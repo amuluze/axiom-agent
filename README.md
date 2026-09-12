@@ -84,4 +84,4 @@ Issue 与 PR 均欢迎。涉及安全边界（授权 / 审批 / 沙箱 / 密钥�
 
 ## 许可
 
-[MIT](LICENSE) © Axiom contributors
+[MIT](LICENSE) © amuluze
