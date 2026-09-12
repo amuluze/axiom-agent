@@ -1,0 +1,695 @@
+.composer {
+  width: 100%;
+  max-width: var(--message-column);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 18px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: var(--text-primary);
+}
+
+.composer__selectors {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 2px 6px 0 6px;
+}
+
+.composer__selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 1rem;
+}
+
+.composer__selector:hover {
+  background: var(--bg-hover);
+}
+
+.composer__selector-icon {
+  color: var(--text-secondary);
+}
+
+.composer__selector-chevron {
+  color: var(--text-tertiary);
+}
+
+.composer__workspace-picker {
+  position: relative;
+  min-width: 0;
+}
+
+.composer__project-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.composer__project-branch {
+  max-width: 220px;
+  overflow: hidden;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.8462rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer__workspace-menu {
+  position: absolute;
+  /* 与 access-menu / model-menu 一致向上弹出：Composer 位于视口底部，
+     向下弹出会被 session__content 的 overflow:hidden 裁剪。 */
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: min(360px, calc(100vw - 48px));
+  max-width: 440px;
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-popover);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.composer__menu-item--row {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-primary);
+  font-size: 0.9615rem;
+}
+
+.composer__input-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--bg-input);
+  border-radius: 12px;
+  padding: 14px 14px 10px 14px;
+}
+
+.composer__textarea {
+  width: 100%;
+  resize: none;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 1.0385rem;
+  line-height: 1.5;
+  min-height: 64px;
+  margin-bottom: 12px;
+}
+
+.composer__textarea::placeholder {
+  color: var(--text-tertiary);
+}
+
+.composer__controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.composer__access-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--accent-text);
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.composer__access-mode[data-mode='no-approval'] {
+  color: var(--diff-red);
+}
+
+.composer__access-mode:hover {
+  background: var(--bg-hover);
+}
+
+.composer__access-picker {
+  position: relative;
+}
+
+.composer__model-selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 1rem;
+  max-width: 300px;
+}
+
+.composer__model-selector > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer__model-selector:hover {
+  background: var(--bg-hover);
+}
+
+.composer__model-selector:disabled {
+  opacity: 0.5;
+}
+
+.composer__model-picker {
+  position: relative;
+}
+
+.composer__model-picker .composer__model-menu {
+  right: 0;
+  bottom: calc(100% + 6px);
+}
+
+.composer__access-picker .composer__access-menu {
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: min(280px, calc(100vw - 48px));
+  z-index: 40;
+}
+
+.composer__model-settings-link {
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  margin-top: 4px;
+  padding-top: 9px;
+  color: var(--accent-text);
+}
+
+.composer__send {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: var(--text-tertiary);
+  color: var(--text-inverse);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.composer__send:disabled {
+  opacity: 0.4;
+}
+
+.composer__send:not(:disabled) {
+  background: var(--text-secondary);
+}
+
+.composer__send--ready:not(:disabled) {
+  background: var(--accent);
+}
+
+.composer__follow-up {
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 0.9231rem;
+}
+
+.composer__follow-up:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.composer__follow-up:disabled {
+  opacity: 0.45;
+}
+
+.composer__stop {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--diff-red);
+  background: color-mix(in srgb, var(--diff-red) 10%, transparent);
+}
+
+.composer__stop:hover {
+  background: color-mix(in srgb, var(--diff-red) 18%, transparent);
+}
+
+.composer__controls-spacer {
+  flex: 1;
+}
+
+/* 上下文预算入口：触发按钮常驻控制行左端，弹层向上展开（同其余菜单）。 */
+.composer__budget-picker {
+  position: relative;
+}
+
+/* 最近一次模型响应的 token 用量（只读展示；数据来自已持久化的 assistant 消息 usage）。 */
+.composer__usage {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  font-size: 0.9231rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.composer__budget-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 0.9231rem;
+}
+
+.composer__budget-trigger:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* 迷你水位条位于 bg-input 背景之上，用 inset 描边保证轨道可见。 */
+.composer__budget-bar {
+  display: inline-block;
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-input);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+  overflow: hidden;
+}
+
+.composer__budget-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 120ms ease-out;
+}
+
+.composer__budget-trigger[data-status='warn'] {
+  color: var(--warn-text);
+}
+
+.composer__budget-trigger[data-status='warn'] .composer__budget-bar-fill {
+  background: var(--warn);
+}
+
+.composer__budget-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  /* 触发按钮位于控制行右侧（模型选择器之前），弹层右对齐防溢出。 */
+  right: 0;
+  width: min(300px, calc(100vw - 48px));
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-popover);
+  z-index: 40;
+}
+
+.composer__budget-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-secondary);
+  font-size: 0.9231rem;
+  font-weight: 600;
+}
+
+.composer__budget-meter {
+  width: 100%;
+  height: 6px;
+  background: var(--bg-input);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.composer__budget-meter-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 120ms ease-out;
+}
+
+.composer__budget-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text-secondary);
+  font-size: 0.8846rem;
+}
+
+.composer__budget-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-tertiary);
+  font-size: 0.8462rem;
+}
+
+.composer__budget-compact {
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 0.8462rem;
+}
+
+.composer__budget-compact:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.composer__budget-compact:disabled {
+  opacity: 0.45;
+}
+
+.composer__budget-checkpoint {
+  color: var(--text-secondary);
+  font-size: 0.8462rem;
+}
+
+.composer__budget-checkpoint summary {
+  cursor: pointer;
+}
+
+.composer__budget-checkpoint pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  background: var(--bg-input);
+  font-family: var(--font-mono);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.composer__access-menu,
+.composer__model-menu {
+  position: absolute;
+  min-width: 280px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+  box-shadow: var(--shadow-popover);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 上弹弹层整体钳高：会话页 Composer 贴近窗口底部、欢迎页垂直居中，
+   静态 100vh 常量覆盖不了两种布局——打开菜单时 useUpwardMenuClamp 实测
+   触发器顶缘上方空间写入 --composer-menu-available，回退值只兜未测量的一帧。
+   列表（.composer__menu-list）以 flex 收缩并内部滚动，标题与底部动作项保持可见。 */
+.composer__workspace-menu,
+.composer__access-menu,
+.composer__model-menu,
+.composer__budget-menu {
+  max-height: var(--composer-menu-available, min(560px, calc(100vh - 24px)));
+  overflow-y: auto;
+}
+
+.composer__menu-title {
+  padding: 6px var(--space-3);
+  color: var(--text-tertiary);
+  font-size: 0.9231rem;
+}
+
+.composer__menu-list {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.composer__menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  text-align: left;
+  width: 100%;
+}
+
+.composer__menu-item:hover {
+  background: var(--bg-hover);
+}
+
+.composer__menu-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.composer__menu-item-label {
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.composer__menu-item-desc {
+  color: var(--text-secondary);
+  font-size: 0.8846rem;
+}
+
+.composer__menu-item--active {
+  background: var(--bg-hover);
+}
+
+.composer__mention-popover {
+  position: absolute;
+  bottom: calc(100% + var(--space-2));
+  left: 0;
+  right: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 4px;
+  box-shadow: var(--shadow-popover);
+  z-index: 30;
+}
+
+.composer__mention-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px 4px 12px;
+  color: var(--text-tertiary);
+  font-size: 0.8462rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.composer__mention-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 1rem;
+  width: 100%;
+  text-align: left;
+}
+
+.composer__mention-item--active {
+  background: var(--bg-hover);
+}
+
+.composer__mention-item-label {
+  font-family: var(--font-mono);
+}
+
+.composer__mention-item-hint {
+  color: var(--text-tertiary);
+  font-size: 0.8846rem;
+  margin-left: auto;
+}
+
+.composer__mention-empty {
+  padding: 8px 12px;
+  color: var(--text-tertiary);
+  font-size: 0.9231rem;
+}
+
+.composer__mention-actions {
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: 2px;
+}
+
+.composer__mention-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 0.9231rem;
+}
+
+.composer__mention-action:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.composer__mention-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.composer__mention-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-family: var(--font-mono);
+  font-size: 0.9231rem;
+}
+
+.composer__queue {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  font-size: 0.8846rem;
+}
+
+.composer__queue--recovered {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border-subtle));
+}
+
+.composer__queue-heading,
+.composer__queue-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.composer__queue-heading {
+  color: var(--text-secondary);
+}
+
+.composer__queue-heading button,
+.composer__queue-list button {
+  margin-left: auto;
+  color: var(--accent-text);
+}
+
+.composer__queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.composer__queue-list li {
+  min-width: 0;
+  color: var(--text-secondary);
+}
+
+.composer__queue-kind {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+}
+
+.composer__queue-preview {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer__queue-list .composer__queue-discard {
+  margin-left: 0;
+  color: var(--diff-red);
+}
+
+/* 编辑已发送消息的提示条：与排队区同构，用 accent 边框区别于「待发送队列」。 */
+.composer__edit-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border-subtle));
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 0.8846rem;
+}
+
+.composer__edit-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.composer__edit-title {
+  color: var(--text-primary);
+}
+
+.composer__edit-hint {
+  color: var(--text-tertiary);
+}
+
+.composer__edit-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: auto;
+  border-radius: 6px;
+  color: var(--text-secondary);
+}
+
+.composer__edit-cancel:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.composer__edit-cancel:focus-visible {
+  outline: 1px solid var(--accent);
+}

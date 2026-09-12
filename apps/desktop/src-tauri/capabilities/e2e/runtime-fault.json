@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "e2e-runtime-fault",
+  "description": "Runtime fault injection and workspace registration available only in isolated E2E builds",
+  "windows": ["main"],
+  "platforms": ["macOS"],
+  "local": true,
+  "permissions": [
+    "allow-e2e-runtime-fault-checkpoint",
+    "allow-e2e-register-workspace"
+  ]
+}

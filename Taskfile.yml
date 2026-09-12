@@ -1,0 +1,74 @@
+version: '3'
+
+# Axiom 任务入口（taskfile.dev）。
+#
+# 开发与检查的常用编排层，底层一律委托 package.json 的 npm scripts（单一权威
+# 来源）。`task --list` 查看全部任务；Rust 命令依赖 rustup（工具链由
+# rust-toolchain.toml 自动固定，无需手动切换）。
+
+tasks:
+  default:
+    desc: 列出全部任务
+    cmd: task --list
+
+  # ── 开发 ──────────────────────────────────────────────────────────────
+
+  install:
+    desc: 安装依赖（Node 22+ / npm 10+）
+    cmd: npm install
+
+  dev:
+    desc: 浏览器开发模式（确定性 Demo Transport，无需 API Key）
+    cmd: npm run dev
+
+  dev:desktop:
+    desc: Tauri 桌面开发模式（启用原生命令）
+    cmd: npm run tauri -- dev
+
+  # ── 编译 ──────────────────────────────────────────────────────────────
+
+  build:
+    desc: 前端构建
+    cmd: npm run build
+
+  build:app:
+    desc: 本地 debug 构建 .app（不打包 DMG）
+    cmd: npm run tauri -- build --debug --bundles app
+
+  # ── 检查与测试 ────────────────────────────────────────────────────────
+
+  check:
+    desc: 提交前完整检查（typecheck + 单测 + Rust + 构建）
+    cmd: npm run check
+
+  typecheck:
+    desc: TypeScript 类型检查（strict）
+    cmd: npm run typecheck
+
+  test:
+    desc: vitest 单元测试（apps/desktop）
+    cmd: npm run test
+
+  test:coverage:
+    desc: vitest 单元测试 + 覆盖率
+    cmd: npm run test:coverage
+
+  test:rust:
+    desc: cargo test（工具链由 rust-toolchain.toml 固定）
+    cmd: npm run test:rust
+
+  test:migrations:
+    desc: Rust 会话仓库测试（SQLite 仓储事务/并发语义）
+    cmd: npm run test:migrations
+
+  lint:rust:
+    desc: cargo clippy（-D warnings）
+    cmd: npm run lint:rust
+
+  check:rust:
+    desc: cargo check
+    cmd: npm run check:rust
+
+  check:rust:targets:
+    desc: cargo check 双 target（aarch64 + x86_64 Apple Darwin）
+    cmd: npm run check:rust:targets

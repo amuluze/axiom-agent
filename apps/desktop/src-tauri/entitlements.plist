@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Developer ID 签名 + hardened runtime 下的 entitlements（公证前提是 hardened
+  runtime，见 tauri.release.conf.json）。仅在配置了签名身份时被 tauri bundler
+  消费——adhoc 构建（无 APPLE_SIGNING_IDENTITY）完全跳过签名，本文件休眠。
+
+  - allow-jit：WKWebView 的 JavaScript JIT 在 hardened runtime 下被默认拒绝，
+    缺失时应用启动即崩（WebKit 无法分配可执行内存）——这是签名后最常见翻车点
+  - allow-unsigned-executable-memory：旧版 WebKit/JSC 的回退执行内存路径
+    （minimumSystemVersion 12.0 兼容）
+  - disable-library-validation：允许加载非本团队签名的动态库（系统框架之外的
+    二进制依赖），不对冲分发安全（主程序签名仍受 Gatekeeper 校验）
+-->
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+  </dict>
+</plist>

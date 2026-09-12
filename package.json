@@ -1,0 +1,49 @@
+{
+  "name": "axiom",
+  "private": true,
+  "version": "0.4.3",
+  "description": "Local-first desktop agent with a first-party runtime.",
+  "type": "module",
+  "workspaces": [
+    "apps/desktop"
+  ],
+  "engines": {
+    "node": ">=22",
+    "npm": ">=10"
+  },
+  "overrides": {
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "scripts": {
+    "dev": "npm run dev --workspace @axiom/desktop",
+    "tauri": "npm run tauri --workspace @axiom/desktop --",
+    "build": "npm run build --workspace @axiom/desktop",
+    "typecheck": "npm run typecheck --workspace @axiom/desktop",
+    "lint:ts": "biome check",
+    "lint:ts:fix": "biome check --write",
+    "test": "npm run test --workspace @axiom/desktop",
+    "test:coverage": "npm run test:coverage --workspace @axiom/desktop",
+    "check": "npm run typecheck && npm run lint:ts && npm run test && npm run test:rust && npm run build && npm run check:rust",
+    "check:rust": "cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --locked",
+    "check:rust:targets": "cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --target aarch64-apple-darwin && cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --target x86_64-apple-darwin",
+    "lint:rust": "cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --all-targets -- -D warnings",
+    "test:rust": "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked",
+    "test:migrations": "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked session_repository::tests"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.10",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.3",
+    "@types/node": "26.3.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "jsdom": "^26.1.0"
+  },
+  "dependencies": {
+    "baseline-browser-mapping": "^2.11.21",
+    "browserslist": "^4.28.9"
+  }
+}

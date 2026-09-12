@@ -1,0 +1,74 @@
+[package]
+name = "axiom"
+version = "0.4.3"
+description = "Local-first desktop agent"
+authors = ["Axiom contributors"]
+edition = "2021"
+
+[features]
+e2e = []
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+specta = { version = "=2.0.0-rc.25", features = ["derive", "function"] }
+specta-typescript = "0.0.12"
+tauri = { version = "2", features = ["dynamic-acl"] }
+tauri-specta = { version = "=2.0.0-rc.25", features = ["typescript"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+# 自更新：updater 拉取 latest.json 并校验 minisign 签名，process 提供 relaunch。
+# 插件常驻编译；仅当配置存在 plugins.updater（generate-release-config.mjs 按
+# 签名凭据注入）时 lib.rs 才注册 updater 插件，开发/无密钥构建保持未配置。
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+reqwest = "0.13.4"
+httpdate = "1"
+# browser 工具的 CDP WebSocket 客户端 + connect 远程操控的飞书/钉钉 wss 长连接：
+# native-tls 走 macOS Security.framework（与 reqwest 默认 TLS 栈一致，不引 rustls 双栈）；
+# futures-util 仅为 WS 流的 Sink/Stream 扩展方法（已是 tungstenite 的传递依赖，显式声明为直接依赖）。
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "sync", "time"] }
+libc = "0.2"
+portable-pty = "0.8"
+globset = "0.4"
+ignore = "0.4"
+regex = "1"
+tempfile = "3"
+base64 = "0.22"
+sha2 = "0.10"
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite"] }
+unicode-normalization = "0.1"
+# connect 微信扫码登录的二维码点阵生成（零依赖实现，Rust 侧生成、前端 SVG 渲染）。
+qrcodegen = "1.8"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+# 密钥批量迁移：解析 SecItemCopyMatching 属性字典需 CFString/字典类型
+# （0.10 与 security-framework 3 内部版本一致，共享类型）；kSecAttrAccount
+# 常量来自 security-framework-sys（同树 2.x，无新增 vendor）。
+core-foundation = "0.10"
+security-framework-sys = "2"
+# 终端原生键盘手势门：NSEvent local monitor 验证 stdin 输入确实来自用户按键
+# （WebView 内 JS 无法伪造 isTrusted，但此处在 Rust 侧直接从 NSApplication 事件流捕获）。
+# 电脑控制模块复用 objc2 家族：NSWorkspace/NSRunningApplication 枚举运行 app，
+# NSAlert（sheet 挂主窗口）做会话门三选一确认；其余 AX/CGEvent/CGWindowList
+# 均手写 extern "C" FFI（对齐 power.rs 风格），不引新 crate。
+objc2-app-kit = { version = "0.3", features = [
+  "block2",
+  "NSRunningApplication",
+  "NSWorkspace",
+  "NSAlert",
+  "NSWindow",
+] }
+objc2-foundation = "0.3"
+block2 = "0.6"
+
+[lib]
+name = "axiom_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]

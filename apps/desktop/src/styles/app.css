@@ -1,0 +1,202 @@
+.app-shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) 1fr;
+  grid-template-rows: 100%;
+  height: 100vh;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  overflow: hidden;
+}
+
+.app-shell--collapsed {
+  grid-template-columns: var(--sidebar-collapsed-width) 1fr;
+}
+
+.app-shell--no-sidebar {
+  grid-template-columns: 1fr;
+  position: relative;
+}
+
+.app-main {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.app-main__body {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  display: flex;
+}
+
+/* 视图内容包裹层：后续行内兄弟是运行时面板，内容占满剩余宽度。
+   子视图（.session / .new-task）按原 100% 高度/宽度布局，无需感知面板。 */
+.app-main__content {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-shell__reopen {
+  position: fixed;
+  top: 6px;
+  left: var(--macos-traffic-light-safe-area);
+  z-index: 30;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  -webkit-app-region: no-drag;
+}
+
+.app-shell__reopen:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.app-main--sidebar-hidden .session__header {
+  padding-left: calc(var(--macos-traffic-light-safe-area) + 28px + var(--space-3));
+}
+
+.app-main--sidebar-hidden .new-task__drag-region {
+  left: calc(var(--macos-traffic-light-safe-area) + 28px + var(--space-3));
+}
+
+@media (max-width: 760px) {
+  :root {
+    --sidebar-width: 0px;
+    --message-column: 100%;
+  }
+}
+
+/* 工作区恢复门（WorkspaceRecoveryGate）：main.tsx 里包住整个应用的启动阻塞
+ * 界面。组件此前只写了类名、没有任何样式定义，此处按设计稿「启动 / 阻塞态」
+ * 补齐。卡片规格沿用设置卡片一族（border-subtle / radius-lg / bg-card），
+ * 仅内外距放大一档取 20/24（设置卡片是 14/16）——它是独占整屏的焦点卡片。 */
+.startup-recovery-shell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+  background: var(--bg-main);
+}
+
+.startup-recovery-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 560px;
+  padding: 20px 24px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+}
+
+/* 设计稿的卡片行距统一由 gap 控制，抵掉 .eyebrow 自带的 2px 下边距。 */
+.startup-recovery-card .eyebrow {
+  margin-bottom: 0;
+}
+
+.startup-recovery-card h1 {
+  margin: 0;
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-size: 2rem;
+  font-weight: 500;
+}
+
+.startup-recovery-summary,
+.startup-recovery-guidance {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.startup-recovery-summary {
+  color: var(--text-secondary);
+  font-size: 1rem;
+}
+
+.startup-recovery-guidance {
+  color: var(--text-tertiary);
+  font-size: 0.9231rem;
+}
+
+.startup-recovery-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+}
+
+.startup-recovery-details > div {
+  display: flex;
+  gap: 12px;
+}
+
+.startup-recovery-details dt,
+.startup-recovery-details dd {
+  font-size: 0.9231rem;
+}
+
+.startup-recovery-details dt {
+  flex: none;
+  width: 72px;
+  color: var(--text-tertiary);
+}
+
+.startup-recovery-details dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.startup-recovery-details code {
+  font-family: var(--font-mono);
+}
+
+.startup-recovery-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 主按钮规格与 .primary-button 一致（设计稿 Button States：padding 6/14、
+ * $radius-8、fill/stroke $accent）。禁用统一 opacity 0.45。 */
+.startup-recovery-actions button {
+  padding: 6px 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--text-inverse);
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.startup-recovery-actions button:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+
+.startup-recovery-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.startup-recovery-loading {
+  color: var(--text-secondary);
+  font-size: 1rem;
+}

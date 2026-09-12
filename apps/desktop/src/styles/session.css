@@ -1,0 +1,1003 @@
+.session {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+.session__content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.session__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--window-titlebar-height);
+  padding: 6px var(--space-2) 6px var(--space-5);
+  width: 100%;
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.session__status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+.session__status-dot--completed {
+  background: var(--diff-green);
+}
+
+.session__status-dot--error {
+  background: var(--diff-red);
+}
+
+.session__status-dot--paused {
+  background: var(--warn);
+}
+
+.session__title {
+  color: var(--text-primary);
+  font-size: 1.0769rem;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session__status-tag {
+  background: var(--accent-soft);
+  border-radius: 6px;
+  padding: 2px 8px;
+  color: var(--accent-text);
+  font-size: 0.8462rem;
+}
+
+.session__status-tag--completed {
+  background: var(--success-soft);
+  color: var(--diff-green);
+}
+
+.session__status-tag--error {
+  background: var(--danger-soft);
+  color: var(--diff-red);
+}
+
+.session__status-tag--paused {
+  background: var(--warn-soft);
+  color: var(--warn-text);
+}
+
+.session__header-spacer {
+  flex: 1;
+}
+
+/* 会话窗口右上角的操作图标容器：作为 header flex 子元素，
+   保证帮助/终端/折叠按钮始终钉在标题栏右边缘，随 header 宽度自然收缩。
+   运行轨迹展开时图标转移到 rail 顶部，header 内条件隐藏。 */
+.session__window-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 8px;
+  -webkit-app-region: no-drag;
+}
+
+.session__window-action {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+}
+
+.session__window-action:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.session__window-action--active {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.session__window-action:disabled {
+  opacity: 0.5;
+}
+
+/* 帮助下拉菜单（圆圈+？按钮）：与终端/运行时面板图标同属窗口操作工具条，
+   菜单跟随 .window-help 宿主定位而非按钮容器；视觉沿用 Composer 弹层语言。
+   帮助按钮位于窗口右上角，菜单向下展开右对齐，三两项目无需钳高。 */
+.window-help {
+  position: relative;
+  display: inline-flex;
+}
+
+.window-help__menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 140px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+  box-shadow: var(--shadow-popover);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.window-help__menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  text-align: left;
+  width: 100%;
+  color: var(--text-primary);
+  font-size: 1rem;
+}
+
+.window-help__menu-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.window-help__menu-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.session__divider {
+  width: 100%;
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+.session__messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-4) var(--space-6);
+  /* 长会话里 scrollHeight 巨大；隔离本容器的 layout/paint，避免外层
+     (composer / runtime-error) 因列内 layout 抖动而重排。 */
+  contain: layout paint;
+}
+
+.session__column {
+  /* 消息块之间的净间距；消息操作行就叠在这条带子里（见 .session__message-actions）。 */
+  --message-gap: 18px;
+  width: 100%;
+  max-width: var(--message-column);
+  display: flex;
+  flex-direction: column;
+  gap: var(--message-gap);
+}
+
+.session__column--compact {
+  max-width: var(--message-column-compact);
+  --message-gap: 12px;
+}
+
+.message-bubble {
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 10px 14px;
+  color: var(--text-primary);
+  font-size: 1.0385rem;
+  line-height: 1.5;
+  max-width: 520px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.message-bubble--user {
+  margin-left: auto;
+}
+
+.message-bubble__row {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+.message-text {
+  color: var(--text-primary);
+  font-size: 1.0385rem;
+  line-height: 1.68;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 消息操作行（设计稿 xBpxw / sNxPn）：18×18 命中区、组内 2px 间距，
+   用户消息右对齐、Agent 消息左对齐；hover 或键盘聚焦时才出现。
+
+   版面：设计稿把操作行**叠在消息块之间的间距带里**（气泡底 62 → 操作行 62–80
+   → 下一块 80），消息块之间的净间距保持不变。做到这一点需要两步：操作行用
+   负的上外边距抵消消息组内部间距、紧贴消息下沿；带操作行的消息组再用等量的
+   负下外边距把这 18px 还给间距带。行本身必须留在文档流里——消息组开着
+   content-visibility: auto，paint containment 会把溢出组框的绝对定位内容裁掉。
+
+   显隐用「占位 + 透明度」而非 display/visibility 切换：后者不占位，hover 时
+   会让整列消息向下位移；且被隐藏的按钮无法获得焦点，键盘用户永远够不到操作行。 */
+.session__message-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: var(--message-actions-band);
+  margin-top: calc(-1 * var(--message-group-gap));
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 行高不超过可用间距带：紧凑列（12px）下退化为按列间距让位，避免压到下一块。 */
+.session__message-group--with-actions {
+  margin-bottom: calc(-1 * min(var(--message-actions-band), var(--message-gap)));
+}
+
+.session__message-actions--user {
+  justify-content: flex-end;
+}
+
+.session__message-group:hover .session__message-actions,
+.session__message-group:focus-within .session__message-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.message-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  color: var(--text-secondary);
+}
+
+.message-action--feedback {
+  color: var(--text-primary);
+}
+
+.message-action:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.message-action:disabled {
+  opacity: 0.45;
+}
+
+.message-action:focus-visible {
+  outline: 1px solid var(--accent);
+}
+
+.message-markdown {
+  color: var(--text-primary);
+  min-width: 0;
+}
+
+.message-markdown > :first-child {
+  margin-top: 0;
+}
+
+.message-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.message-markdown p {
+  margin: 0 0 0.8em;
+}
+
+.message-markdown h1,
+.message-markdown h2,
+.message-markdown h3,
+.message-markdown h4 {
+  margin: 1.35em 0 0.55em;
+  color: var(--text-primary);
+  font-weight: 650;
+  line-height: 1.28;
+  letter-spacing: -0.012em;
+}
+
+.message-markdown h1 {
+  padding-bottom: 0.38em;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 1.45em;
+}
+
+.message-markdown h2 {
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent);
+  font-size: 1.25em;
+}
+
+.message-markdown h3 {
+  font-size: 1.1em;
+}
+
+.message-markdown h4 {
+  color: var(--text-secondary);
+  font-size: 1em;
+}
+
+.message-markdown strong {
+  color: #FFFDF6;
+  font-weight: 650;
+}
+
+.message-markdown em {
+  color: color-mix(in srgb, var(--text-primary) 86%, var(--accent));
+}
+
+.message-markdown ul,
+.message-markdown ol {
+  margin: 0 0 0.9em;
+  padding-left: 1.55em;
+}
+
+.message-markdown li {
+  padding-left: 0.18em;
+}
+
+.message-markdown li + li {
+  margin-top: 0.32em;
+}
+
+.message-markdown li::marker {
+  color: var(--accent-text);
+}
+
+.message-markdown li > p {
+  margin-bottom: 0.38em;
+}
+
+.message-markdown blockquote {
+  margin: 1em 0;
+  padding: 0.72em 0.9em;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--accent-soft) 48%, transparent);
+}
+
+.message-markdown blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.message-markdown a {
+  color: color-mix(in srgb, var(--accent) 88%, white);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  text-underline-offset: 3px;
+}
+
+.message-markdown a:hover {
+  color: #FFC47D;
+  text-decoration-color: currentColor;
+}
+
+/* 链接旁「在面板打开」附属按钮：hover 才显示，默认点击行为（系统浏览器外开）不变。 */
+.message-link-wrap {
+  position: relative;
+  display: inline;
+}
+
+.message-link-panel {
+  display: none;
+  vertical-align: middle;
+  margin-left: 4px;
+  padding: 1px 3px;
+  border-radius: 4px;
+  color: var(--text-tertiary);
+}
+
+.message-link-wrap:hover .message-link-panel,
+.message-link-panel:focus-visible {
+  display: inline-flex;
+  align-items: center;
+}
+
+.message-link-panel:hover {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+
+.message-link-panel:focus-visible {
+  outline: 1px solid var(--accent);
+}
+
+.message-inline-code {
+  padding: 0.14em 0.38em;
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 80%, transparent);
+  border-radius: 5px;
+  color: color-mix(in srgb, var(--accent) 78%, white);
+  background: var(--bg-input);
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  overflow-wrap: anywhere;
+}
+
+.message-code-block {
+  overflow: hidden;
+  margin: 1em 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: #151514;
+  box-shadow: var(--shadow-card);
+}
+
+.message-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+  background: var(--bg-card);
+  font-family: var(--font-mono);
+  font-size: 0.8077rem;
+  text-transform: lowercase;
+}
+
+.message-code-header button {
+  padding: 4px 7px;
+  border-radius: 5px;
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: 0.8077rem;
+  text-transform: none;
+}
+
+.message-code-header button:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.message-code-block pre {
+  max-width: 100%;
+  overflow: auto;
+  margin: 0;
+  padding: 14px 16px;
+  color: #E7E4DA;
+  font-family: var(--font-mono);
+  font-size: 0.9231rem;
+  line-height: 1.62;
+  tab-size: 2;
+}
+
+.message-code-block code {
+  font: inherit;
+  white-space: pre;
+}
+
+.message-markdown hr {
+  height: 1px;
+  margin: 1.35em 0;
+  border: 0;
+  background: var(--border-subtle);
+}
+
+.message-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 1em 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.message-markdown table {
+  width: 100%;
+  min-width: 420px;
+  border-spacing: 0;
+  border-collapse: collapse;
+  font-size: 0.9615rem;
+}
+
+.message-markdown th,
+.message-markdown td {
+  min-width: 112px;
+  padding: 8px 10px;
+  border-right: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+  vertical-align: top;
+}
+
+.message-markdown th {
+  color: var(--text-primary);
+  background: var(--bg-card);
+  font-weight: 600;
+}
+
+.message-markdown tr:last-child td {
+  border-bottom: 0;
+}
+
+.message-markdown th:last-child,
+.message-markdown td:last-child {
+  border-right: 0;
+}
+
+.message-markdown input[type='checkbox'] {
+  margin: 0 0.45em 0 0;
+  accent-color: var(--accent);
+}
+
+.message-thinking {
+  margin: 0.75em 0;
+  padding: 9px 11px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--bg-card) 78%, transparent);
+}
+
+.message-thinking summary {
+  cursor: pointer;
+  color: var(--text-tertiary);
+  font-size: 0.8846rem;
+  user-select: none;
+}
+
+.message-thinking[open] summary {
+  margin-bottom: var(--space-2);
+  color: var(--text-secondary);
+}
+
+/* 思考进行中：summary 文字右侧的旋转指示，随流式结束自动移除。
+   inline 摆位保持 summary 默认 display，不破坏原生折叠箭头。 */
+.message-thinking__spinner {
+  margin-left: 6px;
+  color: var(--accent-text);
+  vertical-align: -2px;
+  animation: tool-card-spin 0.9s linear infinite;
+}
+
+/* 流式输出的未闭合尾部：纯文本轻量渲染，保留换行并继承正文字体。 */
+.message-streaming-tail {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+}
+
+.session__output-anchor {
+  width: 100%;
+  height: 1px;
+}
+
+.session__message-group {
+  /* 组内块间距；操作行带高 = 消息块间距带（两处都被负外边距按名引用）。 */
+  --message-group-gap: 8px;
+  --message-actions-band: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--message-group-gap);
+  min-width: 0;
+  /* 视口外消息组跳过渲染和 layout；浏览器在元素接近视口时按需
+     测量/绘制。contain-intrinsic-size 是滚动条长度估算用的占位
+     高度，实际尺寸浏览器仍会精确测量。 */
+  content-visibility: auto;
+  contain-intrinsic-size: 1px 240px;
+}
+
+.tool-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-primary);
+  font-size: 1rem;
+}
+
+.tool-card__icon {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.tool-card__title {
+  font-family: var(--font-mono);
+  font-size: 0.9615rem;
+  color: var(--text-primary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-card__meta {
+  color: var(--text-tertiary);
+  font-family: var(--font-ui);
+  font-size: 0.8462rem;
+  flex-shrink: 0;
+  display: flex;
+  gap: var(--space-2);
+}
+
+.tool-card__meta-diff-add {
+  color: var(--diff-green);
+  font-family: var(--font-mono);
+  font-size: 0.8462rem;
+}
+
+.tool-card__meta-diff-remove {
+  color: var(--diff-red);
+  font-family: var(--font-mono);
+  font-size: 0.8462rem;
+}
+
+.tool-card__chevron,
+.tool-card__done {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.tool-card__done {
+  color: var(--diff-green);
+}
+
+.tool-card--running {
+  border-color: var(--accent);
+}
+
+.tool-card__spinner {
+  color: var(--accent-text);
+  flex-shrink: 0;
+  animation: tool-card-spin 0.9s linear infinite;
+}
+
+@keyframes tool-card-spin {
+  to { transform: rotate(360deg); }
+}
+
+.tool-card__meta-progress {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-card__meta-status--completed {
+  color: var(--diff-green);
+}
+
+.tool-card__meta-status--partial {
+  color: var(--warn-text);
+}
+
+.tool-card__meta-reason {
+  color: var(--text-tertiary);
+}
+
+.tool-card--expandable {
+  display: block;
+}
+
+.tool-card__summary-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.tool-card__summary-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.tool-card__summary-toggle:hover {
+  background: var(--bg-hover);
+  border-radius: var(--radius-md);
+}
+
+.tool-card__summary-body {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+  max-height: 300px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 0.9231rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+/* 写工具结果的 diff 折叠体：定位是「快速回看改动」，不追求完整 diff 视图。 */
+.tool-card__diff-body {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+  max-height: 320px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 0.9231rem;
+  line-height: 1.5;
+}
+
+.tool-card__diff-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary);
+}
+
+.tool-card__diff-line--add {
+  color: var(--diff-green);
+  background: color-mix(in srgb, var(--diff-green) 8%, transparent);
+}
+
+.tool-card__diff-line--remove {
+  color: var(--diff-red);
+  background: color-mix(in srgb, var(--diff-red) 8%, transparent);
+}
+
+.tool-card__diff-line--meta {
+  color: var(--text-tertiary);
+}
+
+.artifact-preview {
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+}
+
+.artifact-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.artifact-summary div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.artifact-summary strong {
+  color: var(--text-primary);
+  font-size: 0.9231rem;
+}
+
+.artifact-summary span {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 0.7692rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-summary button,
+.artifact-text button {
+  padding: 5px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  font-size: 0.8462rem;
+}
+
+.artifact-summary button:hover:not(:disabled),
+.artifact-text button:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.artifact-text {
+  position: relative;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.artifact-text button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
+.artifact-text pre {
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  padding: 42px 12px 12px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.8462rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.artifact-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 480px;
+  margin: 0 auto;
+  object-fit: contain;
+}
+
+.artifact-error,
+.artifact-recovery {
+  margin: 0;
+  padding: 0 12px 10px;
+  color: var(--diff-red);
+  font-size: 0.8462rem;
+}
+
+.artifact-recovery {
+  color: var(--diff-green);
+}
+
+.session__composer-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 0 var(--space-6) var(--space-2) var(--space-6);
+}
+
+.session__runtime-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: min(calc(100% - (2 * var(--space-6))), var(--message-column));
+  margin: 0 auto var(--space-2);
+  padding: 8px 12px;
+  border: 1px solid var(--diff-red);
+  border-radius: var(--radius-md);
+  color: var(--diff-red);
+  background: var(--danger-soft);
+  font-size: 0.9231rem;
+}
+
+.session__runtime-error button {
+  flex-shrink: 0;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  background: var(--bg-card);
+}
+
+.session__runtime-error button:hover {
+  background: var(--bg-hover);
+}
+
+.session__result-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  font-size: 0.9615rem;
+  color: var(--text-primary);
+}
+
+.session__result-chip-icon {
+  color: var(--diff-green);
+}
+
+.session__result-chip-spacer {
+  flex: 1;
+}
+
+.session__result-chip-meta {
+  color: var(--text-tertiary);
+  font-size: 0.8462rem;
+}
+
+.session__error-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--bg-card);
+  border: 1px solid var(--diff-red);
+  border-radius: var(--radius-md);
+}
+
+.session__error-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--diff-red);
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.session__error-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--text-secondary);
+  font-size: 0.9615rem;
+  line-height: 1.5;
+}
+
+.session__error-card-message {
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.session__error-card-detail {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.9231rem;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.session__error-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.session__error-card-button {
+  padding: 6px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 0.9615rem;
+}
+
+.session__error-card-button:hover {
+  background: var(--bg-hover);
+}
+
+.session__paused-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px var(--space-4);
+  background: var(--bg-card);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 1rem;
+}
+
+.session__paused-banner-title {
+  font-weight: 500;
+}
+
+.session__paused-banner-button {
+  padding: 6px 12px;
+  background: var(--accent);
+  color: var(--text-inverse);
+  border-radius: var(--radius-sm);
+  font-size: 0.9615rem;
+  font-weight: 500;
+}
+
+@media (max-width: 1079px) {
+  .session__messages {
+    padding: var(--space-3) var(--space-4);
+  }
+}

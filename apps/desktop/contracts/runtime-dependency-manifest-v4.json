@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 4,
+  "provider": {
+    "providerId": "generic-anthropic-compatible",
+    "apiFormat": "anthropic-compatible",
+    "modelId": "claude-test",
+    "transportVersion": "1"
+  },
+  "tools": [
+    {
+      "name": "discover_agent_tools",
+      "version": "1",
+      "recoveryPolicy": "never"
+    },
+    {
+      "name": "read",
+      "version": "2",
+      "recoveryPolicy": "never"
+    }
+  ],
+  "hooks": [
+    {
+      "id": "axiom.desktop.runtime-hooks",
+      "version": "7",
+      "fingerprint": "shared-contract-v4"
+    }
+  ],
+  "skills": {
+    "schemaVersion": 1,
+    "skills": []
+  }
+}

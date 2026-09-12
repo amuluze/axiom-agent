@@ -1,0 +1,107 @@
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+/* 标题用衬线体（设计稿 $font-display）。Newsreader 无 CJK 字形，中文标题
+ * 会回退到 --font-ui 栈内的中文字体，与设计稿自身的回退行为一致。 */
+@import '@fontsource/newsreader/500.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* 界面字号基准：全部 UI 字号以 rem 挂在此变量上（px→rem 等比换算，默认 13px
+ * 下与原硬编码视觉一致），「界面字号」偏好只改这一个变量即全局缩放文字——
+ * 图标与 px 布局不受影响。注意 html 的 font-size 不能写 rem（自引用回退 16px）。 */
+/* 界面字号基准：全部 UI 字号以 rem 挂在此变量上（px→rem 等比换算，默认 13px
+ * 下与原硬编码视觉一致），「界面字号」偏好只改这一个变量即全局缩放文字——
+ * 图标与 px 布局不受影响。注意 html 的 font-size 不能写 rem（自引用回退 16px）。 */
+html {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--ui-font-size);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 1rem;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  padding: 0;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+a {
+  color: var(--accent-text);
+  text-decoration: none;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

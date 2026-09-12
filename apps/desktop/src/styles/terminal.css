@@ -1,0 +1,124 @@
+/* 独立终端窗口：占满窗口客户区，仅渲染终端（不渲染会话/模型内容）。 */
+.terminal-window {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg-card);
+  overflow: hidden;
+}
+
+.terminal-window__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.terminal-window__close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.terminal-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* inline style（uiStore 持久化的用户偏好）会覆盖此值；240px 是无 JS 时的兜底默认。 */
+  height: 240px;
+  background: var(--bg-card);
+  border-top: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+/* 顶部拖拽把手：面板自身 overflow:hidden，命中区只能取面板内顶部 7px；
+   视觉线仅在 hover/聚焦时出现，平时不占视觉噪音。 */
+.terminal-panel__resizer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 7px;
+  z-index: 5;
+  cursor: row-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.terminal-panel__resizer::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: transparent;
+}
+
+.terminal-panel__resizer:hover::after,
+.terminal-panel__resizer:focus-visible::after {
+  background: var(--accent-soft);
+}
+
+/* 拖拽期间（把手 pointer capture）全局锁定光标并禁止选择，避免指针甩出把手后光标闪变。 */
+.terminal-panel--resizing,
+.terminal-panel--resizing * {
+  cursor: row-resize;
+  user-select: none;
+}
+
+.terminal-panel__header {
+  display: flex;
+  align-items: center;
+  padding: 6px 8px 6px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-sidebar);
+  flex-shrink: 0;
+}
+
+/* 标题占满左侧余量（设计稿的 fill_container Spacer），把图标组推到最右。 */
+.terminal-panel__title {
+  margin-right: auto;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.9231rem;
+  font-weight: 400;
+}
+
+/* 图标组：24px 命中区、组内零间距，相邻 16px 图标视觉间距正好 8px（设计稿 ok6TR）。 */
+.terminal-panel__actions {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.terminal-panel__actions .rail__toggle {
+  width: 24px;
+  height: 24px;
+}
+
+.terminal-panel__viewport {
+  flex: 1;
+  min-height: 0;
+  padding: 6px 10px;
+  background: var(--bg-canvas);
+  overflow: hidden;
+}
+
+.terminal-panel__viewport .xterm {
+  height: 100%;
+  padding: 0;
+}
+
+.terminal-panel__viewport .xterm-viewport {
+  background-color: var(--bg-canvas);
+}
+
+.terminal-panel__viewport .xterm-screen {
+  background-color: var(--bg-canvas);
+}

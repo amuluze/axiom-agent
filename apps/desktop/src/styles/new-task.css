@@ -1,0 +1,51 @@
+.new-task {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 40px;
+  padding: 40px var(--space-6);
+  height: 100%;
+  width: 100%;
+  overflow: auto;
+}
+
+.new-task__drag-region {
+  position: absolute;
+  z-index: 10;
+  top: 0;
+  right: 116px;
+  left: 0;
+  height: var(--window-titlebar-height);
+  -webkit-app-region: drag;
+}
+
+/* 新会话顶部右侧常驻窗口操作图标（帮助 + 终端 + 运行时面板开关）。
+   与 drag-region 同处顶部，但 no-drag 保证按钮可点击。
+   right 偏移与 drag-region 的 right 预留对齐，避免拖拽区覆盖按钮。 */
+.new-task__window-bar {
+  position: absolute;
+  z-index: 11;
+  top: 0;
+  right: var(--space-2);
+  height: var(--window-titlebar-height);
+  display: flex;
+  align-items: center;
+  -webkit-app-region: no-drag;
+}
+
+.new-task__heading {
+  width: 100%;
+  max-width: var(--message-column);
+  text-align: center;
+}
+
+.new-task__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 2.4615rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}

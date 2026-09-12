@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "scenario": "canonical-tool-replay-and-recovery",
+  "sessionId": "contract-session",
+  "runId": "contract-run",
+  "tool": {
+    "toolCallId": "contract-tool-call",
+    "toolName": "read_workspace_file",
+    "arguments": {
+      "path": "src/main.ts",
+      "options": {
+        "offset": 0,
+        "limit": 20
+      }
+    },
+    "canonicalReplayArguments": {
+      "options": {
+        "limit": 20,
+        "offset": 0
+      },
+      "path": "src/main.ts"
+    },
+    "driftedArguments": {
+      "path": "src/other.ts",
+      "options": {
+        "offset": 0,
+        "limit": 20
+      }
+    },
+    "approvalState": "not_required",
+    "recoveryPolicy": "idempotent",
+    "idempotencyKey": "read:src/main.ts"
+  },
+  "expected": {
+    "canonicalReplay": "accepted",
+    "driftError": "Tool execution start replay 与 canonical effect 不一致",
+    "recoveredRuns": 1,
+    "sessionStatus": "idle",
+    "runStatus": "interrupted",
+    "toolStatus": "interrupted",
+    "runCount": 1,
+    "toolExecutionCount": 1
+  }
+}

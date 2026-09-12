@@ -1,0 +1,161 @@
+:root {
+  color-scheme: dark;
+  /* 背景六级阶梯（canvas→input 逐级提亮），值同步 .pen/axiom.pen 暗色变量 */
+  --bg-canvas: #0A0A09;
+  --bg-sidebar: #1C1B19;
+  --bg-main: #161514;
+  --bg-card: #232220;
+  --bg-input: #2F2E2B;
+  --bg-hover: #2A2927;
+  --border-subtle: #3A3934;
+
+  --text-primary: #F2F1EC;
+  --text-secondary: #A6A498;
+  --text-tertiary: #9B998F;
+  /* 彩色表面（accent 实心按钮等）上的反色文本：取各主题的背景色 */
+  --text-inverse: #0E0E0D;
+
+  --accent: #14B8A6;
+  --accent-hover: #2DD4BF;
+  --accent-soft: #14B8A624;
+  /* 强调色作「文字」时的取值：暗色下等同 --accent，亮色下另取更深的青
+     （见下方亮色块）。填充类用法（按钮底色、选中态、指示点）继续用
+     --accent，两者分开是为了让浅底上的小字达标而不动按钮外观。 */
+  --accent-text: var(--accent);
+  --diff-green: #3FB27F;
+  --diff-red: #F4716B;
+  /* 设计语汇的琥珀只有 warn；diff 的「变更」与警示文本统一走它 */
+  --diff-yellow: var(--warn);
+  --success-soft: #3FB27F24;
+  --danger-soft: #F4716B24;
+  --warn: #FEBC2E;
+  --warn-soft: #FEBC2E24;
+  --warn-border: var(--warn);
+  --warn-text: var(--warn);
+
+  --traffic-red: #FF5F57;
+  --traffic-yellow: #FEBC2E;
+  --traffic-green: #28C840;
+
+  /* 界面字号基准（默认 13px）：全局 UI 字号经 rem 等比挂接，偏好只改此变量。
+   * html 的 font-size 引用它（base.css），不可写 rem（自引用回退 16px）。 */
+  --ui-font-size: 13px;
+
+  /* 字体栈含显式中文回退（macOS 上 -apple-system 隐式回退也工作，显式声明
+   * 保证跨引擎一致与未来多平台可移植）；等宽栈的 CJK 成员让代码块/终端里的
+   * 中文走 PingFang 而非逐字回退。jetbrains 默认栈需与 stores/uiStore.ts 的
+   * MONO_FONT_STACKS.jetbrains 保持一致（xterm canvas 与 CSS 同栈）。 */
+  --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, ui-sans-serif,
+    'PingFang SC', 'Hiragino Sans GB', 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas,
+    'PingFang SC', 'Noto Sans CJK SC', monospace;
+  /* 标题体（设计稿 $font-display = Newsreader）。该字体只有拉丁字形，回退链
+   * 直接复用 --font-ui：中文标题落到 PingFang SC，与加字体前视觉一致。 */
+  --font-display: 'Newsreader', var(--font-ui);
+
+  /* 原生 <select> 的右侧下拉箭头（lucide chevron-down，13px，设计稿取 $text-secondary）。
+   * WebKit 下 select 不能挂伪元素，只能用背景图；SVG 内联颜色不支持 currentColor，
+   * 故按主题各定义一份数值（亮色块在下方两个主题块中覆盖）。 */
+  --chevron-down: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='13' height='13' viewBox='0 0 24 24' fill='none' stroke='%23A6A498' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  --macos-traffic-light-safe-area: 78px;
+  --window-titlebar-height: 40px;
+  --sidebar-width: 264px;
+  --sidebar-collapsed-width: 56px;
+  --rail-width: 288px;
+  --message-column: 840px;
+  --message-column-compact: 680px;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.18);
+  --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.32);
+}
+
+:root[data-theme='light'] {
+  --bg-sidebar: #F0EFEA;
+  --bg-main: #F8F7F3;
+  --bg-card: #FFFFFF;
+  --bg-input: #EEEDE8;
+  --bg-hover: #E8E6E0;
+  --border-subtle: #D8D5CD;
+  --text-primary: #24231F;
+  --text-secondary: #66645D;
+  --text-tertiary: #69665E;
+  --text-inverse: #F8F7F3;
+  /* 箭头随亮色的 $text-secondary 覆盖 */
+  --chevron-down: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='13' height='13' viewBox='0 0 24 24' fill='none' stroke='%2366645D' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  /* 彩色令牌的亮色重取值，与 .pen/axiom.pen 的 light 主题取值一一对应。
+     前景令牌按浅底压深，使其在全部浅色背景（bg-main / bg-card / bg-input /
+     bg-hover / bg-sidebar，以及 *_soft 标签底）上均达到 WCAG AA 4.5:1：
+       --text-tertiary #7D7A72→#69665E（4.00→5.35）
+       --diff-red      #E5534B→#C4342B（3.45→5.06）
+       --diff-green    #3FB27F→#257048（2.48→5.61）
+       --warn-text     var(--text-secondary)→#7A5F00（保留警示语义）
+       --accent-text   新增 #0A6B61（只用于文字，--accent 填充保持品牌亮青）
+     背景用的 *_soft 是浅色表面，不随前景压深（压深反而会降低其上文字的对比度）。
+     --diff-yellow 只在代码侧使用，.pen 无对应变量。 */
+  --accent: #0D9488;
+  --accent-hover: #14B8A6;
+  --accent-soft: #0D948824;
+  --accent-text: #0A6B61;
+  --diff-red: #C4342B;
+  --diff-green: #257048;
+  --diff-yellow: #B58900;
+  --success-soft: #3FB27F26;
+  --danger-soft: #E5534B26;
+  --warn-soft: #FEBC2E26;
+  --warn-border: var(--border-subtle);
+  /* 警示文字在浅底上另取深琥珀：暗色的 #FEBC2E 在 --warn-soft 标签底上只有
+     1.4:1；改用中性灰会丢掉「警示」语义，故压深琥珀本身而不是去色。 */
+  --warn-text: #7A5F00;
+  --shadow-card: 0 1px 2px rgba(37, 34, 25, 0.1);
+  --shadow-popover: 0 10px 28px rgba(37, 34, 25, 0.16);
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --bg-sidebar: #F0EFEA;
+    --bg-main: #F8F7F3;
+    --bg-card: #FFFFFF;
+    --bg-input: #EEEDE8;
+    --bg-hover: #E8E6E0;
+    --border-subtle: #D8D5CD;
+    --text-primary: #24231F;
+    --text-secondary: #66645D;
+    --text-tertiary: #69665E;
+    --text-inverse: #F8F7F3;
+    /* 同 data-theme='light'：彩色令牌与箭头保持亮色值 */
+    --chevron-down: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='13' height='13' viewBox='0 0 24 24' fill='none' stroke='%2366645D' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    --accent: #0D9488;
+    --accent-hover: #14B8A6;
+    --accent-soft: #0D948824;
+    --accent-text: #0A6B61;
+    --diff-red: #C4342B;
+    --diff-green: #257048;
+    --diff-yellow: #B58900;
+    --success-soft: #3FB27F26;
+    --danger-soft: #E5534B26;
+    --warn-soft: #FEBC2E26;
+    --warn-border: var(--border-subtle);
+    --warn-text: #7A5F00;
+    --shadow-card: 0 1px 2px rgba(37, 34, 25, 0.1);
+    --shadow-popover: 0 10px 28px rgba(37, 34, 25, 0.16);
+    color-scheme: light;
+  }
+}
