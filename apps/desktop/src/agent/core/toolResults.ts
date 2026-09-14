@@ -25,6 +25,43 @@ export interface ToolBatchResult {
 export const createToolError = (message: string): AgentToolResult => ({ content: message })
 
 /**
+ * 单条工具结果消息的整体字节预算。message_end 是持久化屏障，Rust 侧
+ * persist_session_message 对整个请求体有 2 MiB 硬上限——超限时写库失败会让 run
+ * 失败关闭，而 assistant(tool_calls) 已先行落库，持久历史从此缺少对应 tool 消息，
+ * 后续所有模型请求都会被 Provider 以 400（insufficient tool messages）拒绝。
+ * contentBlocks 的图片（browser/computer 截图的 base64）不受 256 KiB 文本内联上限
+ * 约束，是唯一能把单条消息顶破持久化上限的载荷，必须在此收口。取 1.5 MiB，
+ * 为 Rust DTO 信封与 JSON 编码差异留足余量。
+ */
+const MAX_TOOL_RESULT_MESSAGE_BYTES = 1536 * 1024
+
+const messageByteLength = (message: ToolResultMessage): number =>
+  byteLength(JSON.stringify(message))
+
+/**
+ * 把消息压回整体预算内：从尾部丢弃图片 contentBlocks（保留靠前的），必要时兜底
+ * 截断文本 content。返回被丢弃的图片数与估算字节数，供调用方追加省略说明。
+ */
+const shrinkToMessageBudget = (
+  message: ToolResultMessage,
+): { omittedImages: number; omittedBytes: number } => {
+  let omittedImages = 0
+  let omittedBytes = 0
+  while (message.contentBlocks?.length && messageByteLength(message) > MAX_TOOL_RESULT_MESSAGE_BYTES) {
+    const dropped = message.contentBlocks[message.contentBlocks.length - 1]
+    if (!dropped) break
+    message.contentBlocks = message.contentBlocks.slice(0, -1)
+    if (message.contentBlocks.length === 0) delete message.contentBlocks
+    omittedImages += 1
+    omittedBytes += byteLength(JSON.stringify(dropped))
+  }
+  if (messageByteLength(message) > MAX_TOOL_RESULT_MESSAGE_BYTES) {
+    message.content = truncateToBytes(message.content, MAX_TOOL_RESULT_MESSAGE_BYTES - 64 * 1024)
+  }
+  return { omittedImages, omittedBytes }
+}
+
+/**
  * 把工具调用结果构造成可回灌的 ToolResultMessage。
  * 超出内联上限或携带 artifactContent 时，尝试外置到 Artifact 存储，
  * 并在尾部追加截断提示或失败说明。
@@ -69,7 +106,7 @@ export const createToolResultMessage = async (
       ]
     : undefined
 
-  return {
+  const message: ToolResultMessage = {
     id: createId('message'),
     role: 'tool',
     toolCallId: outcome.call.id,
@@ -85,6 +122,12 @@ export const createToolResultMessage = async (
     isError: outcome.isError,
     createdAt: Date.now(),
   }
+
+  const { omittedImages, omittedBytes } = shrinkToMessageBudget(message)
+  if (omittedImages > 0) {
+    message.content = `${message.content}\n\n[单条消息超出字节预算，已省略尾部 ${omittedImages} 张图片（约 ${Math.ceil(omittedBytes / 1024)} KiB 的 base64 数据）；如需查看请让工具重新截图或缩小截图范围。]`
+  }
+  return message
 }
 
 /**

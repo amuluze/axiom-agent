@@ -329,6 +329,92 @@ describe('context budget and projection', () => {
     expect(usage.requestBytes).toBe(1_900_000)
     expect(usage.needsCompaction).toBe(true)
   })
+
+  it('injects placeholder tool results for tool_calls whose results were lost', () => {
+    // 工具结果持久化失败（如超 Rust 2 MiB 单条上限）会让持久历史缺少 tool 消息；
+    // 投影必须修复配对，否则后续请求被 Provider 以 400（insufficient tool messages）拒绝。
+    const history: AgentMessage[] = [
+      { id: 'u1', role: 'user', content: '截个图', createdAt: 1 },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'call-1', name: 'browser', arguments: {} }],
+        stopReason: 'stop',
+        createdAt: 2,
+      },
+    ]
+
+    const projection = buildContextProjection(history)
+
+    expect(projection.map((message) => message.role)).toEqual(['user', 'assistant', 'tool'])
+    const placeholder = projection[2]
+    expect(placeholder).toMatchObject({
+      role: 'tool',
+      toolCallId: 'call-1',
+      toolName: 'browser',
+      isError: true,
+      id: 'tool-result-repair:a1:call-1',
+    })
+    expect((placeholder as { content: string }).content).toContain('重新执行该工具')
+  })
+
+  it('does not duplicate tool results that already answer every tool_call', () => {
+    const history: AgentMessage[] = [
+      { id: 'u1', role: 'user', content: '跑一下', createdAt: 1 },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          { id: 'call-1', name: 'bash', arguments: {} },
+          { id: 'call-2', name: 'ls', arguments: {} },
+        ],
+        stopReason: 'stop',
+        createdAt: 2,
+      },
+      {
+        id: 't1', role: 'tool', toolCallId: 'call-1', toolName: 'bash',
+        content: 'ok', isError: false, createdAt: 3,
+      },
+      {
+        id: 't2', role: 'tool', toolCallId: 'call-2', toolName: 'ls',
+        content: 'ok', isError: false, createdAt: 4,
+      },
+      { id: 'u2', role: 'user', content: '继续', createdAt: 5 },
+    ]
+
+    const projection = buildContextProjection(history)
+
+    expect(projection.map((message) => message.id)).toEqual(['u1', 'a1', 't1', 't2', 'u2'])
+  })
+
+  it('repairs only the missing calls of a partially answered tool batch', () => {
+    const history: AgentMessage[] = [
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          { id: 'call-1', name: 'bash', arguments: {} },
+          { id: 'call-2', name: 'screenshot', arguments: {} },
+        ],
+        stopReason: 'stop',
+        createdAt: 2,
+      },
+      {
+        id: 't1', role: 'tool', toolCallId: 'call-1', toolName: 'bash',
+        content: 'ok', isError: false, createdAt: 3,
+      },
+      { id: 'u1', role: 'user', content: '下一条', createdAt: 4 },
+    ]
+
+    const projection = buildContextProjection(history)
+
+    expect(projection).toHaveLength(4)
+    expect(projection[2]).toMatchObject({ id: 't1' })
+    expect(projection[3]).toMatchObject({ role: 'tool', toolCallId: 'call-2', isError: true })
+  })
 })
 
 describe('context compaction', () => {

@@ -22,8 +22,12 @@ use std::hash::{BuildHasher, Hasher};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const FEEDBACK_ENDPOINT: &str = "https://pusher.amuluze.com/api/hooks/axiom";
-const HOOK_SECRET: &str = "b08cc34b92197b8aa43949483039314ef20f084328556c68";
+/// 反馈服务端点与 HMAC 密钥：构建期经环境变量注入（`~/.axiom/release-credentials.env`，
+/// 发布链 build:dmg/build:app 自动 source）。密钥不入源码——源码镜像会公开导出
+/// （scripts/export-public.mjs），写死即等于公开；未注入（源码构建/开发态）时
+/// 提交 fail-closed 报「未配置」。服务端换密钥时只需同步改凭据文件，不动代码。
+const FEEDBACK_ENDPOINT: Option<&str> = option_env!("AXIOM_FEEDBACK_ENDPOINT");
+const HOOK_SECRET: Option<&str> = option_env!("AXIOM_FEEDBACK_HMAC_SECRET");
 const SUBMIT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// 与前端弹窗的字数上限（i18n 文案与 maxLength）保持一致；服务端超限返回 422。
@@ -89,19 +93,23 @@ pub(crate) async fn submit_feedback(
 
     let app_version = app.package_info().version.to_string();
     let body = build_payload(kind, title, description, contact, &app_version);
+    // 密钥经构建期注入：缺失（源码构建/开发态）时 fail-closed，不发起无签名请求。
+    let (endpoint, hook_secret) = FEEDBACK_ENDPOINT.zip(HOOK_SECRET).ok_or_else(|| {
+        "反馈服务未随此构建配置：请使用官网发布的正式版本".to_string()
+    })?;
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| format!("系统时钟异常，无法签名反馈：{error}"))?
         .as_secs()
         .to_string();
-    let signature = hex_hmac_sha256(HOOK_SECRET.as_bytes(), &message_bytes(&timestamp, &body));
+    let signature = hex_hmac_sha256(hook_secret.as_bytes(), &message_bytes(&timestamp, &body));
 
     let client = reqwest::Client::builder()
         .timeout(SUBMIT_TIMEOUT)
         .build()
         .map_err(|error| format!("无法创建网络客户端：{error}"))?;
     let response = client
-        .post(FEEDBACK_ENDPOINT)
+        .post(endpoint)
         .header("Content-Type", "application/json")
         .header("X-Pusher-Timestamp", &timestamp)
         .header("X-Pusher-Signature", format!("sha256={signature}"))
