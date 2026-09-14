@@ -2,6 +2,7 @@ import type {
   AgentMessage,
   AgentRunEndReason,
   AssistantMessage,
+  ImageContentBlock,
 } from '@/agent/core/types'
 import type { PendingToolApproval } from '@/agent/approval/ApprovalCoordinator'
 import type { ContextBudgetUsage, ContextCheckpoint } from '@/agent/context/types'
@@ -59,10 +60,10 @@ export interface AgentSessionSlice {
   branchSummaryRunning: boolean
   contextUsage: ContextBudgetUsage | null
   contextCheckpoint: ContextCheckpoint | null
-  send: (content: string) => Promise<void>
-  queueSteering: (content: string) => Promise<boolean>
-  queueFollowUp: (content: string) => Promise<boolean>
-  queueNextTurn: (content: string) => Promise<boolean>
+  send: (content: string, images?: ImageContentBlock[]) => Promise<void>
+  queueSteering: (content: string, images?: ImageContentBlock[]) => Promise<boolean>
+  queueFollowUp: (content: string, images?: ImageContentBlock[]) => Promise<boolean>
+  queueNextTurn: (content: string, images?: ImageContentBlock[]) => Promise<boolean>
   clearQueuedMessages: () => Promise<void>
   restoreQueuedMessage: (messageId: string) => Promise<QueuedMessageSnapshot | null>
   discardRecoveredMessage: (messageId: string) => Promise<void>
@@ -76,8 +77,9 @@ export interface AgentSessionSlice {
   cancelBranchSummary: () => void
   retryFailedAssistant: (messageId: string) => Promise<boolean>
   retryAssistant: (messageId: string) => Promise<boolean>
-  /** 编辑已发送的用户消息并重发（从该消息之前的分支边界重新开始）。 */
-  editUserMessage: (messageId: string, content: string) => Promise<boolean>
+  /** 编辑已发送的用户消息并重发（从该消息之前的分支边界重新开始）。
+   *  images 是原消息的图片块，重发时原样保留。 */
+  editUserMessage: (messageId: string, content: string, images?: ImageContentBlock[]) => Promise<boolean>
   compactContext: (summaryInstructions?: SummaryInstructionOptions) => Promise<boolean>
 }
 
@@ -105,10 +107,10 @@ export const createAgentSessionSlice = (
   branchSummaryRunning: false,
   contextUsage: null,
   contextCheckpoint: null,
-  send: (content) => sendAction(set, get, deps, content),
-  queueSteering: (content) => queueSteeringAction(set, get, deps.getSession(), content),
-  queueFollowUp: (content) => queueFollowUpAction(set, get, deps.getSession(), content),
-  queueNextTurn: (content) => queueNextTurnAction(set, get, deps.getSession(), content),
+  send: (content, images) => sendAction(set, get, deps, content, images),
+  queueSteering: (content, images) => queueSteeringAction(set, get, deps.getSession(), content, images),
+  queueFollowUp: (content, images) => queueFollowUpAction(set, get, deps.getSession(), content, images),
+  queueNextTurn: (content, images) => queueNextTurnAction(set, get, deps.getSession(), content, images),
   clearQueuedMessages: () => clearQueuedMessagesAction(set, get, deps),
   restoreQueuedMessage: (messageId) => restoreQueuedMessageAction(set, get, deps, messageId),
   discardRecoveredMessage: (messageId) => discardRecoveredMessageAction(set, get, deps, messageId),
@@ -119,6 +121,6 @@ export const createAgentSessionSlice = (
   cancelBranchSummary: () => cancelBranchSummaryAction(set, get, deps),
   retryFailedAssistant: (messageId) => retryFailedAssistantAction(set, get, deps, messageId),
   retryAssistant: (messageId) => retryAssistantAction(set, get, deps, messageId),
-  editUserMessage: (messageId, content) => editUserMessageAction(set, get, deps, messageId, content),
+  editUserMessage: (messageId, content, images) => editUserMessageAction(set, get, deps, messageId, content, images),
   compactContext: (summaryInstructions) => compactContextAction(set, get, deps, summaryInstructions),
 })

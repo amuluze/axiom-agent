@@ -581,6 +581,95 @@
   font: inherit;
 }
 
+/* 用户/工具消息中的截图：约束为缩略图尺寸（原图点按查看是后续查看器的事），
+   不约束会按原始像素渲染撑破消息栏。 */
+.message-image-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0 2px;
+}
+
+.message-image-button {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+
+.message-image {
+  display: block;
+  max-width: min(100%, 340px);
+  max-height: 260px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-card);
+}
+
+/* 截图灯箱：点击消息缩略图后全屏查看原图，Esc/遮罩/关闭按钮退出。 */
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: color-mix(in srgb, #000 78%, transparent);
+}
+
+.image-lightbox__image {
+  display: block;
+  max-width: 92vw;
+  max-height: 92vh;
+  border-radius: 8px;
+  object-fit: contain;
+  box-shadow: 0 12px 48px rgb(0 0 0 / 55%);
+}
+
+.image-lightbox__close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid rgb(255 255 255 / 22%);
+  border-radius: 50%;
+  background: rgb(0 0 0 / 45%);
+  color: #f2f1ec;
+  cursor: pointer;
+}
+
+.image-lightbox__close:hover {
+  background: rgb(0 0 0 / 70%);
+}
+
+.message-image-reference {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  margin: 6px 0 2px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 0.8846rem;
+}
+
+.message-image-reference code {
+  overflow: hidden;
+  max-width: 420px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .session__output-anchor {
   width: 100%;
   height: 1px;

@@ -205,7 +205,7 @@ fn apply_authentication(
     Ok(builder)
 }
 
-// pub(crate)：usage_query 复用同一密钥解析边界（provider 绑定校验 + Keychain 读取），
+// pub(crate)：usage_query 复用同一密钥解析边界（provider 绑定校验 + 密钥库读取），
 // 保证用量查询与模型请求对 Secret 的约束始终一致。
 pub(crate) fn resolve_secret(
     state: &SecretState,
@@ -732,9 +732,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_cross_provider_secret_before_keychain_access() {
+    async fn rejects_cross_provider_secret_before_secret_store_access() {
         // 受陷渲染进程用 provider A 身份 + provider B 的 secretId 组合请求：
-        // resolve_secret 必须在触碰 Keychain 前拒绝（绑定校验先于 load）。
+        // resolve_secret 必须在读取密钥库前拒绝（绑定校验先于 load）。
         let request = ModelHttpRequest {
             request_id: "cross-provider-secret".into(),
             provider_id: "openai".into(),

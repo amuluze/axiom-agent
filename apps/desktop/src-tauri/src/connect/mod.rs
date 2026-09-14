@@ -1,8 +1,9 @@
 //! 「连接」远程操控通道：飞书 / 钉钉 / 微信个人号 三平台适配 + 配对绑定。
 //!
 //! 架构约束：
-//! - 凭证（App Secret / Client Secret / 微信 token）只进 macOS Keychain
-//!   （`connect.` 命名空间，经 secrets.rs 独占辅助函数读写），非密配置存
+//! - 凭证（App Secret / Client Secret / 微信 token）只进本地密钥库
+//!   （axiom.db `secrets` 表 `connect.` 命名空间，经 secrets.rs 独占辅助函数
+//!   读写），非密配置存
 //!   `~/.axiom/connect/config.json`（0600，Rust 独占）。
 //! - 长连接任务（飞书 WS / 钉钉 Stream / 微信长轮询）由本模块持有，
 //!   入站消息经 `axiom:connect-event` 推给 WebView，由 connectService 路由到
@@ -10,7 +11,7 @@
 //! - 只有「配对绑定」过的聊天（平台 + 聊天 + 用户三元组）可以操控会话：
 //!   配对码由桌面端生成（10 分钟有效、生成即作废旧码），或微信扫码登录自动绑定。
 //! - 锁序约定：任何路径都不得同时持有 `ConnectInner` 锁与 `SecretState` 锁——
-//!   需要两者时先取 ConnectInner 的数据并释放，再访问 Keychain。
+//!   需要两者时先取 ConnectInner 的数据并释放，再访问密钥库。
 
 mod dingtalk;
 mod feishu;
@@ -763,7 +764,7 @@ pub fn get_connect_config(
     secrets: State<'_, SecretState>,
 ) -> Result<ConnectConfigSummary, String> {
     ensure_initialized(&app)?;
-    // 锁序约定：先取完 ConnectInner 数据释放锁，再访问 Keychain。
+    // 锁序约定：先取完 ConnectInner 数据释放锁，再访问密钥库。
     let (workspace_path, bindings, feishu_id, dingtalk_id, statuses) = {
         let inner = state.lock()?;
         (
@@ -1112,7 +1113,7 @@ pub async fn connect_reply_message(
     if text.is_empty() {
         return Err("回复内容不能为空".into());
     }
-    // 锁序约定：取出回复上下文与非密配置后释放锁，再取 Keychain 凭证。
+    // 锁序约定：取出回复上下文与非密配置后释放锁，再取密钥库凭证。
     let (context, feishu_id, dingtalk_id) = {
         let inner = state.lock()?;
         let context = inner

@@ -36,10 +36,15 @@ export type BrowserCommandRequest =
   | { action: 'snapshot'; tabId: string }
   | { action: 'click'; tabId: string; ref: number }
   | { action: 'fill'; tabId: string; ref: number; text: string }
+  | { action: 'selectOption'; tabId: string; ref: number; text: string }
+  | { action: 'uploadFile'; tabId: string; ref: number; path: string }
   | { action: 'typeText'; tabId: string; ref?: number; text: string }
   | { action: 'press'; tabId: string; key: string; ref?: number }
   | { action: 'scroll'; tabId: string; ref?: number; deltaX?: number; deltaY?: number }
-  | { action: 'screenshot'; tabId: string }
+  | { action: 'screenshot'; tabId: string; ref?: number }
+  | { action: 'hover'; tabId: string; ref: number }
+  | { action: 'wait'; tabId: string; text?: string; durationMs?: number }
+  | { action: 'find'; tabId: string; text: string; limit?: number }
   | { action: 'back'; tabId: string }
   | { action: 'forward'; tabId: string }
   | { action: 'navigationHistory'; tabId: string }
@@ -104,6 +109,15 @@ export type BrowserCommandResponse =
     }
   | { type: 'dialogState'; dialog?: JsDialogInfo }
   | { type: 'navigationState'; canGoBack: boolean; canGoForward: boolean }
+  | { type: 'waited'; textMatched: boolean; waitedMs: number }
+  | {
+      type: 'found'
+      url: string
+      title: string
+      matches: string[]
+      total: number
+      truncated: boolean
+    }
   | { type: 'screencastStarted' }
   | { type: 'consoleLog'; entries: ConsoleEntry[] }
   | { type: 'done' }
@@ -129,10 +143,15 @@ const SPAWN_REQUIRED_ACTIONS = new Set<BrowserCommandRequest['action']>([
   'snapshot',
   'click',
   'fill',
+  'selectOption',
+  'uploadFile',
   'typeText',
   'press',
   'scroll',
   'screenshot',
+  'hover',
+  'wait',
+  'find',
   'back',
   'forward',
   'reload',

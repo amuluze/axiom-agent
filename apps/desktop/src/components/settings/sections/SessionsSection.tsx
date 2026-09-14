@@ -3,10 +3,6 @@ import { Folder, GitBranch, Trash2, Edit3 } from 'lucide-react'
 import type { SessionsHook, SettingsSectionContext } from './types'
 import type { StorageStats } from '@/persistence/types'
 import { gcArtifacts, type ArtifactGcResult } from '@/platform/artifacts'
-import {
-  migrateLegacySecrets,
-  type LegacySecretMigrationResult,
-} from '@/platform/secrets'
 import { useT } from '@/i18n'
 import { displaySessionTitle } from '@/i18n/sessionTitle'
 
@@ -56,20 +52,6 @@ export const SessionsSection = ({
       setGcError(error instanceof Error ? error.message : String(error))
     } finally {
       setGcing(false)
-    }
-  }
-  const [migrationResult, setMigrationResult] = useState<LegacySecretMigrationResult | null>(null)
-  const [migrating, setMigrating] = useState(false)
-  const [migrationError, setMigrationError] = useState<string | null>(null)
-  const runLegacyMigration = async (): Promise<void> => {
-    setMigrating(true)
-    setMigrationError(null)
-    try {
-      setMigrationResult(await migrateLegacySecrets())
-    } catch (error) {
-      setMigrationError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setMigrating(false)
     }
   }
   return (
@@ -197,30 +179,6 @@ export const SessionsSection = ({
             </span>
           )}
           {gcError && <span className="artifact-gc-error" role="alert">{gcError}</span>}
-        </div>
-      )}
-      {desktop && (
-        <div className="artifact-gc-row">
-          <button
-            className="file-picker-button"
-            disabled={busy || migrating}
-            onClick={() => {
-              if (window.confirm(t('settings.sessions.migrateConfirm'))) {
-                void runLegacyMigration()
-              }
-            }}
-            type="button"
-          >
-            {migrating ? t('settings.sessions.migrating') : t('settings.sessions.migrate')}
-          </button>
-          {migrationResult && (
-            <span className="artifact-gc-result">
-              {migrationResult.failed === 0
-                ? t('settings.sessions.migrateOk', { migrated: migrationResult.migrated, cleaned: migrationResult.cleanedStale })
-                : t('settings.sessions.migratePartial', { migrated: migrationResult.migrated, cleaned: migrationResult.cleanedStale, failed: migrationResult.failed })}
-            </span>
-          )}
-          {migrationError && <span className="artifact-gc-error" role="alert">{migrationError}</span>}
         </div>
       )}
       {recoveredRuns > 0 && (

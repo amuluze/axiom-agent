@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Composer } from './Composer'
+import { MAX_PASTE_IMAGES, bytesToBase64 } from './imagePaste'
 
 const mocks = vi.hoisted(() => ({
   authorizedWorkspace: null as { path: string; name: string; gitBranch?: string | null } | null,
@@ -10,6 +11,10 @@ const mocks = vi.hoisted(() => ({
   recentWorkspacePaths: [] as string[],
   addWorkspace: vi.fn(async () => true),
   activateWorkspace: vi.fn(async () => true),
+  send: vi.fn(async (_content: string, _images?: unknown) => undefined),
+  queueSteering: vi.fn(async (_content: string, _images?: unknown) => true),
+  // 粘贴测试可覆盖为视觉模型 provider；默认沿用 store 原始 provider
+  providerOverride: null as Record<string, unknown> | null,
   running: false,
   sessionBusy: false,
   providerReady: true,
@@ -27,29 +32,35 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/stores/agentStore', async (importOriginal) => {
   const original = await importOriginal<typeof import('@/stores/agentStore')>()
   type StoreState = ReturnType<typeof original.useAgentStore.getState>
+  const stateWithMocks = () => ({
+    ...original.useAgentStore.getState(),
+    provider: (mocks.providerOverride ?? {
+      ...original.useAgentStore.getState().provider,
+      providerId: 'demo',
+    }) as unknown as ReturnType<typeof original.useAgentStore.getState>['provider'],
+    providerReady: mocks.providerReady,
+    providerSetupRequired: mocks.providerSetupRequired,
+    running: mocks.running,
+    sessionBusy: mocks.sessionBusy,
+    compactionRunning: mocks.compactionRunning,
+    branchSummaryRunning: mocks.branchSummaryRunning,
+    authorizedWorkspace: mocks.authorizedWorkspace,
+    authorizedWorkspaces: mocks.authorizedWorkspaces,
+    addWorkspace: mocks.addWorkspace,
+    activateWorkspace: mocks.activateWorkspace,
+    send: mocks.send,
+    queueSteering: mocks.queueSteering,
+    messages: mocks.messages,
+    contextUsage: mocks.contextUsage,
+    contextCheckpoint: mocks.contextCheckpoint,
+  } as StoreState)
+  // deliverInput 的发送分支经 getState() 复核可用性，mock 必须同形提供。
+  const useAgentStore = ((selector: (state: StoreState) => unknown): unknown =>
+    selector(stateWithMocks())) as unknown as typeof original.useAgentStore
+  useAgentStore.getState = () => stateWithMocks()
   return {
     ...original,
-    useAgentStore: <T,>(selector: (state: StoreState) => T): T => selector({
-      ...original.useAgentStore.getState(),
-      provider: {
-        ...original.useAgentStore.getState().provider,
-        providerId: 'demo',
-      },
-      providerReady: mocks.providerReady,
-      providerSetupRequired: mocks.providerSetupRequired,
-      running: mocks.running,
-      sessionBusy: mocks.sessionBusy,
-      compactionRunning: mocks.compactionRunning,
-      branchSummaryRunning: mocks.branchSummaryRunning,
-      authorizedWorkspace: mocks.authorizedWorkspace,
-      authorizedWorkspaces: mocks.authorizedWorkspaces,
-      addWorkspace: mocks.addWorkspace,
-      activateWorkspace: mocks.activateWorkspace,
-      send: vi.fn(async () => undefined),
-      messages: mocks.messages,
-      contextUsage: mocks.contextUsage,
-      contextCheckpoint: mocks.contextCheckpoint,
-    } as StoreState),
+    useAgentStore,
   }
 })
 
@@ -77,6 +88,9 @@ beforeEach(() => {
   mocks.recentWorkspacePaths = ['/other', '/repo']
   mocks.addWorkspace.mockClear()
   mocks.activateWorkspace.mockClear()
+  mocks.send.mockClear()
+  mocks.queueSteering.mockClear()
+  mocks.providerOverride = null
   mocks.setAccessMode.mockClear()
   mocks.setSummaryRequest.mockClear()
   mocks.running = false
@@ -307,5 +321,134 @@ describe('Composer upward menu viewport clamp', () => {
     await user.keyboard('{Escape}')
     expect(picker.style.getPropertyValue('--composer-menu-available')).toBe('')
     rectSpy.mockRestore()
+  })
+})
+
+describe('Composer 粘贴截图', () => {
+  beforeEach(() => {
+    // 视觉模型 provider：绕开 demo 的纯文本目录声明，走完整粘贴链路
+    mocks.providerOverride = {
+      schemaVersion: 3,
+      profileId: 'builtin.ollama',
+      providerId: 'ollama',
+      apiFormat: 'openai-compatible',
+      modelId: 'gemma3',
+      timeoutMs: 60_000,
+      maxOutputTokens: 8_192,
+      contextWindow: 128_000,
+    } as never
+  })
+
+  const pasteImage = (element: Element, files: File[]) => {
+    fireEvent.paste(element, {
+      clipboardData: {
+        items: files.map((file) => ({ type: file.type, getAsFile: () => file })),
+        files,
+      },
+    })
+  }
+
+  const makeShot = (bytes: number[] = [137, 80, 78, 71], name = 'shot.png') =>
+    new File([new Uint8Array(bytes)], name, { type: 'image/png' })
+
+  it('粘贴截图后出现附件缩略图，可移除', async () => {
+    render(<Composer />)
+    pasteImage(screen.getByLabelText('发送给 Axiom'), [makeShot()])
+    await waitFor(() => {
+      expect(screen.getByLabelText('已附加的截图')).toBeInTheDocument()
+    })
+    await userEvent.setup().click(screen.getByRole('button', { name: '移除这张截图' }))
+    expect(screen.queryByLabelText('已附加的截图')).not.toBeInTheDocument()
+  })
+
+  it('纯文本粘贴不进入附件链路', () => {
+    render(<Composer />)
+    const textarea = screen.getByLabelText('发送给 Axiom')
+    fireEvent.paste(textarea, {
+      clipboardData: { items: [{ type: 'text/plain', getAsFile: () => null }], files: [] },
+    })
+    fireEvent.change(textarea, { target: { value: '普通文本' } })
+    expect(screen.queryByLabelText('已附加的截图')).not.toBeInTheDocument()
+  })
+
+  it('文本 + 截图一起发送：send 收到图像内容块', async () => {
+    const user = userEvent.setup()
+    render(<Composer />)
+    const textarea = screen.getByLabelText('发送给 Axiom')
+    await user.type(textarea, '看这张截图')
+    pasteImage(textarea, [makeShot()])
+    await waitFor(() => {
+      expect(screen.getByLabelText('已附加的截图')).toBeInTheDocument()
+    })
+    fireEvent.keyDown(textarea, { key: 'Enter' })
+    expect(mocks.send).toHaveBeenCalledWith('看这张截图', [
+      {
+        type: 'image',
+        source: { type: 'base64', mediaType: 'image/png', data: bytesToBase64(new Uint8Array([137, 80, 78, 71])) },
+      },
+    ])
+  })
+
+  it('仅截图（无文本）也能发送，输入框置空且附件清空', async () => {
+    render(<Composer />)
+    const textarea = screen.getByLabelText('发送给 Axiom')
+    pasteImage(textarea, [makeShot()])
+    await waitFor(() => {
+      expect(screen.getByLabelText('已附加的截图')).toBeInTheDocument()
+    })
+    fireEvent.keyDown(textarea, { key: 'Enter' })
+    await waitFor(() => expect(mocks.send).toHaveBeenCalledTimes(1))
+    expect(mocks.send.mock.calls[0]?.[0]).toBe('') // type-safe: mock has typed params
+    expect(screen.queryByLabelText('已附加的截图')).not.toBeInTheDocument()
+  })
+
+  it('超出单条上限时提示且只保留前 4 张', async () => {
+    render(<Composer />)
+    const files = Array.from({ length: MAX_PASTE_IMAGES + 1 }, (_, i) => makeShot([i], `shot-${i}.png`))
+    pasteImage(screen.getByLabelText('发送给 Axiom'), files)
+    await waitFor(() => {
+      expect(screen.getByText('一次最多附加 4 张截图')).toBeInTheDocument()
+    })
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: '移除这张截图' }).length).toBe(MAX_PASTE_IMAGES)
+    })
+  })
+
+  it('运行中发送带图消息走引导队列：queueSteering 收到图像块', async () => {
+    mocks.running = true
+    const user = userEvent.setup()
+    render(<Composer />)
+    const textarea = screen.getByLabelText('发送给 Axiom')
+    await user.type(textarea, '补个图')
+    pasteImage(textarea, [makeShot()])
+    await waitFor(() => {
+      expect(screen.getByLabelText('已附加的截图')).toBeInTheDocument()
+    })
+    fireEvent.keyDown(textarea, { key: 'Enter' })
+    expect(mocks.queueSteering).toHaveBeenCalledTimes(1)
+    expect((mocks.queueSteering.mock.calls[0]?.[1] as unknown[] | undefined)?.length).toBe(1)
+    mocks.running = false
+  })
+})
+
+describe('Composer 粘贴截图 · 模型能力防线', () => {
+  const makeShot = () => new File([new Uint8Array([137, 80, 78, 71])], 'shot.png', { type: 'image/png' })
+  const pasteImage = (element: Element, files: File[]) => {
+    fireEvent.paste(element, {
+      clipboardData: {
+        items: files.map((file) => ({ type: file.type, getAsFile: () => file })),
+        files,
+      },
+    })
+  }
+
+  it('非视觉模型（目录声明仅文本）粘贴截图时提示且不附加', async () => {
+    // 默认 mock 的 demo provider：demo-v1 在目录中 input=['text']
+    render(<Composer />)
+    pasteImage(screen.getByLabelText('发送给 Axiom'), [makeShot()])
+    await waitFor(() => {
+      expect(screen.getByText(/当前模型不支持图片输入/)).toBeInTheDocument()
+    })
+    expect(screen.queryByLabelText('已附加的截图')).not.toBeInTheDocument()
   })
 })

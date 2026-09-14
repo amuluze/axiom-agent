@@ -40,6 +40,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
+use crate::workspace_access::WorkspaceAccessState;
+
 use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -59,6 +61,15 @@ const MAX_CONSOLE_ENTRIES: usize = 200;
 const MAX_CONSOLE_ENTRY_CHARS: usize = 500;
 /// console 动作默认返回条数。
 const DEFAULT_CONSOLE_LIMIT: usize = 50;
+/// wait 动作的单次上限：文本轮询与固定等待共用（SPA 渲染等待用不到更长，
+/// 更长的等待应由模型拆步，避免一条命令占死工具串行通道）。
+const MAX_WAIT_DURATION_MS: u64 = 15_000;
+/// 文本等待的轮询间隔（Accessibility 全树拉取是重操作，不宜更密）。
+const WAIT_POLL_INTERVAL_MS: u64 = 250;
+/// find 默认/最大返回行数与单行截断（行内含角色与状态注记，300 字符足够）。
+const DEFAULT_FIND_LIMIT: usize = 20;
+const MAX_FIND_LIMIT: usize = 50;
+const MAX_FIND_LINE_CHARS: usize = 300;
 
 /// 首启就绪超时：默认 10s 在高负载机器（负载 10+）上会被瞬时波动打穿——
 /// 模型/IDE/系统服务共跑时 Chrome 首次初始化可达 20s+。25s 覆盖后重试成本
@@ -125,6 +136,21 @@ pub enum BrowserCommandRequest {
     Snapshot { tab_id: String },
     Click { tab_id: String, r#ref: i64 },
     Fill { tab_id: String, r#ref: i64, text: String },
+    /// 原生 `<select>` 的显式选择：focus + 逐字符 type-ahead（关闭态 select 的
+    /// 既有 Chrome 行为，前缀累积选中并发 change），选后回读 AX 值自校验。
+    /// fill 的 focus+insertText 管线对 select 无效，这是补齐的表单原语。
+    SelectOption {
+        tab_id: String,
+        r#ref: i64,
+        text: String,
+    },
+    /// 文件上传：DOM.setFileInputFiles（DOM 域，不执行页面 JS）。path 必须位于
+    /// 已授权工作区内——模型不能把宿主任意文件（密钥库/凭据）喂给页面输入。
+    UploadFile {
+        tab_id: String,
+        r#ref: i64,
+        path: String,
+    },
     TypeText {
         tab_id: String,
         #[serde(default)]
@@ -146,7 +172,34 @@ pub enum BrowserCommandRequest {
         #[serde(default)]
         delta_y: Option<f64>,
     },
-    Screenshot { tab_id: String },
+    Screenshot {
+        tab_id: String,
+        /// 可选元素锚点：截取该 ref 节点的边界区域而非整页（视觉验证元素状态）。
+        #[serde(default)]
+        r#ref: Option<i64>,
+    },
+    /// 悬停在 ref 节点上（触发菜单/tooltip 后再 snapshot）。与 click 同一
+    /// ref→坐标管线，只是 mouseMoved 不携带按键。
+    Hover { tab_id: String, r#ref: i64 },
+    /// 等待页面就绪：text（轮询 AX 树做子串匹配）与 duration_ms（固定等待）
+    /// 至少给一个；都给时先等文本、未命中再耗满时长。SPA 点击后过早 snapshot
+    /// 会拿到陈旧树，wait 是对齐 zcode/ChatGPT 浏览器控制的节奏原语。
+    Wait {
+        tab_id: String,
+        #[serde(default)]
+        text: Option<String>,
+        #[serde(default)]
+        duration_ms: Option<u64>,
+    },
+    /// 服务端 AX 树检索：按子串（大小写不敏感）过滤快照行并返回带 ref 的
+    /// 匹配行。大页面 snapshot 会截断，find 让模型按需取定位信息而不吃满
+    /// 200 KiB 预算。
+    Find {
+        tab_id: String,
+        text: String,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
     Back { tab_id: String },
     Forward { tab_id: String },
     NavigationHistory { tab_id: String },
@@ -253,6 +306,19 @@ pub enum BrowserCommandResponse {
     DialogState {
         #[serde(skip_serializing_if = "Option::is_none")]
         dialog: Option<JsDialogInfo>,
+    },
+    Waited {
+        /// text 等待是否命中（false = 超时未出现，由模型决定下一步）。
+        text_matched: bool,
+        waited_ms: u64,
+    },
+    Found {
+        url: String,
+        title: String,
+        matches: Vec<String>,
+        /// 命中总行数（可能超过 matches 长度，由 limit 截断）。
+        total: usize,
+        truncated: bool,
     },
     NavigationState {
         can_go_back: bool,
@@ -2137,7 +2203,20 @@ async fn dispatch_mouse(
     .map(|_| ())
 }
 
-/// ref（backendDOMNodeId）→ 视口坐标盒中心。走 DOM 域而非 Runtime evaluate：
+/// 悬停：mouseMoved 不携带按键状态——button/buttons 带上去会被页面当成
+/// 拖拽中态，触发的 hover 菜单行为就失真了。
+async fn dispatch_mouse_move(tab: &Arc<CdpTab>, x: f64, y: f64) -> Result<(), String> {
+    tab.send(
+        "Input.dispatchMouseEvent",
+        json!({
+            "type": "mouseMoved",
+            "x": x,
+            "y": y,
+        }),
+    )
+    .await
+    .map(|_| ())
+}
 /// 坐标是注入输入的必要条件，DOM 域不执行页面代码；getBoxModel 原生接受
 /// backendNodeId（免去 describeNode 的 nodeId 会话上下文问题），border quad
 /// 即 viewport 相对坐标（Input.dispatchMouseEvent 的坐标系）。
@@ -2170,6 +2249,86 @@ async fn focus_ref(tab: &Arc<CdpTab>, backend_node_id: i64) -> Result<(), String
         .await
         .map(|_| ())
         .map_err(|error| format!("聚焦目标节点失败：{error}（ref 可能已过期，请重新 snapshot）"))
+}
+
+/// ref（backendDOMNodeId）→ 视口裁剪盒 (x, y, width, height)，供元素区域截图。
+/// border quad 是四个角点（CSS 像素），取包围盒并向上取整到像素边界。
+async fn ref_clip_box(tab: &Arc<CdpTab>, backend_node_id: i64) -> Result<(f64, f64, f64, f64), String> {
+    let box_result = tab
+        .send("DOM.getBoxModel", json!({"backendNodeId": backend_node_id}))
+        .await
+        .map_err(|error| format!("获取节点区域失败：{error}（ref 可能已过期，请重新 snapshot）"))?;
+    let numbers: Vec<f64> = box_result
+        .pointer("/model/border")
+        .and_then(Value::as_array)
+        .map(|values| values.iter().filter_map(Value::as_f64).collect())
+        .unwrap_or_default();
+    if numbers.len() != 8 {
+        return Err("该节点没有可见区域（可能不可见或已移除），请重新 snapshot 确认目标".into());
+    }
+    let min_x = numbers.iter().step_by(2).copied().fold(f64::MAX, f64::min);
+    let max_x = numbers.iter().step_by(2).copied().fold(f64::MIN, f64::max);
+    let min_y = numbers.iter().skip(1).step_by(2).copied().fold(f64::MAX, f64::min);
+    let max_y = numbers.iter().skip(1).step_by(2).copied().fold(f64::MIN, f64::max);
+    let width = (max_x - min_x).ceil();
+    let height = (max_y - min_y).ceil();
+    if width < 1.0 || height < 1.0 {
+        return Err("该节点没有可见区域（可能不可见或已移除），请重新 snapshot 确认目标".into());
+    }
+    Ok((min_x.floor(), min_y.floor(), width, height))
+}
+
+/// 拉取 AX 树并渲染成快照文本（find/wait 共用的检索底座）。
+async fn ax_tree_text(tab: &Arc<CdpTab>) -> Result<(String, bool), String> {
+    let result = tab
+        .send("Accessibility.getFullAXTree", json!({}))
+        .await
+        .map_err(|error| format!("获取页面快照失败：{error}"))?;
+    let tree: AxTreeResponse =
+        serde_json::from_value(result).map_err(|error| format!("解析页面快照失败：{error}"))?;
+    Ok(format_ax_tree(&tree.nodes))
+}
+
+/// ref（backendDOMNodeId）→ 当前 AX 值（value 优先，name 兜底）。select_option
+/// 的自校验用：select 的 AX 值即当前选中项的可见文本。
+async fn ax_node_value_by_ref(tab: &Arc<CdpTab>, backend_node_id: i64) -> Result<Option<String>, String> {
+    let result = tab
+        .send("Accessibility.getFullAXTree", json!({}))
+        .await
+        .map_err(|error| format!("获取页面快照失败：{error}"))?;
+    let tree: AxTreeResponse =
+        serde_json::from_value(result).map_err(|error| format!("解析页面快照失败：{error}"))?;
+    Ok(tree
+        .nodes
+        .iter()
+        .find(|node| node.backend_dom_node_id == Some(backend_node_id))
+        .map(|node| {
+            let value = ax_value_str(&node.value);
+            if value.is_empty() {
+                ax_value_str(&node.name)
+            } else {
+                value
+            }
+        }))
+}
+
+/// upload_file 的路径门：只接受「已授权工作区内」的真实文件。canonicalize 先行
+/// （消解 symlink/相对段，与 read 工具同一坐标系），工作区 containment 把
+/// ~/.axiom 数据根、凭据文件等宿主敏感路径整体排除在外。
+fn validate_upload_path(app: &AppHandle, raw: &str) -> Result<PathBuf, String> {
+    if raw.len() > MAX_URL_CHARS {
+        return Err(format!("上传路径不得超过 {MAX_URL_CHARS} 字符"));
+    }
+    let canonical = std::fs::canonicalize(raw).map_err(|_| "上传文件不存在或无法访问".to_string())?;
+    if !canonical.is_file() {
+        return Err("上传路径不是文件".into());
+    }
+    let roots = crate::workspace_access::authorized_roots(&app.state::<WorkspaceAccessState>());
+    let in_workspace = roots.iter().any(|root| canonical.starts_with(root));
+    if !in_workspace {
+        return Err("上传文件必须位于已授权的工作目录内（防止宿主任意文件外传）".into());
+    }
+    Ok(canonical)
 }
 
 /// 视口盒子（cssVisualViewport 的 x/y/width/height，CSS 像素，与 Input 域
@@ -2344,6 +2503,56 @@ pub async fn browser_command(
                 .map_err(|error| format!("输入文本失败：{error}"))?;
             Ok(BrowserCommandResponse::Done)
         }
+        BrowserCommandRequest::SelectOption { tab_id, r#ref, text } => {
+            let target = text.trim().to_string();
+            if target.is_empty() {
+                return Err("select_option 需要非空的 text（目标选项的可见文本）".into());
+            }
+            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            focus_ref(&tab, r#ref).await?;
+            // 关闭态 select 的 type-ahead：逐字符 keyDown/keyUp 累积前缀，Chrome
+            // 按前缀匹配移动选中项并对每次变化发 change。ASCII 走 key_definition
+            // （带 text 字段）；无键定义的字符（CJK 等）合并走 Input.insertText
+            // 提交，部分平台同样被 select 的 type-ahead 消费。
+            for ch in target.chars() {
+                match key_definition(&ch.to_string()) {
+                    Some(def) => dispatch_key(&tab, &def, 0).await?,
+                    None => {
+                        tab.send("Input.insertText", json!({"text": ch.to_string()}))
+                            .await
+                            .map_err(|error| format!("输入选项文本失败：{error}"))?;
+                    }
+                }
+            }
+            // 自校验：回读 ref 节点的 AX 值（= 当前选中项文本），双向包含视为命中。
+            let actual = ax_node_value_by_ref(&tab, r#ref)
+                .await?
+                .unwrap_or_default();
+            let actual_lower = actual.to_lowercase();
+            let target_lower = target.to_lowercase();
+            let matched = !actual_lower.is_empty()
+                && (actual_lower.contains(&target_lower) || target_lower.contains(&actual_lower));
+            if !matched {
+                return Err(format!(
+                    "选项未选中：当前选中「{actual}」，目标「{target}」。可重新 snapshot 确认选项可见文本后重试，或 click 展开下拉后直接 click 选项"
+                ));
+            }
+            Ok(BrowserCommandResponse::Done)
+        }
+        BrowserCommandRequest::UploadFile { tab_id, r#ref, path } => {
+            let canonical = validate_upload_path(&app, &path)?;
+            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            tab.send(
+                "DOM.setFileInputFiles",
+                json!({
+                    "files": [canonical.display().to_string()],
+                    "backendNodeId": r#ref,
+                }),
+            )
+            .await
+            .map_err(|error| format!("设置上传文件失败：{error}（ref 必须指向文件输入框，请重新 snapshot）"))?;
+            Ok(BrowserCommandResponse::Done)
+        }
         BrowserCommandRequest::TypeText { tab_id, r#ref, text } => {
             if text.chars().count() > MAX_TEXT_INPUT_CHARS {
                 return Err(format!("输入文本不得超过 {MAX_TEXT_INPUT_CHARS} 字符"));
@@ -2390,10 +2599,21 @@ pub async fn browser_command(
             .map_err(|error| format!("滚动失败：{error}"))?;
             Ok(BrowserCommandResponse::Done)
         }
-        BrowserCommandRequest::Screenshot { tab_id } => {
+        BrowserCommandRequest::Screenshot { tab_id, r#ref } => {
             let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            // 带 ref 时裁剪到元素边界盒（captureBeyondViewport 让视口外区域也可截）。
+            let params = if let Some(r#ref) = r#ref {
+                let (x, y, width, height) = ref_clip_box(&tab, r#ref).await?;
+                json!({
+                    "format": "png",
+                    "clip": {"x": x, "y": y, "width": width, "height": height, "scale": 1.0},
+                    "captureBeyondViewport": true,
+                })
+            } else {
+                json!({"format": "png"})
+            };
             let result = tab
-                .send("Page.captureScreenshot", json!({"format": "png"}))
+                .send("Page.captureScreenshot", params)
                 .await
                 .map_err(|error| format!("截图失败：{error}"))?;
             let data = result
@@ -2413,6 +2633,83 @@ pub async fn browser_command(
             })
         }
         BrowserCommandRequest::Back { tab_id } => history_navigate(Some(&app), &state, &tab_id, -1).await,
+        BrowserCommandRequest::Hover { tab_id, r#ref } => {
+            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            let (x, y) = ref_box_center(&tab, r#ref).await?;
+            dispatch_mouse_move(&tab, x, y).await?;
+            Ok(BrowserCommandResponse::Done)
+        }
+        BrowserCommandRequest::Wait { tab_id, text, duration_ms } => {
+            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            let started = std::time::Instant::now();
+            let duration_ms = duration_ms.unwrap_or(0).min(MAX_WAIT_DURATION_MS);
+            let mut text_matched = false;
+            if let Some(needle) = text.as_deref().map(str::trim).filter(|text| !text.is_empty()) {
+                let needle_lower = needle.to_lowercase();
+                loop {
+                    let (ax_text, _) = ax_tree_text(&tab).await?;
+                    if ax_text.to_lowercase().contains(&needle_lower) {
+                        text_matched = true;
+                        break;
+                    }
+                    let elapsed = started.elapsed().as_millis() as u64;
+                    if elapsed >= MAX_WAIT_DURATION_MS {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(
+                        WAIT_POLL_INTERVAL_MS.min(MAX_WAIT_DURATION_MS - elapsed),
+                    ))
+                    .await;
+                }
+            } else if duration_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(duration_ms)).await;
+            }
+            let waited_ms = started.elapsed().as_millis() as u64;
+            Ok(BrowserCommandResponse::Waited { text_matched, waited_ms })
+        }
+        BrowserCommandRequest::Find { tab_id, text, limit } => {
+            let needle = text.trim();
+            if needle.is_empty() {
+                return Err("find 需要非空的 text 检索词".into());
+            }
+            let (tab, port) = take_tab(Some(&app), &state, &tab_id).await?;
+            let result = tab
+                .send("Accessibility.getFullAXTree", json!({}))
+                .await
+                .map_err(|error| format!("获取页面快照失败：{error}"))?;
+            let tree: AxTreeResponse =
+                serde_json::from_value(result).map_err(|error| format!("解析页面快照失败：{error}"))?;
+            let limit = limit.unwrap_or(DEFAULT_FIND_LIMIT).clamp(1, MAX_FIND_LIMIT);
+            let needle_lower = needle.to_lowercase();
+            let mut matches: Vec<String> = Vec::new();
+            let mut total = 0usize;
+            for node in &tree.nodes {
+                let Some(role) = ax_role_display(node) else { continue };
+                let mut line = String::new();
+                render_ax_node(node, &role, 0, &mut line);
+                let line = line.trim_end().to_string();
+                if !line.to_lowercase().contains(&needle_lower) {
+                    continue;
+                }
+                total += 1;
+                if matches.len() < limit {
+                    let mut truncated_line = line;
+                    if truncated_line.chars().count() > MAX_FIND_LINE_CHARS {
+                        truncated_line = truncated_line.chars().take(MAX_FIND_LINE_CHARS).collect();
+                    }
+                    matches.push(truncated_line);
+                }
+            }
+            let truncated = total > matches.len();
+            let info = tab_info(&state, port, &tab_id).await?;
+            Ok(BrowserCommandResponse::Found {
+                url: info.url,
+                title: info.title,
+                matches,
+                total,
+                truncated,
+            })
+        }
         BrowserCommandRequest::Forward { tab_id } => history_navigate(Some(&app), &state, &tab_id, 1).await,
         BrowserCommandRequest::NavigationHistory { tab_id } => {
             navigation_bounds(Some(&app), &state, &tab_id).await
@@ -2818,6 +3115,105 @@ mod tests {
         .expect("serialize status");
         assert_eq!(status.get("type").and_then(Value::as_str), Some("status"));
         assert!(status.get("port").is_none());
+    }
+
+    #[test]
+    fn new_wait_find_hover_variants_serde_round_trip() {
+        let request: BrowserCommandRequest =
+            serde_json::from_str(r#"{"action":"hover","tabId":"t1","ref":77}"#)
+                .expect("deserialize hover");
+        match request {
+            BrowserCommandRequest::Hover { tab_id, r#ref } => {
+                assert_eq!(tab_id, "t1");
+                assert_eq!(r#ref, 77);
+            }
+            _ => panic!("wrong variant"),
+        }
+        let request: BrowserCommandRequest =
+            serde_json::from_str(r#"{"action":"wait","tabId":"t1","text":"登录成功","durationMs":1500}"#)
+                .expect("deserialize wait");
+        match request {
+            BrowserCommandRequest::Wait { tab_id, text, duration_ms } => {
+                assert_eq!(tab_id, "t1");
+                assert_eq!(text.as_deref(), Some("登录成功"));
+                assert_eq!(duration_ms, Some(1500));
+            }
+            _ => panic!("wrong variant"),
+        }
+        let request: BrowserCommandRequest =
+            serde_json::from_str(r#"{"action":"find","tabId":"t1","text":"提交","limit":5}"#)
+                .expect("deserialize find");
+        match request {
+            BrowserCommandRequest::Find { tab_id, text, limit } => {
+                assert_eq!(tab_id, "t1");
+                assert_eq!(text, "提交");
+                assert_eq!(limit, Some(5));
+            }
+            _ => panic!("wrong variant"),
+        }
+        // screenshot 的 ref 是可选参数：省略时保持整页截图语义。
+        let request: BrowserCommandRequest =
+            serde_json::from_str(r#"{"action":"screenshot","tabId":"t1"}"#)
+                .expect("deserialize screenshot without ref");
+        match request {
+            BrowserCommandRequest::Screenshot { tab_id, r#ref } => {
+                assert_eq!(tab_id, "t1");
+                assert_eq!(r#ref, None);
+            }
+            _ => panic!("wrong variant"),
+        }
+        let request: BrowserCommandRequest =
+            serde_json::from_str(r#"{"action":"screenshot","tabId":"t1","ref":9}"#)
+                .expect("deserialize screenshot with ref");
+        match request {
+            BrowserCommandRequest::Screenshot { tab_id, r#ref } => {
+                assert_eq!(tab_id, "t1");
+                assert_eq!(r#ref, Some(9));
+            }
+            _ => panic!("wrong variant"),
+        }
+        let request: BrowserCommandRequest =
+            serde_json::from_str(r#"{"action":"selectOption","tabId":"t1","ref":31,"text":"北京"}"#)
+                .expect("deserialize selectOption");
+        match request {
+            BrowserCommandRequest::SelectOption { tab_id, r#ref, text } => {
+                assert_eq!(tab_id, "t1");
+                assert_eq!(r#ref, 31);
+                assert_eq!(text, "北京");
+            }
+            _ => panic!("wrong variant"),
+        }
+        let request: BrowserCommandRequest =
+            serde_json::from_str(
+                r#"{"action":"uploadFile","tabId":"t1","ref":88,"path":"/repo/fixtures/a.png"}"#,
+            )
+            .expect("deserialize uploadFile");
+        match request {
+            BrowserCommandRequest::UploadFile { tab_id, r#ref, path } => {
+                assert_eq!(tab_id, "t1");
+                assert_eq!(r#ref, 88);
+                assert_eq!(path, "/repo/fixtures/a.png");
+            }
+            _ => panic!("wrong variant"),
+        }
+        let waited = serde_json::to_value(BrowserCommandResponse::Waited {
+            text_matched: false,
+            waited_ms: 1500,
+        })
+        .expect("serialize waited");
+        assert_eq!(waited.get("type").and_then(Value::as_str), Some("waited"));
+        assert_eq!(waited.get("textMatched").and_then(Value::as_bool), Some(false));
+        let found = serde_json::to_value(BrowserCommandResponse::Found {
+            url: "https://example.com".into(),
+            title: "Example".into(),
+            matches: vec!["[ref=12] button \"提交\"".into()],
+            total: 3,
+            truncated: true,
+        })
+        .expect("serialize found");
+        assert_eq!(found.get("type").and_then(Value::as_str), Some("found"));
+        assert_eq!(found.get("total").and_then(Value::as_u64), Some(3));
+        assert_eq!(found.get("truncated").and_then(Value::as_bool), Some(true));
     }
 
     #[test]

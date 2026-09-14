@@ -37,7 +37,7 @@ const mocks = vi.hoisted(() => ({
   send: vi.fn(async () => undefined),
   editUserMessage: vi.fn(async () => true),
   activeSessionId: 'session-1' as string | null,
-  messageEditRequest: null as { sessionId: string; messageId: string; content: string } | null,
+  messageEditRequest: null as { sessionId: string; messageId: string; content: string; images?: Array<{ type: 'image'; source: { type: 'base64'; mediaType: string; data: string } }> } | null,
   setMessageEditRequest: vi.fn(),
   queueSteering: vi.fn(async () => true),
   queueFollowUp: vi.fn(async () => true),
@@ -374,7 +374,7 @@ describe('Composer', () => {
       const textarea = renderComposer()
       fireEvent.change(textarea, { target: { value: '帮我写个脚本' } })
       fireEvent.keyDown(textarea, { key: 'Enter' })
-      expect(mocks.send).toHaveBeenCalledWith('帮我写个脚本')
+      expect(mocks.send).toHaveBeenCalledWith('帮我写个脚本', undefined)
       expect(textarea.value).toBe('')
       expect(persistedHistory()).toEqual(['帮我写个脚本'])
       fireEvent.keyDown(textarea, { key: 'ArrowUp' })
@@ -387,7 +387,7 @@ describe('Composer', () => {
       fireEvent.change(textarea, { target: { value: '排队消息' } })
       fireEvent.keyDown(textarea, { key: 'Enter' })
       await waitFor(() => expect(textarea.value).toBe(''))
-      expect(mocks.queueSteering).toHaveBeenCalledWith('排队消息')
+      expect(mocks.queueSteering).toHaveBeenCalledWith('排队消息', undefined)
       expect(persistedHistory()).toEqual(['排队消息'])
     })
   })
@@ -415,7 +415,7 @@ describe('Composer message editing', () => {
     fireEvent.change(textarea, { target: { value: '新内容' } })
     fireEvent.keyDown(textarea, { key: 'Enter' })
 
-    await waitFor(() => expect(mocks.editUserMessage).toHaveBeenCalledWith('u1', '新内容'))
+    await waitFor(() => expect(mocks.editUserMessage).toHaveBeenCalledWith('u1', '新内容', undefined))
     await waitFor(() => expect(textarea.value).toBe(''))
     expect(mocks.setMessageEditRequest).toHaveBeenCalledWith(null)
     expect(mocks.send).not.toHaveBeenCalled()
@@ -430,9 +430,24 @@ describe('Composer message editing', () => {
     fireEvent.change(textarea, { target: { value: '新内容' } })
     fireEvent.keyDown(textarea, { key: 'Enter' })
 
-    await waitFor(() => expect(mocks.editUserMessage).toHaveBeenCalledWith('u1', '新内容'))
+    await waitFor(() => expect(mocks.editUserMessage).toHaveBeenCalledWith('u1', '新内容', undefined))
     expect(textarea.value).toBe('新内容')
     expect(mocks.setMessageEditRequest).not.toHaveBeenCalled()
+  })
+
+  it('forwards the original message images on edit submit', async () => {
+    const images = [{
+      type: 'image' as const,
+      source: { type: 'base64' as const, mediaType: 'image/png', data: 'cG5n' },
+    }]
+    mocks.messageEditRequest = { sessionId: 'session-1', messageId: 'u1', content: '旧内容', images }
+    const textarea = renderComposer()
+    await waitFor(() => expect(textarea.value).toBe('旧内容'))
+
+    fireEvent.change(textarea, { target: { value: '新内容' } })
+    fireEvent.keyDown(textarea, { key: 'Enter' })
+
+    await waitFor(() => expect(mocks.editUserMessage).toHaveBeenCalledWith('u1', '新内容', images))
   })
 
   it('discards the edit and clears the input on cancel', async () => {

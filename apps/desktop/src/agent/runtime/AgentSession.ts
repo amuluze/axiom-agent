@@ -337,6 +337,7 @@ export class AgentSession {
     update: AgentLoopTurnUpdate
   }
   private pendingIdleMutationBatch?: AgentMutationBatch
+  private pendingIdleMutationApply?: () => void | Promise<void>
   private idleMutationCommitInFlight = false
   private currentRetryAttempt = 0
   private retryWaiting = false
@@ -948,6 +949,7 @@ export class AgentSession {
     this.pendingRuntimeUpdates = []
     this.pendingMutationBatch = undefined
     this.pendingIdleMutationBatch = undefined
+    this.pendingIdleMutationApply = undefined
     this.queueJournalEntryIds.clear()
     this.sessionJournal.reset()
   }
@@ -1488,10 +1490,16 @@ export class AgentSession {
       pending.sessionId !== batch.sessionId
       || JSON.stringify(pending.events) !== JSON.stringify(batch.events)
     )) {
-      throw new Error('上一次空闲 Runtime mutation 结果未知，需先重试原操作或重新加载会话')
+      // 挂起的 batch 与本次操作内容不同：此前直接抛「结果未知」永久卡死——UI 没有
+      // 「重试原操作」入口，而事件嵌着 previous 快照，不同时点的重试内容必然不同。
+      // 改为先幂等重放解决「结果未知」：已落库的 batch 以 replay 收据返回，补跑它的
+      // apply 完成原操作；重放失败则证明它从未持久化（已落库的幂等查询不会失败），
+      // 安全丢弃后放行本次操作。
+      await this.resolvePendingIdleMutation(pending)
     }
-    const durableBatch = pending ?? structuredClone(batch)
-    if (!pending) this.pendingIdleMutationBatch = durableBatch
+    const durableBatch = this.pendingIdleMutationBatch ?? structuredClone(batch)
+    this.pendingIdleMutationBatch = durableBatch
+    this.pendingIdleMutationApply = apply
     this.idleMutationCommitInFlight = true
     try {
       let receipt: AgentMutationReceipt | void = undefined
@@ -1512,10 +1520,41 @@ export class AgentSession {
         throw new Error('空闲 Runtime mutation receipt 与提交 batch ownership 不一致')
       }
       this.pendingIdleMutationBatch = undefined
+      this.pendingIdleMutationApply = undefined
       await apply()
     } finally {
       this.idleMutationCommitInFlight = false
     }
+  }
+
+  /**
+   * 幂等重放挂起的 batch 以消除「结果未知」：提交成功（含 replay 收据）则补跑它的
+   * apply，让原操作真正完成；重放失败说明该 batch 从未持久化（若已落库，Rust 侧
+   * 幂等查询会先命中并返回 replay 收据），丢弃是安全的——apply 未运行，live 状态
+   * 保持原值，不存在半套状态。
+   */
+  private async resolvePendingIdleMutation(pending: AgentMutationBatch): Promise<void> {
+    const apply = this.pendingIdleMutationApply
+    let receipt: AgentMutationReceipt | void
+    try {
+      receipt = await this.commitMutationBatch?.(structuredClone(pending))
+    } catch {
+      this.pendingIdleMutationBatch = undefined
+      this.pendingIdleMutationApply = undefined
+      return
+    }
+    if (receipt && (
+      receipt.batchId !== pending.id
+      || receipt.sessionId !== pending.sessionId
+      || receipt.runId !== undefined
+      || receipt.turn !== undefined
+    )) {
+      // receipt 指向别的 batch：不动挂起状态，把不一致暴露给本次操作。
+      throw new Error('空闲 Runtime mutation receipt 与提交 batch ownership 不一致')
+    }
+    this.pendingIdleMutationBatch = undefined
+    this.pendingIdleMutationApply = undefined
+    if (apply) await apply()
   }
 
   private async emitExternalEvents(events: AgentMutationEvent[]): Promise<void> {

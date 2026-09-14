@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type ClipboardEvent as ReactClipboardEvent,
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react'
@@ -28,10 +29,21 @@ import {
   recordComposerHistoryEntry,
 } from '@/components/composer/inputHistory'
 import { useMentionCandidates } from '@/components/composer/useMentionCandidates'
+import {
+  MAX_PASTE_IMAGES,
+  ImageTooLargeError,
+  compressPastedImage,
+  imageFilesFromClipboard,
+  objectUrlForFile,
+  revokeObjectUrl,
+  toImageContentBlock,
+} from '@/components/composer/imagePaste'
+import { resolveModelDescriptor } from '@/agent/transport/modelCatalog'
 import { ContextBudgetControl } from '@/components/composer/ContextBudgetControl'
 import { SessionUsageControl } from '@/components/composer/SessionUsageControl'
 import { useT } from '@/i18n'
 import { localizedProviderLabel } from '@/i18n/providerLabels'
+import type { ImageContentBlock } from '@/agent/core/types'
 
 const accessModeOptions: Array<{ value: AccessMode; labelKey: string; descriptionKey: string }> = [
   { value: 'standard', labelKey: 'app.composer.access.standard', descriptionKey: 'app.composer.access.standardDesc' },
@@ -69,11 +81,12 @@ export const isComposerAvailable = (state: ComposerAvailability): boolean => (
 )
 
 export const deliverQueuedContent = async (
-  action: (content: string) => Promise<boolean>,
+  action: (content: string, images?: ImageContentBlock[]) => Promise<boolean>,
   content: string,
   onAccepted: () => void,
+  images?: ImageContentBlock[],
 ): Promise<boolean> => {
-  const accepted = await action(content)
+  const accepted = await action(content, images)
   if (accepted) onAccepted()
   return accepted
 }
@@ -129,6 +142,26 @@ const queueKindKey = (kind: string): string => {
   return 'app.composer.queueKind.nextTurn'
 }
 
+interface ComposerAttachment {
+  id: string
+  mediaType: string
+  base64: string
+  previewUrl: string
+}
+
+let attachmentIdCounter = 0
+
+const createAttachment = async (file: File): Promise<ComposerAttachment> => {
+  const image = await compressPastedImage(file)
+  attachmentIdCounter += 1
+  return {
+    id: `paste-${attachmentIdCounter}`,
+    mediaType: image.mediaType,
+    base64: image.base64,
+    previewUrl: objectUrlForFile(file),
+  }
+}
+
 export interface ComposerProps {
   variant?: 'new-task' | 'session'
 }
@@ -142,6 +175,10 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
   const [budgetMenuOpen, setBudgetMenuOpen] = useState(false)
   const [dismissedMentionKey, setDismissedMentionKey] = useState<string | null>(null)
+  // 粘贴截图附件：chips 预览 + 随消息一起发送；attachHint 为临时错误提示。
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
+  const [attachHint, setAttachHint] = useState<string | null>(null)
+  const attachHintTimerRef = useRef<number | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const composingRef = useRef(false)
   // 输入历史浏览态：index -1 表示草稿态；进入浏览前把草稿存入 draftRef，
@@ -289,18 +326,96 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
     historyIndexRef.current = -1
   }, [])
 
+  const clearAttachments = useCallback(() => {
+    setAttachments((current) => {
+      for (const attachment of current) revokeObjectUrl(attachment.previewUrl)
+      return []
+    })
+  }, [])
+
+  const showAttachHint = useCallback((message: string) => {
+    setAttachHint(message)
+    if (attachHintTimerRef.current !== null) window.clearTimeout(attachHintTimerRef.current)
+    attachHintTimerRef.current = window.setTimeout(() => setAttachHint(null), 5000)
+  }, [])
+
+  useEffect(() => () => {
+    if (attachHintTimerRef.current !== null) window.clearTimeout(attachHintTimerRef.current)
+  }, [])
+
+  // 附件的函数式读取：粘贴压缩是异步链，避免闭包里的旧列表覆盖并发新增。
+  const attachmentsRef = useRef<ComposerAttachment[]>([])
+  useEffect(() => {
+    attachmentsRef.current = attachments
+  }, [attachments])
+
+  // 非视觉模型直接拒绝附加（对齐运行时 model.input 校验，避免可预知的失败）；
+  // profile 缺失等未知情形放行，交由运行时兜底。
+  const modelAcceptsImages = useMemo(() => {
+    try {
+      return resolveModelDescriptor(provider).input?.includes('image') ?? false
+    } catch {
+      return true
+    }
+  }, [provider])
+
+  const addAttachmentFiles = useCallback(async (files: File[]) => {
+    if (!modelAcceptsImages) {
+      showAttachHint(t('app.composer.attach.modelUnsupported'))
+      return
+    }
+    const existing = attachmentsRef.current
+    const room = MAX_PASTE_IMAGES - existing.length
+    if (files.length > room) {
+      showAttachHint(t('app.composer.attach.tooMany', { max: MAX_PASTE_IMAGES }))
+    }
+    const batch = files.slice(0, Math.max(0, room))
+    const added: ComposerAttachment[] = []
+    for (const file of batch) {
+      try {
+        added.push(await createAttachment(file))
+      } catch (error) {
+        showAttachHint(t(error instanceof ImageTooLargeError
+          ? 'app.composer.attach.tooLarge'
+          : 'app.composer.attach.failed'))
+      }
+    }
+    if (added.length > 0) setAttachments((current) => [...current, ...added])
+  }, [modelAcceptsImages, showAttachHint, t])
+
+  // 剪贴板带图像时拦截默认粘贴，压缩后加入附件；纯文本粘贴走浏览器默认。
+  const onPaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    if (editRequest) return
+    const files = imageFilesFromClipboard(event.clipboardData)
+    if (files.length === 0) return
+    event.preventDefault()
+    void addAttachmentFiles(files)
+  }
+
+  const removeAttachment = (id: string) => {
+    setAttachments((current) => {
+      const target = current.find((attachment) => attachment.id === id)
+      if (target) revokeObjectUrl(target.previewUrl)
+      return current.filter((attachment) => attachment.id !== id)
+    })
+  }
+
   const deliverInput = useCallback(async (delivery: 'automatic' | 'follow-up' = 'automatic') => {
     const content = input.trim()
-    if (!content || !composerAvailable) return false
+    const images = attachments
+      .map((attachment) => toImageContentBlock(attachment))
+    if ((!content && images.length === 0) || !composerAvailable) return false
     // 被接受即入史（直接发送与排队/跟进同权），与清空输入绑成单点。
     const accept = () => {
-      historyRef.current = recordComposerHistoryEntry(content)
+      if (content) historyRef.current = recordComposerHistoryEntry(content)
       clearAcceptedInput()
+      clearAttachments()
     }
     // 编辑态提交：从该消息之前的分支边界重发；只有成功才清空输入，失败时保留
-    // 用户改过的文本（失败原因由 store 写入 error 区）。
+    // 用户改过的文本（失败原因由 store 写入 error 区）。新贴的图片不进入编辑链路，
+    // 但原消息自带的图片块随重发保留（editRequest.images）。
     if (editRequest) {
-      const accepted = await editUserMessage(editRequest.messageId, content)
+      const accepted = await editUserMessage(editRequest.messageId, content, editRequest.images)
       if (!accepted) return false
       setMessageEditRequest(null)
       accept()
@@ -312,6 +427,7 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
         delivery === 'follow-up' ? queueFollowUp : queueSteering,
         content,
         accept,
+        images.length > 0 ? images : undefined,
       )
     }
 
@@ -323,12 +439,14 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
       sessionBusy: latest.sessionBusy,
       compactionRunning: latest.compactionRunning,
     }) || latest.running) return false
-    void send(content)
+    void send(content, images.length > 0 ? images : undefined)
     accept()
     if (variant === 'new-task') setView('session')
     return true
   }, [
+    attachments,
     clearAcceptedInput,
+    clearAttachments,
     composerAvailable,
     editRequest,
     editUserMessage,
@@ -427,7 +545,8 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
         return
       }
     }
-    if (!isComposerSendKey(event, composingRef.current) || !input.trim()) return
+    if (!isComposerSendKey(event, composingRef.current)) return
+    if (!input.trim() && attachmentsRef.current.length === 0) return
     event.preventDefault()
     event.stopPropagation()
     void deliverInput()
@@ -464,6 +583,7 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
   }, [restoreQueuedMessage])
 
   // 「编辑消息」请求到达时回填原文并聚焦：请求本身由提交或放弃消费。
+  // 编辑链路仅支持文本，进入编辑态时丢弃未发送的图片附件。
   useEffect(() => {
     if (!editRequest) return
     const content = editRequest.content
@@ -471,13 +591,14 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
     setCaret(content.length)
     setDismissedMentionKey(null)
     historyIndexRef.current = -1
+    clearAttachments()
     queueMicrotask(() => {
       const target = textareaRef.current
       if (!target) return
       target.focus()
       target.setSelectionRange(content.length, content.length)
     })
-  }, [editRequest])
+  }, [editRequest, clearAttachments])
 
   const cancelEdit = useCallback(() => {
     setMessageEditRequest(null)
@@ -582,6 +703,7 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
           onCompositionEnd={() => { composingRef.current = false }}
           onCompositionStart={() => { composingRef.current = true }}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           onSelect={onSelectEvent}
           onClick={onSelectEvent}
           onKeyUp={onSelectEvent}
@@ -590,12 +712,39 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
           rows={3}
           value={input}
         />
+        {attachHint && (
+          <div aria-live="polite" className="composer__attach-hint" role="status">
+            {attachHint}
+          </div>
+        )}
+        {attachments.length > 0 && (
+          <div aria-label={t('app.composer.attach.aria')} className="composer__attachments">
+            {attachments.map((attachment) => (
+              <span className="composer__attachment" key={attachment.id}>
+                <img alt="" src={attachment.previewUrl} />
+                <button
+                  aria-label={t('app.composer.attach.remove')}
+                  className="composer__attachment-remove"
+                  onClick={() => removeAttachment(attachment.id)}
+                  title={t('app.composer.attach.remove')}
+                  type="button"
+                >
+                  <X size={9} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         {editRequest && (
           <div aria-live="polite" className="composer__edit-banner" role="status">
             <Pencil size={12} />
             <span className="composer__edit-text">
               <span className="composer__edit-title">{t('app.sessionView.editing')}</span>
-              <span className="composer__edit-hint">{t('app.sessionView.editingHint')}</span>
+              <span className="composer__edit-hint">
+                {(editRequest.images?.length ?? 0) > 0
+                  ? t('app.sessionView.editingHintImages', { count: editRequest.images?.length ?? 0 })
+                  : t('app.sessionView.editingHint')}
+              </span>
             </span>
             <button
               aria-label={t('app.sessionView.editCancel')}
@@ -756,7 +905,7 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
           {running && (
             <button
               className="composer__follow-up"
-              disabled={!composerAvailable || !input.trim()}
+              disabled={!composerAvailable || (!input.trim() && attachments.length === 0)}
               onClick={() => { void deliverInput('follow-up') }}
               type="button"
             >
@@ -776,13 +925,13 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
           )}
           <button
             type="submit"
-            className={`composer__send ${composerAvailable && input.trim() ? 'composer__send--ready' : ''}`}
+            className={`composer__send ${composerAvailable && (input.trim() || attachments.length > 0) ? 'composer__send--ready' : ''}`}
             aria-label={editRequest
               ? t('app.composer.send.edit')
               : running
                 ? t('app.composer.send.running')
                 : t('app.composer.send.idle')}
-            disabled={!composerAvailable || !input.trim()}
+            disabled={!composerAvailable || (!input.trim() && attachments.length === 0)}
           >
             <ArrowUp size={15} />
           </button>

@@ -360,7 +360,7 @@ pub(crate) fn hosts_upsert(
 }
 
 /// 删除主机；id 不存在视为已删除（幂等），同样返回删后全量列表。已托管的
-/// 密码随主机删除清理（best-effort：keychain 删除失败不阻断主机删除，避免
+/// 密码随主机删除清理（best-effort：密钥库删除失败不阻断主机删除，避免
 /// 用户被卡在「删不掉」；残留引用已是孤儿、无任何读取方）。
 pub(crate) fn hosts_remove(
     file: &Path,

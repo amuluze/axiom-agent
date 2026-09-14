@@ -111,6 +111,34 @@ describe('ProviderRegistry (builtin)', () => {
     expect(model.contextWindow).toBe(64_000)
   })
 
+  it('resolveModel 对目录外模型省略 input（能力未知，不触发图片硬闸）', () => {
+    const customProfile = {
+      ...baseProfile,
+      providerId: 'zhipu-glm' as const,
+      apiFormat: 'openai-compatible' as const,
+      endpoint: 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions',
+      modelId: 'custom-finetuned',
+      secretId: 'provider.zhipu-glm.api-key',
+      contextWindow: 64_000,
+    }
+    const model = BUILTIN_PROVIDER_REGISTRY.resolveModel(customProfile)
+    expect(model.input).toBeUndefined()
+  })
+
+  it('resolveModel 对目录内多模态模型标注 image 输入', () => {
+    const glmFlashProfile = {
+      ...baseProfile,
+      providerId: 'zhipu-glm' as const,
+      apiFormat: 'openai-compatible' as const,
+      endpoint: 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions',
+      modelId: 'glm-5.3-flash',
+      secretId: 'provider.zhipu-glm.api-key',
+    }
+    const model = BUILTIN_PROVIDER_REGISTRY.resolveModel(glmFlashProfile)
+    expect(model.input).toEqual(['text', 'image'])
+    expect(model.supportsReasoning).toBe(true)
+  })
+
   it('creates a transport only when a required API key is present', () => {
     // openai（auth.required=true）缺 key 必须失败；anthropic（required=false）可无 key 创建。
     expect(() => BUILTIN_PROVIDER_REGISTRY.createTransport(openaiProfile, false))

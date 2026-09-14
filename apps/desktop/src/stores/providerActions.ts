@@ -353,7 +353,7 @@ export const deleteProviderProfile = async (
       }
       if (!stillReferenced) {
         await BUILTIN_PROVIDER_RUNTIME.credentials.delete(target).catch((error) => {
-          set({ settingsError: storeT('status.provider.keychainCleanupFailed', { detail: errorMessage(error) }) })
+          set({ settingsError: storeT('status.provider.secretCleanupFailed', { detail: errorMessage(error) }) })
         })
       }
     }

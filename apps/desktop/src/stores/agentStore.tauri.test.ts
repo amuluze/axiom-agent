@@ -676,8 +676,8 @@ describe('agentStore Tauri Provider Secret lifecycle', () => {
 
     // 切换后持久化会话的系统提示必须反映新模型身份（Composer 问「你是谁」的权威来源）。
     const stored = await mocks.repository!.loadSession(useAgentStore.getState().activeSessionId!)
-    expect(stored.session.systemPrompt).toContain('DeepSeek V4 Flash')
-    expect(stored.session.modelId).toBe('deepseek-v4-flash')
+    expect(stored.session.systemPrompt).toContain('DeepSeek Flash')
+    expect(stored.session.modelId).toBe('deepseek-flash')
 
     // 运行时 session（AgentHarness）的 systemPrompt 必须同步为同一身份行，
     // 否则持久化正确但运行时回答仍用旧身份。
@@ -687,7 +687,7 @@ describe('agentStore Tauri Provider Secret lifecycle', () => {
     const runtimeSystemPrompt = (runtime as unknown as {
       session: { context: { systemPrompt: string } }
     }).session.context.systemPrompt
-    expect(runtimeSystemPrompt).toContain('DeepSeek V4 Flash')
+    expect(runtimeSystemPrompt).toContain('DeepSeek Flash')
   })
 
   it('adds independent sessions for multiple authorized workspaces', async () => {

@@ -409,11 +409,12 @@ describe('Provider Registry 与 Profile', () => {
   })
 
   it('keeps the configured model as a compatibility catalog entry', () => {
+    // 兼容条目能力未知 → input 省略（与 ProviderRegistry.resolveModel 目录外语义一致）。
     expect(listModelsForProfile(OPENAI_RESPONSES_CONFIG)).toContainEqual(expect.objectContaining({
       providerId: 'openai',
       modelId: 'gpt-5',
       source: 'profile-compatibility',
-      input: ['text'],
+      input: undefined,
       supportsReasoning: false,
     }))
     expect(listModelsForProfile(ANTHROPIC_COMPATIBLE_CONFIG)).toContainEqual(expect.objectContaining({
@@ -439,7 +440,7 @@ describe('resolvePromptModelName（提示词模型身份显示名回退）', () 
   })
 
   it('falls back to the builtin catalog label for the configured modelId', () => {
-    expect(resolvePromptModelName(defaultProviderProfile('deepseek'))).toBe('DeepSeek V4 Flash')
+    expect(resolvePromptModelName(defaultProviderProfile('deepseek'))).toBe('DeepSeek Flash')
     expect(resolvePromptModelName(defaultProviderProfile('minimax-chat'))).toBe('MiniMax abab6.5s')
   })
 

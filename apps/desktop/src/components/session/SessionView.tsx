@@ -15,7 +15,7 @@ import { BackgroundApprovals } from '@/components/session/BackgroundApprovals'
 import { useStickyScroll } from '@/components/session/useStickyScroll'
 import { buildSessionBlocks, type SessionBlock } from '@/components/session/messagePairs'
 import { getBranchMessageActions, type BranchMessageAction } from '@/agent/session/branch'
-import type { AssistantMessage } from '@/agent/core/types'
+import type { AssistantMessage, ImageContentBlock } from '@/agent/core/types'
 import { useT } from '@/i18n'
 
 interface OutputScrollMetrics {
@@ -53,7 +53,7 @@ interface HistoryBlockProps {
   onBranch: (messageId: string) => void
   onSummarizedBranch: (messageId: string) => void
   onRetry: (messageId: string) => void
-  onEdit: (messageId: string, content: string) => void
+  onEdit: (messageId: string, content: string, images?: ImageContentBlock[]) => void
 }
 
 /**
@@ -75,7 +75,11 @@ const HistoryBlock = memo(({
     if (block.type === 'user') {
       return (
         <div className="message-bubble__row">
-          <div className="message-bubble">{block.message.content}</div>
+          {/* 走 RichMessageContent：用户消息可携带截图附件（image 内容块），
+              纯文本时行为与直接输出 content 一致 */}
+          <div className="message-bubble">
+            <RichMessageContent message={block.message} renderToolCalls={false} />
+          </div>
         </div>
       )
     }
@@ -117,6 +121,10 @@ const HistoryBlock = memo(({
 
   const role = blockActionRole(block)
   const message = block.type === 'user' || block.type === 'assistant-text' ? block.message : null
+  // 编辑重发时原样保留的图片块：只有用户消息可能携带 image 内容块。
+  const editImages = message?.role === 'user'
+    ? message.contentBlocks?.filter((block): block is ImageContentBlock => block.type === 'image')
+    : undefined
   const summarizable = Boolean(action?.branchable && message?.id !== lastMessageId)
   // 带操作行的消息组要交出等量的下外边距，让操作行叠在消息间距带里而不是额外占高。
   const groupClass = role
@@ -132,7 +140,7 @@ const HistoryBlock = memo(({
           busy={busy}
           editable={Boolean(action?.editBoundaryId)}
           onBranch={() => onBranch(message.id)}
-          onEdit={() => onEdit(message.id, message.content)}
+          onEdit={() => onEdit(message.id, message.content, editImages)}
           onRetry={() => onRetry(message.id)}
           onSummarizedBranch={() => onSummarizedBranch(message.id)}
           retryable={Boolean(action?.retryBoundaryId)}
@@ -220,8 +228,8 @@ export const SessionView = () => {
       busy={busy}
       lastMessageId={lastMessageId}
       onBranch={(messageId) => { void branchFromMessage(messageId) }}
-      onEdit={(messageId, content) => {
-        if (activeSessionId) setMessageEditRequest({ sessionId: activeSessionId, messageId, content })
+      onEdit={(messageId, content, images) => {
+        if (activeSessionId) setMessageEditRequest({ sessionId: activeSessionId, messageId, content, images })
       }}
       onRetry={(messageId) => { void retryAssistant(messageId) }}
       onSummarizedBranch={(messageId) => setSummaryRequest({ mode: 'branch', messageId })}

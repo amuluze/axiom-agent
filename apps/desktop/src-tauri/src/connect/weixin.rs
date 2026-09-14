@@ -188,7 +188,7 @@ pub(crate) async fn run_wechat_login(
                     if payload.bot_token.is_empty() {
                         return fail("微信登录确认响应缺少 token".into());
                     }
-                    // token 只进 Keychain；扫码用户自动绑定为控制器（cc-connect 同语义）。
+                    // token 只进本地密钥库（axiom.db secrets 表）；扫码用户自动绑定为控制器（cc-connect 同语义）。
                     let secret_state: tauri::State<'_, crate::secrets::SecretState> = app.state();
                     if let Err(error) =
                         crate::secrets::save_connect_secret(&secret_state, "connect.weixin.bot-token", &payload.bot_token)

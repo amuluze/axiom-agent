@@ -27,7 +27,7 @@
         "src/agent/transport/DemoModelTransport.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "df7fb0d04067461a4ca233cdf15644e185f088d598333fde179863ea077e074d"
+      "semanticDigest": "df90fef94dd7a41c32f3bfe775e325e9a1378f931af1bb0301a3eade677a5b0a"
     },
     {
       "id": "provider:generic-openai-compatible",
@@ -38,7 +38,7 @@
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "44766d297de8ed74c13e260bd85faed8df92d0cc193c56fd0e44132f9545cb0e"
+      "semanticDigest": "54855d22ad414c105a7c897ac6baa6ca9b809d744a02828c794dc6acf34cdbf1"
     },
     {
       "id": "provider:custom-openai-compatible",
@@ -49,7 +49,7 @@
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "44766d297de8ed74c13e260bd85faed8df92d0cc193c56fd0e44132f9545cb0e"
+      "semanticDigest": "54855d22ad414c105a7c897ac6baa6ca9b809d744a02828c794dc6acf34cdbf1"
     },
     {
       "id": "provider:openai",
@@ -60,7 +60,7 @@
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "b6808015c037b78fe5253e5473dacf9955ad554c364a9768cd7e66e0f0b59455"
+      "semanticDigest": "43f6f81c1184e92a259d35bc5c4d9cde41b95efa9ee05db88b7510b28df6ffc6"
     },
     {
       "id": "provider:generic-anthropic-compatible",
@@ -71,7 +71,7 @@
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "a0ba0ae72d599aff693f71357e2b9815b743842c48825852a23647f56032cd4c"
+      "semanticDigest": "a84dffb5e0e3913069c13529778ce3ccb96a76ac6071989f034c1c5b156830bc"
     },
     {
       "id": "provider:custom-anthropic-compatible",
@@ -82,7 +82,7 @@
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "a0ba0ae72d599aff693f71357e2b9815b743842c48825852a23647f56032cd4c"
+      "semanticDigest": "a84dffb5e0e3913069c13529778ce3ccb96a76ac6071989f034c1c5b156830bc"
     },
     {
       "id": "provider:zhipu-glm",
@@ -93,7 +93,7 @@
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "44766d297de8ed74c13e260bd85faed8df92d0cc193c56fd0e44132f9545cb0e"
+      "semanticDigest": "54855d22ad414c105a7c897ac6baa6ca9b809d744a02828c794dc6acf34cdbf1"
     },
     {
       "id": "provider:deepseek",
@@ -104,7 +104,7 @@
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "44766d297de8ed74c13e260bd85faed8df92d0cc193c56fd0e44132f9545cb0e"
+      "semanticDigest": "54855d22ad414c105a7c897ac6baa6ca9b809d744a02828c794dc6acf34cdbf1"
     },
     {
       "id": "provider:minimax-chat",
@@ -115,7 +115,7 @@
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "44766d297de8ed74c13e260bd85faed8df92d0cc193c56fd0e44132f9545cb0e"
+      "semanticDigest": "54855d22ad414c105a7c897ac6baa6ca9b809d744a02828c794dc6acf34cdbf1"
     },
     {
       "id": "provider:ollama",
@@ -126,7 +126,7 @@
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "44766d297de8ed74c13e260bd85faed8df92d0cc193c56fd0e44132f9545cb0e"
+      "semanticDigest": "54855d22ad414c105a7c897ac6baa6ca9b809d744a02828c794dc6acf34cdbf1"
     },
     {
       "id": "provider:gemini",
@@ -137,7 +137,7 @@
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "44766d297de8ed74c13e260bd85faed8df92d0cc193c56fd0e44132f9545cb0e"
+      "semanticDigest": "54855d22ad414c105a7c897ac6baa6ca9b809d744a02828c794dc6acf34cdbf1"
     },
     {
       "id": "provider:kimi",
@@ -148,7 +148,7 @@
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "44766d297de8ed74c13e260bd85faed8df92d0cc193c56fd0e44132f9545cb0e"
+      "semanticDigest": "54855d22ad414c105a7c897ac6baa6ca9b809d744a02828c794dc6acf34cdbf1"
     },
     {
       "id": "provider:kimi-coding",
@@ -159,7 +159,7 @@
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "a0ba0ae72d599aff693f71357e2b9815b743842c48825852a23647f56032cd4c"
+      "semanticDigest": "a84dffb5e0e3913069c13529778ce3ccb96a76ac6071989f034c1c5b156830bc"
     },
     {
       "id": "provider:orcarouter",
@@ -170,7 +170,7 @@
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "44766d297de8ed74c13e260bd85faed8df92d0cc193c56fd0e44132f9545cb0e"
+      "semanticDigest": "54855d22ad414c105a7c897ac6baa6ca9b809d744a02828c794dc6acf34cdbf1"
     },
     {
       "id": "tool:apply_changes",
@@ -224,7 +224,7 @@
         "src/agent/runtime/AgentSession.ts",
         "src/stores/services/subAgentObservability.ts"
       ],
-      "semanticDigest": "015067420916680e97cf3750ce1c658712a8ed209302258e9c3b7733b5f8417b"
+      "semanticDigest": "d875ceb0f1e3c648535beee685d563a0b07f7b6bb5d983e7efecdbdd7d0be434"
     },
     {
       "id": "tool:explore_subagent",
@@ -239,7 +239,7 @@
         "src/agent/runtime/AgentSession.ts",
         "src/stores/services/subAgentObservability.ts"
       ],
-      "semanticDigest": "817e7e8b07ed42ef57d5fb6d1e22f7737919836dfa7601b4ca8a2a2acac55ca7"
+      "semanticDigest": "c4bb403df3027a4d438c81b7c93290332991a025cb53944cb41552dcf2646d37"
     },
     {
       "id": "tool:find",
@@ -274,7 +274,7 @@
         "src/agent/runtime/AgentSession.ts",
         "src/stores/services/subAgentObservability.ts"
       ],
-      "semanticDigest": "7c304a7ad72f1a1d3d92d4cadb322f378642631da6bd49c068b98a092af78153"
+      "semanticDigest": "a91339dc2a9a1834329d8be87fc7caf4d229ab7ebc0f335e9529c795930fea4e"
     },
     {
       "id": "tool:load_skill",
@@ -329,7 +329,7 @@
         "src/agent/runtime/AgentSession.ts",
         "src/stores/services/subAgentObservability.ts"
       ],
-      "semanticDigest": "97ec67f9bfb056a5379c36e818334ccc6a830fac9742a4fe6728a5cdd8bce5b1"
+      "semanticDigest": "ee0ecee01abf99574fa3c4b517bcecec4d9932cffde7bf2fbc3460e3f652191a"
     },
     {
       "id": "tool:web_fetch",
@@ -361,12 +361,12 @@
     },
     {
       "id": "tool:browser",
-      "version": "2",
+      "version": "4",
       "sourceFiles": [
         "src/agent/tools/browserTool.ts",
         "src/agent/tools/workspaceToolUtils.ts"
       ],
-      "semanticDigest": "a961e86011c3259b734669d212d251168dca3f5bb09e004d3f60ab9f4d5868e0"
+      "semanticDigest": "b350830e1ebde2077d7d197f4e362f3b8405cad4f436290174c79a4eaf80a8ca"
     },
     {
       "id": "tool:computer",

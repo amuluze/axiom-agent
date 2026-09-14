@@ -632,7 +632,7 @@ fn write_askpass_script(data_root: &Path, host_id: &str) -> Result<PathBuf, Stri
     Ok(path)
 }
 
-/// 读取已托管密码（keychain/DB 可能阻塞，调用方应置于 blocking 上下文）。
+/// 读取已托管密码（SQLite 密钥库可能阻塞，调用方应置于 blocking 上下文）。
 fn read_ssh_password(app: &AppHandle, secret_id: &str) -> Result<Option<String>, String> {
     let Some(state) = app.try_state::<crate::secrets::SecretState>() else {
         return Ok(None);

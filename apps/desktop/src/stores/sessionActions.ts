@@ -1,7 +1,7 @@
 import type { AgentHarness } from '@/agent/runtime/AgentHarness'
 import { isAgentHarnessAbortError } from '@/agent/runtime/AgentHarness'
 import type { AgentSessionJournalEntry } from '@/agent/runtime/mutationJournal'
-import type { AgentMessage } from '@/agent/core/types'
+import type { AgentMessage, ImageContentBlock } from '@/agent/core/types'
 import {
   normalizeContextPolicySettings,
   type ContextCheckpoint,
@@ -151,28 +151,31 @@ export const queueSteering = (
   get: AgentGet,
   session: AgentHarness,
   content: string,
+  images?: ImageContentBlock[],
 ): Promise<boolean> =>
-  queueMessage(set, get, session, content, (s, c) => s.steer(c))
+  queueMessage(set, get, session, content, (s, c) => s.steer(c, images))
 
 export const queueFollowUp = (
   set: AgentSet,
   get: AgentGet,
   session: AgentHarness,
   content: string,
+  images?: ImageContentBlock[],
 ): Promise<boolean> =>
-  queueMessage(set, get, session, content, (s, c) => s.followUp(c))
+  queueMessage(set, get, session, content, (s, c) => s.followUp(c, images))
 
 export const queueNextTurn = async (
   set: AgentSet,
   get: AgentGet,
   session: AgentHarness,
   content: string,
+  images?: ImageContentBlock[],
 ): Promise<boolean> => {
   // next-turn 队列独立于正在运行的任务：不要求 running，只要求未在压缩/结算。
   if (get().runtimeLifecycle !== 'ready' || get().compactionRunning || get().sessionBusy) return false
   let queued: boolean
   try {
-    queued = await session.nextTurn(content)
+    queued = await session.nextTurn(content, images)
   } catch (error) {
     set({ error: errorMessage(error) })
     return false
@@ -191,9 +194,10 @@ export const send = async (
   get: AgentGet,
   deps: StoreRuntimeDeps,
   content: string,
+  images?: ImageContentBlock[],
 ): Promise<void> => {
   const initialState = get()
-  if (initialState.running || initialState.sessionBusy || !content.trim()) return
+  if (initialState.running || initialState.sessionBusy || (!content.trim() && !images?.length)) return
   if (!initialState.providerReady) {
     set({ error: 'Axiom 桌面能力仍在初始化，请稍候' })
     return
@@ -226,7 +230,7 @@ export const send = async (
   let queuedRecoveryFailure: string | undefined
   set({ running: true, error: null, endReason: null })
   try {
-    const result = await runSession.prompt(content)
+    const result = await runSession.prompt(content, images)
     const assistant = [...result.newMessages]
       .reverse()
       .find((message) => message.role === 'assistant' && message.content.trim())
@@ -628,9 +632,10 @@ export const editUserMessage = async (
   deps: StoreRuntimeDeps,
   messageId: string,
   content: string,
+  images?: ImageContentBlock[],
 ): Promise<boolean> => {
   const edited = content.trim()
-  if (!edited) {
+  if (!edited && !images?.length) {
     set({ error: '编辑后的消息不能为空' })
     return false
   }
@@ -697,7 +702,9 @@ export const editUserMessage = async (
       return true
     })
     if (!activated) return false
-    await deps.getSession().prompt(edited)
+    // 原消息的图片块随编辑重发保留：分支从被编辑消息之前的边界重建，
+    // 不带 images 会让贴图消息编辑后图片丢失。
+    await deps.getSession().prompt(edited, images)
     return true
   } catch (error) {
     set({ running: false, error: errorMessage(error) })

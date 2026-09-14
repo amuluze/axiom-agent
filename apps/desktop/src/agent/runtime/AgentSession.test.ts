@@ -975,6 +975,85 @@ describe('AgentSession runtime updates', () => {
     expect(session.messages).toEqual([message])
   })
 
+  it('auto-resolves a stale pending idle mutation via idempotent replay when a different operation arrives', async () => {
+    const callIds: string[] = []
+    const session = new AgentSession({
+      sessionId: 'stale-idle-replay',
+      systemPrompt: 'system',
+      model: { provider: 'test', model: 'model' },
+      transport: new ResumeTransport(),
+      commitMutationBatch: async (batch) => {
+        callIds.push(batch.id)
+        // commitThenApply 内置两次尝试：失败两次才会留下挂起 batch。
+        if (callIds.length <= 2) {
+          throw new Error('idle commit response unavailable')
+        }
+        return {
+          batchId: batch.id,
+          sessionId: batch.sessionId,
+          committedAt: batch.createdAt,
+          replayed: false,
+        }
+      },
+    })
+    const message: AgentMessage = {
+      id: 'stale-idle-message',
+      role: 'user',
+      content: 'persist once',
+      createdAt: 1,
+    }
+
+    await expect(session.appendMessage(message)).rejects.toThrow('response unavailable')
+    expect(session.messages).toEqual([])
+
+    // 不同的新操作不再被「结果未知」卡死：先幂等重放挂起 batch（补跑原 apply），
+    // 再提交并应用新操作。
+    await session.updateRuntime({ systemPrompt: 'updated system' })
+
+    expect(session.messages).toEqual([message])
+    expect(session.runtimeContext.systemPrompt).toBe('updated system')
+    // 调用序列：A 失败×2 → A 幂等重放成功（补跑原 apply）→ 新 batch B 提交。
+    expect(callIds).toHaveLength(4)
+    expect(callIds[1]).toBe(callIds[0])
+    expect(callIds[2]).toBe(callIds[0])
+    expect(callIds[3]).not.toBe(callIds[0])
+  })
+
+  it('drops a never-durable pending idle mutation when its replay fails and lets the new operation proceed', async () => {
+    let staleBatchId: string | undefined
+    const session = new AgentSession({
+      sessionId: 'stale-idle-drop',
+      systemPrompt: 'system',
+      model: { provider: 'test', model: 'model' },
+      transport: new ResumeTransport(),
+      commitMutationBatch: async (batch) => {
+        if (!staleBatchId) staleBatchId = batch.id
+        if (batch.id === staleBatchId) throw new Error('会话不存在或已被删除')
+        return {
+          batchId: batch.id,
+          sessionId: batch.sessionId,
+          committedAt: batch.createdAt,
+          replayed: false,
+        }
+      },
+    })
+    const message: AgentMessage = {
+      id: 'stale-idle-message',
+      role: 'user',
+      content: 'persist once',
+      createdAt: 1,
+    }
+
+    await expect(session.appendMessage(message)).rejects.toThrow('会话不存在')
+    expect(session.messages).toEqual([])
+
+    // 重放失败证明挂起 batch 从未持久化：安全丢弃并放行新操作。
+    await session.updateRuntime({ systemPrompt: 'updated system' })
+
+    expect(session.messages).toEqual([])
+    expect(session.runtimeContext.systemPrompt).toBe('updated system')
+  })
+
   it('rejects a mutation receipt from another Turn before applying Runtime state', async () => {
     class OwnershipMismatchTransport implements ModelTransport {
       private requestCount = 0

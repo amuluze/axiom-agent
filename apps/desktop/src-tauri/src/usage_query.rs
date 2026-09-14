@@ -1,11 +1,11 @@
 //! Provider 用量查询：对已配置的内置 Provider 调用官方账户接口，查询余额/额度。
 //!
 //! 安全模型：用量端点全部由本模块的内置表权威决定，渲染进程只传 providerId 与
-//! secretId——受陷渲染进程无法借本命令把 Keychain 密钥发到任意端点。这比
+//! secretId——受陷渲染进程无法借本命令把密钥库密钥发到任意端点。这比
 //! model_http 的 `resolve_profile`（接受同 origin 的 endpoint 覆盖）更严格：
 //! 连 endpoint 覆盖都不接受，因为用量接口与用户可自定义的 chat endpoint 无
 //! 路径派生关系。密钥经 `model_http::resolve_secret` 做 per-provider 绑定
-//! 校验（跨 Provider 组合在触碰 Keychain 前即被拒绝），认证头仅在请求期构造，
+//! 校验（跨 Provider 组合在读取密钥库前即被拒绝），认证头仅在请求期构造，
 //! 不回传渲染进程。
 
 use crate::{
@@ -926,9 +926,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_cross_provider_secret_before_keychain_access() {
+    async fn rejects_cross_provider_secret_before_secret_store_access() {
         // 受陷渲染进程用 deepseek 身份 + openai 的 secretId：绑定校验必须先于
-        // Keychain 读取拒绝。
+        // 密钥库读取拒绝。
         let result = query_provider_usage_inner(
             UsageQueryRequest {
                 provider_id: "deepseek".into(),

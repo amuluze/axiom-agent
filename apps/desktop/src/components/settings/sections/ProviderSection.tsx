@@ -1,4 +1,5 @@
-import { Sparkles, Zap, KeyRound, LockKeyhole, Plus, Trash2 } from 'lucide-react'
+import { useState } from 'react'
+import { Sparkles, Zap, KeyRound, LockKeyhole, Plus, Trash2, Eye, EyeOff } from 'lucide-react'
 import {
   BUILTIN_PROVIDER_RUNTIME,
   listModelsForProfile,
@@ -44,6 +45,9 @@ export const ProviderSection = ({ hook, context, providerLabel_, providerHasKey,
     deleteProviderKey,
   } = hook
   const { busy, providerMessage, settingsError } = context
+  // API Key 的明文核对开关：掩码输入防窥探，粘贴后可临时切明文检查。
+  const [showKey, setShowKey] = useState(false)
+  const keyStored = providerHasKey && draftIsSaved
   return (
     <section className="settings-section" id="settings-provider" aria-labelledby="settings-provider-title">
       <div className="settings__profile-picker">
@@ -188,22 +192,34 @@ export const ProviderSection = ({ hook, context, providerLabel_, providerHasKey,
           </label>
           <label>
             {t('settings.provider.apiKey')}
-            <div className="settings__input">
+            <div className={`settings__input settings__input--key${keyStored ? ' settings__input--key-stored' : ''}`}>
               <KeyRound size={13} className="settings__input-icon" aria-hidden />
               <input
                 autoComplete="off"
                 disabled={busy}
                 onChange={(event) => setApiKey(event.target.value)}
                 placeholder={
-                  providerHasKey && draftIsSaved
+                  keyStored
                     ? t('settings.provider.keyPlaceholderStored')
                     : needsKey
                       ? t('settings.provider.keyPlaceholderRequired')
                       : t('settings.provider.keyPlaceholderOptional')
                 }
-                type="password"
+                type={showKey ? 'text' : 'password'}
                 value={apiKey}
               />
+              {keyStored && <span className="settings__key-stored">{t('settings.provider.keyStoredBadge')}</span>}
+              <button
+                aria-label={showKey ? t('settings.provider.keyHideAria') : t('settings.provider.keyShowAria')}
+                aria-pressed={showKey}
+                className="settings__input-action"
+                disabled={busy}
+                onClick={() => setShowKey((current) => !current)}
+                title={showKey ? t('settings.provider.keyHideAria') : t('settings.provider.keyShowAria')}
+                type="button"
+              >
+                {showKey ? <EyeOff size={13} /> : <Eye size={13} />}
+              </button>
             </div>
           </label>
         </div>

@@ -291,7 +291,8 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: 8px 12px;
+  height: 34px;
+  padding: 0 12px;
   background: var(--bg-input);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
@@ -309,6 +310,9 @@
 .settings__input input,
 .settings__input textarea {
   flex: 1;
+  /* .settings-section input 的统一 8px 内距在此会叠加到包装层内距上，
+     使 API Key 输入框比其它输入框高出一截——内距以包装层为唯一来源。 */
+  padding: 0;
   background: transparent;
   border: 0;
   outline: 0;
@@ -321,6 +325,46 @@
 .settings__input-icon {
   color: var(--text-tertiary);
   flex-shrink: 0;
+}
+
+/* API Key 输入：已存 Key 时钥匙图标转强调色，一眼可辨当前 Provider 是否已配置。 */
+.settings__input--key-stored .settings__input-icon {
+  color: var(--accent-text);
+}
+
+.settings__input-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.settings__input-action:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.settings__key-stored {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border-subtle));
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-size: 0.7692rem;
+  line-height: 1;
+  user-select: none;
 }
 
 .settings__field-help {
@@ -593,8 +637,11 @@
 }
 
 .settings-section select,
-.settings-section input {
-  padding: 8px 12px;
+.settings-section input:not([type='checkbox']) {
+  /* 单行控件统一显式高度：不带高度时各控件按内容计算（API Key 包装层的
+     行内按钮会把框撑得比普通输入框高），统一 34px 后视觉严格一致。 */
+  height: 34px;
+  padding: 0 12px;
   background: var(--bg-input);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);

@@ -2,7 +2,7 @@
 //!
 //! 这是模型端点安全模型的权威源：渲染进程只传入 `providerId`（和可选的 endpoint
 //! 覆盖），最终请求 URL、认证格式、允许的 origin 全部由本模块按内置表解析。
-//! 受陷渲染进程无法把 Keychain 里的密钥发到任意 host——见 `AGENTS.md` 安全模型段
+//! 受陷渲染进程无法把密钥库里的密钥发到任意 host——见 `AGENTS.md` 安全模型段
 //! 「模型端点绑定」与 `model_http.rs::stream_model_http_to_events` 的 origin 校验。
 //!
 //! Provider Profile 文档解析（v4/v3/v2/legacy 迁移）与 secretId 规范化/迁移也在此

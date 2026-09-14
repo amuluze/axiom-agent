@@ -2,6 +2,7 @@ mod artifacts;
 mod browser_session;
 mod connect;
 mod computer_control;
+mod feedback;
 mod file_access;
 mod file_access_registry;
 mod fuzzy_match;
@@ -63,6 +64,7 @@ use file_access::{
     list_authorized_read_files, pick_and_authorize_read_directory, pick_and_authorize_read_file,
     read_authorized_text, revoke_authorized_read_file, FileAccessState,
 };
+use feedback::submit_feedback;
 use model_http::{cancel_model_http, probe_model_http, stream_model_http, ModelRequestState};
 use power::{set_prevent_idle_sleep, PowerManagementState};
 use web_access::{open_external_url, web_fetch, web_search};
@@ -77,8 +79,8 @@ use workspace_access::e2e_register_workspace;
 #[cfg(feature = "e2e")]
 use secrets::seed_e2e_legacy_provider_secret;
 use secrets::{
-    delete_secret, has_secret, load_provider_secret_cleanup_intent, migrate_legacy_secrets,
-    migrate_secret, persist_provider_secret_cleanup_intent, save_secret, SecretState,
+    delete_secret, has_secret, load_provider_secret_cleanup_intent, migrate_secret,
+    persist_provider_secret_cleanup_intent, save_secret, SecretState,
 };
 use session_mutations::commit_session_mutation_batch;
 use session_repository::{
@@ -216,15 +218,13 @@ fn get_runtime_info(app: tauri::AppHandle) -> RuntimeInfo {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() -> Result<(), String> {
     let context = tauri::generate_context!();
-    let secret_service = context.config().identifier.clone();
     #[cfg(feature = "e2e")]
     assert_eq!(
-        secret_service, "com.axiom.desktop.e2e",
+        context.config().identifier, "com.axiom.desktop.e2e",
         "the e2e feature requires the isolated E2E bundle identifier"
     );
-    // 密钥存储 worker（SQLite + legacy Keychain 回填）：service 仅用作回填读取
-    // 的钥匙串条目名，构造失败不再可能（无钥匙串初始化）。
-    let secret_state = SecretState::new(secret_service);
+    // 密钥存储 worker（SQLite 唯一权威存储，无任何 Keychain 触点）。
+    let secret_state = SecretState::new();
     #[cfg(feature = "e2e")]
     let e2e_data_store_identifier = e2e_data_store_identifier();
     #[cfg(feature = "e2e")]
@@ -282,7 +282,6 @@ pub fn run() -> Result<(), String> {
             save_secret,
             has_secret,
             migrate_secret,
-            migrate_legacy_secrets,
             delete_secret,
             load_provider_secret_cleanup_intent,
             persist_provider_secret_cleanup_intent,
@@ -293,6 +292,7 @@ pub fn run() -> Result<(), String> {
             web_search,
             web_fetch,
             open_external_url,
+            submit_feedback,
             browser_command,
             computer_command,
             ssh_command,

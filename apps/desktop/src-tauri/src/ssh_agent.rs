@@ -365,7 +365,7 @@ async fn resolve_exec_target(app: &AppHandle, host: &str) -> Result<AgentSshTarg
                     crate::ssh::validate_private_key_path(key_path)?;
                 }
                 let password = match entry.secret_id.as_deref() {
-                    // secrets 读取（SQLite/Keychain）可能阻塞：当前已在 blocking 池。
+                    // secrets 读取（SQLite）可能阻塞：当前已在 blocking 池。
                     Some(secret_id) => load_ssh_password(&lookup_app, secret_id)?,
                     None => None,
                 };

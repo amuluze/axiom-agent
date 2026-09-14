@@ -36,6 +36,8 @@
   --traffic-red: #FF5F57;
   --traffic-yellow: #FEBC2E;
   --traffic-green: #28C840;
+  /* 模态遮罩（反馈弹窗等）：设计稿 $bg-overlay，暗色单值不随主题分叉 */
+  --bg-overlay: #0A0A09B8;
 
   /* 界面字号基准（默认 13px）：全局 UI 字号经 rem 等比挂接，偏好只改此变量。
    * html 的 font-size 引用它（base.css），不可写 rem（自引用回退 16px）。 */

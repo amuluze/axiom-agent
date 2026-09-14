@@ -512,6 +512,13 @@ export const streamAssistantMessage = async (
       base = { ...base, stopReason: 'error', errorMessage: '模型流在结束事件前关闭' }
     }
   } catch (error) {
+    // 请求构造期失败（上下文 Hook 校验、图片能力校验、prepare/auth 回调）：
+    // provider ledger 尚未建立（provider_request_start 未发出），此类失败必须
+    // 上抛给编排层构造 orchestration failure 消息（带 agent-orchestration-error
+    // 诊断）才能命中持久化豁免——若在此处按流错误终态落库，消息只有
+    // model-stream-error 诊断，会被「Assistant message 缺少 Provider response
+    // ledger」拒绝并引发 save point 级联补偿失败。
+    if (!sentRequest) throw error
     const aborted = signal.aborted || isAbortError(error)
     base = {
       ...base,

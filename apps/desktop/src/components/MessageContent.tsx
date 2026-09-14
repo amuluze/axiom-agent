@@ -6,6 +6,7 @@ import type { AgentMessage, ImageContentBlock } from '@/agent/core/types'
 import { assistantContentBlocks } from '@/agent/core/messages'
 import { openExternalUrl } from '@/platform/webAccess'
 import { openUrlInBuiltinBrowser } from '@/stores/services/browserPanelService'
+import { useUiStore } from '@/stores/uiStore'
 import { splitStreamingMarkdown } from './streamingMarkdown'
 import { useT, type TFunction } from '@/i18n'
 
@@ -168,6 +169,7 @@ const truncateToolArguments = (value: string, t: TFunction): string =>
 
 const ImagePreview = ({ block }: { block: ImageContentBlock }) => {
   const { t } = useT()
+  const openImageLightbox = useUiStore((state) => state.openImageLightbox)
   if (block.source.type === 'url') {
     return (
       <div className="message-image-reference">
@@ -179,13 +181,22 @@ const ImagePreview = ({ block }: { block: ImageContentBlock }) => {
   if (!supportedPreviewMedia.has(block.source.mediaType)) {
     return <div className="message-image-reference">{t('app.message.image', { mediaType: block.source.mediaType })}</div>
   }
+  const src = `data:${block.source.mediaType};base64,${block.source.data}`
   return (
-    <img
-      alt={t('app.message.imageAlt')}
-      className="message-image"
-      loading="lazy"
-      src={`data:${block.source.mediaType};base64,${block.source.data}`}
-    />
+    <button
+      aria-label={t('app.message.imageZoomAria')}
+      className="message-image-button"
+      onClick={() => { openImageLightbox(src, t('app.message.imageAlt')) }}
+      title={t('app.message.imageZoomAria')}
+      type="button"
+    >
+      <img
+        alt={t('app.message.imageAlt')}
+        className="message-image"
+        loading="lazy"
+        src={src}
+      />
+    </button>
   )
 }
 

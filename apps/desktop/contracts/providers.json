@@ -173,6 +173,14 @@
           "supportsReasoning": true
         },
         {
+          "modelId": "glm-5.3-flash",
+          "label": "GLM-5.3-Flash",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
+          "input": ["text", "image"],
+          "supportsReasoning": true
+        },
+        {
           "modelId": "glm-4.6",
           "label": "GLM-4.6",
           "contextWindow": 200000,
@@ -221,7 +229,7 @@
       "defaultProfile": {
         "profileId": "builtin.deepseek",
         "endpoint": "https://api.deepseek.com/chat/completions",
-        "modelId": "deepseek-v4-flash",
+        "modelId": "deepseek-flash",
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 1000000,
@@ -230,18 +238,26 @@
       "legacySecretIdPrefixes": [],
       "models": [
         {
+          "modelId": "deepseek-flash",
+          "label": "DeepSeek Flash",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
+          "input": ["text", "image"],
+          "supportsReasoning": true
+        },
+        {
           "modelId": "deepseek-v4-flash",
           "label": "DeepSeek V4 Flash",
           "contextWindow": 1000000,
-          "maxOutputTokens": 8192,
-          "input": ["text"],
+          "maxOutputTokens": 64000,
+          "input": ["text", "image"],
           "supportsReasoning": true
         },
         {
           "modelId": "deepseek-v4-pro",
           "label": "DeepSeek V4 Pro",
           "contextWindow": 1000000,
-          "maxOutputTokens": 8192,
+          "maxOutputTokens": 64000,
           "input": ["text"],
           "supportsReasoning": true
         }
@@ -270,6 +286,14 @@
       },
       "legacySecretIdPrefixes": [],
       "models": [
+        {
+          "modelId": "minimax-m3",
+          "label": "MiniMax M3",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 8192,
+          "input": ["text", "image"],
+          "supportsReasoning": true
+        },
         {
           "modelId": "abab6.5s",
           "label": "MiniMax abab6.5s",
@@ -387,7 +411,7 @@
           "label": "Gemini 2.5 Pro",
           "contextWindow": 1000000,
           "maxOutputTokens": 65536,
-          "input": ["text"],
+          "input": ["text", "image"],
           "supportsReasoning": true
         },
         {
@@ -395,7 +419,7 @@
           "label": "Gemini 2.5 Flash",
           "contextWindow": 1000000,
           "maxOutputTokens": 65536,
-          "input": ["text"],
+          "input": ["text", "image"],
           "supportsReasoning": true
         },
         {
@@ -403,7 +427,7 @@
           "label": "Gemini 2.5 Flash-Lite",
           "contextWindow": 1000000,
           "maxOutputTokens": 65536,
-          "input": ["text"],
+          "input": ["text", "image"],
           "supportsReasoning": false
         },
         {
@@ -411,7 +435,7 @@
           "label": "Gemini 2.0 Flash",
           "contextWindow": 1000000,
           "maxOutputTokens": 8192,
-          "input": ["text"],
+          "input": ["text", "image"],
           "supportsReasoning": false
         }
       ]

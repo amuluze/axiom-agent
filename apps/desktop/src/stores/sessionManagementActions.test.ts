@@ -539,9 +539,29 @@ describe('editUserMessage', () => {
       kind: 'branch',
     }))
     expect(deps.activateCommittedSessionSnapshot).toHaveBeenCalledTimes(1)
-    expect(harness.prompt).toHaveBeenCalledWith('编辑后的内容')
+    expect(harness.prompt).toHaveBeenCalledWith('编辑后的内容', undefined)
     expect(state.error).toBeNull()
     expect(deps.endStructural).toHaveBeenCalledTimes(1)
+  })
+
+  it('编辑重发时原消息的图片块随 prompt 透传', async () => {
+    await seedEditState()
+    const images = [{
+      type: 'image' as const,
+      source: { type: 'base64' as const, mediaType: 'image/png', data: 'cG5n' },
+    }]
+    expect(await editUserMessage(set, get, deps, 'm3', '编辑后的内容', images)).toBe(true)
+    expect(harness.prompt).toHaveBeenCalledWith('编辑后的内容', images)
+  })
+
+  it('文本被清空但带图片时允许编辑重发', async () => {
+    await seedEditState()
+    const images = [{
+      type: 'image' as const,
+      source: { type: 'base64' as const, mediaType: 'image/png', data: 'cG5n' },
+    }]
+    expect(await editUserMessage(set, get, deps, 'm3', '   ', images)).toBe(true)
+    expect(harness.prompt).toHaveBeenCalledWith('', images)
   })
 
   it('投影失败时不发送编辑后的内容', async () => {

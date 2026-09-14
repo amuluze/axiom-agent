@@ -172,6 +172,17 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   // 等）。schema 向后兼容（新增可选 limit 字段），行为增强。
   { previousName: 'browser', previousVersion: '1', currentName: 'browser', currentVersion: '2' },
 
+  // browser → v3：新增 hover / wait（text+durationMs）/ find（服务端 AX 树
+  // 关键词检索）三个动作；screenshot 增加可选 ref（元素区域裁剪截图）。对齐
+  // zcode/ChatGPT 浏览器控制的节奏与检索原语；schema 向后兼容（新增动作与
+  // 可选字段，旧会话恢复无需迁移即可读）。
+  { previousName: 'browser', previousVersion: '2', currentName: 'browser', currentVersion: '3' },
+
+  // browser → v4：新增 select_tab（切前台）、select_option（原生下拉按可见
+  // 文本选择，focus+type-ahead+AX 值自校验）、upload_file（DOM.setFileInputFiles，
+  // path 限授权工作区内防宿主文件外传）。schema 向后兼容（新增动作与可选字段）。
+  { previousName: 'browser', previousVersion: '3', currentName: 'browser', currentVersion: '4' },
+
   // bash → v13 (formerly run_workspace_command / run_command)
   // v9：安全守卫扩展——sudo 命令上下文边界、重定向到引号/变量/noclobber/命令替换目标
   // v10：重定向守卫扩展——`>&` 文件复制形式与 `exec {fd}>` 绝对路径封堵。

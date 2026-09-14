@@ -35,11 +35,6 @@ export const sessionsZh = {
   'settings.sessions.gcing': '正在清理…',
   'settings.sessions.gcConfirm': '清理未引用的 Artifact 吗？\n\n仅回收不再被任何会话/审计 diff 包引用的内容寻址对象：先进入可恢复回收区（未引用超过宽限期后），超过保留期后彻底删除。删除的会话或分支相关对象可能在此被回收。',
   'settings.sessions.gcResult': '回收 {trashed} 项（可恢复）· 清理 {purged} 项',
-  'settings.sessions.migrate': '迁移旧版钥匙串密钥',
-  'settings.sessions.migrating': '正在迁移旧密钥…',
-  'settings.sessions.migrateConfirm': '把旧版存放在 macOS 钥匙串里的 API Key 迁移到本地数据库吗？\n\n迁移会逐个读取旧条目：每条会弹出一次钥匙串授权，请选择「始终允许」；回填成功后旧条目将从钥匙串移除，之后不再出现任何授权弹窗。被拒绝的条目会保留，可稍后重试。',
-  'settings.sessions.migrateOk': '迁移完成：新迁移 {migrated} 个 · 清理陈旧 {cleaned} 个',
-  'settings.sessions.migratePartial': '部分完成：迁移 {migrated} 个 · 清理 {cleaned} 个 · 失败 {failed} 个（可重试）',
   'settings.sessions.recovered': '本次启动已安全结束 {count} 个中断运行，没有自动重放工具。',
 } satisfies Record<string, string>
 
@@ -76,11 +71,6 @@ export const sessionsEn: Record<string, string> = {
   'settings.sessions.gcing': 'Cleaning…',
   'settings.sessions.gcConfirm': 'Clean up unreferenced artifacts?\n\nOnly content-addressed objects no longer referenced by any session/audit diff are reclaimed: they move to the recoverable trash first (after the grace period), then are permanently deleted after the retention period. Objects of deleted sessions or branches may be reclaimed here.',
   'settings.sessions.gcResult': 'Reclaimed {trashed} items (recoverable) · purged {purged} items',
-  'settings.sessions.migrate': 'Migrate legacy Keychain keys',
-  'settings.sessions.migrating': 'Migrating legacy keys…',
-  'settings.sessions.migrateConfirm': 'Migrate API keys previously stored in macOS Keychain to the local database?\n\nMigration reads each legacy item one by one: every item prompts once for Keychain authorization, please choose “Always Allow”; after backfill the legacy item is removed from Keychain and no further prompts appear. Denied items are kept and can be retried later.',
-  'settings.sessions.migrateOk': 'Migration complete: {migrated} migrated · {cleaned} stale cleaned',
-  'settings.sessions.migratePartial': 'Partial: {migrated} migrated · {cleaned} cleaned · {failed} failed (retryable)',
   'settings.sessions.recovered': 'This launch safely finished {count} interrupted runs without auto-replaying tools.',
 }
 

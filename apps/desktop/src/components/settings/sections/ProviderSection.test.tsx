@@ -156,7 +156,7 @@ describe('ProviderSection', () => {
       providerHasKey: false,
       desktop: true,
     }))
-    expect(html).toContain('可选，仅写入 macOS Keychain')
+    expect(html).toContain('可选，仅写入 Axiom 本地密钥库')
   })
 
   it('switches the API Key placeholder when the Provider already has a key', () => {
@@ -167,7 +167,7 @@ describe('ProviderSection', () => {
       providerHasKey: true,
       desktop: true,
     }))
-    expect(html).toContain('已存入 macOS Keychain；留空保持不变')
+    expect(html).toContain('已存入 Axiom 本地密钥库；留空保持不变')
   })
 
   it('forwards the API Key input to the hook setApiKey callback', () => {

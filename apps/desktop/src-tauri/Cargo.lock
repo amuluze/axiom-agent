@@ -268,11 +268,10 @@ dependencies = [
 
 [[package]]
 name = "axiom"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "base64 0.22.1",
  "block2",
- "core-foundation 0.10.1",
  "futures-util",
  "globset",
  "httpdate",
@@ -285,8 +284,6 @@ dependencies = [
  "qrcodegen",
  "regex",
  "reqwest",
- "security-framework",
- "security-framework-sys",
  "serde",
  "serde_json",
  "sha2",

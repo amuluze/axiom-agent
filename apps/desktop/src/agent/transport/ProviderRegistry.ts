@@ -126,7 +126,11 @@ export class ProviderRegistry {
       // 等模型不准确；自定义模型（不在目录中）回退 profile 值。
       contextWindow: builtin?.contextWindow ?? normalized.contextWindow,
       maxOutputTokens: normalized.maxOutputTokens,
-      input: builtin?.input.slice() ?? ['text'],
+      // 目录内模型按目录标注；目录外模型能力未知 → input 省略（不硬编码 ['text']）：
+      // streamAssistantMessage 的图片硬闸只在 input 已声明且缺 image 时拦截，省略即
+      // 不误伤多模态自定义模型；工具侧 modelAcceptsImage 对未知 input 仍默认 false，
+      // 截图降级保持保守。
+      input: builtin?.input.slice(),
       supportsReasoning: builtin?.supportsReasoning ?? false,
     }
   }

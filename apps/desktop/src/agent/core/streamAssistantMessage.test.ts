@@ -3,6 +3,7 @@ import type {
   AgentContext,
   AgentEvent,
   AgentEventSink,
+  AgentMessage,
   ModelRequest,
   ModelStreamEvent,
   ModelTransport,
@@ -60,6 +61,17 @@ const textScript = (content: string): ModelStreamEvent[] => [
   { type: 'text_delta', contentIndex: 0, delta: content },
   { type: 'done', stopReason: 'stop' },
 ]
+
+const imageUserMessage: AgentMessage = {
+  id: 'u-img',
+  role: 'user',
+  content: '看这张图',
+  contentBlocks: [
+    { type: 'text', text: '看这张图' },
+    { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: 'aGk=' } },
+  ],
+  createdAt: 1,
+}
 
 describe('streamAssistantMessage', () => {
   it('streams a text response and emits a correct lifecycle', async () => {
@@ -203,5 +215,36 @@ describe('streamAssistantMessage', () => {
     )
     expect(prepareModelRequest).toHaveBeenCalled()
     expect(transport.requests[0].messages.map((m) => m.role)).toContain('user')
+  })
+
+  it('declared text-only model rejects image input before reaching the provider', async () => {
+    const transport = new ScriptedTransport([textScript('hi')])
+    const { events } = sink()
+    const context: AgentContext = {
+      ...makeContext(),
+      model: { provider: 'p', model: 'm', input: ['text'] },
+      messages: [imageUserMessage],
+    }
+    // 请求构造期失败（图片硬闸在 sentRequest 建立之前）：原样上抛走编排失败路径，
+    // 不落库为 model-stream-error 消息。
+    await expect(streamAssistantMessage(
+      context, 'r', transport, new AbortController().signal, (event) => { events.push(event) }, 64 * 1024,
+    )).rejects.toThrow('不支持图片输入')
+    expect(transport.requests).toHaveLength(0)
+  })
+
+  it('unknown-capability model (input omitted) forwards images to the provider', async () => {
+    // 目录外自定义模型多为多模态：input 缺省表示能力未知，图片直达 provider 由其裁决。
+    const transport = new ScriptedTransport([textScript('seen')])
+    const { events } = sink()
+    const context: AgentContext = { ...makeContext(), messages: [imageUserMessage] }
+    const message = await streamAssistantMessage(
+      context, 'r', transport, new AbortController().signal, (event) => { events.push(event) }, 64 * 1024,
+    )
+
+    expect(message.stopReason).toBe('stop')
+    expect(message.content).toBe('seen')
+    const forwarded = transport.requests[0].messages.find((m) => m.role === 'user')
+    expect(forwarded?.contentBlocks?.some((block) => block.type === 'image')).toBe(true)
   })
 })

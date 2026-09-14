@@ -183,6 +183,22 @@ describe('RichMessageContent SSR', () => {
     expect(html).toContain('summarise the repo')
   })
 
+  it('wraps pasted screenshots in a zoom button for the lightbox', () => {
+    const message: AgentMessage = {
+      id: 'u-img',
+      createdAt: 0,
+      role: 'user',
+      content: '看这张图',
+      contentBlocks: [
+        { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: 'cG5n' } },
+      ],
+    }
+    const html = renderToStaticMarkup(createElement(RichMessageContent, { message }))
+    expect(html).toContain('message-image-button')
+    expect(html).toContain('message-image')
+    expect(html).toContain('data:image/png;base64,cG5n')
+  })
+
   it('renders tool result message content directly', () => {
     const message: AgentMessage = {
       id: 't',

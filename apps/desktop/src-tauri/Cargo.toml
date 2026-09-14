@@ -1,6 +1,6 @@
 [package]
 name = "axiom"
-version = "0.4.3"
+version = "0.5.0"
 description = "Local-first desktop agent"
 authors = ["Axiom contributors"]
 edition = "2021"
@@ -48,12 +48,6 @@ qrcodegen = "1.8"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "3"
-# 密钥批量迁移：解析 SecItemCopyMatching 属性字典需 CFString/字典类型
-# （0.10 与 security-framework 3 内部版本一致，共享类型）；kSecAttrAccount
-# 常量来自 security-framework-sys（同树 2.x，无新增 vendor）。
-core-foundation = "0.10"
-security-framework-sys = "2"
 # 终端原生键盘手势门：NSEvent local monitor 验证 stdin 输入确实来自用户按键
 # （WebView 内 JS 无法伪造 isTrusted，但此处在 Rust 侧直接从 NSApplication 事件流捕获）。
 # 电脑控制模块复用 objc2 家族：NSWorkspace/NSRunningApplication 枚举运行 app，

@@ -1,0 +1,434 @@
+/* 反馈弹窗（.pen/axiom.pen「反馈弹窗」六态）：表单 / 校验 / 提交中 / 成功 / 失败。
+ * 字号一律用 rem 挂接全局 UI 字号缩放（根字号 13px：11px=0.8462rem、
+ * 12px=0.9231rem、13px=1rem、14px=1.0769rem、16px=1.2308rem）。 */
+
+.feedback-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+}
+
+.feedback-dialog {
+  display: flex;
+  flex-direction: column;
+  width: 520px;
+  max-width: calc(100vw - 32px);
+  max-height: min(720px, calc(100vh - 48px));
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-popover);
+}
+
+.feedback__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.feedback__header-badge {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  color: var(--accent-text);
+}
+
+.feedback__header-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.feedback__header-text h2 {
+  margin: 0;
+  font-size: 1.0769rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.feedback__header-text p {
+  margin: 0;
+  font-size: 0.9231rem;
+  color: var(--text-secondary);
+}
+
+.feedback__close {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+
+.feedback__close:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.feedback__close:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.feedback__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5) var(--space-5);
+}
+
+/* 提交中锁定态：正文整体降不透明度（设计稿 0.55），头部与底部保持原样。 */
+.feedback-dialog--locked .feedback__body {
+  opacity: 0.55;
+}
+
+.feedback__banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 10px var(--space-3);
+  background: var(--danger-soft);
+  border-radius: var(--radius-sm);
+  color: var(--diff-red);
+  font-size: 0.9231rem;
+  line-height: 1.4;
+}
+
+.feedback__banner svg {
+  flex: none;
+}
+
+.feedback__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.feedback__label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 0.9231rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.feedback__label--row {
+  width: 100%;
+  justify-content: space-between;
+}
+
+.feedback__required {
+  color: var(--diff-red);
+}
+
+.feedback__counter {
+  font-size: 0.8462rem;
+  font-weight: normal;
+  color: var(--text-tertiary);
+}
+
+.feedback__options {
+  display: flex;
+  gap: 10px;
+}
+
+.feedback__option {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px var(--space-3);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  text-align: left;
+}
+
+.feedback__option--selected {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.feedback__option-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.feedback__option-label {
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.feedback__option--selected .feedback__option-label {
+  color: var(--text-primary);
+}
+
+.feedback__option-desc {
+  font-size: 0.8462rem;
+  color: var(--text-secondary);
+}
+
+.feedback__option-check {
+  flex: none;
+  color: var(--accent-text);
+}
+
+.feedback__error {
+  margin: 0;
+  font-size: 0.8462rem;
+  line-height: 1.4;
+  color: var(--diff-red);
+}
+
+.feedback__input,
+.feedback__textarea {
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 10px var(--space-3);
+  font-family: inherit;
+  font-size: 1rem;
+  color: var(--text-primary);
+}
+
+.feedback__input::placeholder,
+.feedback__textarea::placeholder {
+  color: var(--text-tertiary);
+}
+
+.feedback__input:focus-visible,
+.feedback__textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.feedback__input--error,
+.feedback__textarea.feedback__input--error {
+  border-color: var(--diff-red);
+}
+
+.feedback__textarea {
+  height: 92px;
+  resize: none;
+  line-height: 1.5;
+}
+
+.feedback__input--with-icon {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 10px var(--space-3);
+}
+
+.feedback__input-icon {
+  flex: none;
+  color: var(--text-tertiary);
+}
+
+.feedback__input--with-icon input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-family: inherit;
+  font-size: 1rem;
+  color: var(--text-primary);
+}
+
+.feedback__input--with-icon input:focus {
+  outline: none;
+}
+
+.feedback__input--with-icon input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.feedback__note {
+  margin: 0;
+  font-size: 0.8462rem;
+  line-height: 1.4;
+  color: var(--text-tertiary);
+}
+
+.feedback__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.feedback__hint {
+  font-size: 0.8462rem;
+  color: var(--text-tertiary);
+}
+
+.feedback__hint--error {
+  color: var(--diff-red);
+}
+
+.feedback__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.feedback__secondary {
+  padding: var(--space-1) var(--space-3);
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 1rem;
+  color: var(--text-primary);
+}
+
+.feedback__secondary:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.feedback__secondary:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.feedback__primary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) 14px;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--text-inverse);
+}
+
+.feedback__primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.feedback__primary:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.feedback__loader {
+  animation: feedback-loader-spin 0.9s linear infinite;
+}
+
+@keyframes feedback-loader-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 提交成功态：头部隐藏，正文居中展示回执与单号摘要。 */
+.feedback__success {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-8) var(--space-5) var(--space-6);
+  overflow-y: auto;
+  text-align: center;
+}
+
+.feedback__success-badge {
+  width: 56px;
+  height: 56px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft);
+  border-radius: 999px;
+  color: var(--accent);
+}
+
+.feedback__success-title {
+  margin: 0;
+  font-size: 1.2308rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.feedback__success-desc {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.feedback__receipt {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--bg-input);
+  border-radius: var(--radius-md);
+  text-align: left;
+}
+
+.feedback__receipt-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.feedback__receipt-tag {
+  padding: 2px var(--space-2);
+  background: var(--accent-soft);
+  border-radius: 6px;
+  font-size: 0.8462rem;
+  font-weight: 500;
+  color: var(--accent-text);
+}
+
+.feedback__receipt-ticket {
+  font-size: 0.8462rem;
+  color: var(--text-tertiary);
+}
+
+.feedback__receipt-title {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text-primary);
+}

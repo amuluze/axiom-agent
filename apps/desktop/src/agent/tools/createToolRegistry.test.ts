@@ -103,7 +103,7 @@ describe('tool registry', () => {
     expect(browser?.requiresApproval).toBe(false)
     expect(browser?.executionMode).toBe('sequential')
     // v2：新增 console 动作 + 快照状态注记（迁移链见 toolNameMigrations.ts）。
-    expect(browser?.runtimeVersion).toBe('2')
+    expect(browser?.runtimeVersion).toBe('4')
     expect(createProductToolRuntime(['workspace:read', 'web:browser'], undefined).activeToolNames)
       .not.toContain('browser')
   })

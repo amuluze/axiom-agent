@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { ImageContentBlock } from '@/agent/core/types'
 import { setIdleSleepPrevention } from '@/platform/power'
 import { setWorkspaceApprovalMode } from '@/platform/workspaceApproval'
 import { syncNativeWindowTheme } from '@/platform/windowTheme'
@@ -20,11 +21,23 @@ export type SummaryRequest =
   | { mode: 'compaction' }
   | { mode: 'branch'; messageId: string }
 /** 待编辑的已发送用户消息：操作行点击「编辑」后回填 Composer，提交时分支重发。
- *  带上会话 id——切走会话后残留的请求不得回填到别的会话的输入框。 */
+ *  带上会话 id——切走会话后残留的请求不得回填到别的会话的输入框。
+ *  images 是原消息的图片块：编辑重发从分支边界重建消息，不带会把图丢掉。 */
 export interface MessageEditRequest {
   sessionId: string
   messageId: string
   content: string
+  images?: ImageContentBlock[]
+}
+/** 会话输出窗口截图的灯箱：点击缩略图查看原图，Esc/点击遮罩关闭。 */
+export interface ImageLightboxState {
+  src: string
+  alt: string
+}
+/** 反馈弹窗请求：帮助菜单「需求/问题」打开同一弹窗，按入口预选类型。 */
+export type FeedbackKind = 'feature' | 'bug'
+export interface FeedbackRequest {
+  kind: FeedbackKind
 }
 /** 自更新流程阶段：downloading 的字节进度在 updateProgress，错误文案在 updateMessage。 */
 export type UpdatePhase = 'idle' | 'checking' | 'downloading' | 'ready' | 'uptodate' | 'disabled' | 'error'
@@ -316,6 +329,8 @@ interface UiState {
   preventIdleSleep: boolean
   summaryRequest: SummaryRequest | null
   messageEditRequest: MessageEditRequest | null
+  imageLightbox: ImageLightboxState | null
+  feedbackRequest: FeedbackRequest | null
   recentWorkspacePaths: string[]
   updatePhase: UpdatePhase
   availableUpdate: AvailableAppUpdate | null
@@ -351,6 +366,10 @@ interface UiState {
   setPreventIdleSleep: (enabled: boolean) => void
   setSummaryRequest: (request: SummaryRequest | null) => void
   setMessageEditRequest: (request: MessageEditRequest | null) => void
+  openImageLightbox: (src: string, alt: string) => void
+  closeImageLightbox: () => void
+  openFeedback: (kind: FeedbackKind) => void
+  closeFeedback: () => void
 }
 
 const initialLanguage = loadUiLanguage()
@@ -391,6 +410,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   preventIdleSleep: loadPreventIdleSleep(),
   summaryRequest: null,
   messageEditRequest: null,
+  imageLightbox: null,
+  feedbackRequest: null,
   recentWorkspacePaths: loadRecentWorkspacePaths(),
   updatePhase: 'idle',
   availableUpdate: null,
@@ -511,5 +532,9 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
   setSummaryRequest: (summaryRequest) => set({ summaryRequest }),
   setMessageEditRequest: (messageEditRequest) => set({ messageEditRequest }),
+  openImageLightbox: (src, alt) => set({ imageLightbox: { src, alt } }),
+  closeImageLightbox: () => set({ imageLightbox: null }),
+  openFeedback: (kind) => set({ feedbackRequest: { kind } }),
+  closeFeedback: () => set({ feedbackRequest: null }),
   patchUpdater: (patch) => set(patch),
 }))

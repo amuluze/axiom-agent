@@ -1,10 +1,11 @@
-//! Provider / connect 凭据存储（v15 起落在 `~/.axiom/axiom.db` 的 `secrets` 表）。
+//! Provider / connect 凭据存储：`~/.axiom/axiom.db` 的 `secrets` 表是唯一权威存储。
 //!
 //! 历史上密钥存 macOS Keychain（service = 应用 identifier），但 adhoc 签名下
 //! 每次重建二进制的 cdhash 都会变化，钥匙串 ACL 按 designated requirement 匹配
-//! 失败，导致每次更新后读取密钥都弹系统授权对话框。改为 Rust 独占的 SQLite
-//! 存储后彻底脱离 ACL；钥匙串只保留**只读 legacy 回填**通道：旧版本落下的
-//! Keychain 条目在首次读取时迁入 DB（会弹最后一次授权框），之后永远走 DB。
+//! 失败，导致每次更新后读取密钥都弹系统授权对话框。v15 改为 Rust 独占的 SQLite
+//! 存储后彻底脱离 ACL；此后补充的「只读回填 legacy 钥匙串条目」通道也已整体
+//! 移除——本模块不再触碰 Security.framework，pre-v15 遗留的钥匙串条目不再
+//! 迁移（受影响用户在设置里重新输入 API Key 即可）。
 //!
 //! 并发模型：所有读写经一条后台 worker 线程串行执行（线程内自持
 //! current-thread tokio runtime 与单条 SQLite 连接），对外 API 保持同步——
@@ -16,7 +17,6 @@
 use crate::provider_profiles::{CURRENT_PROVIDER_SECRET_PREFIXES, LEGACY_PROVIDER_SECRET_PREFIXES};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -26,8 +26,6 @@ use std::{
 use sqlx::sqlite::SqliteConnection;
 use sqlx::Connection as _;
 
-#[cfg(target_os = "macos")]
-use security_framework::passwords;
 use crate::session_schema::{create_options, SECRETS_TABLE_DDL};
 
 const MAX_SECRET_BYTES: usize = 16 * 1024;
@@ -35,8 +33,6 @@ const MAX_PROVIDER_SECRET_CLEANUP_IDS: usize = 256;
 const PROVIDER_SECRET_CLEANUP_DIRECTORY: &str = "provider-secret-migrations";
 const PROVIDER_SECRET_CLEANUP_FILE: &str = "cleanup-intent-v1.json";
 const DATABASE_FILE_NAME: &str = "axiom.db";
-#[cfg(target_os = "macos")]
-const ERR_SEC_ITEM_NOT_FOUND: i32 = -25_300;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -47,10 +43,7 @@ struct ProviderSecretCleanupIntent {
 
 /// worker 请求：Bind 恒为首个请求（setup 在任何密钥操作前调用 bind_data_root）。
 enum SecretRequest {
-    Bind {
-        data_root: PathBuf,
-        keychain_fallback_enabled: bool,
-    },
+    Bind { data_root: PathBuf },
     Load {
         key: String,
         reply: mpsc::Sender<Result<Option<String>, String>>,
@@ -68,41 +61,15 @@ enum SecretRequest {
         key: String,
         reply: mpsc::Sender<Result<(), String>>,
     },
-    /// 一键完成旧密钥迁移：枚举钥匙串全部旧条目，逐个回填/清理。
-    /// 读取未迁移条目会依次弹授权框（每条目一次），由用户显式触发。
-    MigrateLegacyAll {
-        reply: mpsc::Sender<Result<LegacySecretMigrationSummary, String>>,
-    },
-}
-
-/// 一键迁移汇总。failed 项保留钥匙串条目（重试可续）；其余条目迁移或
-/// 清理后钥匙串不再持有副本，DB 成为唯一存储。
-#[derive(Debug, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct LegacySecretMigrationSummary {
-    /// 钥匙串中扫描到的旧条目数
-    scanned: usize,
-    /// 本次从钥匙串回填 DB 并删除旧条目
-    migrated: usize,
-    /// DB 已有同 key 数据，仅清理陈旧钥匙串副本
-    cleaned_stale: usize,
-    /// 读取被拒/失败，条目保留
-    failed: usize,
 }
 
 pub(crate) struct SecretState {
-    /// 钥匙串 legacy 条目的 service 名（应用 identifier），仅回填读取使用。
-    service: String,
-    /// 钥匙串 legacy 回填开关：仅测试关闭以保证 hermetic（不触碰登录钥匙串）。
-    keychain_fallback_enabled: bool,
     requests: OnceLock<tokio::sync::mpsc::UnboundedSender<SecretRequest>>,
 }
 
 impl SecretState {
-    pub(crate) fn new(service: String) -> Self {
+    pub(crate) fn new() -> Self {
         let state = Self {
-            service,
-            keychain_fallback_enabled: true,
             requests: OnceLock::new(),
         };
         state.spawn_worker();
@@ -111,7 +78,6 @@ impl SecretState {
 
     /// 启动 worker 线程。OnceLock 保证幂等（构造时恰好触发一次）。
     fn spawn_worker(&self) {
-        let service = self.service.clone();
         let _ = self.requests.get_or_init(|| {
             let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<SecretRequest>();
             std::thread::Builder::new()
@@ -125,7 +91,7 @@ impl SecretState {
                         // 后续请求方会在 recv 端得到明确错误而不是挂死。
                         return;
                     };
-                    runtime.block_on(run_secret_worker(receiver, service));
+                    runtime.block_on(run_secret_worker(receiver));
                 })
                 .expect("spawning the Axiom secret store worker must not fail");
             sender
@@ -134,16 +100,11 @@ impl SecretState {
 
     /// 绑定数据根（setup 在 legacy 数据迁移完成后调用，先于任何密钥操作）。
     pub(crate) fn bind_data_root(&self, data_root: PathBuf) {
-        // 回填开关随 Bind 一并下发：worker 在构造时即启动，构造后对字段的
-        // 修改（测试关闭钥匙串）必须经 Bind 生效，不能在线程启动时捕获。
         let _ = self
             .requests
             .get()
             .expect("secret worker must be spawned at construction")
-            .send(SecretRequest::Bind {
-                data_root,
-                keychain_fallback_enabled: self.keychain_fallback_enabled,
-            });
+            .send(SecretRequest::Bind { data_root });
     }
 
     fn send(&self, request: SecretRequest) -> Result<(), String> {
@@ -166,9 +127,7 @@ impl SecretState {
             .map_err(|_| "Axiom secret store worker 已停止".to_string())?
     }
 
-    /// 存在性检查（DB 命中或钥匙串元数据匹配）：不解密密钥内容、不触发
-    /// 钥匙串 ACL 授权——配置状态展示、切换模型等高频检查走此通道，
-    /// 避免「查一下是否已配置」也弹授权框。
+    /// 存在性检查（DB 查询）：配置状态展示、切换模型等高频检查走此通道。
     fn exists(&self, key: &str) -> Result<bool, String> {
         let (reply_sender, reply_receiver) = mpsc::channel();
         self.send(SecretRequest::Exists {
@@ -176,17 +135,6 @@ impl SecretState {
             reply: reply_sender,
         })
         .map_err(|error| format!("检查密钥失败：{error}"))?;
-        reply_receiver
-            .recv()
-            .map_err(|_| "Axiom secret store worker 已停止".to_string())?
-    }
-
-    fn migrate_all(&self) -> Result<LegacySecretMigrationSummary, String> {
-        let (reply_sender, reply_receiver) = mpsc::channel();
-        self.send(SecretRequest::MigrateLegacyAll {
-            reply: reply_sender,
-        })
-        .map_err(|error| format!("迁移密钥失败：{error}"))?;
         reply_receiver
             .recv()
             .map_err(|_| "Axiom secret store worker 已停止".to_string())?
@@ -221,15 +169,14 @@ impl SecretState {
 #[cfg(test)]
 impl Default for SecretState {
     fn default() -> Self {
-        let mut state = Self::new("com.axiom.desktop.test".to_string());
-        // hermetic：独立临时数据根 + 关闭钥匙串回填——测试绝不触碰登录钥匙串。
+        // hermetic：独立临时数据根，测试绝不触碰用户数据目录。
         static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let directory = std::env::temp_dir().join(format!(
             "axiom-secret-tests-{}-{}",
             std::process::id(),
             COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
-        state.keychain_fallback_enabled = false;
+        let state = Self::new();
         state.bind_data_root(directory);
         state
     }
@@ -238,58 +185,29 @@ impl Default for SecretState {
 struct SecretWorkerState {
     connection: Option<SqliteConnection>,
     data_root: Option<PathBuf>,
-    /// 本次进程内已尝试过钥匙串回填的 key：无论未找到还是被用户拒绝，
-    /// 都不再重复发起钥匙串读取——迁移弹窗每个密钥每次启动至多一次。
-    keychain_attempted_keys: HashSet<String>,
-    /// 随 Bind 下发生效（见 bind_data_root 注释）。
-    keychain_fallback_enabled: bool,
 }
 
-async fn run_secret_worker(
-    mut receiver: tokio::sync::mpsc::UnboundedReceiver<SecretRequest>,
-    service: String,
-) {
+async fn run_secret_worker(mut receiver: tokio::sync::mpsc::UnboundedReceiver<SecretRequest>) {
     let mut state = SecretWorkerState {
         connection: None,
         data_root: None,
-        keychain_attempted_keys: HashSet::new(),
-        keychain_fallback_enabled: false,
     };
     while let Some(request) = receiver.recv().await {
         match request {
-            SecretRequest::Bind {
-                data_root,
-                keychain_fallback_enabled,
-            } => {
+            SecretRequest::Bind { data_root } => {
                 state.data_root = Some(data_root);
-                state.keychain_fallback_enabled = keychain_fallback_enabled;
             }
             SecretRequest::Load { key, reply } => {
-                let fallback = state.keychain_fallback_enabled;
-                let _ = reply.send(load_value(&mut state, &service, fallback, &key).await);
+                let _ = reply.send(load_value(&mut state, &key).await);
             }
             SecretRequest::Exists { key, reply } => {
-                let fallback = state.keychain_fallback_enabled;
-                let _ = reply.send(exists_value(&mut state, &service, fallback, &key).await);
+                let _ = reply.send(exists_value(&mut state, &key).await);
             }
             SecretRequest::Save { key, value, reply } => {
                 let _ = reply.send(save_value(&mut state, &key, &value).await);
             }
             SecretRequest::Delete { key, reply } => {
-                let fallback = state.keychain_fallback_enabled;
-                let _ = reply.send(delete_value(&mut state, &service, fallback, &key).await);
-            }
-            SecretRequest::MigrateLegacyAll { reply } => {
-                #[cfg(target_os = "macos")]
-                {
-                    let _ = reply.send(migrate_all_legacy(&mut state, &service).await);
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    let _ = reply.send(Err(
-                        "Legacy Keychain migration is unavailable on this platform".into(),
-                    ));
-                }
+                let _ = reply.send(delete_value(&mut state, &key).await);
             }
         }
     }
@@ -345,221 +263,37 @@ async fn save_value(
     Ok(())
 }
 
-async fn load_value(
-    state: &mut SecretWorkerState,
-    service: &str,
-    keychain_fallback_enabled: bool,
-    key: &str,
-) -> Result<Option<String>, String> {
-    {
-        let connection = ensure_connection(state).await?;
-        let stored: Option<String> = sqlx::query_scalar("SELECT value FROM secrets WHERE secret_key = ?")
+async fn load_value(state: &mut SecretWorkerState, key: &str) -> Result<Option<String>, String> {
+    let connection = ensure_connection(state).await?;
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT value FROM secrets WHERE secret_key = ?")
             .bind(key)
             .fetch_optional(connection)
             .await
             .map_err(|error| format!("无法读取 Axiom secrets 表：{error}"))?;
-        if stored.is_some() {
-            return Ok(stored);
-        }
-    }
-    // DB miss → legacy Keychain 回填：旧版本落在钥匙串的条目首次读取时迁入 DB，
-    // 之后永远命中 DB（Keychain ACL 对 adhoc 二进制的弹窗至多发生这一次）。
-    // 注意回填不删除 Keychain 条目：保留旧版本二进制可读（版本回滚兼容），
-    // 只在显式 delete 时清理。未找到或被拒绝也计入已尝试——拒绝后不回填，
-    // 若不记账，每次刷新都会再次弹框。
-    #[cfg(target_os = "macos")]
-    if keychain_fallback_enabled && !state.keychain_attempted_keys.contains(key) {
-        state.keychain_attempted_keys.insert(key.to_string());
-        let Some(legacy) = keychain_load(service, key).map_err(|error| {
-            format!("API Key 迁移未完成：钥匙串读取被拒绝或失败（{error}）。重启 Axiom 可重试迁移，或重新保存该 API Key。")
-        })?
-        else {
-            return Ok(None);
-        };
-        save_value(state, key, &legacy).await?;
-        // 迁移即移动：回填成功后删除钥匙串旧条目（SecItemDelete 仅属性匹配，
-        // 不解密不弹窗；失败 best-effort，不影响 DB 已权威的事实）。
-        let _ = keychain_delete(service, key);
-        return Ok(Some(legacy));
-    }
-    Ok(None)
+    Ok(stored)
 }
 
-/// 一键完成迁移：枚举钥匙串全部旧条目，DB 已有的清理陈旧副本，缺失的
-/// 逐个回填（读取会依次弹授权框，每条目一次）并删除旧条目。被拒条目
-/// 保留，重试可续——直到 scanned 全部进入 migrated/cleaned_stale。
-#[cfg(target_os = "macos")]
-async fn migrate_all_legacy(
-    state: &mut SecretWorkerState,
-    service: &str,
-) -> Result<LegacySecretMigrationSummary, String> {
-    if !state.keychain_fallback_enabled {
-        return Err("Legacy Keychain migration is unavailable in this build".into());
-    }
-    let accounts = enumerate_legacy_accounts(service)?;
-    let mut summary = LegacySecretMigrationSummary {
-        scanned: accounts.len(),
-        ..Default::default()
-    };
-    for account in accounts {
-        let in_db = {
-            let connection = ensure_connection(state).await?;
-            let hits: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM secrets WHERE secret_key = ?")
-                .bind(&account)
-                .fetch_one(connection)
-                .await
-                .map_err(|error| format!("无法读取 Axiom secrets 表：{error}"))?;
-            hits > 0
-        };
-        if in_db {
-            // DB 已权威：钥匙串副本是陈旧残留，直接清理（无解密，不弹窗）。
-            let _ = keychain_delete(service, &account);
-            summary.cleaned_stale += 1;
-            continue;
-        }
-        match keychain_load(service, &account) {
-            Ok(Some(value)) => {
-                save_value(state, &account, &value).await?;
-                let _ = keychain_delete(service, &account);
-                summary.migrated += 1;
-            }
-            // 条目已消失（并发删除等竞态）：按清理计。
-            Ok(None) => summary.cleaned_stale += 1,
-            Err(_) => summary.failed += 1,
-        }
-    }
-    Ok(summary)
-}
-
-/// 存在性检查：不解密、不触发 ACL 授权。DB 命中即存在；miss 时用钥匙串
-/// 元数据匹配（SecItemCopyMatching 不带 kSecReturnData）兜底——迁移期
-/// has_secret 对未回填的旧条目也能如实返回 true，且切换模型/设置页等
-/// 高频检查绝不弹框。
-async fn exists_value(
-    state: &mut SecretWorkerState,
-    service: &str,
-    keychain_fallback_enabled: bool,
-    key: &str,
-) -> Result<bool, String> {
-    {
-        let connection = ensure_connection(state).await?;
-        let stored: Option<String> = sqlx::query_scalar("SELECT value FROM secrets WHERE secret_key = ?")
+/// 存在性检查：纯 DB 查询，不解密密钥内容之外的任何系统存储。
+async fn exists_value(state: &mut SecretWorkerState, key: &str) -> Result<bool, String> {
+    let connection = ensure_connection(state).await?;
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT value FROM secrets WHERE secret_key = ?")
             .bind(key)
             .fetch_optional(connection)
             .await
             .map_err(|error| format!("无法读取 Axiom secrets 表：{error}"))?;
-        if stored.is_some() {
-            return Ok(true);
-        }
-    }
-    #[cfg(target_os = "macos")]
-    if keychain_fallback_enabled {
-        return keychain_exists(service, key);
-    }
-    let _ = (service, keychain_fallback_enabled);
-    Ok(false)
+    Ok(stored.is_some())
 }
 
-async fn delete_value(
-    state: &mut SecretWorkerState,
-    service: &str,
-    keychain_fallback_enabled: bool,
-    key: &str,
-) -> Result<(), String> {
-    {
-        let connection = ensure_connection(state).await?;
-        sqlx::query("DELETE FROM secrets WHERE secret_key = ?")
-            .bind(key)
-            .execute(connection)
-            .await
-            .map_err(|error| format!("无法删除 Axiom secrets 行：{error}"))?;
-    }
-    // best-effort 清理 legacy Keychain 条目（不存在视为成功；失败不阻断 DB 删除）。
-    #[cfg(target_os = "macos")]
-    if keychain_fallback_enabled {
-        let _ = keychain_delete(service, key);
-    }
+async fn delete_value(state: &mut SecretWorkerState, key: &str) -> Result<(), String> {
+    let connection = ensure_connection(state).await?;
+    sqlx::query("DELETE FROM secrets WHERE secret_key = ?")
+        .bind(key)
+        .execute(connection)
+        .await
+        .map_err(|error| format!("无法删除 Axiom secrets 行：{error}"))?;
     Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn keychain_load(service: &str, key: &str) -> Result<Option<String>, String> {
-    match passwords::get_generic_password(service, key) {
-        Ok(bytes) => String::from_utf8(bytes)
-            .map(Some)
-            .map_err(|error| format!("secret in macOS Keychain is not valid UTF-8: {error}")),
-        Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(None),
-        Err(error) => Err(format!("failed to read secret from macOS Keychain: {error}")),
-    }
-}
-
-/// 钥匙串元数据存在性检查：SecItemCopyMatching 不带任何 kSecReturn* 标志，
-/// 只做匹配不解密——ACL 只在解密时强制，因此绝不会弹授权框。
-#[cfg(target_os = "macos")]
-fn keychain_exists(service: &str, key: &str) -> Result<bool, String> {
-    use security_framework::item::{ItemClass, ItemSearchOptions};
-    // 无命中时 search 返回 errSecItemNotFound 而非空结果。「不存在」是本通道
-    // 的正常语义（全新环境首启 / 跨签名访问组不可见），不得作为错误上抛——
-    // 否则生产模式启动早期的 has_secret 探测会阻断整个 initialize。
-    let found = match ItemSearchOptions::new()
-        .class(ItemClass::generic_password())
-        .service(service)
-        .account(key)
-        .search()
-    {
-        Ok(found) => found,
-        Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => return Ok(false),
-        Err(error) => {
-            return Err(format!("failed to inspect secret in macOS Keychain: {error}"))
-        }
-    };
-    Ok(!found.is_empty())
-}
-
-/// 枚举钥匙串中本应用全部旧密钥条目的 account（secretId）：仅返回属性字典
-/// （load_attributes），不解密任何值，绝不弹授权框。
-#[cfg(target_os = "macos")]
-fn enumerate_legacy_accounts(service: &str) -> Result<Vec<String>, String> {
-    use core_foundation::base::TCFType;
-    use core_foundation::string::CFString;
-    use security_framework::item::{ItemClass, ItemSearchOptions, SearchResult};
-    // 无条目 = 空列表（同 keychain_exists：errSecItemNotFound 是正常语义）。
-    let results = match ItemSearchOptions::new()
-        .class(ItemClass::generic_password())
-        .service(service)
-        .load_attributes(true)
-        .search()
-    {
-        Ok(results) => results,
-        Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => return Ok(Vec::new()),
-        Err(error) => {
-            return Err(format!("failed to enumerate secrets in macOS Keychain: {error}"))
-        }
-    };
-    let mut accounts = Vec::new();
-    for result in results {
-        if let SearchResult::Dict(dict) = result {
-            // 字典键值类型为 *const c_void：kSecAttrAccount 的 CFStringRef 作键，
-            // 命中值即 account 的 CFStringRef。
-            let key = unsafe { security_framework_sys::item::kSecAttrAccount as *const std::os::raw::c_void };
-            if let Some(value) = dict.find(key) {
-                let name = unsafe { CFString::wrap_under_get_rule(*value as *const _) };
-                accounts.push(name.to_string());
-            }
-        }
-    }
-    accounts.sort();
-    accounts.dedup();
-    Ok(accounts)
-}
-
-#[cfg(target_os = "macos")]
-fn keychain_delete(service: &str, key: &str) -> Result<(), String> {
-    match passwords::delete_generic_password(service, key) {
-        Ok(()) => Ok(()),
-        Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(()),
-        Err(error) => Err(format!("failed to delete secret from macOS Keychain: {error}")),
-    }
 }
 
 pub(crate) fn validate_secret_key(key: &str) -> Result<&str, String> {
@@ -693,7 +427,9 @@ fn persist_provider_secret_cleanup_intent_to(
         temporary
             .as_file()
             .set_permissions(fs::Permissions::from_mode(0o600))
-            .map_err(|error| format!("failed to secure Provider Secret cleanup intent: {error}"))?;
+            .map_err(|error| {
+                format!("failed to secure Provider Secret cleanup intent: {error}")
+            })?;
     }
     temporary
         .write_all(&encoded)
@@ -796,7 +532,7 @@ pub(crate) fn load_secret(state: &SecretState, key: &str) -> Result<Option<Strin
     state.load(key)
 }
 
-/// connect 状态展示专用：元数据存在性检查（不解密不弹窗）。
+/// connect 状态展示专用：存在性检查（纯 DB 查询）。
 pub(crate) fn connect_secret_exists(
     state: &SecretState,
     key: &str,
@@ -849,14 +585,6 @@ pub(crate) fn has_secret(
     state.exists(key)
 }
 
-/// 一键迁移旧钥匙串密钥（macOS；其他平台返回错误）。
-#[tauri::command]
-pub(crate) fn migrate_legacy_secrets(
-    state: tauri::State<'_, SecretState>,
-) -> Result<LegacySecretMigrationSummary, String> {
-    state.migrate_all()
-}
-
 #[tauri::command]
 pub(crate) fn migrate_secret(
     state: tauri::State<'_, SecretState>,
@@ -864,8 +592,7 @@ pub(crate) fn migrate_secret(
     target_key: String,
 ) -> Result<bool, String> {
     let (source_key, target_key) = validate_provider_secret_migration(&source_key, &target_key)?;
-    // 目标存在性用元数据检查（不解密不弹窗）；只有真正需要复制值时才读
-    // source（source 首读触发回填）。
+    // 只有真正需要复制值时才读 source；目标已存在则不覆盖。
     if state.exists(target_key)? {
         return Ok(true);
     }
@@ -1029,7 +756,7 @@ mod tests {
         );
     }
 
-    // SQLite 存储行为测试（hermetic：默认构造器禁用 Keychain 回填）。
+    // SQLite 存储行为测试（hermetic：默认构造器绑定独立临时数据根）。
     #[tokio::test]
     async fn round_trips_secrets_through_sqlite_storage() {
         let state = SecretState::default();
@@ -1055,7 +782,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exists_tracks_database_state_without_touching_keychain() {
+    async fn exists_tracks_database_state() {
         let state = SecretState::default();
         assert!(!state.exists("provider.test.exists").unwrap());
         state.save("provider.test.exists", "v").unwrap();
@@ -1066,7 +793,7 @@ mod tests {
 
     #[test]
     fn refuses_secret_operations_before_data_root_binding() {
-        let state = SecretState::new("com.axiom.desktop.test".to_string());
+        let state = SecretState::new();
         assert!(state.load("provider.test.unbound").is_err());
     }
 }

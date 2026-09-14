@@ -52,7 +52,11 @@ pub struct CommitSessionMutationBatchRequest {
 pub struct SessionMutationReceipt {
     batch_id: String,
     session_id: String,
+    // TS receipt 契约是 optional（undefined 语义），ownership 校验做严格比较；
+    // None 必须缺省而非 null，否则每次空闲 mutation 都会被误判不一致。
+    #[serde(skip_serializing_if = "Option::is_none")]
     run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     turn: Option<u32>,
     committed_at: i64,
     replayed: bool,
@@ -804,6 +808,33 @@ mod tests {
         let changed = request("mutation-stable", vec![message("message-changed")]);
         assert!(commit_at(&path, &changed).await.is_err());
         assert_eq!(count(&path, "agent_messages").await, 1);
+    }
+
+    #[test]
+    fn runless_receipt_omits_ownership_fields_on_the_wire() {
+        // TS receipt 契约是 optional（undefined 语义）；None 序列化成 null 会被
+        // ownership 严格比较误判为不一致，wire 上必须缺省。
+        let runless = SessionMutationReceipt {
+            batch_id: "mutation-wire".to_string(),
+            session_id: "session-wire".to_string(),
+            run_id: None,
+            turn: None,
+            committed_at: 1,
+            replayed: false,
+        };
+        let value = serde_json::to_value(&runless).unwrap();
+        assert!(value.get("runId").is_none());
+        assert!(value.get("turn").is_none());
+        assert_eq!(value["batchId"], "mutation-wire");
+
+        let owned = SessionMutationReceipt {
+            run_id: Some("run-wire".to_string()),
+            turn: Some(3),
+            ..runless
+        };
+        let value = serde_json::to_value(&owned).unwrap();
+        assert_eq!(value["runId"], "run-wire");
+        assert_eq!(value["turn"], 3);
     }
 
     #[tokio::test]

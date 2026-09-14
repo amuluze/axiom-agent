@@ -22,9 +22,12 @@ export const providerZh = {
   'settings.provider.modelId': '模型 ID',
   'settings.provider.modelIdPlaceholder': '由你的 Provider 提供',
   'settings.provider.apiKey': 'API Key',
-  'settings.provider.keyPlaceholderStored': '已存入 macOS Keychain；留空保持不变',
-  'settings.provider.keyPlaceholderRequired': '必填，仅写入 macOS Keychain',
-  'settings.provider.keyPlaceholderOptional': '可选，仅写入 macOS Keychain',
+  'settings.provider.keyPlaceholderStored': '已存入 Axiom 本地密钥库；留空保持不变',
+  'settings.provider.keyPlaceholderRequired': '必填，仅写入 Axiom 本地密钥库',
+  'settings.provider.keyPlaceholderOptional': '可选，仅写入 Axiom 本地密钥库',
+  'settings.provider.keyStoredBadge': '已存入',
+  'settings.provider.keyShowAria': '显示 API Key 明文',
+  'settings.provider.keyHideAria': '隐藏 API Key',
   'settings.provider.timeout': '超时（秒）',
   'settings.provider.maxOutputTokens': '最大输出 token',
   'settings.provider.contextWindow': '上下文窗口',
@@ -33,7 +36,7 @@ export const providerZh = {
   'settings.provider.testConnection': '验证连接',
   'settings.provider.deleteKey': '删除 Key',
   'settings.provider.customKeyNote': '自定义（中转站）的 API Key 仅用于该中转站，可能被发往任意公网 https 端点；请勿填写内置厂商的 Key。',
-  'settings.provider.securityNote': 'API Key 不会进入 localStorage、模型消息或 WebView 事件；Rust 只在发起请求时从 Keychain 注入。',
+  'settings.provider.securityNote': 'API Key 不会进入 localStorage、模型消息或 WebView 事件；Rust 只在发起请求时从本地密钥库注入。',
 } satisfies Record<string, string>
 
 export const providerEn: Record<string, string> = {
@@ -56,9 +59,12 @@ export const providerEn: Record<string, string> = {
   'settings.provider.modelId': 'Model ID',
   'settings.provider.modelIdPlaceholder': 'Provided by your Provider',
   'settings.provider.apiKey': 'API Key',
-  'settings.provider.keyPlaceholderStored': 'Stored in macOS Keychain; leave empty to keep',
-  'settings.provider.keyPlaceholderRequired': 'Required, written only to macOS Keychain',
-  'settings.provider.keyPlaceholderOptional': 'Optional, written only to macOS Keychain',
+  'settings.provider.keyPlaceholderStored': 'Stored in the Axiom local key store; leave empty to keep',
+  'settings.provider.keyPlaceholderRequired': 'Required, written only to the Axiom local key store',
+  'settings.provider.keyPlaceholderOptional': 'Optional, written only to the Axiom local key store',
+  'settings.provider.keyStoredBadge': 'Stored',
+  'settings.provider.keyShowAria': 'Reveal API Key',
+  'settings.provider.keyHideAria': 'Hide API Key',
   'settings.provider.timeout': 'Timeout (seconds)',
   'settings.provider.maxOutputTokens': 'Max output tokens',
   'settings.provider.contextWindow': 'Context window',
@@ -67,7 +73,7 @@ export const providerEn: Record<string, string> = {
   'settings.provider.testConnection': 'Test connection',
   'settings.provider.deleteKey': 'Delete key',
   'settings.provider.customKeyNote': 'API keys for custom (relay) providers are used only by that relay and may be sent to arbitrary public https endpoints; do not reuse keys issued by built-in vendors.',
-  'settings.provider.securityNote': 'API keys never enter localStorage, model messages or WebView events; Rust injects them from Keychain only when making requests.',
+  'settings.provider.securityNote': 'API keys never enter localStorage, model messages or WebView events; Rust injects them from the local key store only when making requests.',
 }
 
 export const reasoningZh = {

@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   openExternalUrl: vi.fn(async () => {}),
   toggleTerminalPanel: vi.fn(),
   toggleRuntimeRail: vi.fn(),
+  openFeedback: vi.fn(),
 }))
 
 vi.mock('@/platform/webAccess', () => ({
@@ -18,14 +19,18 @@ vi.mock('@/platform/webAccess', () => ({
 vi.mock('@/stores/uiStore', async (importOriginal) => {
   const original = await importOriginal<typeof import('@/stores/uiStore')>()
   type UiState = ReturnType<typeof original.useUiStore.getState>
+  const mockedUseUiStore = <T,>(selector: (state: UiState) => T): T =>
+    selector({
+      ...original.useUiStore.getState(),
+      toggleTerminalPanel: mocks.toggleTerminalPanel,
+      toggleRuntimeRail: mocks.toggleRuntimeRail,
+    } as UiState)
+  // 组件经 getState().openFeedback 打开反馈弹窗（不依赖 hook 订阅）。
+  mockedUseUiStore.getState = () =>
+    ({ ...original.useUiStore.getState(), openFeedback: mocks.openFeedback }) as UiState
   return {
     ...original,
-    useUiStore: <T,>(selector: (state: UiState) => T): T =>
-      selector({
-        ...original.useUiStore.getState(),
-        toggleTerminalPanel: mocks.toggleTerminalPanel,
-        toggleRuntimeRail: mocks.toggleRuntimeRail,
-      } as UiState),
+    useUiStore: mockedUseUiStore,
   }
 })
 
@@ -33,6 +38,7 @@ afterEach(() => {
   mocks.openExternalUrl.mockReset()
   mocks.toggleTerminalPanel.mockClear()
   mocks.toggleRuntimeRail.mockClear()
+  mocks.openFeedback.mockClear()
 })
 
 const openHelpMenu = async (): Promise<void> => {
@@ -50,12 +56,21 @@ describe('WindowActions 帮助菜单 (RTL)', () => {
     expect(screen.getByRole('menuitem', { name: '问题' })).toBeInTheDocument()
   })
 
-  it('需求与问题菜单项置灰不可点，文档项可点', async () => {
+  it('需求与问题菜单项可点，分别按预选类型打开反馈弹窗并收起菜单', async () => {
+    const user = userEvent.setup()
     render(<WindowActions />)
     await openHelpMenu()
-    expect(screen.getByRole('menuitem', { name: '文档' })).toBeEnabled()
-    expect(screen.getByRole('menuitem', { name: '需求' })).toBeDisabled()
-    expect(screen.getByRole('menuitem', { name: '问题' })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: '需求' })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: '问题' })).toBeEnabled()
+    await user.click(screen.getByRole('menuitem', { name: '需求' }))
+    expect(mocks.openFeedback).toHaveBeenCalledTimes(1)
+    expect(mocks.openFeedback).toHaveBeenLastCalledWith('feature')
+    expect(screen.queryByRole('menu', { name: '帮助菜单' })).not.toBeInTheDocument()
+    // 重新展开后点「问题」：预选缺陷问题（菜单重挂载，须重查 DOM）。
+    await openHelpMenu()
+    await user.click(screen.getByRole('menuitem', { name: '问题' }))
+    expect(mocks.openFeedback).toHaveBeenCalledTimes(2)
+    expect(mocks.openFeedback).toHaveBeenLastCalledWith('bug')
   })
 
   it('点击文档经系统浏览器打开官网文档页并收起菜单', async () => {

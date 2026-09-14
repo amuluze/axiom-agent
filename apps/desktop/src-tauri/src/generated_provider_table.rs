@@ -240,7 +240,7 @@ pub(crate) const GENERATED_PROVIDER_ENTRIES: &[ProviderProfileEntry] = &[
         default_profile: ProviderDefaultProfile {
             profile_id: "builtin.deepseek",
             endpoint: "https://api.deepseek.com/chat/completions",
-            model_id: "deepseek-v4-flash",
+            model_id: "deepseek-flash",
             timeout_ms: 60_000,
             max_output_tokens: 4_096,
             context_window: 1_000_000,

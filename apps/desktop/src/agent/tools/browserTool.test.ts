@@ -39,9 +39,42 @@ describe('browserTool validate', () => {
     expect(tool.validate({ action: 'press', tabId: 't1', key: 'Enter' }).ok).toBe(true)
     expect(tool.validate({ action: 'scroll', tabId: 't1', deltaY: -300 }).ok).toBe(true)
     expect(tool.validate({ action: 'screenshot', tabId: 't1' }).ok).toBe(true)
+    expect(tool.validate({ action: 'screenshot', tabId: 't1', ref: 12 }).ok).toBe(true)
+    expect(tool.validate({ action: 'hover', tabId: 't1', ref: 42 }).ok).toBe(true)
+    expect(tool.validate({ action: 'select_tab', tabId: 't1' }).ok).toBe(true)
+    expect(tool.validate({ action: 'select_option', tabId: 't1', ref: 31, text: '北京' }).ok).toBe(true)
+    expect(tool.validate({ action: 'upload_file', tabId: 't1', ref: 88, path: '/repo/fixtures/a.png' }).ok).toBe(true)
+    expect(tool.validate({ action: 'wait', tabId: 't1', text: '登录成功' }).ok).toBe(true)
+    expect(tool.validate({ action: 'wait', tabId: 't1', durationMs: 1500 }).ok).toBe(true)
+    expect(tool.validate({ action: 'wait', tabId: 't1', text: 'ok', durationMs: 3000 }).ok).toBe(true)
+    expect(tool.validate({ action: 'find', tabId: 't1', text: '提交', limit: 5 }).ok).toBe(true)
     expect(tool.validate({ action: 'respond_dialog', tabId: 't1', accept: false }).ok).toBe(true)
     expect(tool.validate({ action: 'console', tabId: 't1' }).ok).toBe(true)
     expect(tool.validate({ action: 'console', tabId: 't1', limit: 30 }).ok).toBe(true)
+  })
+
+  it('rejects invalid select_tab/select_option/upload_file arguments', () => {
+    expect(tool.validate({ action: 'select_tab' }).ok).toBe(false)
+    expect(tool.validate({ action: 'select_option', tabId: 't1', ref: 31 }).ok).toBe(false)
+    expect(tool.validate({ action: 'select_option', tabId: 't1', ref: 31, text: '  ' }).ok).toBe(false)
+    expect(tool.validate({ action: 'select_option', tabId: 't1', text: '北京' }).ok).toBe(false)
+    expect(tool.validate({ action: 'upload_file', tabId: 't1', ref: 88 }).ok).toBe(false)
+    expect(tool.validate({ action: 'upload_file', tabId: 't1', ref: 88, path: '' }).ok).toBe(false)
+    expect(tool.validate({ action: 'upload_file', tabId: 't1', ref: 88, path: 'fixtures/a.png' }).ok).toBe(false)
+    expect(tool.validate({ action: 'upload_file', tabId: 't1', path: '/repo/a.png' }).ok).toBe(false)
+  })
+
+  it('rejects invalid hover/wait/find arguments', () => {
+    expect(tool.validate({ action: 'hover', tabId: 't1' }).ok).toBe(false)
+    expect(tool.validate({ action: 'hover', tabId: 't1', ref: 0 }).ok).toBe(false)
+    expect(tool.validate({ action: 'wait', tabId: 't1' }).ok).toBe(false)
+    expect(tool.validate({ action: 'wait', tabId: 't1', text: '' }).ok).toBe(false)
+    expect(tool.validate({ action: 'wait', tabId: 't1', durationMs: 0 }).ok).toBe(false)
+    expect(tool.validate({ action: 'wait', tabId: 't1', durationMs: 15001 }).ok).toBe(false)
+    expect(tool.validate({ action: 'find', tabId: 't1' }).ok).toBe(false)
+    expect(tool.validate({ action: 'find', tabId: 't1', text: '  ' }).ok).toBe(false)
+    expect(tool.validate({ action: 'find', tabId: 't1', text: '提交', limit: 51 }).ok).toBe(false)
+    expect(tool.validate({ action: 'find', tabId: 't1', text: '提交', limit: 1.5 }).ok).toBe(false)
   })
 
   it('rejects unknown actions and misplaced arguments', () => {
@@ -86,6 +119,99 @@ describe('browserTool execute', () => {
     })
     expect(result.content).toContain('Vite App')
     expect(result.details).toMatchObject({ action: 'navigate', url: 'http://localhost:5173/' })
+  })
+
+  it('renders wait outcomes and tells the model to observe after waiting', async () => {
+    const matched = createBrowserTool(
+      createFakeAgentEnvironment({ browserCommand: respondsWith({ type: 'waited', textMatched: true, waitedMs: 900 }) }),
+    )
+    const matchedResult = await matched.execute({ action: 'wait', tabId: 't1', text: '登录成功' }, baseContext())
+    expect(matchedResult.content).toContain('目标文本已出现')
+
+    const timedOut = createBrowserTool(
+      createFakeAgentEnvironment({ browserCommand: respondsWith({ type: 'waited', textMatched: false, waitedMs: 15000 }) }),
+    )
+    const timedOutResult = await timedOut.execute({ action: 'wait', tabId: 't1', durationMs: 15000 }, baseContext())
+    expect(timedOutResult.content).toContain('未出现')
+  })
+
+  it('forwards hover and renders find matches with ref anchors', async () => {
+    const hover = createFakeAgentEnvironment({
+      browserCommand: respondsWith({ type: 'done' }),
+    })
+    const hoverTool = createBrowserTool(hover)
+    await hoverTool.execute({ action: 'hover', tabId: 't1', ref: 42 }, baseContext())
+    expect(hover.browser.command).toHaveBeenCalledWith({ action: 'hover', tabId: 't1', ref: 42 })
+
+    const selectTab = createFakeAgentEnvironment({
+      browserCommand: respondsWith({ type: 'done' }),
+    })
+    const selectTabTool = createBrowserTool(selectTab)
+    await selectTabTool.execute({ action: 'select_tab', tabId: 't9' }, baseContext())
+    expect(selectTab.browser.command).toHaveBeenCalledWith({ action: 'activateTab', tabId: 't9' })
+
+    const upload = createFakeAgentEnvironment({
+      browserCommand: respondsWith({ type: 'done' }),
+    })
+    const uploadTool = createBrowserTool(upload)
+    await uploadTool.execute(
+      { action: 'upload_file', tabId: 't1', ref: 88, path: '/repo/fixtures/a.png' },
+      baseContext(),
+    )
+    expect(upload.browser.command).toHaveBeenCalledWith({
+      action: 'uploadFile',
+      tabId: 't1',
+      ref: 88,
+      path: '/repo/fixtures/a.png',
+    })
+
+    const selectOption = createFakeAgentEnvironment({
+      browserCommand: respondsWith({ type: 'done' }),
+    })
+    const selectOptionTool = createBrowserTool(selectOption)
+    await selectOptionTool.execute(
+      { action: 'select_option', tabId: 't1', ref: 31, text: '北京' },
+      baseContext(),
+    )
+    expect(selectOption.browser.command).toHaveBeenCalledWith({
+      action: 'selectOption',
+      tabId: 't1',
+      ref: 31,
+      text: '北京',
+    })
+
+    const found = createBrowserTool(
+      createFakeAgentEnvironment({
+        browserCommand: respondsWith({
+          type: 'found',
+          url: 'http://localhost:5173/',
+          title: 'Vite App',
+          matches: ['[ref=12] button "提交"', '[ref=13] textbox "搜索"'],
+          total: 5,
+          truncated: true,
+        }),
+      }),
+    )
+    const foundResult = await found.execute({ action: 'find', tabId: 't1', text: '提交' }, baseContext())
+    expect(foundResult.content).toContain('[ref=12] button "提交"')
+    expect(foundResult.content).toContain('共 5 条命中')
+    expect(foundResult.content).toContain('仅返回前 2 条')
+    expect(foundResult.details).toMatchObject({ action: 'find', total: 5, truncated: true })
+
+    const none = createBrowserTool(
+      createFakeAgentEnvironment({
+        browserCommand: respondsWith({
+          type: 'found',
+          url: 'http://localhost:5173/',
+          title: 'Vite App',
+          matches: [],
+          total: 0,
+          truncated: false,
+        }),
+      }),
+    )
+    const noneResult = await none.execute({ action: 'find', tabId: 't1', text: '不存在' }, baseContext())
+    expect(noneResult.content).toContain('没有找到匹配「不存在」')
   })
 
   it('formats tab lists with tabId anchors and empty-state guidance', async () => {
@@ -264,7 +390,7 @@ describe('browserTool contract metadata', () => {
   it('declares never-recovery and serialized execution for stateful browser actions', () => {
     const tool = createBrowserTool(createFakeAgentEnvironment())
     expect(tool.name).toBe('browser')
-    expect(tool.runtimeVersion).toBe('2')
+    expect(tool.runtimeVersion).toBe('4')
     expect(tool.recoveryPolicy).toBe('never')
     expect(tool.requiresApproval).toBe(false)
     expect(tool.executionMode).toBe('sequential')

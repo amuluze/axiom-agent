@@ -10,6 +10,7 @@ import {
 import { openExternalUrl } from '@/platform/webAccess'
 import { useUiStore } from '@/stores/uiStore'
 import { useT } from '@/i18n'
+import type { FeedbackKind } from '@/stores/uiStore'
 
 const DOCS_URL = 'https://axiom.amuluze.com/#/docs'
 
@@ -55,6 +56,12 @@ export const WindowActions = () => {
     void openExternalUrl(DOCS_URL).catch(() => undefined)
   }
 
+  // 需求/问题共用同一反馈弹窗，按入口预选类型（与设计稿帮助菜单语义一致）。
+  const openFeedback = (kind: FeedbackKind) => {
+    setHelpMenuOpen(false)
+    useUiStore.getState().openFeedback(kind)
+  }
+
   return (
     <div
       className="session__window-actions"
@@ -83,8 +90,7 @@ export const WindowActions = () => {
               type="button"
               role="menuitem"
               className="window-help__menu-item"
-              disabled
-              title={t('app.windowActions.comingSoon')}
+              onClick={() => openFeedback('feature')}
             >
               <ClipboardList size={14} />
               <span>{t('app.windowActions.requests')}</span>
@@ -93,8 +99,7 @@ export const WindowActions = () => {
               type="button"
               role="menuitem"
               className="window-help__menu-item"
-              disabled
-              title={t('app.windowActions.comingSoon')}
+              onClick={() => openFeedback('bug')}
             >
               <MessageCircleQuestion size={14} />
               <span>{t('app.windowActions.issues')}</span>

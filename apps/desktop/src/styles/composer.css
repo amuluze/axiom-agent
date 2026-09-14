@@ -582,6 +582,59 @@
   font-size: 0.9231rem;
 }
 
+/* 粘贴截图附件：缩略图 chips 行（textarea 与控件行之间），错误提示同行内联。 */
+.composer__attachments {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.composer__attachment {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: visible;
+  flex: none;
+}
+
+.composer__attachment img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: calc(var(--radius-sm) - 1px);
+  display: block;
+}
+
+.composer__attachment-remove {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.composer__attachment-remove:hover {
+  color: var(--text-primary);
+  background: var(--bg-input);
+}
+
+.composer__attach-hint {
+  font-size: 0.8462rem;
+  line-height: 1.4;
+  color: var(--diff-red);
+}
+
 .composer__queue {
   display: flex;
   flex-direction: column;

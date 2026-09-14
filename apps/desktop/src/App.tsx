@@ -14,6 +14,8 @@ import { useViewRouter } from '@/components/shell/useViewRouter'
 import { resolveViewRender } from '@/components/shell/viewRouter'
 import { NewTaskView } from '@/components/new-task/NewTaskView'
 import { SummaryInstructionsDialog } from '@/components/SummaryInstructionsDialog'
+import { FeedbackDialog } from '@/components/feedback/FeedbackDialog'
+import { ImageLightbox } from '@/components/session/ImageLightbox'
 import { useT } from '@/i18n'
 import type { SummaryInstructionOptions } from '@/agent/context/summaryInstructions'
 
@@ -112,6 +114,7 @@ export const App = () => {
   const terminalPanelOpen = useUiStore((state) => state.terminalPanelOpen)
   const summaryRequest = useUiStore((state) => state.summaryRequest)
   const setSummaryRequest = useUiStore((state) => state.setSummaryRequest)
+  const feedbackRequest = useUiStore((state) => state.feedbackRequest)
   useViewRouter()
   // 定期刷新已授权工作区的 git 分支显示：分支在外部（终端/IDE）切换后，
   // 输入框与侧边栏的分支名跟随更新（Rust 实时读 .git/HEAD，开销极小）。
@@ -173,11 +176,13 @@ export const App = () => {
   return (
     <>
       {content}
+      <ImageLightbox />
       <SummaryInstructionsDialog
         mode={pendingApproval ? null : summaryRequest?.mode ?? null}
         onCancel={() => setSummaryRequest(null)}
         onSubmit={submitSummaryInstructions}
       />
+      {feedbackRequest && <FeedbackDialog request={feedbackRequest} />}
     </>
   )
 }

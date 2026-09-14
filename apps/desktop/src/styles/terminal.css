@@ -110,6 +110,14 @@
   overflow: hidden;
 }
 
+/* 运行时挂载容器（terminalRuntime 的模块级承载 div，服务解绑/重挂生命周期）：
+   必须撑满视口给出确定高度——.xterm 的百分比高度链与 FitAddon 的行数计算都取本容器
+   的计算高度；高度 auto 时测到的是终端自身内容高度（循环自证），行数冻结在初始值，
+   屏幕底部被 overflow:hidden 裁掉，连续输出恰好落在底部被遮挡。 */
+.terminal-panel__surface {
+  height: 100%;
+}
+
 .terminal-panel__viewport .xterm {
   height: 100%;
   padding: 0;
