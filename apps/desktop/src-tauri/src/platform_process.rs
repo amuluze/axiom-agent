@@ -318,7 +318,10 @@ mod windows_api {
         pub(crate) fn TerminateJobObject(job: Handle, exit_code: u32) -> i32;
     }
 
-    #[link(name = "bcryptprimitives")]
+    // raw-dylib：编译期自生成导入表，不依赖 Windows SDK 的 bcryptprimitives.lib
+    // 导入库——新版 MSVC/SDK 镜像缺失该 lib 时 link.exe LNK1181（CI 实跑踩坑）；
+    // std 对 ProcessPrng 的链接正是 raw-dylib 形态。
+    #[link(name = "bcryptprimitives", kind = "raw-dylib")]
     extern "system" {
         /// 返回非零表示成功（BOOL 语义）。
         pub(crate) fn ProcessPrng(buffer: *mut u8, length: usize) -> i32;

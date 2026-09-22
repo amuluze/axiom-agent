@@ -46,17 +46,6 @@ jobs:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
     env:
       TARGET: ${{ matrix.target }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -70,7 +59,44 @@ jobs:
             ~/.cargo/git
             apps/desktop/src-tauri/target/${{ matrix.target }}
           key: cargo-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
-      - name: 签名/公证凭据形态归一（缺失自动降级 adhoc/无 updater）
+      # secrets 条件映射：GHA 对未配置的 secret 会注入「空字符串」env，常驻 job env
+      # 会让下游（generate-release-config / tauri bundler）把空串误判为已配置
+      # （实跑踩坑 #4/#5）——非空才写入 GITHUB_ENV，未配置 = 变量不存在 = 自动降级。
+      # 值假定单行（minisign 私钥为 base64 包裹形态、密码/身份不含换行）。
+      - name: 映射 Secrets（非空才注入 GITHUB_ENV）
+        env:
+          S_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          S_KEYCHAIN_PW: ${{ secrets.KEYCHAIN_PASSWORD }}
+          S_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          S_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          S_APPLE_ID: ${{ secrets.APPLE_ID }}
+          S_APPLE_PW: ${{ secrets.APPLE_PASSWORD }}
+          S_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          S_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          S_UPDATER_PW: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          append() {
+            [ -n "$2" ] || return 0
+            printf '%s=%s\n' "$1" "$2" >> "$GITHUB_ENV"
+          }
+          append APPLE_SIGNING_IDENTITY "$S_IDENTITY"
+          append KEYCHAIN_PASSWORD "$S_KEYCHAIN_PW"
+          append APPLE_API_ISSUER "$S_ISSUER"
+          append APPLE_API_KEY_ID "$S_KEY_ID"
+          append APPLE_ID "$S_APPLE_ID"
+          append APPLE_PASSWORD "$S_APPLE_PW"
+          append APPLE_TEAM_ID "$S_TEAM"
+          append TAURI_SIGNING_PRIVATE_KEY "$S_UPDATER_KEY"
+          append TAURI_SIGNING_PRIVATE_KEY_PASSWORD "$S_UPDATER_PW"
+      # 证书与 .p8 经 step 级 env 只给凭据脚本：脚本导入/落盘后把派生量
+      # （APPLE_SIGNING_IDENTITY / APPLE_API_KEY_PATH / APPLE_API_KEY）写 GITHUB_ENV，
+      # 原始密钥材料不进入构建步骤环境（tauri 也不会二次导入证书）
+      - name: 签名/公证凭据装配（缺失自动降级 adhoc/无 updater）
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         run: bash scripts/ci-macos-credentials.sh
       - name: 安装依赖 + 生成条件构建配置
         run: |
