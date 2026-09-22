@@ -18,7 +18,7 @@ describe('QueueModesSection', () => {
 
   it('enables 保存队列模式 when the draft diverges from saved settings', () => {
     const hook = buildQueueModesHook({
-      draft: { steering: 'all', followUp: 'all' },
+      draft: { steering: 'all', followUp: 'all', autoDrain: true },
     })
     const html = renderToStaticMarkup(createElement(QueueModesSection, {
       hook,

@@ -12,12 +12,16 @@
   --text-primary: #F2F1EC;
   --text-secondary: #A6A498;
   --text-tertiary: #9B998F;
+  /* 弱化态文字（如推理强度关闭的标签）：取三级文字色，随主题联动 */
+  --text-muted: var(--text-tertiary);
   /* 彩色表面（accent 实心按钮等）上的反色文本：取各主题的背景色 */
   --text-inverse: #0E0E0D;
 
   --accent: #14B8A6;
   --accent-hover: #2DD4BF;
   --accent-soft: #14B8A624;
+  /* accent 的低饱和描边（恢复草稿卡等「accent 高亮」容器边框），同步 .pen 变量 accent-border-soft */
+  --accent-border-soft: #2B6C62;
   /* 强调色作「文字」时的取值：暗色下等同 --accent，亮色下另取更深的青
      （见下方亮色块）。填充类用法（按钮底色、选中态、指示点）继续用
      --accent，两者分开是为了让浅底上的小字达标而不动按钮外观。 */
@@ -32,6 +36,12 @@
   --warn-soft: #FEBC2E24;
   --warn-border: var(--warn);
   --warn-text: var(--warn);
+
+  /* 聊天平台品牌色与品牌面上的白字（连接弹窗品牌块）：设计稿单值，不随主题分叉 */
+  --brand-lark: #3370FF;
+  --brand-dingtalk: #0089FF;
+  --brand-wechat: #07C160;
+  --text-on-brand: #FFFFFF;
 
   --traffic-red: #FF5F57;
   --traffic-yellow: #FEBC2E;
@@ -110,6 +120,7 @@
   --accent: #0D9488;
   --accent-hover: #14B8A6;
   --accent-soft: #0D948824;
+  --accent-border-soft: #87BBB1;
   --accent-text: #0A6B61;
   --diff-red: #C4342B;
   --diff-green: #257048;
@@ -147,6 +158,7 @@
     --accent: #0D9488;
     --accent-hover: #14B8A6;
     --accent-soft: #0D948824;
+    --accent-border-soft: #87BBB1;
     --accent-text: #0A6B61;
     --diff-red: #C4342B;
     --diff-green: #257048;
@@ -160,4 +172,12 @@
     --shadow-popover: 0 10px 28px rgba(37, 34, 25, 0.16);
     color-scheme: light;
   }
+}
+
+/* Linux/Windows：窗口使用系统标题栏（macOS 交通灯专属安全区不适用），归零。
+   data-os 由 App 启动时经 platform/osRuntime 按 Rust get_runtime_info 挂载；
+   预热完成前无该属性，按默认（macOS 布局）渲染一帧，预热后重排。 */
+html[data-os='linux'],
+html[data-os='windows'] {
+  --macos-traffic-light-safe-area: 0px;
 }

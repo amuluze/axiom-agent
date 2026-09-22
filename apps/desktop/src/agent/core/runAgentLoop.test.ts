@@ -1,4 +1,5 @@
 import { createUserMessage } from './messages'
+import { markPersistenceUnrelated } from './persistenceBarrier'
 import { runAgentLoop } from './runAgentLoop'
 import { ApprovalCoordinator } from '../approval/ApprovalCoordinator'
 import { computeBudgetThresholds, DEFAULT_AGENT_LIMITS } from './types'
@@ -1642,6 +1643,90 @@ describe('runAgentLoop', () => {
     expect(turnEndAttempts).toBe(2)
   })
 
+  it('rolls back an unpersisted message so the compensation Save Point matches the durable boundary', async () => {
+    // 锁定：message_end 落库失败（监听器抛错）的消息不得留在 newMessages——否则补偿 Turn
+    // Save Point 的 newMessageCount 把它计入，与已持久化消息边界失配，被 Rust 判定
+    // 「Turn Save Point 与已持久化消息边界不一致」，run 永远无法结算。
+    const events: AgentEvent[] = []
+    const result = await runAgentLoop({
+      context: createContext(),
+      prompts: [createUserMessage('persist me')],
+      transport: new ScriptedTransport([textResponse('done')]),
+      emit: (event) => {
+        events.push(event)
+        if (event.type === 'message_end' && event.message.role === 'user') {
+          throw new Error('Session message 与 queue journal 消费事实不匹配')
+        }
+      },
+    })
+
+    expect(result.reason).toBe('error')
+    expect(result.errorMessage).toBe('Session message 与 queue journal 消费事实不匹配')
+    expect(result.newMessages.some((message) => message.role === 'user')).toBe(false)
+    expect(result.messages.some((message) => message.role === 'user')).toBe(false)
+    // 补偿 Save Point 只统计已落库消息：只有合成失败 assistant 一条留在边界内。
+    const savePoints = events.filter((event) => event.type === 'turn_save_point')
+    expect(savePoints.at(-1)).toMatchObject({ savePoint: { messageCount: 1 } })
+    expect(result.messages.at(-1)).toMatchObject({ role: 'assistant', stopReason: 'error' })
+  })
+
+  it('keeps a marked persistence-unrelated failure inside the runtime boundary', async () => {
+    // UI 投影类错误发生在写库之后：不得回滚已落库消息——否则内存边界落后于持久化边界，
+    // 队列消息还会被重复入队（重复投递）。
+    const result = await runAgentLoop({
+      context: createContext(),
+      prompts: [createUserMessage('keep me')],
+      transport: new ScriptedTransport([textResponse('done')]),
+      emit: (event) => {
+        if (event.type === 'message_end' && event.message.role === 'user') {
+          throw markPersistenceUnrelated(new Error('projection failed'))
+        }
+      },
+    })
+
+    expect(result.reason).toBe('error')
+    expect(result.errorMessage).toBe('projection failed')
+    expect(result.newMessages.some((message) => message.role === 'user')).toBe(true)
+  })
+
+  it('registers tool results up to the persisted prefix when a later result fails to persist', async () => {
+    // 锁定：一批工具结果逐条 emit，第 k 条落库失败时前 k-1 条已落库——它们必须已登记进
+    // 内存边界（DB 领先内存同样会让 Turn Save Point 边界失配）。
+    const events: AgentEvent[] = []
+    const twoCallsResponse: ModelStreamEvent[] = [
+      { type: 'start', responseId: 'response-tools' },
+      { type: 'tool_call_start', index: 0, id: 'call-a', name: 'echo' },
+      { type: 'tool_call_delta', index: 0, argumentsDelta: '{"value":"a"}' },
+      { type: 'tool_call_end', index: 0 },
+      { type: 'tool_call_start', index: 1, id: 'call-b', name: 'echo' },
+      { type: 'tool_call_delta', index: 1, argumentsDelta: '{"value":"b"}' },
+      { type: 'tool_call_end', index: 1 },
+      { type: 'done', stopReason: 'tool_use' },
+    ]
+    const toolMessageEnds: string[] = []
+    const result = await runAgentLoop({
+      context: createContext([createEchoTool(async () => ({ content: 'echo' }))]),
+      prompts: [createUserMessage('use two tools')],
+      transport: new ScriptedTransport([twoCallsResponse]),
+      emit: (event) => {
+        events.push(event)
+        if (event.type === 'message_end' && event.message.role === 'tool') {
+          toolMessageEnds.push(event.message.id)
+          if (toolMessageEnds.length === 2) throw new Error('tool result persistence failed')
+        }
+      },
+    })
+
+    expect(result.reason).toBe('error')
+    expect(result.errorMessage).toBe('tool result persistence failed')
+    expect(result.messages.filter((message) => message.role === 'tool')).toEqual([
+      expect.objectContaining({ role: 'tool', content: 'echo' }),
+    ])
+    // 补偿 Save Point 只统计已落库消息：user + assistant(tool_calls) + 首条 tool + 失败 assistant
+    const savePoints = events.filter((event) => event.type === 'turn_save_point')
+    expect(savePoints.at(-1)).toMatchObject({ savePoint: { messageCount: 4 } })
+  })
+
   it('aborts an in-flight model stream with a normal agent_end result', async () => {
     let notifyStarted = (): void => undefined
     const started = new Promise<void>((resolve) => {
@@ -2168,23 +2253,60 @@ describe('runAgentLoop', () => {
 describe('computeBudgetThresholds', () => {
   it('derives proportional thresholds from the default limits', () => {
     // maxTurns=48 → soft=24 / hard=5; maxToolCalls=144 → tool=36
+    // 默认 token 软预算 2M → 软提醒 1.5M / 硬提醒 1.8M（billable 口径）
     expect(computeBudgetThresholds(DEFAULT_AGENT_LIMITS)).toEqual({
       turnSoftNotice: 24,
       turnHardNotice: 5,
       toolCallNotice: 36,
+      tokenSoftNotice: 1_500_000,
+      tokenHardNotice: 1_800_000,
     })
   })
 
   it('scales linearly for larger limits', () => {
     // maxTurns=64 → soft=32 / hard=7; maxToolCalls=192 → tool=48
     expect(computeBudgetThresholds({ ...DEFAULT_AGENT_LIMITS, maxTurns: 64, maxToolCalls: 192 }))
-      .toEqual({ turnSoftNotice: 32, turnHardNotice: 7, toolCallNotice: 48 })
+      .toEqual({
+        turnSoftNotice: 32,
+        turnHardNotice: 7,
+        toolCallNotice: 48,
+        tokenSoftNotice: 1_500_000,
+        tokenHardNotice: 1_800_000,
+      })
   })
 
   it('enforces minimum floors so tiny limits do not fire on the first turn', () => {
     // maxTurns=4 → raw soft=2 floored to 4 / raw hard=1 floored to 3; maxToolCalls=8 → raw tool=2 floored to 20
     expect(computeBudgetThresholds({ ...DEFAULT_AGENT_LIMITS, maxTurns: 4, maxToolCalls: 8 }))
-      .toEqual({ turnSoftNotice: 4, turnHardNotice: 3, toolCallNotice: 20 })
+      .toEqual({
+        turnSoftNotice: 4,
+        turnHardNotice: 3,
+        toolCallNotice: 20,
+        tokenSoftNotice: 1_500_000,
+        tokenHardNotice: 1_800_000,
+      })
+  })
+
+  it('derives absolute token thresholds when maxTotalTokens is configured', () => {
+    expect(computeBudgetThresholds({ ...DEFAULT_AGENT_LIMITS, maxTotalTokens: 100_000 }))
+      .toEqual({
+        turnSoftNotice: 24,
+        turnHardNotice: 5,
+        toolCallNotice: 36,
+        tokenSoftNotice: 75_000,
+        tokenHardNotice: 90_000,
+      })
+  })
+
+  it('disables token thresholds when maxTotalTokens is explicitly undefined', () => {
+    expect(computeBudgetThresholds({ ...DEFAULT_AGENT_LIMITS, maxTotalTokens: undefined }))
+      .toEqual({
+        turnSoftNotice: 24,
+        turnHardNotice: 5,
+        toolCallNotice: 36,
+        tokenSoftNotice: Number.POSITIVE_INFINITY,
+        tokenHardNotice: Number.POSITIVE_INFINITY,
+      })
   })
 })
 
@@ -2202,6 +2324,39 @@ describe('runAgentLoop budget notices (proportional thresholds)', () => {
     })
     // turn 1/48: remainingTurns = 48 > turnSoftNotice(24) → no budget notice
     expect(transport.requests[0]?.systemPrompt).toBe('Test system prompt')
+  })
+
+  it('injects the token budget soft notice from the default budget once billable tokens cross 75%', async () => {
+    // 默认 maxTotalTokens=2M（mergeLimits 兜底，调用方未传 limits）：第一轮累计
+    // billable 1.605M（output 5k + 非缓存 input 1.6M）越过 75% 软线 → 第二轮注入提醒。
+    const bigTransport = new ScriptedTransport([
+      [
+        { type: 'start', responseId: 'response-big' },
+        { type: 'tool_call_start', index: 0, id: 'call-1', name: 'echo' },
+        { type: 'tool_call_delta', index: 0, argumentsDelta: '{"value":"x"}' },
+        { type: 'tool_call_end', index: 0 },
+        {
+          type: 'done',
+          stopReason: 'tool_use',
+          usage: { inputTokens: 1_600_000, outputTokens: 5_000, totalTokens: 1_605_000 },
+        },
+      ],
+      [
+        { type: 'start', responseId: 'response-final' },
+        { type: 'text_delta', delta: 'done' },
+        { type: 'done', stopReason: 'stop' },
+      ],
+    ])
+    await runAgentLoop({
+      context: createContext([createEchoTool(async () => ({ content: 'continue' }))]),
+      prompts: [createUserMessage('go')],
+      transport: bigTransport,
+    })
+    // 第一轮：尚无累计 → 无 token 提醒；第二轮：累计越线 → 注入软提醒
+    expect(bigTransport.requests[0]?.systemPrompt).not.toContain('token 预算提示')
+    expect(bigTransport.requests[1]?.systemPrompt).toContain('token 预算提示')
+    expect(bigTransport.requests[1]?.systemPrompt).toContain('1605000/2000000')
+    expect(bigTransport.requests[1]?.systemPrompt).not.toContain('token 预算硬约束')
   })
 })
 

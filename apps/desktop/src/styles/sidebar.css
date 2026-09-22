@@ -329,6 +329,20 @@
   font-weight: 500;
 }
 
+/* 待发送队列条数：后台运行中的会话可排队引导消息，条数在此可见（否则只能切过去看）。 */
+.sidebar__task-queued {
+  flex-shrink: 0;
+  min-width: 16px;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-size: 0.7692rem;
+  line-height: 1.4;
+  font-weight: 500;
+  text-align: center;
+}
+
 .sidebar__task-actions {
   display: flex;
   align-items: center;

@@ -28,6 +28,17 @@ import { RUNTIME_POLICY } from '@/config/runtimePolicy'
 import type { SessionSnapshot } from '@/persistence/types'
 import type { AgentGet, AgentSet, StoreRuntimeDeps } from './sessionActions'
 import type { ProviderSaveResult } from './agentStateTypes'
+import {
+  validateProviderNumericDraft,
+  type ProviderNumericField,
+} from '@/agent/transport/providerDraftValidation'
+
+/** 数值字段 → 设置界面同款标签键：报错文案复用 UI 措辞，避免两处漂移。 */
+const PROVIDER_NUMERIC_FIELD_LABEL_KEYS: Record<ProviderNumericField, string> = {
+  timeoutMs: 'settings.provider.timeout',
+  maxOutputTokens: 'settings.provider.maxOutputTokens',
+  contextWindow: 'settings.provider.contextWindow',
+}
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
@@ -62,6 +73,17 @@ export const saveProvider = async (
   let supersededSecretId: string | undefined
   let durableCommitted = false
   try {
+    // Rust 侧 bounded_integer 对越界值静默 clamp、对 null 回落默认值；UI 的 min/max 只是
+    // HTML 属性（不在 form 内不触发原生校验）。不在此显式拒绝，用户会看到「配置已保存」
+    // 而实际生效的是被裁剪后的值——即「最大输出 token 改了却不报错」。
+    const numericViolation = validateProviderNumericDraft(draft)
+    if (numericViolation) {
+      throw new Error(storeT('status.provider.numericOutOfRange', {
+        field: storeT(PROVIDER_NUMERIC_FIELD_LABEL_KEYS[numericViolation.field]),
+        min: String(numericViolation.min),
+        max: String(numericViolation.max),
+      }))
+    }
     const previousConfig = get().provider
     let config = await normalizeProviderConfig(draft)
     if (!get().providerProfiles.some((profile) => profile.profileId === config.profileId)

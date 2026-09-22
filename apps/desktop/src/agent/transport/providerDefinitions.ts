@@ -43,6 +43,10 @@ export interface ProviderDefinition {
     readonly capabilities: Readonly<ProviderCapabilities>
   }
   readonly models: readonly ProviderModelDefinition[]
+  /** 官网地址（UI-only 展示字段）：设置页呈现 provider 官方入口。 */
+  readonly website?: string
+  /** 邀请/优惠链接（UI-only）：订阅型 provider 给用户的优惠入口。 */
+  readonly inviteUrl?: string
 }
 
 const freezeDefinition = (definition: ProviderDefinition): ProviderDefinition => {
@@ -76,6 +80,8 @@ const DEFINITIONS: readonly ProviderDefinition[] = Object.freeze(
     supportedCapabilities: descriptor.supportedCapabilities,
     defaultProfile: descriptor.defaultProfile,
     models: descriptor.models,
+    ...(descriptor.website ? { website: descriptor.website } : {}),
+    ...(descriptor.inviteUrl ? { inviteUrl: descriptor.inviteUrl } : {}),
   })),
 )
 

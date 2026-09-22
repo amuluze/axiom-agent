@@ -1,4 +1,5 @@
 import type { AgentHarness } from '@/agent/runtime/AgentHarness'
+import type { QueuedMessageSnapshot } from '@/agent/runtime/AgentSession'
 import type { AgentRunEndReason, JsonValue } from '@/agent/core/types'
 import type { ProviderProfile } from '@/agent/transport/provider'
 
@@ -15,7 +16,7 @@ export interface ActiveToolInfo {
 
 /**
  * Per-session UI projection snapshot. The store derives `activeTools`,
- * `endReason`, `error`, and `compactionRunning` from this
+ * `endReason`, `error`, `compactionRunning` and `queuedMessages` from this
  * structure (the AgentHarness remains the source of truth; this is a
  * read-optimized cache updated by the event reducer in `handleSessionEvent`).
  */
@@ -24,6 +25,8 @@ export interface RuntimeProjection {
   endReason: AgentRunEndReason | null
   error: string | null
   compactionRunning: boolean
+  /** 该会话的待发送队列快照：后台运行中的会话据此在侧栏显示排队条数。 */
+  queuedMessages: QueuedMessageSnapshot[]
 }
 
 interface RuntimeProviderState {

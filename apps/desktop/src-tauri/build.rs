@@ -109,7 +109,15 @@ fn main() {
     }
     let app_commands = Box::leak(app_commands.into_boxed_slice());
     let app_manifest = tauri_build::AppManifest::new().commands(app_commands);
-    let mut attributes = tauri_build::Attributes::new().app_manifest(app_manifest);
+    let mut attributes = tauri_build::Attributes::new()
+        .app_manifest(app_manifest)
+        // 应用/测试 manifest 统一由下方 embed-resource 嵌入（覆盖所有 rustc
+        // 目标）：tauri-winres 自带的 manifest 只进 bin 目标，cargo test 的
+        // lib 测试 harness 不带 manifest 时，tao/wry 序号导入的 comctl32
+        // v6-only 符号（TaskDialogIndirect 等）会让测试进程加载期即
+        // ENTRYPOINT_NOT_FOUND（外部 .manifest 受 PreferExternalManifest
+        // 默认关闭影响不可靠，必须编译进二进制）。
+        .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
     if !e2e_enabled {
         // 非 e2e 构建只加载顶层 capabilities/*.json（default）。
         // e2e capability 移到 capabilities/e2e/ 子目录，glob 的 `*` 不跨目录，
@@ -117,6 +125,63 @@ fn main() {
         // （tauri_build 默认扫描 capabilities/**/* 会在非 e2e 干净环境下因权限缺失失败）。
         attributes = attributes.capabilities_path_pattern("capabilities/*.json");
     }
+    // 必须先于 try_build：tauri-build 会校验 bundle.resources 路径存在。
+    let target_os_windows = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
+    if target_os_windows {
+        stage_webview2_loader();
+    }
     tauri_build::try_build(attributes)
         .expect("failed to build Axiom with its explicit application command manifest");
+    // 见上方 windows_attributes 注释：全目标统一嵌入应用 manifest。
+    if target_os_windows {
+        // .rc 只引用 .manifest 文件：manifest 内容变化必须显式触发重嵌。
+        println!("cargo:rerun-if-changed=windows-app-manifest.rc");
+        println!("cargo:rerun-if-changed=windows-app.manifest");
+        let _ = embed_resource::compile_for_everything(
+            "windows-app-manifest.rc",
+            embed_resource::NONE,
+        );
+    }
+}
+
+/// 把 `WebView2Loader.dll` 收进 `resources/`（tauri.windows.conf.json 的
+/// bundle.resources 引用，NSIS 打进安装根）：windows-gnu 下 webview2-com-sys
+/// 动态链接 loader（MSVC 才有静态库），bundler 不自动收集该 DLL，缺失时安装
+/// 后应用加载 WebView2 即崩。构建期从两处取（均由 webview2-com-sys 产出）：
+/// target profile 根（gnu 场景自动复制）或其 OUT_DIR 的 x64/ 原件（MSVC 场景
+/// 兜底，静态链接下多打包一份 DLL 无害）。
+fn stage_webview2_loader() {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".into());
+    let target_dir = std::env::var("CARGO_TARGET_DIR")
+        .unwrap_or_else(|_| format!("{manifest_dir}/target"));
+    let build_root = format!("{target_dir}/{profile}/build");
+    let mut candidates = vec![format!("{target_dir}/{profile}/WebView2Loader.dll")];
+    if let Ok(entries) = std::fs::read_dir(&build_root) {
+        let mut sys_dirs: Vec<_> = entries
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("webview2-com-sys-"))
+            .map(|entry| entry.path())
+            .collect();
+        // 新产物优先（hash 变化后旧目录残留）。
+        sys_dirs.sort_by_key(|path| {
+            path.metadata().and_then(|meta| meta.modified()).ok()
+        });
+        if let Some(latest) = sys_dirs.pop() {
+            candidates.push(latest.join("out/x64/WebView2Loader.dll").to_string_lossy().into_owned());
+        }
+    }
+    let staged_dir = format!("{manifest_dir}/resources");
+    let staged = format!("{staged_dir}/WebView2Loader.dll");
+    let Some(source) = candidates.iter().find(|candidate| {
+        std::fs::metadata(candidate).map(|meta| meta.is_file()).unwrap_or(false)
+    }) else {
+        // 找不到不阻断编译：打包阶段 resources 缺失会显式报错，此处多为
+        // `cargo check` 等未编译依赖的浅路径。
+        println!("cargo:warning=WebView2Loader.dll not found; skip staging (bundle step will fail if packaging)");
+        return;
+    };
+    std::fs::create_dir_all(&staged_dir).expect("create resources staging dir");
+    std::fs::copy(source, &staged).expect("stage WebView2Loader.dll");
+    println!("cargo:rerun-if-changed=resources/WebView2Loader.dll");
 }

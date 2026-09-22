@@ -7,7 +7,8 @@ import { hashSkillContent } from './canonical'
 import { parseSkillFile } from './parseSkillFile'
 import { readSkillFileBounded } from './loadProjectSkills'
 import { ProjectSkillRegistry } from './ProjectSkillRegistry'
-import { findBuiltinSkillBody } from './builtinSkillBodies'
+import { findBuiltinSkillBody, resolveBuiltinSkillVariant } from './builtinSkillBodies'
+import { getBuiltinPromptOverrides, resolvePromptLanguage } from '@/agent/prompt/promptLocalizationHost'
 import type { ProjectSkillInventorySnapshot } from './types'
 
 /**
@@ -79,7 +80,7 @@ export const createLoadSkillTool = ({
     '若 load_skill 尚未激活，先调用 discover_agent_tools({ query: "load_skill" }) 激活。',
     '加载后按正文工作流执行，完成后回到用户原任务；不要把 skill 正文原样回吐给用户。',
   ],
-  runtimeVersion: '5',
+  runtimeVersion: '6',
   recoveryPolicy: 'idempotent',
   idempotencyKey: (input) => {
     if (!isJsonObject(input)) return 'load_skill:invalid'
@@ -124,14 +125,22 @@ export const createLoadSkillTool = ({
     if (!dependency) {
       // 双通道回退：项目未命中时查内置正文 Skill（SDD 工作流 6 项）。
       // 内置正文直接返回，无磁盘读取 / contentSha256 比对（数据在进程内，不随磁盘变化）。
+      // 语言与用户覆写经本地化宿主在执行期解析：按当前生效语言取变体，设置页保存的
+      // per-language 覆写字段优先、未覆写字段回落内置默认。
       const builtin = findBuiltinSkillBody(name)
       if (!builtin) {
         throw new Error(`未知技能「${name}」，仅可加载 <available_skills> 中列出的技能。`)
       }
+      const language = resolvePromptLanguage()
+      const variant = resolveBuiltinSkillVariant(
+        builtin,
+        language,
+        getBuiltinPromptOverrides().skills[name]?.[language],
+      )
       return {
         content: capabilities.includes('subagent:review')
-          ? builtin.body
-          : `${builtin.body}${REVIEWER_ABSENCE_NOTE}`,
+          ? variant.body
+          : `${variant.body}${REVIEWER_ABSENCE_NOTE}`,
         details: {
           name: builtin.name,
           source: 'builtin',

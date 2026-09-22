@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { ProviderSection } from './ProviderSection'
 import type { ProviderDraftHook, SettingsSectionContext } from './types'
-import { TEST_ANTHROPIC_PROFILE } from './testFixtures'
+import { TEST_ANTHROPIC_PROFILE } from '@/agent/transport/__fixtures__/testAnthropicProfile'
 
 const baseDraft = {
   ...TEST_ANTHROPIC_PROFILE,

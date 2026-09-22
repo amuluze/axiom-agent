@@ -1,3 +1,8 @@
+// Linux 上整条通道 fail-closed（见 computer_command）：实现区不可达但保持
+// 编译以维持跨平台类型检查——dead_code 豁免仅限非 macOS，macOS 漏用仍是
+// 真实缺陷，保持告警。
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+
 //! computer 工具宿主会话：macOS 电脑控制——Accessibility 观测（语义树快照）
 //! 加合成输入注入（CGEvent / AX 动作）与屏幕捕获。对齐 zcode / codex 的
 //! Computer Use 形态：a11y 优先语义动作（不移动真指针、不抢焦点），坐标/键盘
@@ -28,22 +33,38 @@
 //! NSAlert（会话门 sheet）走 objc2-app-kit 绑定，需主线程（run_on_main）。
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
+// macOS 实现区（FFI/快照注册表/allowlist 文件路径/门对话框）专用的导入；
+// serde 契约类型与 ComputerSessionState 壳不依赖它们，Linux 编译时裁剪。
+#[cfg(target_os = "macos")]
+use std::collections::VecDeque;
+#[cfg(target_os = "macos")]
 use std::ffi::{c_char, c_void, CStr};
+#[cfg(target_os = "macos")]
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex as StdMutex};
+#[cfg(target_os = "macos")]
+use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 
+#[cfg(target_os = "macos")]
 use base64::Engine as _;
-use tauri::{AppHandle, Manager as _, State};
+use tauri::{AppHandle, State};
+#[cfg(target_os = "macos")]
+use tauri::Manager as _;
 
+#[cfg(target_os = "macos")]
 const MAX_TEXT_INPUT_CHARS: usize = 20_000;
+#[cfg(target_os = "macos")]
 const MAX_TREE_CHARS: usize = 200 * 1024;
 /// AX 树遍历上限：节点数与深度双上限，防病态深树拖垮快照。
+#[cfg(target_os = "macos")]
 const MAX_TREE_NODES: usize = 4000;
+#[cfg(target_os = "macos")]
 const MAX_TREE_DEPTH: usize = 12;
 // 坐标动作必须能命中归属 app（AX hit-test），无 AX 区域拒绝——这是门控的
 // 结构性前提：不存在未经鉴权的全局事件注入。
 
+#[cfg(target_os = "macos")]
 const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
 
 // ---------------------------------------------------------------------------
@@ -219,16 +240,26 @@ pub enum ComputerCommandResponse {
 // CGPreflight/CGRequest——把非 0/1 值读成 bool 是 UB。
 // ---------------------------------------------------------------------------
 
+#[cfg(target_os = "macos")]
 type CFStringRef = *const c_void;
+#[cfg(target_os = "macos")]
 type CFArrayRef = *const c_void;
+#[cfg(target_os = "macos")]
 type CFDictionaryRef = *const c_void;
+#[cfg(target_os = "macos")]
 type CFDictionaryMutRef = *mut c_void;
+#[cfg(target_os = "macos")]
 type CFBooleanRef = *const c_void;
 /// AXUIElement / AXValue / CGEvent / CGImage / CFData 均 CF 类型，指针语义。
+#[cfg(target_os = "macos")]
 type CFTypeRef = *const c_void;
+#[cfg(target_os = "macos")]
 type AXUIElementRef = *mut c_void;
+#[cfg(target_os = "macos")]
 type AXError = i32;
+#[cfg(target_os = "macos")]
 type CGEventRef = *mut c_void;
+#[cfg(target_os = "macos")]
 type CGImageRef = *const c_void;
 
 #[repr(C)]
@@ -253,26 +284,40 @@ struct CGRect {
 }
 
 /// CGEventType（只列鼠标事件类型；键盘/滚轮由 CGEventCreate* API 自带）。
+#[cfg(target_os = "macos")]
 const CG_EVENT_LEFT_MOUSE_DOWN: u32 = 1;
+#[cfg(target_os = "macos")]
 const CG_EVENT_LEFT_MOUSE_UP: u32 = 2;
+#[cfg(target_os = "macos")]
 const CG_EVENT_RIGHT_MOUSE_DOWN: u32 = 3;
+#[cfg(target_os = "macos")]
 const CG_EVENT_RIGHT_MOUSE_UP: u32 = 4;
 /// kCGMouseEventClickCount。
+#[cfg(target_os = "macos")]
 const CG_FIELD_MOUSE_CLICK_COUNT: u32 = 1;
 /// CGScrollEventUnit：kCGScrollEventUnitPixel。
+#[cfg(target_os = "macos")]
 const CG_SCROLL_UNIT_PIXEL: u32 = 1;
 /// CGEventTapLocation：kCGHIDEventTap（会话级合成事件注入点）。
+#[cfg(target_os = "macos")]
 const CG_TAP_HID: u32 = 0;
 /// CGWindowListOption：kCGWindowListOptionOnScreenOnly。
+#[cfg(target_os = "macos")]
 const CG_WINDOW_LIST_ON_SCREEN: u32 = 1;
 /// kCGWindowImageDefault。
+#[cfg(target_os = "macos")]
 const CG_WINDOW_IMAGE_DEFAULT: u32 = 0;
 /// CGEventFlags 修饰键位（kCGEventFlagMask*）。
+#[cfg(target_os = "macos")]
 const CG_FLAG_CMD: u64 = 1 << 8;
+#[cfg(target_os = "macos")]
 const CG_FLAG_SHIFT: u64 = 1 << 9;
+#[cfg(target_os = "macos")]
 const CG_FLAG_ALT: u64 = 1 << 11;
+#[cfg(target_os = "macos")]
 const CG_FLAG_CTRL: u64 = 1 << 12;
 
+#[cfg(target_os = "macos")]
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
     fn CFStringCreateWithCString(
@@ -305,6 +350,7 @@ extern "C" {
     ) -> CFDictionaryMutRef;
 }
 
+#[cfg(target_os = "macos")]
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> u8;
@@ -336,12 +382,16 @@ extern "C" {
 }
 
 /// AXValueType：kAXValueCGPointType=1 / CGSize=2 / CGRect=3。
+#[cfg(target_os = "macos")]
 const AX_VALUE_CGPOINT: u32 = 1;
+#[cfg(target_os = "macos")]
 const AX_VALUE_CGSIZE: u32 = 2;
 
 /// AXError 关键值（错误消息区分用）。
+#[cfg(target_os = "macos")]
 const AX_ERROR_SUCCESS: AXError = 0;
 
+#[cfg(target_os = "macos")]
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGEventCreateMouseEvent(
@@ -391,8 +441,10 @@ extern "C" {
 // ---------------------------------------------------------------------------
 
 /// CFString 生命周期守卫：Drop 时 CFRelease。
+#[cfg(target_os = "macos")]
 struct ScopedCFString(CFStringRef);
 
+#[cfg(target_os = "macos")]
 impl ScopedCFString {
     fn new(text: &str) -> Self {
         let mut bytes = text.as_bytes().to_vec();
@@ -412,6 +464,7 @@ impl ScopedCFString {
     }
 }
 
+#[cfg(target_os = "macos")]
 impl Drop for ScopedCFString {
     fn drop(&mut self) {
         if !self.0.is_null() {
@@ -422,9 +475,11 @@ impl Drop for ScopedCFString {
 
 /// AXUIElement 的 retain/release 包装：快照注册表跨命令存元素引用必须显式
 /// 持有（AXCopy 出的对象归调用方）。
+#[cfg(target_os = "macos")]
 #[derive(Clone)]
 struct RetainedAxElement(AXUIElementRef);
 
+#[cfg(target_os = "macos")]
 impl RetainedAxElement {
     fn retain(raw: AXUIElementRef) -> Option<Self> {
         if raw.is_null() {
@@ -437,8 +492,10 @@ impl RetainedAxElement {
 
 // AXUIElement 是 CF 对象（内部带锁），跨线程移动安全；指针本身需要显式
 // 声明 Send 才能进入 ComputerSessionState（async command 的 State 约束）。
+#[cfg(target_os = "macos")]
 unsafe impl Send for RetainedAxElement {}
 
+#[cfg(target_os = "macos")]
 impl Drop for RetainedAxElement {
     fn drop(&mut self) {
         if !self.0.is_null() {
@@ -447,6 +504,7 @@ impl Drop for RetainedAxElement {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn cfstring_to_string(cf: CFStringRef) -> Option<String> {
     if cf.is_null() {
         return None;
@@ -472,6 +530,7 @@ fn cfstring_to_string(cf: CFStringRef) -> Option<String> {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn cfboolean_to_bool(value: CFTypeRef) -> Option<bool> {
     if value.is_null() {
         return None;
@@ -480,6 +539,7 @@ fn cfboolean_to_bool(value: CFTypeRef) -> Option<bool> {
 }
 
 /// CFArray 拆包：逐项取指针（调用方决定如何解释每项）。
+#[cfg(target_os = "macos")]
 fn cf_array_items(array: CFArrayRef) -> Vec<CFTypeRef> {
     if array.is_null() {
         return Vec::new();
@@ -493,6 +553,7 @@ fn cf_array_items(array: CFArrayRef) -> Vec<CFTypeRef> {
 }
 
 /// 读 AX 属性并释放返回的 CF 对象（调用方拿到 String/f64 等值语义副本）。
+#[cfg(target_os = "macos")]
 fn ax_string_attribute(element: AXUIElementRef, attribute: &str) -> Option<String> {
     let key = ScopedCFString::new(attribute);
     let mut raw: *mut c_void = std::ptr::null_mut();
@@ -507,6 +568,7 @@ fn ax_string_attribute(element: AXUIElementRef, attribute: &str) -> Option<Strin
     text
 }
 
+#[cfg(target_os = "macos")]
 fn ax_bool_attribute(element: AXUIElementRef, attribute: &str) -> Option<bool> {
     let key = ScopedCFString::new(attribute);
     let mut raw: *mut c_void = std::ptr::null_mut();
@@ -522,6 +584,7 @@ fn ax_bool_attribute(element: AXUIElementRef, attribute: &str) -> Option<bool> {
 }
 
 /// AX 位置/尺寸属性（AXValue 包装的 CGPoint/CGSize）。
+#[cfg(target_os = "macos")]
 fn ax_point_attribute(element: AXUIElementRef, attribute: &str) -> Option<CGPoint> {
     let key = ScopedCFString::new(attribute);
     let mut raw: *mut c_void = std::ptr::null_mut();
@@ -537,6 +600,7 @@ fn ax_point_attribute(element: AXUIElementRef, attribute: &str) -> Option<CGPoin
     (ok != 0).then_some(point)
 }
 
+#[cfg(target_os = "macos")]
 fn ax_size_attribute(element: AXUIElementRef, attribute: &str) -> Option<CGSize> {
     let key = ScopedCFString::new(attribute);
     let mut raw: *mut c_void = std::ptr::null_mut();
@@ -553,6 +617,7 @@ fn ax_size_attribute(element: AXUIElementRef, attribute: &str) -> Option<CGSize>
 }
 
 /// 读 AX 子元素数组：返回 retain 过的元素列表（注册表可直接接管）。
+#[cfg(target_os = "macos")]
 fn ax_children_elements(element: AXUIElementRef) -> Vec<RetainedAxElement> {
     let key = ScopedCFString::new("AXChildren");
     let mut raw: *mut c_void = std::ptr::null_mut();
@@ -572,6 +637,7 @@ fn ax_children_elements(element: AXUIElementRef) -> Vec<RetainedAxElement> {
 
 /// 系统级 AX 元素（懒初始化单例；AXUIElementCreateSystemWide 归调用方所有，
 /// 进程生命周期内持有即可）。
+#[cfg(target_os = "macos")]
 fn system_wide_element() -> AXUIElementRef {
     // 指针以 usize 存（static 要求 Send+Sync）；进程生命周期内持有不释放。
     static INSTANCE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -586,6 +652,7 @@ fn system_wide_element() -> AXUIElementRef {
 /// 注意：不再经 AXIsProcessTrustedWithOptions(prompt=true) 弹授权引导（弹窗
 /// 状态机不可预测：每进程会话只弹一次、拒绝后不再弹），「去授权」按钮走系统
 /// 设置深链（open_system_settings_for_kind）。
+#[cfg(target_os = "macos")]
 fn accessibility_trusted() -> bool {
     unsafe {
         let key = ScopedCFString::new("AXTrustedCheckOptionPrompt");
@@ -611,6 +678,7 @@ fn accessibility_trusted() -> bool {
 // 全局（C 里传 &kCFType...）——按指针声明会把结构体首字段（函数指针）当地址
 // 传给 CFDictionaryCreate，产出损坏字典（真机 SIGSEGV 的第二根因）。必须以
 // 结构体类型声明后取地址。
+#[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct CFDictionaryCallBacks {
@@ -621,6 +689,7 @@ struct CFDictionaryCallBacks {
     hash: *const c_void,
 }
 
+#[cfg(target_os = "macos")]
 extern "C" {
     static kCFBooleanTrue: CFTypeRef;
     static kCFBooleanFalse: CFTypeRef;
@@ -629,6 +698,7 @@ extern "C" {
 }
 
 /// 屏幕录制权限（10.15+；无该 API 的系统按无权限处理，fail-closed）。
+#[cfg(target_os = "macos")]
 fn screen_recording_granted() -> bool {
     unsafe { CGPreflightScreenCaptureAccess() }
 }
@@ -637,13 +707,16 @@ fn screen_recording_granted() -> bool {
 // 系统设置隐私面板深链（「去授权」引导）
 // ---------------------------------------------------------------------------
 
+#[cfg(target_os = "macos")]
 const SYSTEM_SETTINGS_PRIVACY_URL_VENTURA: &str =
     "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension";
+#[cfg(target_os = "macos")]
 const SYSTEM_SETTINGS_PRIVACY_URL_LEGACY: &str =
     "x-apple.systempreferences:com.apple.preference.security";
 
 /// 隐私面板深链：macOS 13+ 新 schema 在前，旧 schema（macOS 12-）兜底。
 /// 每个面板两条候选 URL，open 失败依次尝试（纯函数，单测锁定）。
+#[cfg(target_os = "macos")]
 fn system_settings_urls(kind: ComputerAccessKind) -> Vec<String> {
     let anchor = match kind {
         ComputerAccessKind::Accessibility => "Privacy_Accessibility",
@@ -656,6 +729,7 @@ fn system_settings_urls(kind: ComputerAccessKind) -> Vec<String> {
 }
 
 /// 打开系统设置隐私面板：候选 URL 逐条尝试，全部失败给手动指引。
+#[cfg(target_os = "macos")]
 async fn open_system_settings_for_kind(kind: &ComputerAccessKind) -> Result<(), String> {
     for url in system_settings_urls(*kind) {
         let status = tokio::process::Command::new("/usr/bin/open")
@@ -694,6 +768,7 @@ struct AxNodeData {
 
 /// 角色归一（与 browser_session::ax_role_display 同思路但独立实现：
 /// macOS AX 角色是 PascalCase，如 AXButton/button/AXTextField/staticText）。
+#[cfg(target_os = "macos")]
 fn ax_role_display(role: &str, name: &str) -> Option<String> {
     let canonical = role
         .trim_start_matches("AX")
@@ -723,6 +798,7 @@ fn ax_role_display(role: &str, name: &str) -> Option<String> {
 
 /// 快照文本格式化（纯函数）：`[eid=N] role "name" [已禁用] = "value"`，
 /// 缩进两级空格，text 角色输出裸文本行。超 MAX_TREE_CHARS 截断。
+#[cfg(target_os = "macos")]
 fn format_ax_nodes(nodes: &[AxNodeData]) -> (String, bool) {
     let by_eid: HashMap<u64, &AxNodeData> =
         nodes.iter().map(|node| (node.eid, node)).collect();
@@ -771,6 +847,7 @@ fn format_ax_nodes(nodes: &[AxNodeData]) -> (String, bool) {
 }
 
 /// 计算节点深度：沿 parent 链上溯（被剪的中间层不影响深度计算的简单近似）。
+#[cfg(target_os = "macos")]
 fn ancestor_depth(by_eid: &HashMap<u64, &AxNodeData>, node: &AxNodeData) -> usize {
     let mut depth = 0usize;
     let mut cursor = node.parent;
@@ -787,6 +864,7 @@ fn ancestor_depth(by_eid: &HashMap<u64, &AxNodeData>, node: &AxNodeData) -> usiz
 }
 
 /// FFI 遍历：从 app 根元素收集 AxNodeData + eid → 元素注册表。
+#[cfg(target_os = "macos")]
 fn walk_ax_tree(
     root: AXUIElementRef,
     next_eid: &mut u64,
@@ -837,27 +915,38 @@ fn walk_ax_tree(
 // ---------------------------------------------------------------------------
 
 /// 每个 app 保留最近 N 代快照（元素注册表），旧代淘汰。
+#[cfg(target_os = "macos")]
 const KEPT_SNAPSHOT_GENERATIONS: usize = 2;
 
+#[cfg(target_os = "macos")]
 struct AppSnapshot {
     generation: u64,
     elements: HashMap<u64, RetainedAxElement>,
 }
 
+/// Linux 下 grants/next_eid 无消费方（dispatch 全量 fail-closed，见
+/// computer_command），保留字段是为 macOS 路径单一事实源；dead_code 豁免仅限
+/// 非 macOS——macOS 上漏用仍是真实缺陷，保持告警。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Default)]
 struct ComputerInner {
     /// (session_id, pid) → app 名（会话授权，进程内存，重启清空）。
     grants: HashMap<(String, i32), String>,
     /// pid → 最近快照代（保留 KEPT_SNAPSHOT_GENERATIONS 代）。
+    #[cfg(target_os = "macos")]
     snapshots: HashMap<i32, VecDeque<AppSnapshot>>,
     next_eid: u64,
 }
 
 /// 电脑控制会话状态：会话授权 + 快照注册表。allowlist 是磁盘文件，读写经
 /// 独立函数（锁外序列化，读-改-写在调用方锁内完成结构判定）。
+/// Linux 上整条通道 fail-closed（见 computer_command），状态壳仅为命令注册
+/// 与 lib.rs manage 存在——capability 契约跨平台稳定，旧会话恢复不漂移。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Default)]
 pub struct ComputerSessionState(StdMutex<Option<ComputerInner>>);
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl ComputerSessionState {
     fn with_inner<T>(
         &self,
@@ -873,13 +962,17 @@ impl ComputerSessionState {
 }
 
 /// allowlist 文件路径：`~/.axiom/computer/allowed_apps.json`（0600）。
+#[cfg(target_os = "macos")]
 fn allowed_apps_path(data_root: &std::path::Path) -> PathBuf {
     data_root.join("computer").join("allowed_apps.json")
 }
 
-/// 读 allowlist：损坏/缺失 fail-safe 回退空表（与授权注册表同一自愈哲学：
-/// 用户重新经设置页添加即可，不阻断其它动作）。
-fn load_allowed_apps(data_root: &std::path::Path) -> Vec<ComputerAllowedApp> {
+/// 读 allowlist 的同步实现：只由下方 spawn_blocking 包装层与单测调用。
+///
+/// 损坏/缺失 fail-safe 回退空表（与授权注册表同一自愈哲学：用户重新经设置页
+/// 添加即可，不阻断其它动作）。
+#[cfg(target_os = "macos")]
+fn load_allowed_apps_sync(data_root: &std::path::Path) -> Vec<ComputerAllowedApp> {
     let path = allowed_apps_path(data_root);
     let Ok(raw) = std::fs::read_to_string(&path) else {
         return Vec::new();
@@ -887,7 +980,8 @@ fn load_allowed_apps(data_root: &std::path::Path) -> Vec<ComputerAllowedApp> {
     serde_json::from_str(&raw).unwrap_or_default()
 }
 
-fn save_allowed_apps(data_root: &std::path::Path, apps: &[ComputerAllowedApp]) -> Result<(), String> {
+#[cfg(target_os = "macos")]
+fn save_allowed_apps_sync(data_root: &std::path::Path, apps: &[ComputerAllowedApp]) -> Result<(), String> {
     let path = allowed_apps_path(data_root);
     let dir = path.parent().ok_or("allowlist 路径异常")?;
     std::fs::create_dir_all(dir).map_err(|error| format!("创建电脑控制目录失败：{error}"))?;
@@ -899,7 +993,31 @@ fn save_allowed_apps(data_root: &std::path::Path, apps: &[ComputerAllowedApp]) -
     Ok(())
 }
 
+/// 读 allowlist：command 入口跑在 tokio worker 上，文件 I/O 必须显式移出，
+/// 否则会与其它异步任务抢同一批 worker 线程（同项目其余命令的 spawn_blocking 范式）。
+#[cfg(target_os = "macos")]
+async fn load_allowed_apps(data_root: &std::path::Path) -> Vec<ComputerAllowedApp> {
+    let root = data_root.to_path_buf();
+    tokio::task::spawn_blocking(move || load_allowed_apps_sync(&root))
+        .await
+        .unwrap_or_default()
+}
+
+/// 写 allowlist：同上，持久化与目录权限调整一并移出异步线程。
+#[cfg(target_os = "macos")]
+async fn save_allowed_apps(
+    data_root: &std::path::Path,
+    apps: &[ComputerAllowedApp],
+) -> Result<(), String> {
+    let root = data_root.to_path_buf();
+    let apps = apps.to_vec();
+    tokio::task::spawn_blocking(move || save_allowed_apps_sync(&root, &apps))
+        .await
+        .map_err(|error| format!("写 allowlist 任务失败：{error}"))?
+}
+
 /// 门控判定（纯函数，单测锁定）：Pass / NeedDialog / KillSwitch。
+#[cfg(target_os = "macos")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GateDecision {
     /// allowlist 命中或已有会话授权。
@@ -908,6 +1026,7 @@ enum GateDecision {
     NeedDialog,
 }
 
+#[cfg(target_os = "macos")]
 fn gate_decision(
     allowlist: &[ComputerAllowedApp],
     grants: &HashMap<(String, i32), String>,
@@ -935,6 +1054,7 @@ fn gate_decision(
 }
 
 /// 原生确认结果。
+#[cfg(target_os = "macos")]
 enum GateDialogChoice {
     AllowSession,
     AllowAlways,
@@ -943,6 +1063,7 @@ enum GateDialogChoice {
 
 /// 会话门三选一 sheet：绑定主窗口（对齐 workspace_approval::confirm_interactive
 /// 的 parent 理由——无 parent 的对话框不在常规 AX 树内，值守自动化无法驱动）。
+#[cfg(target_os = "macos")]
 async fn show_gate_dialog(
     app: &AppHandle,
     app_name: &str,
@@ -1025,6 +1146,7 @@ async fn show_gate_dialog(
 /// 控制类动作的统一门：命中 allowlist/会话授权直接放行，否则弹原生确认。
 /// 「始终允许」在锁外写文件前先在锁内登记（先授权再持久化，与工作区授权
 /// 注册表同一 fail-closed 顺序），持久化失败不影响本次会话授权。
+#[cfg(target_os = "macos")]
 async fn authorize_app(
     app: &AppHandle,
     state: &ComputerSessionState,
@@ -1037,8 +1159,11 @@ async fn authorize_app(
     if session_id.trim().is_empty() {
         return Err("缺少会话标识：控制动作必须由会话内工具发起".into());
     }
+    // allowlist 读取先出闭包：文件 I/O 要经 spawn_blocking 落到阻塞线程池，
+    // 而 with_inner 的闭包是同步的，不能在其中 await。
+    let allowlist = load_allowed_apps(data_root).await;
     let decision = state.with_inner(|inner| {
-        gate_decision(&load_allowed_apps(data_root), &inner.grants, session_id, pid, bundle_id, name)
+        gate_decision(&allowlist, &inner.grants, session_id, pid, bundle_id, name)
     })?;
     if let GateDecision::Pass { .. } = decision {
         return Ok(());
@@ -1056,13 +1181,13 @@ async fn authorize_app(
                 inner.grants.insert((session_id.to_string(), pid), name.to_string());
             })?;
             if let Some(bundle) = bundle_id {
-                let mut allowlist = load_allowed_apps(data_root);
+                let mut allowlist = load_allowed_apps(data_root).await;
                 if !allowlist.iter().any(|entry| entry.bundle_id.eq_ignore_ascii_case(bundle)) {
                     allowlist.push(ComputerAllowedApp {
                         bundle_id: bundle.to_string(),
                         name: name.to_string(),
                     });
-                    save_allowed_apps(data_root, &allowlist)?;
+                    save_allowed_apps(data_root, &allowlist).await?;
                 }
             }
             Ok(())
@@ -1074,6 +1199,7 @@ async fn authorize_app(
 }
 
 /// 直接登记会话授权（不经对话框）：仅用于「用户已确认打开该应用」的启动链路。
+#[cfg(target_os = "macos")]
 fn insert_grant(state: &ComputerSessionState, session_id: &str, pid: i32, name: &str) {
     let _ = state.with_inner(|inner| {
         inner.grants.insert((session_id.to_string(), pid), name.to_string());
@@ -1081,6 +1207,7 @@ fn insert_grant(state: &ComputerSessionState, session_id: &str, pid: i32, name: 
 }
 
 /// 注册快照：分配代际号、登记元素注册表、淘汰旧代。返回 stateToken（pid:gen）。
+#[cfg(target_os = "macos")]
 fn store_snapshot(
     state: &ComputerSessionState,
     pid: i32,
@@ -1103,6 +1230,7 @@ fn store_snapshot(
 
 /// 取快照元素：stateToken（pid:generation）匹配最新代才有效；代际过期报
 /// 「重新 state」引导（与浏览器工具的「ref 过期重新 snapshot」同款纪律）。
+#[cfg(target_os = "macos")]
 fn take_snapshot_element(
     state: &ComputerSessionState,
     state_token: &str,
@@ -1127,6 +1255,7 @@ fn take_snapshot_element(
         })
 }
 
+#[cfg(target_os = "macos")]
 fn parse_state_token(token: &str) -> Result<(i32, u64), String> {
     let (pid, generation) = token
         .split_once(':')
@@ -1141,6 +1270,7 @@ fn parse_state_token(token: &str) -> Result<(i32, u64), String> {
 // ---------------------------------------------------------------------------
 
 /// 主线程执行 AppKit 调用（NSWorkspace/NSAlert 都是 MainThreadOnly）。
+#[cfg(target_os = "macos")]
 async fn run_on_main<T: Send + 'static>(
     app: &AppHandle,
     body: impl FnOnce() -> T + Send + 'static,
@@ -1156,6 +1286,7 @@ async fn run_on_main<T: Send + 'static>(
 }
 
 /// 枚举运行中的常规应用（NSWorkspace，主线程）。
+#[cfg(target_os = "macos")]
 async fn list_running_apps(app: &AppHandle) -> Result<Vec<ComputerAppInfo>, String> {
     #[cfg(target_os = "macos")]
     {
@@ -1190,6 +1321,7 @@ async fn list_running_apps(app: &AppHandle) -> Result<Vec<ComputerAppInfo>, Stri
 
 /// 打开并激活应用：`/usr/bin/open -a/-b`（直接 exec、env_clear，不经 shell；
 /// open 本身会激活目标应用）。返回启动/激活后的运行信息。
+#[cfg(target_os = "macos")]
 async fn open_app_process(
     name: Option<&str>,
     bundle_id: Option<&str>,
@@ -1216,6 +1348,7 @@ async fn open_app_process(
 }
 
 /// 等待 app 出现在运行列表（open 异步拉起），按 bundle 优先、名字回退匹配。
+#[cfg(target_os = "macos")]
 async fn wait_app_running(
     app: &AppHandle,
     bundle_id: Option<&str>,
@@ -1242,6 +1375,7 @@ async fn wait_app_running(
 
 /// 读焦点应用元素 + pid（同步段：CF 裸指针局部不跨 await，async fn 的
 /// future Send 约束不允许裸指针存活到 await 点之后）。
+#[cfg(target_os = "macos")]
 fn read_focused_app_element() -> Result<(RetainedAxElement, i32), String> {
     let system_wide = system_wide_element();
     if system_wide.is_null() {
@@ -1266,6 +1400,7 @@ fn read_focused_app_element() -> Result<(RetainedAxElement, i32), String> {
 }
 
 /// 解析 AX 焦点应用元素 + 应用身份（name 取 AXTitle；bundle 经运行列表查）。
+#[cfg(target_os = "macos")]
 async fn focused_app(app: &AppHandle) -> Result<(RetainedAxElement, ComputerAppInfo), String> {
     let (element, pid) = read_focused_app_element()?;
     let name = ax_string_attribute(element.0, "AXTitle").unwrap_or_else(|| "未知应用".into());
@@ -1292,6 +1427,7 @@ async fn focused_app(app: &AppHandle) -> Result<(RetainedAxElement, ComputerAppI
 
 /// 按 pid 取 app 元素 + 身份。
 /// 创建 app 级元素（同步段：同上，裸指针不跨 await）。
+#[cfg(target_os = "macos")]
 fn create_app_element(pid: i32) -> Result<RetainedAxElement, String> {
     let raw = unsafe { AXUIElementCreateApplication(pid) };
     if raw.is_null() {
@@ -1302,6 +1438,7 @@ fn create_app_element(pid: i32) -> Result<RetainedAxElement, String> {
     Ok(element)
 }
 
+#[cfg(target_os = "macos")]
 async fn app_element_for_pid(
     app: &AppHandle,
     pid: i32,
@@ -1328,6 +1465,7 @@ async fn app_element_for_pid(
 // ---------------------------------------------------------------------------
 
 /// 元素是否支持某动作（AXUIElementCopyActionNames）。
+#[cfg(target_os = "macos")]
 fn element_has_action(element: AXUIElementRef, action: &str) -> bool {
     let mut names: CFArrayRef = std::ptr::null();
     let error = unsafe { AXUIElementCopyActionNames(element, &mut names) };
@@ -1343,6 +1481,7 @@ fn element_has_action(element: AXUIElementRef, action: &str) -> bool {
 }
 
 /// element 语义点击（AXPress）：不移动真指针、不抢焦点（a11y 优先路径）。
+#[cfg(target_os = "macos")]
 fn element_press(element: AXUIElementRef) -> Result<(), String> {
     if !element_has_action(element, "AXPress") {
         return Err(
@@ -1359,6 +1498,7 @@ fn element_press(element: AXUIElementRef) -> Result<(), String> {
 }
 
 /// element 语义设值：先 AXFocus（部分控件要求聚焦才接受输入）再设 AXValue。
+#[cfg(target_os = "macos")]
 fn element_set_value(element: AXUIElementRef, text: &str) -> Result<(), String> {
     let focus_key = ScopedCFString::new("AXFocused");
     unsafe {
@@ -1383,6 +1523,7 @@ fn element_set_value(element: AXUIElementRef, text: &str) -> Result<(), String> 
 }
 
 /// AXFocus 元素（键盘动作前的定位）。
+#[cfg(target_os = "macos")]
 fn element_focus(element: AXUIElementRef) -> Result<(), String> {
     let focus_key = ScopedCFString::new("AXFocused");
     let error = unsafe {
@@ -1397,6 +1538,7 @@ fn element_focus(element: AXUIElementRef) -> Result<(), String> {
 
 /// 坐标 → 归属 app 元素（AX hit-test）。门控的结构性前提：所有坐标动作先经
 /// 此命中确定目标 app，不存在未经鉴权的全局注入。
+#[cfg(target_os = "macos")]
 fn element_at_position(x: f64, y: f64) -> Result<(RetainedAxElement, i32), String> {
     let system_wide = system_wide_element();
     if system_wide.is_null() {
@@ -1419,6 +1561,7 @@ fn element_at_position(x: f64, y: f64) -> Result<(RetainedAxElement, i32), Strin
 }
 
 /// 鼠标事件合成并投递到目标 app（CGEventPostToPid：不移动真指针）。
+#[cfg(target_os = "macos")]
 fn post_mouse_events_to_pid(
     pid: i32,
     x: f64,
@@ -1446,6 +1589,7 @@ fn post_mouse_events_to_pid(
 }
 
 /// 滚轮事件合成（wheel1=纵向、wheel2=横向，像素单位）投递到目标 app。
+#[cfg(target_os = "macos")]
 fn post_scroll_events_to_pid(
     pid: i32,
     delta_x: f64,
@@ -1472,6 +1616,7 @@ fn post_scroll_events_to_pid(
 }
 
 /// 键名 → 虚拟键码（Carbon kVK 常量硬编码）。单字符返回 None（走 Unicode 注入）。
+#[cfg(target_os = "macos")]
 fn named_key_virtual_code(name: &str) -> Option<u16> {
     Some(match name.to_ascii_lowercase().as_str() {
         "enter" | "return" => 36,
@@ -1506,6 +1651,7 @@ fn named_key_virtual_code(name: &str) -> Option<u16> {
 }
 
 /// 修饰键名 → (CGEventFlags 位, 修饰键虚拟键码)。
+#[cfg(target_os = "macos")]
 fn modifier_definition(name: &str) -> Option<(u64, u16)> {
     Some(match name.to_ascii_lowercase().as_str() {
         "cmd" | "command" | "meta" | "super" => (CG_FLAG_CMD, 55),
@@ -1517,6 +1663,7 @@ fn modifier_definition(name: &str) -> Option<(u64, u16)> {
 }
 
 /// 组合修饰键（修饰键按下 → 主键 down/up → 反序抬起，投递到前台 tap）。
+#[cfg(target_os = "macos")]
 fn post_key_chord(virtual_key: u16, modifiers: &[(u64, u16)]) -> Result<(), String> {
     let mut held: Vec<CGEventRef> = Vec::new();
     for (_, vk) in modifiers {
@@ -1560,6 +1707,7 @@ fn post_key_chord(virtual_key: u16, modifiers: &[(u64, u16)]) -> Result<(), Stri
 /// Unicode 文本按键注入：CGEventKeyboardSetUnicodeString 单事件最多约 20 个
 /// UTF-16 码元，超出必须分块；块边界不得落在代理对中间（CJK 增补平面字符
 /// 会被拆成坏字符）。纯函数，单测锁定。
+#[cfg(target_os = "macos")]
 fn chunk_utf16(text: &str) -> Vec<Vec<u16>> {
     let units: Vec<u16> = text.encode_utf16().collect();
     let mut chunks = Vec::new();
@@ -1580,6 +1728,7 @@ fn chunk_utf16(text: &str) -> Vec<Vec<u16>> {
     chunks
 }
 
+#[cfg(target_os = "macos")]
 fn post_unicode_text(text: &str) -> Result<(), String> {
     for chunk in chunk_utf16(text) {
         for key_down in [true, false] {
@@ -1607,6 +1756,7 @@ fn post_unicode_text(text: &str) -> Result<(), String> {
 
 /// 捕获指定矩形（全局显示坐标）→ PNG + 尺寸（4 MiB 上限降采样，复用 browser
 /// 的守卫）。色彩：CGWindowList 默认 ARGB 字节序（PremultipliedFirst/32Big）。
+#[cfg(target_os = "macos")]
 fn capture_screen_rect(rect: CGRect) -> Result<ComputerScreenshot, String> {
     if !screen_recording_granted() {
         return Err("缺少屏幕录制权限：系统设置 → 隐私与安全性 → 屏幕录制 中允许 Axiom".into());
@@ -1629,6 +1779,7 @@ fn capture_screen_rect(rect: CGRect) -> Result<ComputerScreenshot, String> {
     })
 }
 
+#[cfg(target_os = "macos")]
 fn decode_cg_image_to_png(image: CGImageRef) -> Result<(Vec<u8>, u32, u32, bool), String> {
     let (width, height, bpp, bpr) = unsafe {
         (
@@ -1676,6 +1827,7 @@ fn decode_cg_image_to_png(image: CGImageRef) -> Result<(Vec<u8>, u32, u32, bool)
 }
 
 /// app 焦点窗口的屏幕矩形（AXFocusedWindow 的 position+size）。
+#[cfg(target_os = "macos")]
 fn focused_window_rect(app_element: AXUIElementRef) -> Result<CGRect, String> {
     let key = ScopedCFString::new("AXFocusedWindow");
     let mut raw: *mut c_void = std::ptr::null_mut();
@@ -1696,6 +1848,7 @@ fn focused_window_rect(app_element: AXUIElementRef) -> Result<CGRect, String> {
 }
 
 /// 窗口列表（AXWindows：标题/焦点/边界；windowId 用 AX 哈希近似自增序号）。
+#[cfg(target_os = "macos")]
 fn list_app_windows(app_element: AXUIElementRef) -> Vec<ComputerWindowInfo> {
     let key = ScopedCFString::new("AXWindows");
     let mut raw: *mut c_void = std::ptr::null_mut();
@@ -1734,6 +1887,7 @@ fn list_app_windows(app_element: AXUIElementRef) -> Vec<ComputerWindowInfo> {
 // ---------------------------------------------------------------------------
 
 /// 控制类动作的公共前置：总开关 + 辅助功能权限 + 空会话标识。
+#[cfg(target_os = "macos")]
 fn control_guard(state: &ComputerSessionState, session_id: &str) -> Result<(), String> {
     if !accessibility_trusted() {
         return Err(
@@ -1749,6 +1903,48 @@ fn control_guard(state: &ComputerSessionState, session_id: &str) -> Result<(), S
 
 #[tauri::command]
 pub async fn computer_command(
+    app: AppHandle,
+    state: State<'_, ComputerSessionState>,
+    request: ComputerCommandRequest,
+) -> Result<ComputerCommandResponse, String> {
+    #[cfg(target_os = "macos")]
+    {
+        dispatch_computer_command(app, state, request).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // 非 macOS 限制：电脑控制依赖 macOS Accessibility（AXUIElement 观测/
+        // 语义动作）、CGEvent 注入与 CGWindowList 截图，其它平台无等价实现
+        // （Linux AT-SPI/libei 方案见 docs/linux-support.md 规划；Windows UIA +
+        // SendInput 方案见 docs/windows-support.md §0.3）。命令保持注册以维持
+        // capability 契约稳定，全部动作 fail-closed 并给出指引；TS 工具注册层
+        // 不按 OS 过滤（与 browser「注册只看 capability、运行时 fail-closed 引导」
+        // 同一哲学，见 docs/linux-support.md §1.2），模型尝试调用即收到本错误。
+        let _ = (&app, &state, &request);
+        Err(computer_unsupported_message().to_string())
+    }
+}
+
+/// 非 macOS 的电脑控制 fail-closed 文案（按平台取因与后续路径指引）。
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn computer_unsupported_message() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        "电脑控制仅支持 macOS（依赖 Accessibility 与 CGEvent 系统能力），Linux 版暂未提供（docs/linux-support.md）"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "电脑控制仅支持 macOS：Windows 需要 UIA（观测/语义动作）+ SendInput（输入注入）+ 图形捕获的等价实现，暂未提供（docs/windows-support.md §0.3）"
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        "电脑控制仅支持 macOS"
+    }
+}
+
+/// computer_command 的 macOS 实现体：全部动作的既有分发逻辑原样保留。
+#[cfg(target_os = "macos")]
+async fn dispatch_computer_command(
     app: AppHandle,
     state: State<'_, ComputerSessionState>,
     request: ComputerCommandRequest,
@@ -1771,7 +1967,7 @@ pub async fn computer_command(
                 accessibility: accessibility_trusted(),
                 screen_recording: screen_recording_granted(),
                 grants,
-                allowlist: load_allowed_apps(&data_root),
+                allowlist: load_allowed_apps(&data_root).await,
             })
         }
         ComputerCommandRequest::RequestAccess { kind } => {
@@ -2015,17 +2211,17 @@ pub async fn computer_command(
             Ok(ComputerCommandResponse::Done)
         }
         ComputerCommandRequest::AllowApp { bundle_id, name } => {
-            let mut allowlist = load_allowed_apps(&data_root);
+            let mut allowlist = load_allowed_apps(&data_root).await;
             if !allowlist.iter().any(|entry| entry.bundle_id.eq_ignore_ascii_case(&bundle_id)) {
                 allowlist.push(ComputerAllowedApp { bundle_id, name });
-                save_allowed_apps(&data_root, &allowlist)?;
+                save_allowed_apps(&data_root, &allowlist).await?;
             }
             Ok(ComputerCommandResponse::Done)
         }
         ComputerCommandRequest::UnallowApp { bundle_id } => {
-            let mut allowlist = load_allowed_apps(&data_root);
+            let mut allowlist = load_allowed_apps(&data_root).await;
             allowlist.retain(|entry| !entry.bundle_id.eq_ignore_ascii_case(&bundle_id));
-            save_allowed_apps(&data_root, &allowlist)?;
+            save_allowed_apps(&data_root, &allowlist).await?;
             Ok(ComputerCommandResponse::Done)
         }
     }
@@ -2039,6 +2235,7 @@ pub async fn computer_command(
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "macos")]
     fn node(eid: u64, role: &str, name: &str, parent: Option<u64>) -> AxNodeData {
         AxNodeData {
             eid,
@@ -2051,6 +2248,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn formats_ax_nodes_with_eid_anchors_and_states() {
         let mut disabled = node(3, "AXButton", "提交", Some(1));
@@ -2078,6 +2276,7 @@ mod tests {
         assert!(!text.contains("group"), "{text}");
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn format_ax_nodes_truncates_over_cap() {
         let mut nodes = vec![node(1, "AXApplication", "App", None)];
@@ -2158,6 +2357,7 @@ mod tests {
         assert!(response.get("screenshot").is_none(), "skip_serializing_if 生效");
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn key_and_modifier_matrix() {
         assert_eq!(named_key_virtual_code("Enter"), Some(36));
@@ -2173,6 +2373,7 @@ mod tests {
         assert_eq!(modifier_definition("win"), None);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn chunk_utf16_splits_on_pair_boundaries() {
         assert!(chunk_utf16("").is_empty());
@@ -2203,6 +2404,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn gate_decision_matrix() {
         let allowlist = vec![
@@ -2241,6 +2443,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn state_token_parse_and_stale_snapshot() {
         assert_eq!(parse_state_token("123:7"), Ok((123, 7)));
@@ -2266,6 +2469,7 @@ mod tests {
     /// 回归：AXIsProcessTrustedWithOptions 的 options 必须是合法字典。传 NULL
     /// 在 macOS 26 的 HIServices 内部直接 CFGetTypeID(NULL) 段错误（真机崩溃
     /// 报告 Thread 7）；本用例在开发机上真跑探测锁住该行为。
+    #[cfg(target_os = "macos")]
     #[test]
     fn accessibility_probe_does_not_crash() {
         let _ = accessibility_trusted();
@@ -2273,6 +2477,7 @@ mod tests {
 
     /// 系统设置深链：每个隐私面板两条候选 URL（macOS 13+ 新 schema 在前，
     /// macOS 12- 旧 schema 兜底）。
+    #[cfg(target_os = "macos")]
     #[test]
     fn system_settings_urls_cover_both_panels() {
         let accessibility = system_settings_urls(ComputerAccessKind::Accessibility);
@@ -2295,21 +2500,22 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn allowlist_file_round_trip() {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path();
-        assert!(load_allowed_apps(root).is_empty());
+        assert!(load_allowed_apps_sync(root).is_empty());
         let apps = vec![ComputerAllowedApp {
             bundle_id: "com.example.app".into(),
             name: "示例".into(),
         }];
-        save_allowed_apps(root, &apps).expect("save");
-        let loaded = load_allowed_apps(root);
+        save_allowed_apps_sync(root, &apps).expect("save");
+        let loaded = load_allowed_apps_sync(root);
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].bundle_id, "com.example.app");
         // 损坏载荷 fail-safe 回退空表。
         std::fs::write(allowed_apps_path(root), "{not-json").expect("corrupt");
-        assert!(load_allowed_apps(root).is_empty());
+        assert!(load_allowed_apps_sync(root).is_empty());
     }
 }

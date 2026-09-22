@@ -76,7 +76,7 @@ describe('SubAgentsSection', () => {
     expect(html).toContain('8 次调用')
     expect(html).toContain('120 次模型请求')
     expect(html).toContain('900 秒')
-    expect(html).toContain('runtime v10')
+    expect(html).toContain('runtime v11')
     expect(html).toContain('sequential')
   })
 

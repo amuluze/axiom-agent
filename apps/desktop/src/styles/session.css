@@ -951,8 +951,6 @@
 .session__runtime-error {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
   width: min(calc(100% - (2 * var(--space-6))), var(--message-column));
   margin: 0 auto var(--space-2);
   padding: 8px 12px;
@@ -961,18 +959,6 @@
   color: var(--diff-red);
   background: var(--danger-soft);
   font-size: 0.9231rem;
-}
-
-.session__runtime-error button {
-  flex-shrink: 0;
-  padding: 5px 8px;
-  border-radius: var(--radius-sm);
-  color: var(--text-primary);
-  background: var(--bg-card);
-}
-
-.session__runtime-error button:hover {
-  background: var(--bg-hover);
 }
 
 .session__result-chip {

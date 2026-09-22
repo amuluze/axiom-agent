@@ -9,6 +9,9 @@ import { PROVIDER_CONSTANTS, PROVIDER_DATA } from './generatedProviderData'
 import { getProviderHost } from './providerHost'
 
 export type { ProviderCapabilities, ProviderId } from './providerDefinitions'
+// 数值边界（与 Rust 生成表同源）经本模块转出：providerDraftValidation 这类纯校验模块由此
+// 取用，避免直连 generatedProviderData 绕过 Provider Runtime 边界（tauri-capability-audit 强制）。
+export { PROVIDER_CONSTANTS }
 
 const PREVIOUS_PROVIDER_PROFILE_SCHEMA_VERSION = 3 as const
 export const PROVIDER_PROFILE_SCHEMA_VERSION = 4 as const

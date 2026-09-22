@@ -28,11 +28,13 @@ export const SummaryInstructionsDialog = ({
     [customInstructions],
   )
 
+  // 重置只跟随 mode 变化（弹层重开清空上次输入）。onCancel 是 App 每次渲染
+  // 新建的回调，纳入依赖会让弹层打开期间的任意父级重渲染清空已输入的指令。
   useEffect(() => {
     if (!mode) return
     setCustomInstructions('')
     setReplaceInstructions(false)
-  }, [mode, onCancel])
+  }, [mode])
 
   if (!mode) return null
   const label = {

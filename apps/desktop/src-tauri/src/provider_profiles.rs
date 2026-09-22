@@ -73,6 +73,17 @@ pub(crate) struct ProviderDefaultProfile {
     pub capabilities: ProviderCapabilities,
 }
 
+/// 模型级 wire 覆盖（多协议网关用，如 OpenCode Go：同一订阅下 chat / responses / messages）。
+///
+/// 只在**同 origin** 下声明（由 `scripts/generate-provider-sources.mjs` fail-closed 校验）：
+/// 端点覆盖规则（换 host 时保留协议 path）依赖这一不变量。
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct ProviderModelWire {
+    pub model_id: &'static str,
+    pub api_format: ModelApiFormat,
+    pub endpoint: &'static str,
+}
+
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct ProviderProfileEntry {
     pub provider_id: &'static str,
@@ -83,6 +94,8 @@ pub(crate) struct ProviderProfileEntry {
     /// 放行任意公网 https 端点（仅自定义中转站 provider 使用；http 公网仍由
     /// `validate_model_url` 拒绝，secret 绑定由请求期 `is_secret_id_bound_to_provider` 独立强制）。
     pub allow_public_endpoints: bool,
+    /// 逐模型的协议/端点覆盖；未命中时回落 `api_format` + `default_profile.endpoint`。
+    pub model_wires: &'static [ProviderModelWire],
     pub legacy_secret_id_prefixes: &'static [&'static str],
 }
 
@@ -93,6 +106,21 @@ impl ProviderProfileEntry {
             ModelApiFormat::OpenaiResponses => "openai-responses",
             ModelApiFormat::AnthropicCompatible => "anthropic-compatible",
         }
+    }
+
+    /// 该模型生效的协议与端点（未声明 wire 或模型未知时即 provider 默认）。
+    ///
+    /// 未命中回落默认是有意的：用户可以在设置页手填目录外的 modelId，此时按 provider
+    /// 主协议发送（与「未知模型 = 按 provider 默认」的既有语义一致）。
+    pub(crate) fn wire_for(&self, model_id: Option<&str>) -> (ModelApiFormat, &'static str) {
+        let Some(model_id) = model_id else {
+            return (self.api_format, self.default_profile.endpoint);
+        };
+        self.model_wires
+            .iter()
+            .find(|wire| wire.model_id == model_id)
+            .map(|wire| (wire.api_format, wire.endpoint))
+            .unwrap_or((self.api_format, self.default_profile.endpoint))
     }
 }
 
@@ -770,9 +798,9 @@ pub(crate) struct ResolvedProfile {
     pub api_format: ModelApiFormat,
 }
 
-/// 按 provider 解析最终请求 URL 与允许的 origin。
+/// 按 provider（与可选 modelId）解析最终请求 URL 与允许的 origin。
 ///
-/// - `endpoint_override` 为 `None` 时用内置默认 endpoint。
+/// - `endpoint_override` 为 `None` 时用该模型生效的端点（无模型 wire 时即内置默认）。
 /// - 自定义 endpoint 必须命中以下任一才放行：
 ///   - 与该 provider 内置默认 endpoint 同 origin（官方 endpoint 的不同 path）
 ///   - 本地/私网地址（`is_allowed_plain_http_host`，覆盖 localhost mock 与自托管模型）
@@ -784,19 +812,48 @@ pub(crate) struct ResolvedProfile {
 ///     secret namespace（`is_secret_id_bound_to_provider` 请求期绑定校验，见 model_http.rs）
 ///
 /// 其它自定义 origin 一律拒绝——受陷渲染进程无法把密钥发到任意公网 host。
+///
+/// **模型级 wire 与覆盖规则的交互**（多协议网关）：模型声明了 wire 时，override 只用来
+/// 决定 host，协议 path 始终由该模型的 wire 决定——同 origin 的 override 视为「未换 host」
+/// 直接取 wire 端点；异 origin 的 override 取「override 的 origin + wire 的 path」（自建
+/// 镜像场景）。无 wire 的模型/ provider 完全沿用旧行为（override 原样生效），既有 provider
+/// 的语义逐字不变。
 pub(crate) fn resolve_profile(
     provider_id: &str,
     endpoint_override: Option<&str>,
+    model_id: Option<&str>,
 ) -> Result<ResolvedProfile, String> {
     let entry = find_profile(provider_id)?;
-    let raw_endpoint = endpoint_override
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(entry.default_profile.endpoint);
+    let (api_format, wire_endpoint) = entry.wire_for(model_id);
+    let model_wire = entry
+        .model_wires
+        .iter()
+        .find(|wire| Some(wire.model_id) == model_id);
+    let override_value = endpoint_override.map(str::trim).filter(|value| !value.is_empty());
+    let raw_endpoint = match (override_value, model_wire) {
+        (None, _) => wire_endpoint.to_string(),
+        (Some(override_endpoint), None) => override_endpoint.to_string(),
+        (Some(override_endpoint), Some(wire)) => {
+            let override_url = validate_model_url(override_endpoint)?;
+            let default_origin =
+                url_origin(&validate_model_url(entry.default_profile.endpoint)?);
+            if url_origin(&override_url) == default_origin {
+                // 同 origin：用户没换 host，协议 path 由该模型的 wire 说了算。
+                wire_endpoint.to_string()
+            } else {
+                // 异 origin（自建镜像）：换 host、保留该模型形状的 path。
+                let wire_url = validate_model_url(wire.endpoint)?;
+                let mut mirrored = override_url;
+                mirrored.set_path(wire_url.path());
+                mirrored.set_query(wire_url.query());
+                mirrored.to_string()
+            }
+        }
+    };
     // Anthropic 格式需要 path 补全（与前端 anthropicMessagesEndpoint 等价）。
-    let final_endpoint = match entry.api_format {
-        ModelApiFormat::AnthropicCompatible => resolve_anthropic_endpoint(raw_endpoint)?,
-        _ => raw_endpoint.to_string(),
+    let final_endpoint = match api_format {
+        ModelApiFormat::AnthropicCompatible => resolve_anthropic_endpoint(&raw_endpoint)?,
+        _ => raw_endpoint,
     };
     let url = validate_model_url(&final_endpoint)?;
     let origin = url_origin(&url);
@@ -820,10 +877,7 @@ pub(crate) fn resolve_profile(
             "provider {provider_id} 的端点 {origin} 既非官方 origin 也非本地/私网地址，已拒绝"
         ));
     }
-    Ok(ResolvedProfile {
-        url,
-        api_format: entry.api_format,
-    })
+    Ok(ResolvedProfile { url, api_format })
 }
 
 /// Anthropic Messages API 的 path 补全。
@@ -1074,7 +1128,7 @@ mod tests {
             ("kimi-coding", "https://api.kimi.com/coding/v1/messages"),
             ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"),
         ] {
-            let resolved = resolve_profile(provider_id, Some(endpoint)).unwrap();
+            let resolved = resolve_profile(provider_id, Some(endpoint), None).unwrap();
             assert_eq!(
                 resolved.url.host_str(),
                 reqwest::Url::parse(endpoint).unwrap().host_str()
@@ -1091,7 +1145,7 @@ mod tests {
             ("deepseek", "https://api.moonshot.cn/v1/chat/completions"),
             ("generic-anthropic-compatible", "https://api.kimi.com/coding/v1/messages"),
         ] {
-            let error = resolve_profile(provider_id, Some(foreign_endpoint)).unwrap_err();
+            let error = resolve_profile(provider_id, Some(foreign_endpoint), None).unwrap_err();
             assert!(
                 error.contains("已拒绝"),
                 "{provider_id} → {foreign_endpoint} 应被拒绝，unexpected error: {error}"
@@ -1104,7 +1158,7 @@ mod tests {
         // Kimi Coding Plan 走 Anthropic 兼容端点（api.kimi.com/coding），
         // 与开放平台（api.moonshot.cn）是两套独立体系：开放平台 Key 用于
         // coding 端点会得到 HTTP 401 Invalid Authentication。
-        let resolved = resolve_profile("kimi-coding", None).unwrap();
+        let resolved = resolve_profile("kimi-coding", None, None).unwrap();
         assert_eq!(
             resolved.url.as_str(),
             "https://api.kimi.com/coding/v1/messages"
@@ -1117,6 +1171,7 @@ mod tests {
         let error = resolve_profile(
             "generic-anthropic-compatible",
             Some("https://attacker.example.com/v1/messages"),
+            None,
         )
         .unwrap_err();
         assert!(error.contains("已拒绝"), "unexpected error: {error}");
@@ -1128,6 +1183,7 @@ mod tests {
         let resolved = resolve_profile(
             "custom-openai-compatible",
             Some("https://any-transit.example.com/v1/chat/completions"),
+            None,
         )
         .unwrap();
         assert_eq!(resolved.url.host_str(), Some("any-transit.example.com"));
@@ -1140,6 +1196,7 @@ mod tests {
         let resolved = resolve_profile(
             "custom-anthropic-compatible",
             Some("https://any-transit.example.com/v1"),
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -1155,6 +1212,7 @@ mod tests {
         let error = resolve_profile(
             "custom-openai-compatible",
             Some("http://any-transit.example.com/v1/chat/completions"),
+            None,
         )
         .unwrap_err();
         assert!(error.contains("plain HTTP"), "unexpected error: {error}");
@@ -1194,10 +1252,12 @@ mod tests {
     fn rejects_non_normalized_v4_profile() {
         let mut value = v4_profile();
         // 越界 maxOutputTokens 在 v4 文档中必须 fail-closed（strict 校验）。
+        // 用常量 + 1 而非旧魔数：范围由契约生成，写死字面量会在上限变更时静默失效
+        // （64000 → 512000 时 99_999 变为合法值，用例曾因此失去意义）。
         value
             .as_object_mut()
             .unwrap()
-            .insert("maxOutputTokens".into(), Value::from(99_999u64));
+            .insert("maxOutputTokens".into(), Value::from(MAX_OUTPUT_MAX + 1));
         let error = decode_profile_document(&value).unwrap_err();
         assert!(error.contains("无效"), "unexpected error: {error}");
     }
@@ -1505,8 +1565,98 @@ mod tests {
     }
 
     #[test]
+    fn resolves_model_wire_for_multi_protocol_provider() {
+        // OpenCode Go：一个订阅三种协议，按模型分发（同一 origin、不同 path）。
+        let chat = resolve_profile("opencode-go", None, Some("glm-5.3")).unwrap();
+        assert_eq!(
+            chat.url.as_str(),
+            "https://opencode.ai/zen/go/v1/chat/completions"
+        );
+        assert_eq!(chat.api_format, ModelApiFormat::OpenaiCompatible);
+
+        let messages = resolve_profile("opencode-go", None, Some("minimax-m3")).unwrap();
+        assert_eq!(messages.url.as_str(), "https://opencode.ai/zen/go/v1/messages");
+        assert_eq!(messages.api_format, ModelApiFormat::AnthropicCompatible);
+
+        let responses = resolve_profile("opencode-go", None, Some("grok-4.6")).unwrap();
+        assert_eq!(
+            responses.url.as_str(),
+            "https://opencode.ai/zen/go/v1/responses"
+        );
+        assert_eq!(responses.api_format, ModelApiFormat::OpenaiResponses);
+    }
+
+    #[test]
+    fn falls_back_to_provider_default_for_unknown_or_missing_model() {
+        // 目录外自定义 modelId 与「未传 modelId」都按 provider 主协议发送。
+        for model_id in [None, Some("some-unknown-model")] {
+            let resolved = resolve_profile("opencode-go", None, model_id).unwrap();
+            assert_eq!(
+                resolved.url.as_str(),
+                "https://opencode.ai/zen/go/v1/chat/completions"
+            );
+            assert_eq!(resolved.api_format, ModelApiFormat::OpenaiCompatible);
+        }
+        // 单协议 provider 不受影响。
+        let resolved = resolve_profile("openai", None, Some("gpt-4.1")).unwrap();
+        assert_eq!(resolved.url.as_str(), "https://api.openai.com/v1/responses");
+    }
+
+    #[test]
+    fn model_wire_keeps_its_protocol_path_under_same_origin_override() {
+        // 同 origin 的 endpoint 覆盖：用户没换 host，协议 path 由模型 wire 决定
+        // （否则会把 messages 请求打到 chat 路径上）。
+        let resolved = resolve_profile(
+            "opencode-go",
+            Some("https://opencode.ai/zen/go/v1/chat/completions"),
+            Some("minimax-m3"),
+        )
+        .unwrap();
+        assert_eq!(resolved.url.as_str(), "https://opencode.ai/zen/go/v1/messages");
+        assert_eq!(resolved.api_format, ModelApiFormat::AnthropicCompatible);
+    }
+
+    #[test]
+    fn model_wire_mirrors_its_path_onto_a_foreign_override_origin() {
+        // 自建镜像（本地/私网放行）：换 host、保留该模型形状的 path。
+        let resolved = resolve_profile(
+            "opencode-go",
+            Some("http://127.0.0.1:8080/zen/go/v1/chat/completions"),
+            Some("grok-4.6"),
+        )
+        .unwrap();
+        assert_eq!(resolved.url.as_str(), "http://127.0.0.1:8080/zen/go/v1/responses");
+        assert_eq!(resolved.api_format, ModelApiFormat::OpenaiResponses);
+    }
+
+    #[test]
+    fn model_wire_does_not_relax_the_endpoint_allow_list() {
+        // wire 只覆盖 path，不放宽 origin：攻击者域名仍然被拒（密钥不外发）。
+        let error = resolve_profile(
+            "opencode-go",
+            Some("https://attacker.example.com/zen/go/v1/chat/completions"),
+            Some("minimax-m3"),
+        )
+        .unwrap_err();
+        assert!(error.contains("已拒绝"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn provider_without_wires_keeps_the_legacy_override_semantics() {
+        // 回归：无 wire 的 provider，同 origin 的任意 path 覆盖仍原样生效
+        // （模型级 path 规则只作用于声明了 wire 的模型）。
+        let resolved = resolve_profile(
+            "generic-openai-compatible",
+            Some("https://api.openai.com/v1/other-path"),
+            Some("anything"),
+        )
+        .unwrap();
+        assert_eq!(resolved.url.as_str(), "https://api.openai.com/v1/other-path");
+    }
+
+    #[test]
     fn resolves_builtin_openai_compatible_default_endpoint() {
-        let resolved = resolve_profile("generic-openai-compatible", None).unwrap();
+        let resolved = resolve_profile("generic-openai-compatible", None, None).unwrap();
         assert_eq!(
             resolved.url.as_str(),
             "https://api.openai.com/v1/chat/completions"
@@ -1516,14 +1666,14 @@ mod tests {
 
     #[test]
     fn resolves_builtin_openai_responses_default_endpoint() {
-        let resolved = resolve_profile("openai", None).unwrap();
+        let resolved = resolve_profile("openai", None, None).unwrap();
         assert_eq!(resolved.url.as_str(), "https://api.openai.com/v1/responses");
         assert_eq!(resolved.api_format, ModelApiFormat::OpenaiResponses);
     }
 
     #[test]
     fn resolves_builtin_anthropic_default_endpoint() {
-        let resolved = resolve_profile("generic-anthropic-compatible", None).unwrap();
+        let resolved = resolve_profile("generic-anthropic-compatible", None, None).unwrap();
         assert_eq!(
             resolved.url.as_str(),
             "https://api.anthropic.com/v1/messages"
@@ -1537,6 +1687,7 @@ mod tests {
         let resolved = resolve_profile(
             "generic-anthropic-compatible",
             Some("https://api.anthropic.com/v2/messages"),
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -1550,6 +1701,7 @@ mod tests {
         let error = resolve_profile(
             "generic-anthropic-compatible",
             Some("https://attacker.example.com/v1/messages"),
+            None,
         )
         .unwrap_err();
         assert!(error.contains("已拒绝"), "unexpected error: {error}");
@@ -1560,6 +1712,7 @@ mod tests {
         let resolved = resolve_profile(
             "generic-openai-compatible",
             Some("http://127.0.0.1:11434/v1/chat/completions"),
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -1573,6 +1726,7 @@ mod tests {
         let resolved = resolve_profile(
             "generic-anthropic-compatible",
             Some("http://localhost:8080/anthropic"),
+            None,
         )
         .unwrap();
         // path 补全：/anthropic → /anthropic/v1/messages
@@ -1587,6 +1741,7 @@ mod tests {
         let resolved = resolve_profile(
             "generic-anthropic-compatible",
             Some("https://api.anthropic.com/v1/messages"),
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -1600,6 +1755,7 @@ mod tests {
         let resolved = resolve_profile(
             "generic-anthropic-compatible",
             Some("https://api.anthropic.com/v1"),
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -1613,6 +1769,7 @@ mod tests {
         let resolved = resolve_profile(
             "generic-anthropic-compatible",
             Some("https://api.anthropic.com"),
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -1623,7 +1780,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_provider_id() {
-        let error = resolve_profile("minimax", None).unwrap_err();
+        let error = resolve_profile("minimax", None, None).unwrap_err();
         assert!(
             error.contains("unknown provider id"),
             "unexpected error: {error}"
@@ -1633,7 +1790,7 @@ mod tests {
     #[test]
     fn rejects_empty_endpoint_override_falls_back_to_default() {
         // 空字符串覆盖等同不覆盖。
-        let resolved = resolve_profile("openai", Some("  ")).unwrap();
+        let resolved = resolve_profile("openai", Some("  "), None).unwrap();
         assert_eq!(resolved.url.as_str(), "https://api.openai.com/v1/responses");
     }
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { LockKeyhole, Monitor, ShieldCheck, X } from 'lucide-react'
+import { LockKeyhole, Monitor, MonitorOff, ShieldCheck, X } from 'lucide-react'
 import {
   loadComputerSettings,
   saveComputerSettings,
@@ -14,6 +14,7 @@ import {
   type ComputerGrantInfo,
 } from '@/platform/computerSession'
 import { useT } from '@/i18n'
+import { useUiStore } from '@/stores/uiStore'
 
 /**
  * 电脑控制配置区：能力开关、macOS 权限引导（辅助功能/屏幕录制）、
@@ -30,6 +31,16 @@ interface ComputerStatusState {
 
 export const ComputerSection = () => {
   const { t } = useT()
+  // Linux 限制：电脑控制依赖 macOS Accessibility/CGEvent，Rust 侧全动作
+  // fail-closed（docs/linux-support.md §1.2）——区块顶部直接呈现不支持说明。
+  const operatingSystem = useUiStore((state) => state.operatingSystem)
+  const isUnsupportedPlatform = operatingSystem !== 'macos'
+  const unsupportedNoteKey = operatingSystem === 'windows'
+    ? 'settings.computer.windowsUnsupported'
+    : 'settings.computer.linuxUnsupported'
+  const unsupportedNoteKeyShort = operatingSystem === 'windows'
+    ? 'settings.computer.windowsUnsupportedShort'
+    : 'settings.computer.linuxUnsupportedShort'
   const [draft, setDraft] = useState<ComputerSettings>(() => loadComputerSettings())
   const [status, setStatus] = useState<ComputerStatusState | null>(null)
   const [message, setMessage] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
@@ -56,8 +67,9 @@ export const ComputerSection = () => {
   }, [])
 
   useEffect(() => {
+    if (isUnsupportedPlatform) return
     void refreshStatus()
-  }, [refreshStatus])
+  }, [refreshStatus, isUnsupportedPlatform])
 
   const draftChanged = JSON.stringify(draft) !== JSON.stringify(loadComputerSettings())
 
@@ -118,9 +130,19 @@ export const ComputerSection = () => {
       <div className="section-title">
         <span>{t('settings.computer.title')}</span>
         <span className="section-state">
-          {status ? (status.accessibility ? t('settings.computer.state.accessibilityGranted') : t('settings.computer.state.pending')) : t('settings.computer.state.unknown')}
+          {isUnsupportedPlatform
+            ? t(unsupportedNoteKeyShort)
+            : status
+              ? (status.accessibility ? t('settings.computer.state.accessibilityGranted') : t('settings.computer.state.pending'))
+              : t('settings.computer.state.unknown')}
         </span>
       </div>
+      {isUnsupportedPlatform && (
+        <p className="security-note" role="note">
+          <MonitorOff size={13} aria-hidden />
+          <span>{t(unsupportedNoteKey)}</span>
+        </p>
+      )}
       <div className="settings-grid">
         <label className="settings__toggle">
           <input

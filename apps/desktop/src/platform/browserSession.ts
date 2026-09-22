@@ -20,6 +20,7 @@ export interface BrowserSpawnConfig {
   enabled: boolean
   executablePath: string
   headless: boolean
+  ignoreCertificateErrors: boolean
 }
 
 export type BrowserCommandRequest =
@@ -28,9 +29,14 @@ export type BrowserCommandRequest =
   | { action: 'status' }
   | { action: 'ensureRunning'; config: BrowserSpawnConfig }
   | { action: 'shutdown' }
+  | { action: 'clearProfileData'; mode: 'cache' | 'all' }
   | { action: 'tabs' }
   | { action: 'newTab'; url?: string }
   | { action: 'closeTab'; tabId: string }
+  | { action: 'dblClick'; tabId: string; ref: number }
+  | { action: 'setViewport'; tabId: string; width?: number; height?: number }
+  | { action: 'downloads'; limit?: number }
+  | { action: 'readDownload'; name: string }
   | { action: 'activateTab'; tabId: string }
   | { action: 'navigate'; tabId: string; url: string }
   | { action: 'snapshot'; tabId: string }
@@ -120,7 +126,19 @@ export type BrowserCommandResponse =
     }
   | { type: 'screencastStarted' }
   | { type: 'consoleLog'; entries: ConsoleEntry[] }
+  | { type: 'viewportApplied'; width?: number; height?: number }
+  | { type: 'downloadList'; directory: string; entries: DownloadEntry[] }
+  | { type: 'downloadContent'; name: string; path: string; sizeBytes: number; truncated: boolean; content: string }
   | { type: 'done' }
+
+/** 下载目录条目（recent-first，未完成的 .crdownload 不出现）。 */
+export interface DownloadEntry {
+  name: string
+  path: string
+  sizeBytes: number
+  /** Unix 毫秒时间戳 */
+  modifiedAt: number
+}
 
 /** console/运行时错误条目（Rust 环形缓冲的镜像，最近条目优先语义）。 */
 export interface ConsoleEntry {
@@ -139,6 +157,8 @@ const SPAWN_REQUIRED_ACTIONS = new Set<BrowserCommandRequest['action']>([
   'newTab',
   'closeTab',
   'activateTab',
+  'dblClick',
+  'setViewport',
   'navigate',
   'snapshot',
   'click',
@@ -165,6 +185,7 @@ const spawnConfigFromSettings = (settings: BrowserSettings): BrowserSpawnConfig 
   enabled: settings.enabled,
   executablePath: settings.executablePath,
   headless: settings.headless,
+  ignoreCertificateErrors: settings.ignoreCertificateErrors,
 })
 
 export const browserCommand = async (
@@ -206,6 +227,10 @@ export const ensureBrowserRunning = (
 
 export const shutdownBrowser = (): Promise<BrowserCommandResponse> =>
   browserCommand({ action: 'shutdown' })
+
+/** 清理隔离 profile 数据：cache 保留登录态，all 整库重建（不可撤销）。 */
+export const clearBrowserProfileData = (mode: 'cache' | 'all'): Promise<BrowserCommandResponse> =>
+  browserCommand({ action: 'clearProfileData', mode })
 
 // ---------------------------------------------------------------------------
 // Agent 通道活动监听：browserPanelService 注册，用于「Agent 用浏览器时自动

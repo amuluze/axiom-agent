@@ -1,12 +1,10 @@
-import type { RefObject } from 'react'
+import { useState, type CSSProperties, type RefObject } from 'react'
 import { useAgentStore } from '@/stores/agentStore'
 import { useUiStore } from '@/stores/uiStore'
 import type { ContextBudgetUsage, ContextCheckpoint } from '@/agent/context/types'
 import { useT } from '@/i18n'
-
-export const formatTokens = (tokens: number): string => tokens >= 1_000
-  ? `${(tokens / 1_000).toFixed(tokens >= 100_000 ? 0 : 1)}K`
-  : String(tokens)
+import { SessionUsageControl, SessionUsageDetail } from './SessionUsageControl'
+import { formatTokens, lastAssistantUsage } from './usageSummary'
 
 export const formatContextBytes = (bytes: number): string => bytes >= 1024 * 1024
   ? `${(bytes / 1024 / 1024).toFixed(2)} MiB`
@@ -73,6 +71,23 @@ export const ContextBudgetPanel = ({
   )
 }
 
+/**
+ * 悬浮层里的预算区块（纯 props）：水位与两条上限。与用量区块并列，
+ * 分区标题是必需的——两者数值含义无交集，混排会让用户把水位读成命中率。
+ */
+export const ContextBudgetSummary = ({ usage }: { usage: ContextBudgetUsage }) => {
+  const { t } = useT()
+  const percent = contextBudgetPercent(usage)
+  return (
+    <span className="composer__budget-summary">
+      <span className="composer__popover-title">{t('app.budget.title')}</span>
+      <span className="composer__popover-emphasis">{percent.toFixed(0)}%</span>
+      <span>{formatTokens(usage.estimatedTokens)} / {formatTokens(usage.contextWindow)} tokens</span>
+      <span>{formatContextBytes(usage.requestBytes)} / 2.00 MiB</span>
+    </span>
+  )
+}
+
 export interface ContextBudgetControlProps {
   containerRef: RefObject<HTMLDivElement | null>
   open: boolean
@@ -82,9 +97,11 @@ export interface ContextBudgetControlProps {
 }
 
 /**
- * 输入框控制行里的上下文预算入口：触发按钮常驻展示水位，
- * 弹层承载原 RuntimeRail 预算面板的完整信息（迁移后 rail 只保留浏览器/电脑控制）。
- * 仅会话 variant 渲染；无 contextUsage（尚无活跃会话）时不渲染。
+ * 输入框控制行里的预算入口：环即水位——底栏不再给出百分比文本，数值只出现在
+ * aria 名称与悬浮层里；悬浮展开预算与用量明细，点击展开完整面板。
+ *
+ * 无水位（尚无活跃会话）时退化为「最近一次响应」的命中率环；两者都无则不渲染。
+ * 悬浮层与面板互斥：面板已展开时不再叠一层提示。
  */
 export const ContextBudgetControl = ({
   containerRef,
@@ -95,12 +112,14 @@ export const ContextBudgetControl = ({
   const { t } = useT()
   const contextUsage = useAgentStore((state) => state.contextUsage)
   const contextCheckpoint = useAgentStore((state) => state.contextCheckpoint)
-  const messageCount = useAgentStore((state) => state.messages.length)
+  const messages = useAgentStore((state) => state.messages)
   const running = useAgentStore((state) => state.running)
   const sessionBusy = useAgentStore((state) => state.sessionBusy)
   const compactionRunning = useAgentStore((state) => state.compactionRunning)
   const setSummaryRequest = useUiStore((state) => state.setSummaryRequest)
-  if (!contextUsage) return null
+  const [hovered, setHovered] = useState(false)
+  if (!contextUsage) return <SessionUsageControl />
+  const usage = lastAssistantUsage(messages)
   const busy = running || sessionBusy
   const percent = contextBudgetPercent(contextUsage)
 
@@ -108,24 +127,33 @@ export const ContextBudgetControl = ({
     <div className="composer__budget-picker" ref={containerRef}>
       <button
         aria-expanded={open}
-        aria-label={t('app.budget.aria')}
+        aria-label={t('app.budget.ariaValue', { percent: percent.toFixed(0) })}
         className="composer__budget-trigger"
         data-status={contextUsage.needsCompaction ? 'warn' : 'ok'}
+        onBlur={() => setHovered(false)}
         onClick={onToggle}
-        title={t('app.budget.title')}
+        onFocus={() => setHovered(true)}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
         type="button"
       >
-        <span className="composer__budget-bar">
-          <span className="composer__budget-bar-fill" style={{ width: `${percent}%` }} />
-        </span>
-        <span>{percent.toFixed(0)}%</span>
+        <span
+          className="composer__budget-ring"
+          style={{ '--hit': `${percent}%` } as CSSProperties}
+        />
       </button>
+      {hovered && !open && (
+        <span className="composer__budget-popover" role="tooltip">
+          <ContextBudgetSummary usage={contextUsage} />
+          {usage && <SessionUsageDetail usage={usage} />}
+        </span>
+      )}
       {open && (
         <ContextBudgetPanel
           busy={busy}
           checkpoint={contextCheckpoint}
           compactionRunning={compactionRunning}
-          messageCount={messageCount}
+          messageCount={messages.length}
           onCompact={() => {
             setSummaryRequest({ mode: 'compaction' })
             onCompacted()

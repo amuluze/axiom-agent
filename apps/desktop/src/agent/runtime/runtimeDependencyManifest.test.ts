@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { validateToolRegistry } from '@/agent/core/deferredTools'
 import { defaultProviderProfile } from '@/agent/transport/provider'
 import { describe, expect, it } from 'vitest'
-import { TEST_ANTHROPIC_PROFILE } from '@/components/settings/sections/testFixtures'
+import { TEST_ANTHROPIC_PROFILE } from '@/agent/transport/__fixtures__/testAnthropicProfile'
 import {
   assertRuntimeDependenciesCompatible,
   createRuntimeDependencyManifest as createManifest,
@@ -154,20 +154,24 @@ describe('Runtime dependency manifest', () => {
     ['apply_changes', '3', 'never', '5'],
     ['apply_changes', '4', 'never', '5'],
     ['restore_trash', '2', 'never', '3'],
-    ['bash', '2', 'never', '15'],
-    ['bash', '3', 'never', '15'],
-    ['bash', '4', 'never', '15'],
-    ['bash', '5', 'never', '15'],
-    ['bash', '6', 'never', '15'],
-    ['bash', '7', 'never', '15'],
-    ['bash', '8', 'never', '15'],
-    ['bash', '9', 'never', '15'],
-    ['bash', '10', 'never', '15'],
-    ['bash', '11', 'never', '15'],
-    ['bash', '12', 'never', '15'],
+    ['bash', '2', 'never', '16'],
+    ['bash', '3', 'never', '16'],
+    ['bash', '4', 'never', '16'],
+    ['bash', '5', 'never', '16'],
+    ['bash', '6', 'never', '16'],
+    ['bash', '7', 'never', '16'],
+    ['bash', '8', 'never', '16'],
+    ['bash', '9', 'never', '16'],
+    ['bash', '10', 'never', '16'],
+    ['bash', '11', 'never', '16'],
+    ['bash', '12', 'never', '16'],
     // bash 曾随未合入主干的 sudo 词边界扩展 bump 到 v13（已回滚）；两版 v13 的
     // schema 一致（command/cwd/timeout/network），存储的旧 v13 无需迁移即可恢复。
-    ['bash', '13', 'never', '15'],
+    ['bash', '13', 'never', '16'],
+    // v16：沙箱后端平台化（macOS Seatbelt / Linux bubblewrap），审批卡片与降级
+    // 警示文案去掉平台专名；schema 不变。
+    ['bash', '14', 'never', '16'],
+    ['bash', '15', 'never', '16'],
   ])('migrates stored %s@%s/%s to the live %s contract', (name, previousVersion, recoveryPolicy, liveVersion) => {
     const stored = createRuntimeDependencyManifest(
       TEST_ANTHROPIC_PROFILE,
@@ -287,8 +291,8 @@ describe('Runtime dependency manifest', () => {
   })
 
   it('restores sessions persisted during the rolled-back v7 transport window', () => {
-    // 一等公民 provider 曾随未合入主干的改动 bump 到 v7；回滚后 live 为 v6。
-    // 旧会话必须能经单跳迁移恢复，否则桌面能力初始化被 Provider 依赖不匹配阻塞。
+    // 一等公民 provider 曾随未合入主干的改动 bump 到 v7；该版本号已废弃，live 为 v10。
+    // 历史窗口会话必须能经单跳迁移恢复，否则桌面能力初始化被 Provider 依赖不匹配阻塞。
     const stored = decodeRuntimeDependencyManifest({
       schemaVersion: 3,
       provider: {
@@ -305,7 +309,28 @@ describe('Runtime dependency manifest', () => {
       [tool('discover')],
     )
 
-    expect(current.provider.transportVersion).toBe('6')
+    expect(current.provider.transportVersion).toBe('10')
+    expect(() => assertRuntimeDependenciesCompatible(stored, current, ['discover'])).not.toThrow()
+  })
+
+  it('migrates sessions persisted on the previous live transport version', () => {
+    // 当前发布存量（v6）会话在升级后必须继续恢复。
+    const stored = decodeRuntimeDependencyManifest({
+      schemaVersion: 3,
+      provider: {
+        providerId: 'generic-openai-compatible',
+        apiFormat: 'openai-compatible',
+        modelId: 'gpt-test',
+        transportVersion: '6',
+      },
+      tools: [{ name: 'discover', version: '1', recoveryPolicy: 'never' }],
+      hooks: desktopRuntimeHookDependencies,
+    })
+    const current = createRuntimeDependencyManifest(
+      { ...defaultProviderProfile('generic-openai-compatible'), modelId: 'gpt-test' },
+      [tool('discover')],
+    )
+
     expect(() => assertRuntimeDependenciesCompatible(stored, current, ['discover'])).not.toThrow()
   })
 

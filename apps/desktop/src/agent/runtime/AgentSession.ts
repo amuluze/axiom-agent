@@ -1,8 +1,11 @@
 import { createId } from '@/agent/core/id'
 import {
+  assertMessagePersistable,
   convertBuiltInCustomMessage,
+  createTurnAbortedMessage,
   createUserMessage,
   defaultConvertToModelMessages,
+  TURN_ABORTED_CUSTOM_TYPE,
 } from '@/agent/core/messages'
 import {
   activeToolsForContext,
@@ -23,6 +26,7 @@ import {
   snapshotAgentTools,
 } from '@/agent/core/snapshots'
 import { applyStreamingEvent } from '@/agent/core/streamingDraft'
+import { impliesMessageNotPersisted } from '@/agent/core/persistenceBarrier'
 import { ContextWindowManager } from '@/agent/context/ContextWindowManager'
 import { createContextPolicy } from '@/agent/context/types'
 import type { ContextBudgetUsage, ContextCheckpoint, ContextPolicy } from '@/agent/context/types'
@@ -32,6 +36,14 @@ import { isOverflowAssistant } from '@/agent/context/budget'
 import { MessageQueue } from './messageQueue'
 import { SessionJournal } from './sessionJournal'
 import type { QueueDeliveryMode } from './queueSettings'
+import {
+  acceptedQueueMessage,
+  rejectedQueueMessage,
+  type QueueAcceptance,
+  type QueueMoveTarget,
+  type QueueMutationResult,
+  type QueuePlacement,
+} from './queueContracts'
 import type { AgentEnvironment } from '@/agent/environment/AgentEnvironment'
 import {
   createParentRunLedger,
@@ -118,6 +130,8 @@ export interface AgentSessionOptions {
   toolExecution?: ToolExecutionMode
   steeringMode?: QueueDeliveryMode
   followUpMode?: QueueDeliveryMode
+  /** 队列自动出队开关（默认 true）：false 时 turn 边界不自动消费，仅手动放行。 */
+  autoDrain?: boolean
   beforeToolCall?: BeforeToolCall
   afterToolCall?: AfterToolCall
   transformContext?: TransformContext
@@ -182,6 +196,11 @@ export interface QueuedMessageSnapshot {
   id: string
   kind: QueuedMessageKind
   content: string
+  /**
+   * 队列项的图片块（只读投影：与队列内消息共享块对象，调用方不得就地修改）。
+   * 回填输入框必须带上它，否则「恢复编辑」会静默丢图。
+   */
+  images: ImageContentBlock[]
   createdAt: number
 }
 
@@ -275,6 +294,14 @@ const isSafeAutoRetryFailure = (message: AgentMessage | undefined): message is A
   && message.content.length === 0
   && !message.contentBlocks?.some((block) => block.type === 'thinking')
 
+/** 队列项的图片块投影：共享块对象，只读消费（回填输入框时按需再克隆）。 */
+const queuedMessageImages = (message: AgentMessage): ImageContentBlock[] =>
+  message.role === 'user' && message.contentBlocks
+    ? message.contentBlocks.filter((block): block is ImageContentBlock => block.type === 'image')
+    : []
+
+const QUEUE_KINDS: readonly QueuedMessageKind[] = ['steering', 'follow-up', 'next-turn']
+
 export class AgentSession {
   readonly id: string
   private readonly listeners = new Set<AgentEventListener>()
@@ -343,6 +370,12 @@ export class AgentSession {
   private retryWaiting = false
   private readonly queueJournalEntryIds = new Map<string, string>()
   private readonly sessionJournal: SessionJournal
+  /** 队列自动出队开关（默认 true）：false 时 turn 边界不消费，仅 sendQueuedNow 放行。 */
+  private autoDrainEnabled = true
+  /** 手动放行待注入的队列项 id：命中 steering 队首时放行一次，消费/换条后失效。 */
+  private immediateDispatchId?: string
+  /** 中点插值触及 double 精度极限的标记：下一次跨队列移动前先整型重排。 */
+  private orderPrecisionDegraded = false
 
   constructor(options: AgentSessionOptions) {
     this.id = options.sessionId ?? createId('session')
@@ -403,6 +436,7 @@ export class AgentSession {
     this.steeringQueue = new MessageQueue(options.steeringMode ?? 'one-at-a-time')
     this.followUpQueue = new MessageQueue(options.followUpMode ?? 'one-at-a-time')
     this.nextTurnQueue = new MessageQueue('all')
+    this.autoDrainEnabled = options.autoDrain ?? true
     this.restoreJournalEntries(options.journalEntries ?? [])
   }
 
@@ -412,6 +446,23 @@ export class AgentSession {
 
   get canQueueMessages(): boolean {
     return this.acceptingQueuedMessages
+  }
+
+  /**
+   * sendQueuedNow 的武装目标（未消费/未作废时非空）：UI 据此渲染「已放行，
+   * 等待 turn 边界注入」的即时反馈——否则点击接受与注入之间的窗口对用户不可见。
+   */
+  get armedQueueMessageId(): string | undefined {
+    return this.immediateDispatchId
+  }
+
+  /** 当前队列模式（steering/follow-up 投递档 + autoDrain）：宿主在缓存激活等边界对齐全局设置用。 */
+  get queueModes(): { steering: QueueDeliveryMode; followUp: QueueDeliveryMode; autoDrain: boolean } {
+    return {
+      steering: this.steeringQueue.deliveryMode,
+      followUp: this.followUpQueue.deliveryMode,
+      autoDrain: this.autoDrainEnabled,
+    }
   }
 
   get signal(): AbortSignal | undefined {
@@ -700,6 +751,9 @@ export class AgentSession {
 
   private async startPromptRun(prompts: AgentMessage[]): Promise<AgentLoopResult> {
     if (this.activeRun) throw new Error('Agent 正在运行，请使用 steering 或等待当前运行结束')
+    // 在 run 启动前 fail-fast：超预算消息一旦入列，message_end 持久化屏障才会失败，
+    // 会话已被留在半持久化状态；此处拒绝则什么都没写，用户拆分/精简后直接重发。
+    for (const message of prompts) assertMessagePersistable(message)
     return this.startRun(prompts, true)
   }
 
@@ -753,30 +807,108 @@ export class AgentSession {
     return promise
   }
 
-  steer(message: AgentMessage): Promise<boolean>
-  steer(content: string, images?: ImageContentBlock[]): Promise<boolean>
-  async steer(input: string | AgentMessage, images?: ImageContentBlock[]): Promise<boolean> {
+  /**
+   * post-turn 空闲压缩触发点（P0-3a）。仅正常收口的 run 触发：aborted/time_limit
+   * 的上下文马上可能被用户继续（且中断标记紧跟其后），error 的历史可能有毒，
+   * 都交给下一个请求 prepareModelRequest 的硬阈值兜底。若本次 prompt 期间已经
+   * 压缩过（checkpoint 创建于本次 prompt 内），跳过——压缩刚做过，立即按更低的
+   * 软水位重复压缩只会多花一次摘要调用。失败静默：空闲压缩是优化而非正确性依赖。
+   */
+  private async runIdleCompactionIfDue(
+    result: AgentLoopResult,
+    signal: AbortSignal,
+    promptStartedAt: number,
+  ): Promise<void> {
+    if (
+      result.reason !== 'completed'
+      && result.reason !== 'tool_limit'
+      && result.reason !== 'turn_limit'
+      && result.reason !== 'stopped'
+    ) {
+      return
+    }
+    const checkpoint = this.contextWindowManager.currentCheckpoint
+    if (checkpoint && checkpoint.createdAt >= promptStartedAt) return
+    try {
+      const request = this.createModelRequest('context-usage', this.context)
+      await this.contextWindowManager.compactIfIdleDue(request, signal, this.transport)
+    } catch {
+      // best-effort：空闲压缩失败不毒化已结算的 run
+    }
+  }
+
+  /**
+   * 中断仪式（对齐 codex 的 interrupted_turn_history_marker）：被中断/超时的 run
+   * 在历史尾部写入 turn-aborted 标记，下一轮模型能看到上一轮未正常收口、不假设
+   * 中断前的工作已完成。调用时机在 runPrompt 收尾处（savePoint 之前），此时
+   * activeRun 仍挂着，因此不走 appendMessage 的 pending 队列分支（会被
+   * recoverActiveQueuedMessages 误标为恢复草稿），而是复用其空闲分支的提交路径
+   * 立即落库——标记计入 savePoint 边界，终态事件发出前已落库。
+   * 标记是 best-effort：写失败不把一次已成功结算的中断变成失败的 run。
+   */
+  private async appendTurnAbortedMarkerIfInterrupted(result: AgentLoopResult): Promise<void> {
+    if (result.reason !== 'aborted' && result.reason !== 'time_limit') return
+    // 没有产生任何 turn 的中断（采样尚未开始）不写标记——没有「被中断的工作」可言。
+    if (result.turns <= 0) return
+    const last = this.historyMessages[this.historyMessages.length - 1]
+    if (last?.role === 'custom' && last.customType === TURN_ABORTED_CUSTOM_TYPE) return
+    const message = createTurnAbortedMessage(result.reason === 'time_limit' ? 'time-limit' : 'user-abort')
+    try {
+      const appended = snapshotAgentMessage(message)
+      this.assertAppendableMessages([appended], new Set(this.historyMessages.map((item) => item.id)))
+      const event: AgentMutationEvent = {
+        type: 'session_message_append',
+        sessionId: this.id,
+        message: appended,
+      }
+      await this.commitThenApply(this.createMutationBatch([event]), async () => {
+        this.historyMessages.push(appended)
+        this.context = {
+          ...this.context,
+          messages: this.contextWindowManager.buildProjection(this.historyMessages),
+        }
+        await this.emitExternal(event)
+      })
+    } catch (error) {
+      console.warn('turn-aborted 标记写入失败（不影响已结算的运行结果）', error)
+    }
+  }
+
+  steer(message: AgentMessage): Promise<QueueAcceptance>
+  steer(content: string, images?: ImageContentBlock[]): Promise<QueueAcceptance>
+  async steer(
+    input: string | AgentMessage,
+    images?: ImageContentBlock[],
+  ): Promise<QueueAcceptance> {
     const message = this.createQueuedMessage(input, images)
+    if (!message) return rejectedQueueMessage('empty-input')
     const acceptedRun = this.acceptingQueuedMessages ? this.activeRun : undefined
-    if (!message || !acceptedRun) return false
+    if (!acceptedRun) return rejectedQueueMessage('runtime-not-accepting')
     return this.enqueueQueuedMessage(this.steeringQueue, 'steering', message, acceptedRun)
   }
 
-  followUp(message: AgentMessage): Promise<boolean>
-  followUp(content: string, images?: ImageContentBlock[]): Promise<boolean>
-  async followUp(input: string | AgentMessage, images?: ImageContentBlock[]): Promise<boolean> {
+  followUp(message: AgentMessage): Promise<QueueAcceptance>
+  followUp(content: string, images?: ImageContentBlock[]): Promise<QueueAcceptance>
+  async followUp(
+    input: string | AgentMessage,
+    images?: ImageContentBlock[],
+  ): Promise<QueueAcceptance> {
     const message = this.createQueuedMessage(input, images)
+    if (!message) return rejectedQueueMessage('empty-input')
     const acceptedRun = this.acceptingQueuedMessages ? this.activeRun : undefined
-    if (!message || !acceptedRun) return false
+    if (!acceptedRun) return rejectedQueueMessage('runtime-not-accepting')
     return this.enqueueQueuedMessage(this.followUpQueue, 'follow-up', message, acceptedRun)
   }
 
   /** Queue context that is injected only alongside the next explicit prompt. */
-  nextTurn(message: AgentMessage): Promise<boolean>
-  nextTurn(content: string, images?: ImageContentBlock[]): Promise<boolean>
-  async nextTurn(input: string | AgentMessage, images?: ImageContentBlock[]): Promise<boolean> {
+  nextTurn(message: AgentMessage): Promise<QueueAcceptance>
+  nextTurn(content: string, images?: ImageContentBlock[]): Promise<QueueAcceptance>
+  async nextTurn(
+    input: string | AgentMessage,
+    images?: ImageContentBlock[],
+  ): Promise<QueueAcceptance> {
     const message = this.createQueuedMessage(input, images)
-    if (!message) return false
+    if (!message) return rejectedQueueMessage('empty-input')
     return this.enqueueQueuedMessage(this.nextTurnQueue, 'next-turn', message)
   }
 
@@ -803,6 +935,156 @@ export class AgentSession {
   setQueueModes(steering: QueueDeliveryMode, followUp: QueueDeliveryMode): void {
     this.steeringQueue.setMode(steering)
     this.followUpQueue.setMode(followUp)
+  }
+
+  /** 切换队列自动出队：切换即作废悬挂的手动放行，避免方向切换后意外注入旧目标。 */
+  setAutoDrain(enabled: boolean): void {
+    this.autoDrainEnabled = enabled
+    this.immediateDispatchId = undefined
+  }
+
+  /**
+   * 手动放行一条队列项（对齐 ZCode sendQueuedNow）：运行中把目标项移到 steering 队首
+   * 并武装单次立即注入——即使 autoDrain=false 也会在下一个 turn 边界被消费；未指定 id
+   * 时取显示序第一条。run 未运行时拒绝（idle 发送由 store 层组合恢复草稿 + prompt）。
+   */
+  async sendQueuedNow(messageId?: string): Promise<QueueAcceptance> {
+    if (!this.activeRun || !this.acceptingQueuedMessages) {
+      return rejectedQueueMessage('runtime-not-accepting')
+    }
+    const target = messageId ?? this.queuedMessages[0]?.id
+    if (!target) return rejectedQueueMessage('unknown-message')
+    const moved = await this.moveQueuedMessage(target, {
+      kind: 'steering',
+      placement: { position: 'top' },
+    })
+    if (!moved.updated) return rejectedQueueMessage(moved.reason)
+    this.immediateDispatchId = target
+    return acceptedQueueMessage(target)
+  }
+
+  /**
+   * 原位改写队列项（保留消息 id、kind 与位置）。队列项 id 是 journal 消费事实的锚点，
+   * 因此编辑必须复用同一 id——新建消息会让已落盘的消费事实与队列项失联。
+   */
+  async editQueuedMessage(
+    messageId: string,
+    content: string,
+    images?: ImageContentBlock[],
+  ): Promise<QueueMutationResult> {
+    const location = this.queuedMessageLocation(messageId)
+    if (!location) return { updated: false, reason: 'unknown-message' }
+    const current = location.queue.find(messageId)
+    if (!current) return { updated: false, reason: 'unknown-message' }
+    const edited = this.applyQueuedMessageContent(current, content, images)
+    if (!edited) return { updated: false, reason: 'empty-input' }
+    return this.rewriteQueuedMessage(
+      messageId,
+      location.kind,
+      edited,
+      this.orderOf(messageId),
+    )
+  }
+
+  /**
+   * 移动队列项：可在同一队列内重排，也可跨队列提升（follow-up / next-turn → steering）。
+   * 位置相对「显示序」表达，order 由运行时插值计算，只需重写一条 entry。
+   */
+  async moveQueuedMessage(
+    messageId: string,
+    target: QueueMoveTarget,
+  ): Promise<QueueMutationResult> {
+    const location = this.queuedMessageLocation(messageId)
+    if (!location) return { updated: false, reason: 'unknown-message' }
+    const current = location.queue.find(messageId)
+    if (!current) return { updated: false, reason: 'unknown-message' }
+    let order = this.resolveQueueOrder(messageId, target.placement)
+    if (order === undefined) return { updated: false, reason: 'unknown-message' }
+    if (this.orderPrecisionDegraded) {
+      // 中点插值已无法在既有 order 之间表达新位置（double 精度耗尽）：先整型重排
+      // 全部队列项腾出空间，再重算目标位置——顺序语义与用户意图保持一致。
+      await this.reindexQueueOrders()
+      order = this.resolveQueueOrder(messageId, target.placement)
+      if (order === undefined) return { updated: false, reason: 'unknown-message' }
+    }
+    return this.rewriteQueuedMessage(messageId, target.kind, current, order)
+  }
+
+  /**
+   * 整型重排全部队列项（0..n-1，按当前显示序）：单点中点插值的精度兜底。
+   * journal 侧与 rewriteQueuedMessage 同向——先 append 全部新 entry（承载新 order）
+   * 再 discard 全部旧 entry；discard 失败补偿丢弃新 entry，append 半途失败则新旧
+   * 并存，恢复按重复 ID fail-closed，不丢数据。内存侧最后统一重建，不领先于 durable。
+   */
+  private async reindexQueueOrders(): Promise<void> {
+    await this.sessionJournal.write(() => this.reindexQueueOrdersLocked())
+  }
+
+  /** reindex 内核：必须已在 sessionJournal.write 内调用（write 串行链不可重入）。 */
+  private async reindexQueueOrdersLocked(): Promise<void> {
+    const ordered = this.queuedMessages.slice()
+    const rewrites: Array<{ id: string; kind: QueuedMessageKind; message: AgentMessage }> = []
+    for (const snapshot of ordered) {
+      const location = this.queuedMessageLocation(snapshot.id)
+      const message = location?.queue.find(snapshot.id)
+      if (!location || !message) continue
+      rewrites.push({ id: snapshot.id, kind: location.kind, message })
+    }
+    const entries = rewrites.map(({ kind, message }, index) =>
+      this.sessionJournal.createEntry({ kind: 'queue', queueKind: kind, message, order: index }))
+    for (const entry of entries) {
+      if (entry) await this.mutationJournal?.append(entry)
+    }
+    try {
+      const previousEntryIds = rewrites.flatMap(({ id }) => {
+        const entryId = this.queueJournalEntryIds.get(id)
+        return entryId ? [entryId] : []
+      })
+      if (previousEntryIds.length > 0) await this.mutationJournal?.discard(previousEntryIds)
+    } catch (error) {
+      const appendedIds = entries.flatMap((entry) => (entry ? [entry.id] : []))
+      for (const entryId of appendedIds) {
+        try {
+          await this.mutationJournal?.discard([entryId])
+        } catch {
+          // fail-soft：与 rewriteQueuedMessage 同款补偿；残留 pending 携带同一
+          // message.id，恢复时按重复 ID fail-closed 暴露。
+        }
+      }
+      throw error
+    }
+    rewrites.forEach(({ id, message }, index) => {
+      const entry = entries[index]
+      if (entry) this.queueJournalEntryIds.set(id, entry.id)
+      this.recordQueuedMessage(message, index)
+    })
+    // 按新显示序重建各队列数组：drain 顺序（数组头）必须与显示序一致。
+    for (const kind of QUEUE_KINDS) {
+      const queue = this.queueForKind(kind)
+      const queueItems = rewrites
+        .filter(({ id }) => this.queuedMessageLocation(id)?.kind === kind)
+        .map(({ message }) => message)
+      queue.clear()
+      for (const message of queueItems) queue.enqueue(message)
+    }
+    this.orderPrecisionDegraded = false
+  }
+
+  /** 提升为引导：移到 steering 队首（下一个 turn 边界注入，不中断当前 turn）。 */
+  promoteQueuedMessage(messageId: string): Promise<QueueMutationResult> {
+    return this.moveQueuedMessage(messageId, { kind: 'steering', placement: { position: 'top' } })
+  }
+
+  /** 删除单条队列项（恢复草稿走 discardRecoveredMessage，语义不同）。 */
+  async deleteQueuedMessage(messageId: string): Promise<QueueMutationResult> {
+    const location = this.queuedMessageLocation(messageId)
+    if (!location) return { updated: false, reason: 'unknown-message' }
+    await this.sessionJournal.write(async () => {
+      // 直接用不嵌套 write 的内核：sessionJournal.write 是串行链，写入中再发起写入会互等死锁。
+      await this.discardQueuedMessagesLocked([messageId])
+      location.queue.remove(messageId)
+    })
+    return { updated: true, messageId, kind: location.kind }
   }
 
   async restoreQueuedMessage(messageId: string): Promise<QueuedMessageSnapshot | undefined> {
@@ -857,6 +1139,14 @@ export class AgentSession {
   }
 
   private async recoverActiveQueuedMessages(): Promise<QueuedMessageSnapshot[]> {
+    // 手动模式（autoDrain=false）是「队列暂停」而非「结算回收」：run 结束残留保留在
+    // 队列跨 run 存活（下一个 run 的 turn 边界或手动放行继续消费），不搬运为恢复草稿。
+    // 两个分支都要作废武装标记：autoDrain 分支队列整体转为恢复草稿，armed id 指向的
+    // 已不是队列项，残留会让 armedQueueMessageId 投影携带跨 run 的脏目标。
+    this.immediateDispatchId = undefined
+    if (!this.autoDrainEnabled) {
+      return []
+    }
     const messages = this.sortQueuedMessages([
       ...this.steeringQueue.snapshot().map((message) => this.queueSnapshot(message, 'steering')),
       ...this.followUpQueue.snapshot().map((message) => this.queueSnapshot(message, 'follow-up')),
@@ -951,6 +1241,8 @@ export class AgentSession {
     this.pendingIdleMutationBatch = undefined
     this.pendingIdleMutationApply = undefined
     this.queueJournalEntryIds.clear()
+    this.immediateDispatchId = undefined
+    this.orderPrecisionDegraded = false
     this.sessionJournal.reset()
   }
 
@@ -1030,6 +1322,7 @@ export class AgentSession {
     signal: AbortSignal,
     getInitialMessages?: (runId: string) => Promise<AgentMessage[]>,
   ): Promise<AgentLoopResult> {
+    const promptStartedAt = Date.now()
     let overflowRecoveryAttempted = false
     let retryAttempt = 0
     let prompts = initialPrompts
@@ -1172,6 +1465,13 @@ export class AgentSession {
     }
 
     this.lastRunResult = finalResult
+    // 中断仪式：被中断/超时的 run 在历史尾部写入 turn-aborted 标记。必须在
+    // savePoint/agent_settled 之前直接提交——标记计入 savePoint 边界，终态事件
+    // 发出前已落库（先落库后终态）；空闲压缩也基于含标记的上下文评估。
+    await this.appendTurnAbortedMarkerIfInterrupted(finalResult)
+    // post-turn 空闲压缩：正常收口的 run 在回合间隙按软水位提前压缩，避免下一个
+    // 请求为上一轮历史膨胀同步买单（对齐 codex 的 post-turn compaction slot）。
+    await this.runIdleCompactionIfDue(finalResult, signal, promptStartedAt)
     await this.onRuntimeCheckpoint?.('agent_end_before_settled')
     const lastMessage = this.historyMessages[this.historyMessages.length - 1]
     this.lastSavePoint = {
@@ -1234,6 +1534,14 @@ export class AgentSession {
         ? { ...event, consumedJournalEntryId }
         : event,
     )
+    // 已 drain 的队列消息：message_end 落库失败要回收，message_start 未能送达同样要回收
+    // （此时 journal 已是 consuming，但消息尚未 append）。
+    const drainedQueueMessage = (observedEvent.type === 'message_start'
+      || observedEvent.type === 'message_end')
+      && this.drainedQueueKinds.has(observedEvent.message.id)
+      ? snapshotAgentMessage(observedEvent.message)
+      : undefined
+    let restoredToQueue = false
     if (observedEvent.type === 'agent_start') {
       this.acceptingQueuedMessages = true
       this.lastErrorMessage = undefined
@@ -1269,30 +1577,58 @@ export class AgentSession {
     }
     const signal = this.activeRun?.controller.signal
     if (!signal) throw new Error('Agent 事件不能在活动运行之外发送')
-    for (const listener of this.listeners) {
-      await listener(snapshotAgentEvent(observedEvent), signal)
-    }
-    if (observedEvent.type === 'tool_execution_start') {
-      await this.onRuntimeCheckpoint?.('tool_execution_started')
-    } else if (observedEvent.type === 'tool_execution_end') {
-      await this.onRuntimeCheckpoint?.('tool_execution_finished')
-      if ((observedEvent.toolName === 'apply_changes'
-        || observedEvent.toolName === 'apply_workspace_changes')
-        && !observedEvent.isError
-        && observedEvent.result.artifact) {
-        await this.onRuntimeCheckpoint?.('workspace_audit_persisted')
+    try {
+      for (const listener of this.listeners) {
+        await listener(snapshotAgentEvent(observedEvent), signal)
       }
-    } else if (observedEvent.type === 'message_end' && observedEvent.message.role === 'tool') {
-      await this.onRuntimeCheckpoint?.('tool_result_committed')
-    } else if (observedEvent.type === 'provider_response_received') {
-      await this.onRuntimeCheckpoint?.('provider_response_received')
-    } else if (observedEvent.type === 'compaction_end' && observedEvent.checkpoint) {
-      await this.onRuntimeCheckpoint?.('compaction_checkpoint_committed')
-    }
-    if (completedQueueMessageId) {
-      if (consumedJournalEntryId) this.queueJournalEntryIds.delete(completedQueueMessageId)
-      this.drainedQueueKinds.delete(completedQueueMessageId)
-      this.queuedMessageOrder.delete(completedQueueMessageId)
+      if (observedEvent.type === 'tool_execution_start') {
+        await this.onRuntimeCheckpoint?.('tool_execution_started')
+      } else if (observedEvent.type === 'tool_execution_end') {
+        await this.onRuntimeCheckpoint?.('tool_execution_finished')
+        if ((observedEvent.toolName === 'apply_changes'
+          || observedEvent.toolName === 'apply_workspace_changes')
+          && !observedEvent.isError
+          && observedEvent.result.artifact) {
+          await this.onRuntimeCheckpoint?.('workspace_audit_persisted')
+        }
+      } else if (observedEvent.type === 'message_end' && observedEvent.message.role === 'tool') {
+        await this.onRuntimeCheckpoint?.('tool_result_committed')
+      } else if (observedEvent.type === 'provider_response_received') {
+        await this.onRuntimeCheckpoint?.('provider_response_received')
+      } else if (observedEvent.type === 'compaction_end' && observedEvent.checkpoint) {
+        await this.onRuntimeCheckpoint?.('compaction_checkpoint_committed')
+      }
+    } catch (error) {
+      // 落库失败（监听器抛错）时不能只清内存事实：durable journal 会停在 consuming 且
+      // consumer_run_id 指向已终结的 run，消息既不在库也不在队列——进程内没有任何路径
+      // 再回收它，只有重启恢复才会把它回退 pending 重放。这里主动把 entry 回退 pending
+      // 并把消息重新入队：下一次 run 以全新消费事实重新 drain、落库。
+      // 回收失败不遮蔽原始错误：entry 留在 consuming，重启恢复仍会回退 pending 重放，
+      // 消息不丢；消息实际已落库（journal 已 applied，或错误与落库无关）时回退是 no-op，
+      // 不会重复投递。
+      if (drainedQueueMessage && impliesMessageNotPersisted(error)) {
+        try {
+          await this.restoreDrainedMessages([drainedQueueMessage])
+          restoredToQueue = true
+        } catch {
+          // fail-soft：原始落库错误优先，见上。
+        }
+      }
+      throw error
+    } finally {
+      // 清理必须无条件执行：监听器（store 持久化）抛错正是「消息未落库」的常见形态，
+      // 此时若跳过清理，drainedQueueKinds / queueJournalEntryIds 会带着已结束 run 的
+      // 消费事实跨越 run 边界存活——之后每次重试 flush 该消息都会重放失效条目，
+      // 持久化校验以「Session message 与 queue journal 消费事实不匹配」拒绝，
+      // 并连带 save point 边界补偿失败，形成每次重试必败的死循环。
+      // 例外：消息已随 journal 回退重新入队（restoredToQueue）时必须保留
+      // queueJournalEntryIds 与 queuedMessageOrder——下一次 drain 要用同一 entry 重新
+      // markConsuming。
+      if (completedQueueMessageId && !restoredToQueue) {
+        if (consumedJournalEntryId) this.queueJournalEntryIds.delete(completedQueueMessageId)
+        this.drainedQueueKinds.delete(completedQueueMessageId)
+        this.queuedMessageOrder.delete(completedQueueMessageId)
+      }
     }
   }
 
@@ -1565,7 +1901,148 @@ export class AgentSession {
     message: AgentMessage,
     kind: QueuedMessageKind,
   ): QueuedMessageSnapshot {
-    return { id: message.id, kind, content: message.content, createdAt: message.createdAt }
+    return {
+      id: message.id,
+      kind,
+      content: message.content,
+      images: queuedMessageImages(message),
+      createdAt: message.createdAt,
+    }
+  }
+
+  private queueForKind(kind: QueuedMessageKind): MessageQueue {
+    if (kind === 'steering') return this.steeringQueue
+    if (kind === 'follow-up') return this.followUpQueue
+    return this.nextTurnQueue
+  }
+
+  private queuedMessageLocation(
+    messageId: string,
+  ): { queue: MessageQueue; kind: QueuedMessageKind } | undefined {
+    for (const kind of QUEUE_KINDS) {
+      const queue = this.queueForKind(kind)
+      if (queue.find(messageId)) return { queue, kind }
+    }
+    return undefined
+  }
+
+  private orderOf(messageId: string): number {
+    return this.queuedMessageOrder.get(messageId) ?? Number.MAX_SAFE_INTEGER
+  }
+
+  /**
+   * 以「显示序」为坐标系解析目标 order：显示序即三队列按 order 归并的顺序，用户看到的
+   * 就是这个顺序。相邻项之间取中点（首次/末次则取 ±1），因此一次移动只重写一条 entry。
+   */
+  private resolveQueueOrder(messageId: string, placement: QueuePlacement): number | undefined {
+    const others = this.queuedMessages.filter((message) => message.id !== messageId)
+    if (placement.position === 'top') {
+      return others.length === 0 ? this.orderOf(messageId) : this.orderOf(others[0].id) - 1
+    }
+    if (placement.position === 'bottom') {
+      return others.length === 0
+        ? this.orderOf(messageId)
+        : this.orderOf(others[others.length - 1].id) + 1
+    }
+    const anchorIndex = others.findIndex((message) => message.id === placement.anchorId)
+    if (anchorIndex < 0) return undefined
+    const index = placement.position === 'above' ? anchorIndex : anchorIndex + 1
+    const previous = others[index - 1]
+    const next = others[index]
+    if (!previous) return this.orderOf(next.id) - 1
+    if (!next) return this.orderOf(previous.id) + 1
+    const mid = (this.orderOf(previous.id) + this.orderOf(next.id)) / 2
+    // 中点不再严格介于两邻之间 = float 精度耗尽：标记待整型重排（moveQueuedMessage 消费）。
+    if (!(mid > this.orderOf(previous.id) && mid < this.orderOf(next.id))) {
+      this.orderPrecisionDegraded = true
+    }
+    return mid
+  }
+
+  /** 重写队列项内容（保留 id 与 createdAt），空文本且无图片时返回 undefined。 */
+  private applyQueuedMessageContent(
+    message: AgentMessage,
+    content: string,
+    images?: ImageContentBlock[],
+  ): AgentMessage | undefined {
+    const normalized = content.trim()
+    const blocks = images ?? queuedMessageImages(message)
+    if (!normalized && blocks.length === 0) return undefined
+    if (message.role !== 'user') return { ...message, content: normalized || message.content }
+    return {
+      ...message,
+      content: normalized,
+      contentBlocks: blocks.length > 0
+        ? [
+            ...(normalized ? [{ type: 'text' as const, text: normalized }] : []),
+            ...blocks.map((block) => (block.type === 'image'
+              ? { ...block, source: { ...block.source } }
+              : { ...block })),
+          ]
+        : undefined,
+    }
+  }
+
+  /**
+   * 队列项重写：journal 是 append-only + 状态机，不支持 payload 原地更新，因此一次重写
+   * 表现为「先 append 承载新 payload/新位置的新 entry，再 discard 旧 entry」。
+   * 顺序不可颠倒——先 discard 再 append 时若 append 失败，队列项在库里已消失而内存还在，
+   * 崩溃恢复即静默丢消息；反之若两个 pending entry 携带同一 message.id，恢复会命中既有的
+   * 重复 ID 校验（fail-closed，不丢数据）。discard 失败时补偿丢弃新 entry，保证
+   * 「要么新旧都在、要么两边都不在」，内存状态始终不领先于 durable 状态。
+   */
+  private async rewriteQueuedMessage(
+    messageId: string,
+    kind: QueuedMessageKind,
+    next: AgentMessage,
+    order: number,
+  ): Promise<QueueMutationResult> {
+    return this.sessionJournal.write(async () => {
+      const location = this.queuedMessageLocation(messageId)
+      if (!location) return { updated: false, reason: 'unknown-message' }
+      const previousEntryId = this.queueJournalEntryIds.get(messageId)
+      const entry = this.sessionJournal.createEntry({ kind: 'queue', queueKind: kind, message: next, order })
+      if (entry) {
+        await this.mutationJournal?.append(entry)
+        if (previousEntryId) {
+          try {
+            await this.mutationJournal?.discard([previousEntryId])
+          } catch (error) {
+            try {
+              await this.mutationJournal?.discard([entry.id])
+            } catch {
+              // fail-soft：原始错误优先；残留的 pending entry 仍携带同一 message.id，
+              // 恢复时按重复 ID fail-closed 暴露，不会静默丢消息。
+            }
+            throw error
+          }
+        }
+        this.queueJournalEntryIds.set(messageId, entry.id)
+      }
+      this.recordQueuedMessage(next, order)
+      if (location.kind === kind) {
+        const queue = this.queueForKind(kind)
+        const index = this.queueIndexForOrder(queue, order, messageId)
+        queue.remove(messageId)
+        queue.insertAt(next, index)
+      } else {
+        location.queue.remove(messageId)
+        const target = this.queueForKind(kind)
+        target.insertAt(next, this.queueIndexForOrder(target, order, messageId))
+      }
+      return { updated: true, messageId, kind }
+    })
+  }
+
+  /** 目标队列内按 order 的插入位（排除被移动项自身；队列内数组按 order 升序维护）。 */
+  private queueIndexForOrder(
+    queue: MessageQueue,
+    order: number,
+    excludedId: string,
+  ): number {
+    return queue.snapshot()
+      .filter((message) => message.id !== excludedId && this.orderOf(message.id) < order)
+      .length
   }
 
   private recordQueuedMessage(message: AgentMessage, order?: number): void {
@@ -1585,8 +2062,18 @@ export class AgentSession {
     kind: QueuedMessageKind,
     runId: string,
   ): Promise<AgentMessage[]> {
+    // 手动模式门控（对齐 ZCode autoDrain=false）：turn 边界不自动出队，仅当
+    // sendQueuedNow 武装的目标恰为该队列队首时放行一次（放行即作废武装标记）。
+    // next-turn 队列不在此通道消费，不受门控影响。放行**只消费这一条**——模式 `all`
+    // 的批量语义属于自动出队，逐条放行若整批出队就违背了「立即发送这一条」的承诺。
+    const manualRelease = !this.autoDrainEnabled && kind !== 'next-turn'
+    if (manualRelease) {
+      const head = queue.snapshot()[0]
+      if (!head || this.immediateDispatchId !== head.id) return []
+      this.immediateDispatchId = undefined
+    }
     return this.sessionJournal.write(async () => {
-      const pending = queue.peekDrain()
+      const pending = manualRelease ? queue.snapshot().slice(0, 1) : queue.peekDrain()
       const entryIds = pending.flatMap((message) => {
         const entryId = this.queueJournalEntryIds.get(message.id)
         return entryId ? [entryId] : []
@@ -1595,7 +2082,7 @@ export class AgentSession {
         await this.mutationJournal?.markConsuming(entryIds, runId)
         await this.onRuntimeCheckpoint?.('queue_consuming')
       }
-      const messages = queue.drain()
+      const messages = manualRelease ? queue.drainOne() : queue.drain()
       for (const message of messages) this.drainedQueueKinds.set(message.id, kind)
       return messages
     })
@@ -1634,7 +2121,7 @@ export class AgentSession {
     kind: QueuedMessageKind,
     message: AgentMessage,
     acceptedRun?: ActiveRun,
-  ): Promise<boolean> {
+  ): Promise<QueueAcceptance> {
     const entry = this.sessionJournal.createEntry({ kind: 'queue', queueKind: kind, message })
     await this.sessionJournal.write(async () => {
       if (entry) await this.mutationJournal?.append(entry)
@@ -1647,7 +2134,7 @@ export class AgentSession {
         queue.enqueue(message)
       }
     })
-    return true
+    return acceptedQueueMessage(message.id)
   }
 
   private async clearQueues(queues: MessageQueue[]): Promise<void> {
@@ -1672,18 +2159,21 @@ export class AgentSession {
   }
 
   private async discardQueuedMessages(messageIds: string[]): Promise<void> {
+    await this.sessionJournal.write(() => this.discardQueuedMessagesLocked(messageIds))
+  }
+
+  /** discard 内核：必须已在 sessionJournal.write 内调用（write 是串行链，不可重入）。 */
+  private async discardQueuedMessagesLocked(messageIds: string[]): Promise<void> {
     const entryIds = messageIds.flatMap((messageId) => {
       const entryId = this.queueJournalEntryIds.get(messageId)
       return entryId ? [entryId] : []
     })
-    await this.sessionJournal.write(async () => {
-      if (entryIds.length > 0) await this.mutationJournal?.discard(entryIds)
-      for (const messageId of messageIds) {
-        this.queueJournalEntryIds.delete(messageId)
-        this.drainedQueueKinds.delete(messageId)
-        this.queuedMessageOrder.delete(messageId)
-      }
-    })
+    if (entryIds.length > 0) await this.mutationJournal?.discard(entryIds)
+    for (const messageId of messageIds) {
+      this.queueJournalEntryIds.delete(messageId)
+      this.drainedQueueKinds.delete(messageId)
+      this.queuedMessageOrder.delete(messageId)
+    }
   }
 
   private restoreJournalEntries(entries: AgentSessionJournalEntry[]): void {
@@ -1700,7 +2190,9 @@ export class AgentSession {
         const message = snapshotAgentMessage(entry.message)
         if (this.queueJournalEntryIds.has(message.id)) throw new Error('恢复的 queue journal 消息 ID 重复')
         this.queueJournalEntryIds.set(message.id, entry.id)
-        this.recordQueuedMessage(message, entry.sequence)
+        // 重排/编辑重写过的队列项，其位置由 payload.order 承载（新 entry 的 sequence 不再
+        // 反映用户期望的位置）；旧版本 payload 无 order，回落到 sequence 保持原顺序。
+        this.recordQueuedMessage(message, entry.order ?? entry.sequence)
         if (entry.recoveredAt !== undefined) {
           this.recoveredQueuedMessages.push(this.queueSnapshot(message, entry.queueKind))
           continue

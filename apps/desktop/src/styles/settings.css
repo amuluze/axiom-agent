@@ -698,9 +698,49 @@
   color: var(--text-secondary);
 }
 
+/* 设置区内的小节标题（如浏览器数据管理）；比 section-title 低一档。 */
+.section-subtitle {
+  margin: 4px 0 0;
+  color: var(--text-tertiary);
+  font-size: 0.8462rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* 危险动作按钮（清除全部浏览器数据）：沿用 secondary 形态、换警示色。 */
+.settings__danger-button {
+  color: var(--diff-red);
+}
+
 .security-note > svg {
   flex-shrink: 0;
   color: var(--text-secondary);
+}
+
+/* 订阅型 provider 的官方入口与邀请/优惠链接：与 security-note 同构（同一底/圆角），
+   链接用 accent 文字 + 下划线，点击经 open_external_url 交给系统浏览器。 */
+.provider-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  font-size: 0.9231rem;
+  color: var(--text-secondary);
+}
+
+.provider-links > svg {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.provider-links > a {
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 /* 强调变体（设计稿 accent-soft 底 + accent 描边）：用于运行态等需要醒目的提示。 */
@@ -1618,4 +1658,199 @@
   border-radius: 50%;
   background: var(--accent);
   flex-shrink: 0;
+}
+
+/* ====== 内置提示词查看/编辑弹窗（设置-技能 / 设置-子智能体共用） ======
+ * 与连接弹窗同一模式（backdrop + 居中卡片）；正文/模板区取 $font-mono。 */
+.builtin-prompt-editor__backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+}
+
+.builtin-prompt-editor {
+  display: flex;
+  flex-direction: column;
+  width: 760px;
+  max-width: calc(100vw - 32px);
+  max-height: min(820px, calc(100vh - 48px));
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-popover);
+  overflow: hidden;
+  color: var(--text-primary);
+  padding: var(--space-5);
+  gap: var(--space-3);
+}
+
+.builtin-prompt-editor__header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.builtin-prompt-editor__heading {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.builtin-prompt-editor__title {
+  margin: 0;
+  font-size: 1.0769rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.builtin-prompt-editor__close {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.builtin-prompt-editor__close:hover {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.builtin-prompt-editor__description {
+  margin: 0;
+  font-size: 0.9231rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.builtin-prompt-editor__tabs {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.builtin-prompt-editor__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-secondary);
+  font-size: 0.9231rem;
+  cursor: pointer;
+}
+
+.builtin-prompt-editor__tab:hover {
+  color: var(--text-primary);
+}
+
+.builtin-prompt-editor__tab--active {
+  border-color: var(--accent);
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+
+.builtin-prompt-editor__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn-text, var(--accent));
+  flex: none;
+}
+
+.builtin-prompt-editor__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.builtin-prompt-editor__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.builtin-prompt-editor__field > span {
+  color: var(--text-secondary);
+  font-size: 0.9231rem;
+}
+
+.builtin-prompt-editor__field input,
+.builtin-prompt-editor__textarea {
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.9231rem;
+  line-height: 1.55;
+  padding: var(--space-2);
+}
+
+.builtin-prompt-editor__textarea {
+  resize: vertical;
+  white-space: pre;
+  overflow: auto;
+}
+
+.builtin-prompt-editor__preview {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+}
+
+.builtin-prompt-editor__preview summary {
+  color: var(--text-secondary);
+  font-size: 0.9231rem;
+  cursor: pointer;
+}
+
+.builtin-prompt-editor__preview pre {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2);
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.8462rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+  color: var(--text-secondary);
+}
+
+.builtin-prompt-editor__footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.builtin-prompt-editor__footer-spacer {
+  flex: 1;
+}
+
+.builtin-prompt-editor__restore svg {
+  margin-right: 4px;
+}
+
+/* 技能/子智能体列表行内的「查看 / 编辑」操作区。 */
+.settings__skill-actions {
+  display: flex;
+  justify-content: flex-end;
 }

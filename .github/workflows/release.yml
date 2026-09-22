@@ -1,0 +1,332 @@
+# Axiom 三平台编译发布（公开分发仓 amuluze/axiom-agent，文档：docs/github-actions.md）
+#
+# 形态参照 cc-switch（farion1231/cc-switch）的发布工作流：GitHub 托管 runner 矩阵
+# （公有仓免费）→ artifact 中转 → 汇总 job 生成 SBOM / changelog.json / 多平台
+# latest.json / SHA256SUMS → GitHub Release。产物命名与清单规则与私仓本地发布链
+# （Taskfile release:local / release:local:linux）逐字同语义。
+#
+# 触发：推送 v* tag（由私仓 `task release:sync-public -- --tag vX` 在导出同步时打出）
+# 或手动 workflow_dispatch（验证构建用：publish job 仅在 tag ref 上运行，手动触发
+# 只产出构建 artifact，不创建 Release）。
+#
+# 凭据（仓库 Secrets，全部可选；缺失时自动降级 adhoc 未公证 / 无 updater 工件）：
+#   APPLE_CERTIFICATE(+PASSWORD)/KEYCHAIN_PASSWORD   .p12 base64 导入临时钥匙串
+#   APPLE_API_ISSUER + APPLE_API_KEY（.p8 文本内容）  App Store Connect API 公证
+#   TAURI_SIGNING_PRIVATE_KEY(+PASSWORD)             updater minisign（与 macOS/Linux 共用）
+# Windows 不做 Authenticode 签名（未签名 = SmartScreen 提示），updater 未启用。
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  WEBSITE_DOWNLOAD_BASE: https://axiom.amuluze.com/downloads
+  SYFT_VERSION: v1.27.0
+
+jobs:
+  # ── macOS：双架构 DMG + updater 工件（x86_64 在 arm64 runner 上交叉构建）──
+  build-macos:
+    name: build:macos (${{ matrix.target }})
+    runs-on: macos-14
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    env:
+      TARGET: ${{ matrix.target }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target/${{ matrix.target }}
+          key: cargo-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+      - name: 签名/公证凭据形态归一（缺失自动降级 adhoc/无 updater）
+        run: bash scripts/ci-macos-credentials.sh
+      - name: 安装依赖 + 生成条件构建配置
+        run: |
+          npm ci
+          node scripts/generate-release-config.mjs
+      - name: 构建（tauri build；签名身份在位时补 staple 并验收）
+        run: |
+          set -euo pipefail
+          npm run tauri -- build --target "$TARGET" --config src-tauri/tauri.ci.conf.json
+          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            xcrun stapler staple "apps/desktop/src-tauri/target/$TARGET/release/bundle/macos/Axiom.app"
+            xcrun stapler validate "apps/desktop/src-tauri/target/$TARGET/release/bundle/macos/Axiom.app"
+          fi
+      - name: 汇集 macOS 资产（命名与本地发布链一致：bundler x64 归一为 x86_64）
+        run: |
+          set -euo pipefail
+          V="$(node -p "require('./package.json').version")"
+          ARCH="${TARGET%%-apple-darwin}"
+          DMG_ARCH="$ARCH"
+          [ "$ARCH" = "x86_64" ] && DMG_ARCH="x64"
+          PUBLISH='artifacts/release-publish'
+          NOTES='artifacts/release-notes'
+          mkdir -p "$PUBLISH" "$NOTES"
+          BUNDLE="apps/desktop/src-tauri/target/$TARGET/release/bundle"
+          cp "$BUNDLE/dmg/Axiom_${V}_${DMG_ARCH}.dmg" "$PUBLISH/Axiom_${V}_${ARCH}.dmg"
+          TARBALL="$BUNDLE/macos/Axiom.app.tar.gz"
+          if [ -f "$TARBALL" ]; then
+            cp "$TARBALL" "$PUBLISH/Axiom_${V}_${ARCH}.app.tar.gz"
+            cp "$TARBALL.sig" "$PUBLISH/Axiom_${V}_${ARCH}.app.tar.gz.sig"
+          fi
+          # adhoc 构建时留下 quarantine 安装说明（仅 aarch64 job 写一次，publish 拼进 notes）
+          if [ "$ARCH" = "aarch64" ] \
+            && codesign -dv "$BUNDLE/macos/Axiom.app" 2>&1 | grep -q 'Signature=adhoc'; then
+            {
+              printf '%s\n' \
+                '' \
+                '---' \
+                '' \
+                '## 安装说明（未签名构建）' \
+                '' \
+                '本版本为 adhoc 签名、未公证，提供 Apple Silicon（aarch64）与 Intel' \
+                '（x86_64）双架构 DMG，按机型选择对应文件。首次打开会被 Gatekeeper' \
+                '拦截，需移除 quarantine 属性：' \
+                '' \
+                '1. 校验完整性：`shasum -a 256 -c SHA256SUMS.txt --ignore-missing`' \
+                '2. 挂载 DMG，将 Axiom.app 拖入 /Applications' \
+                '3. 移除隔离属性：`sudo xattr -rd com.apple.quarantine /Applications/Axiom.app`'
+            } > "$NOTES/notes-macos-install.md"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axiom-assets-macos-${{ matrix.target }}
+          path: |
+            artifacts/release-publish/
+            artifacts/release-notes/
+          if-no-files-found: error
+          retention-days: 14
+
+  # ── Linux：debian:12 容器基线（glibc 2.36，与私仓 build/linux/Dockerfile 同源）──
+  build-linux:
+    name: build:linux（debian:12 基线 AppImage + deb）
+    runs-on: ubuntu-latest
+    container: node:22-bookworm
+    timeout-minutes: 90
+    env:
+      # linuxdeploy（AppImage 打包链）在无 FUSE 容器内以解压模式运行
+      APPIMAGE_EXTRACT_AND_RUN: '1'
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装 Tauri 2 Linux 构建依赖（debian:12，与私仓 Dockerfile 逐字同源）
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential curl ca-certificates git file xz-utils pkg-config patchelf \
+            librsvg2-dev libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            libssl-dev
+      - name: 安装 Rust 工具链（rust-toolchain.toml 固定 1.96.0，首次 cargo 调用自动安装）
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            /root/.cargo/registry
+            /root/.cargo/git
+            apps/desktop/src-tauri/target
+          key: cargo-linux-debian12-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+      - name: 安装依赖 + 生成条件构建配置 + 构建
+        run: |
+          set -euo pipefail
+          npm ci
+          node scripts/generate-release-config.mjs --platform linux
+          npm run tauri -- build --config src-tauri/tauri.linux.ci.conf.json
+      - name: 汇集 Linux 资产 + glibc 基线实测写安装说明
+        run: |
+          set -euo pipefail
+          V="$(node -p "require('./package.json').version")"
+          PUBLISH='artifacts/release-publish'
+          NOTES='artifacts/release-notes'
+          mkdir -p "$PUBLISH" "$NOTES"
+          BUNDLE='apps/desktop/src-tauri/target/release/bundle'
+          for APPIMAGE in "$BUNDLE"/appimage/*.AppImage; do
+            [ -e "$APPIMAGE" ] || { echo "缺少 AppImage 产物（$BUNDLE/appimage/）" >&2; exit 1; }
+            BASE="$(basename "$APPIMAGE" .AppImage)"
+            ARCH="${BASE##*_}"
+            [ "$ARCH" = "amd64" ] && ARCH="x86_64"
+            cp "$APPIMAGE" "$PUBLISH/Axiom_${V}_${ARCH}.AppImage"
+            if [ -f "$APPIMAGE.sig" ]; then
+              cp "$APPIMAGE.sig" "$PUBLISH/Axiom_${V}_${ARCH}.AppImage.sig"
+            fi
+          done
+          for DEB in "$BUNDLE"/deb/*.deb; do
+            [ -e "$DEB" ] || continue
+            cp "$DEB" "$PUBLISH/"
+          done
+          BASELINE_OUT="$(node scripts/linux-glibc-baseline.mjs \
+            --appdir "$BUNDLE/appimage/Axiom.AppDir" \
+            --deb-data "$BUNDLE/deb/Axiom_${V}_amd64/data")"
+          GLIBC_BASELINE="$(printf '%s\n' "$BASELINE_OUT" | sed -n 's/^baseline-glibc: //p')"
+          SUPPORTED_NOTE="$(printf '%s\n' "$BASELINE_OUT" | sed -n 's/^supported-note: //p')"
+          echo "glibc 基线实测：$BASELINE_OUT"
+          {
+            printf '%s\n' \
+              '' \
+              '---' \
+              '' \
+              '## 安装说明（Linux）' \
+              '' \
+              '提供 AppImage（免安装，下载后 `chmod +x` 直接运行）与 deb 包' \
+              '（`sudo apt install ./Axiom_*.deb`）。AppImage 支持应用内自更新。'
+            printf '**系统要求：%s**——AppImage 自带 WebKitGTK 等依赖，但\n' "$SUPPORTED_NOTE"
+            printf 'glibc/libstdc++ 使用系统副本（实测基线 glibc %s）。\n' "$GLIBC_BASELINE"
+          } > "$NOTES/notes-linux-install.md"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axiom-assets-linux
+          path: |
+            artifacts/release-publish/
+            artifacts/release-notes/
+          if-no-files-found: error
+          retention-days: 14
+
+  # ── Windows：NSIS 安装包（未签名 = SmartScreen 提示）──
+  build-windows:
+    name: build:windows（NSIS）
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+          key: cargo-windows-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+      - name: 安装依赖 + 构建 NSIS
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: 汇集 Windows 资产
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $publish = 'artifacts/release-publish'
+          New-Item -ItemType Directory -Force -Path $publish | Out-Null
+          $bundle = 'apps/desktop/src-tauri/target/release/bundle/nsis'
+          $installer = Get-ChildItem -Path $bundle -Filter 'Axiom_*_x64-setup.exe' | Select-Object -First 1
+          if ($null -eq $installer) { throw "NSIS installer not found in $bundle" }
+          Copy-Item $installer.FullName (Join-Path $publish $installer.Name)
+          Write-Host 'Windows asset collected:'
+          Get-ChildItem $publish
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axiom-assets-windows
+          path: artifacts/release-publish/
+          if-no-files-found: error
+          retention-days: 14
+
+  # ── 汇总发布：三平台全绿才发（仅 tag ref；workflow_dispatch 到此为止）──
+  publish:
+    name: 汇总发布（SBOM / latest.json / SHA256SUMS / GitHub Release）
+    runs-on: ubuntu-latest
+    needs: [build-macos, build-linux, build-windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: axiom-assets-*
+          path: .dl
+          merge-multiple: true
+      - name: 校验 tag 与 manifest 版本一致 + 合并三平台资产
+        run: |
+          set -euo pipefail
+          V="$(node -p "require('./package.json').version")"
+          test "${GITHUB_REF_NAME}" = "v${V}" \
+            || { echo "tag ${GITHUB_REF_NAME} 与 manifest 版本 v${V} 不一致"; exit 1; }
+          mkdir -p artifacts/release-publish artifacts/release-notes
+          cp .dl/release-publish/* artifacts/release-publish/
+          if [ -d .dl/release-notes ]; then
+            cp .dl/release-notes/* artifacts/release-notes/
+          fi
+          ls -la artifacts/release-publish
+      - name: 生成 SBOM（CycloneDX + SPDX）
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin "$SYFT_VERSION"
+          node scripts/generate-sbom.mjs --output-dir=artifacts/sbom
+          cp artifacts/sbom/axiom-*.cdx.json artifacts/sbom/axiom-*.spdx.json artifacts/release-publish/
+      - name: changelog.json + release notes + latest.json（updater 多平台清单）+ SHA256SUMS
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          node scripts/generate-changelog-json.mjs --changelog CHANGELOG.md --out artifacts/release-publish/changelog.json
+          node scripts/changelog.mjs extract --tag "$TAG" --changelog CHANGELOG.md --output notes.md
+          test -s notes.md
+          # 平台安装说明（构建 job 产出，文件缺失 = 形态未触发）拼进 Release notes
+          for EXTRA in artifacts/release-notes/notes-*-install.md; do
+            [ -f "$EXTRA" ] || continue
+            printf '\n---\n\n' >> notes.md
+            cat "$EXTRA" >> notes.md
+          done
+          # updater 清单：任一平台有签名更新工件才生成（generate-latest-json 按文件名
+          # 后缀识别 darwin-aarch64 / darwin-x86_64 / linux-x86_64 键；裸 .exe 不入清单）
+          if ls artifacts/release-publish/*.app.tar.gz >/dev/null 2>&1 || ls artifacts/release-publish/*.AppImage >/dev/null 2>&1; then
+            node scripts/generate-latest-json.mjs \
+              --tag "$TAG" \
+              --assets-dir artifacts/release-publish \
+              --out artifacts/release-publish/latest.json \
+              --download-base "${WEBSITE_DOWNLOAD_BASE}" \
+              --notes-file notes.md
+          else
+            echo '未检出 updater 工件（无 minisign 凭据），跳过 latest.json 生成。'
+          fi
+          cd artifacts/release-publish
+          rm -f SHA256SUMS.txt
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' -print0 \
+            | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+          cd "$GITHUB_WORKSPACE"
+      - name: 创建/更新 GitHub Release 并上传全部资产（修复重跑幂等）
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "Axiom $TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" --verify-tag --title "Axiom $TAG" --notes-file notes.md
+          fi
+          gh release upload "$TAG" --clobber artifacts/release-publish/*
+          echo "Release 就绪：$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG"

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   MAX_IMAGE_BYTES,
   MAX_PASTE_IMAGES,
+  attachmentFromImageBlock,
   bytesToBase64,
   compressPastedImage,
   imageFilesFromClipboard,
@@ -104,5 +105,28 @@ describe('compressPastedImage', () => {
     // 重编码路径的超限拒绝由 ImageTooLargeError 在真实浏览器环境触发。
     expect(MAX_IMAGE_BYTES).toBeGreaterThan(0)
     expect(MAX_PASTE_IMAGES).toBeGreaterThan(0)
+  })
+})
+
+describe('attachmentFromImageBlock', () => {
+  it('回填 base64 图片块：字节原样、不做二次压缩', () => {
+    const base64 = bytesToBase64(new Uint8Array([137, 80, 78, 71]))
+    expect(attachmentFromImageBlock({
+      type: 'image',
+      source: { type: 'base64', mediaType: 'image/png', data: base64 },
+    })).toEqual({
+      mediaType: 'image/png',
+      base64,
+      previewUrl: `data:image/png;base64,${base64}`,
+    })
+  })
+
+  it('url 来源的图片块没有可回填字节，返回 undefined', () => {
+    // 队列项/历史消息可能持有 url 图片块：回填输入框必须有字节，故显式不可回填，
+    // 由调用方按数量提示（而不是回填出坏图）。
+    expect(attachmentFromImageBlock({
+      type: 'image',
+      source: { type: 'url', url: 'https://example.com/a.png' },
+    })).toBeUndefined()
   })
 })

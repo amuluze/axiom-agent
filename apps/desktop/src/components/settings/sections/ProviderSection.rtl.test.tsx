@@ -2,7 +2,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ProviderSection } from './ProviderSection'
-import { buildProviderHook, stubContext } from './testFixtures'
+import { baseProviderDraft, buildProviderHook, stubContext } from './testFixtures'
 import type { ProviderProfileDraft } from '@/agent/transport/provider'
 
 const builtinCatalog = [
@@ -60,3 +60,52 @@ describe('ProviderSection 模型自动填充', () => {
     expect(called.maxOutputTokens).toBe(hook.draft.maxOutputTokens)
   })
 })
+
+describe('ProviderSection 官网与邀请链接', () => {
+  it('订阅型 provider 渲染官网与邀请链接，并把点击交给系统浏览器', () => {
+    // opencode-go 在 providers.json 里声明了 website/inviteUrl：设置页据此展示官方入口与
+    // 新用户优惠链接（数据驱动，未声明的 provider 不渲染）。
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const hook = buildProviderHook({
+      draft: { ...baseProviderDraft, providerId: 'opencode-go' },
+    })
+    render(
+      <ProviderSection
+        hook={hook}
+        context={stubContext}
+        providerLabel_="OpenCode Go"
+        providerHasKey={false}
+        desktop
+      />,
+    )
+    const website = screen.getByRole('link', { name: '官网' })
+    const invite = screen.getByRole('link', { name: '邀请链接（新用户优惠）' })
+    expect(website).toHaveAttribute('href', 'https://opencode.ai/go')
+    expect(invite).toHaveAttribute('href', 'https://opencode.ai/go?ref=QQ1BKKXRTV')
+    expect(screen.getByText('OpenCode Go 为独立订阅服务，Axiom 不代理其计费：')).toBeInTheDocument()
+
+    // 点击不走应用内跳转（preventDefault + openExternalUrl；jsdom 下回退 window.open）。
+    fireEvent.click(website)
+    expect(open).toHaveBeenCalledWith(
+      'https://opencode.ai/go',
+      '_blank',
+      'noopener,noreferrer',
+    )
+    open.mockRestore()
+  })
+
+  it('未声明链接的 provider 不渲染该提示块', () => {
+    const hook = buildProviderHook()
+    render(
+      <ProviderSection
+        hook={hook}
+        context={stubContext}
+        providerLabel_="Anthropic-compatible"
+        providerHasKey={false}
+        desktop
+      />,
+    )
+    expect(screen.queryByRole('link', { name: '官网' })).not.toBeInTheDocument()
+  })
+})
+

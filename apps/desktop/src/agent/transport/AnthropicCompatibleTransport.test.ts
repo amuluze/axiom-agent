@@ -443,6 +443,9 @@ describe('AnthropicCompatibleTransport', () => {
     expect(captured).toMatchObject({
       providerId: 'generic-anthropic-compatible',
       secretId: 'provider.dynamic.api-key',
+      // 多协议 wire 分发与上游会话归因依赖这两个字段透传到 Rust。
+      modelId: 'model-b',
+      sessionId: 'session-1',
     })
     expect(captured?.body).not.toContain('provider.anthropic.api-key')
     expect(transport.requestByteLength(request)).toBe(
@@ -542,7 +545,9 @@ describe('AnthropicCompatibleTransport', () => {
     expect(events.some((event) => event.type === 'done')).toBe(false)
     if (errorEvent?.type === 'error') {
       expect(errorEvent.message).toContain('message_stop')
-      expect(errorEvent.error?.retryable).toBe(false)
+      // 截断按 network 分类：可重试，自动重试接管（isSafeAutoRetryFailure 安全门槛内）。
+      expect(errorEvent.error?.kind).toBe('network')
+      expect(errorEvent.error?.retryable).toBe(true)
     }
   })
 

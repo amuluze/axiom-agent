@@ -13,10 +13,6 @@ import {
 } from '@/agent/context/types'
 import { flattenSessionTree } from '@/agent/session/tree'
 import type { QueueModeSettings } from '@/agent/runtime/queueSettings'
-import {
-  normalizeReasoningSettings,
-  type ReasoningSettings,
-} from '@/agent/runtime/reasoningSettings'
 import { isTauriRuntime } from '@/platform/environment'
 import { useAgentStore } from '@/stores/agentStore'
 import type { SettingsSection } from '@/stores/uiStore'
@@ -34,7 +30,6 @@ import {
   submitProviderSettings,
 } from '@/components/settings/settingsUtils'
 import { ProviderSection } from '@/components/settings/sections/ProviderSection'
-import { ReasoningSection } from '@/components/settings/sections/ReasoningSection'
 import { ContextPolicySection } from '@/components/settings/sections/ContextPolicySection'
 import { QueueModesSection } from '@/components/settings/sections/QueueModesSection'
 import { LimitsSection } from '@/components/settings/sections/LimitsSection'
@@ -57,7 +52,6 @@ import type {
   ContextPolicyDraftHook,
   ProviderDraftHook,
   QueueModesDraftHook,
-  ReasoningDraftHook,
   SessionsHook,
   SettingsSectionContext,
 } from '@/components/settings/sections/types'
@@ -90,7 +84,6 @@ export const SettingsPanel = ({ open, onClose, inline = false, section }: Settin
   const recoveredRuns = useAgentStore((state) => state.recoveredRuns)
   const storageStats = useAgentStore((state) => state.storageStats)
   const contextPolicySettings = useAgentStore((state) => state.contextPolicySettings)
-  const reasoningSettings = useAgentStore((state) => state.reasoningSettings)
   const queueModeSettings = useAgentStore((state) => state.queueModeSettings)
   const agentLimitsSettings = useAgentStore((state) => state.agentLimitsSettings)
   const contextPolicySaving = useAgentStore((state) => state.contextPolicySaving)
@@ -107,14 +100,12 @@ export const SettingsPanel = ({ open, onClose, inline = false, section }: Settin
   const renameSession = useAgentStore((state) => state.renameSession)
   const refreshStorageStats = useAgentStore((state) => state.refreshStorageStats)
   const saveContextPolicy = useAgentStore((state) => state.saveContextPolicy)
-  const saveReasoningSettings = useAgentStore((state) => state.saveReasoningSettings)
   const saveQueueModes = useAgentStore((state) => state.saveQueueModes)
   const saveAgentLimits = useAgentStore((state) => state.saveAgentLimits)
   const retryInitialize = useAgentStore((state) => state.retryInitialize)
 
   const [draft, setDraft] = useState<ProviderProfileDraft>(provider)
   const [contextDraft, setContextDraft] = useState<ContextPolicySettings>(contextPolicySettings)
-  const [reasoningDraft, setReasoningDraft] = useState<ReasoningSettings>(reasoningSettings)
   const [queueModeDraft, setQueueModeDraft] = useState<QueueModeSettings>(queueModeSettings)
   const [agentLimitsDraft, setAgentLimitsDraft] = useState<AgentLimitsSettings>(agentLimitsSettings)
   const [apiKey, setApiKey] = useState('')
@@ -137,7 +128,6 @@ export const SettingsPanel = ({ open, onClose, inline = false, section }: Settin
     if (open) {
       setDraft(provider)
       setContextDraft(contextPolicySettings)
-      setReasoningDraft(reasoningSettings)
       setQueueModeDraft(queueModeSettings)
       setAgentLimitsDraft(agentLimitsSettings)
       setApiKey('')
@@ -152,7 +142,6 @@ export const SettingsPanel = ({ open, onClose, inline = false, section }: Settin
     open,
     provider,
     queueModeSettings,
-    reasoningSettings,
     refreshStorageStats,
   ])
 
@@ -202,11 +191,6 @@ export const SettingsPanel = ({ open, onClose, inline = false, section }: Settin
   const agentLimitsDraftIsSaved = JSON.stringify(
     normalizeAgentLimitsSettings(agentLimitsDraft),
   ) === JSON.stringify(agentLimitsSettings)
-  const reasoningDraftIsSaved = JSON.stringify(normalizeReasoningSettings(
-    reasoningDraft,
-    provider.apiFormat,
-    provider.maxOutputTokens,
-  )) === JSON.stringify(reasoningSettings)
 
   const handleDialogKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key === 'Escape' && !providerSetupRequired) {
@@ -297,17 +281,6 @@ export const SettingsPanel = ({ open, onClose, inline = false, section }: Settin
     deleteProviderKey,
   }
 
-  const reasoningHook: ReasoningDraftHook = {
-    draft: reasoningDraft,
-    apiFormat: provider.apiFormat,
-    maxOutputTokens: provider.maxOutputTokens,
-    // 按 draft 模型查声明；catalog 未覆盖该 modelId 时按支持处理，避免误报。
-    supportsReasoning: modelCatalog.find((model) => model.modelId === draft.modelId)?.supportsReasoning
-      ?? true,
-    save: async (settings) => saveReasoningSettings(settings),
-    setDraft: setReasoningDraft,
-  }
-
   const contextPolicyHook: ContextPolicyDraftHook = {
     draft: contextDraft,
     contextWindow: provider.contextWindow,
@@ -376,11 +349,6 @@ export const SettingsPanel = ({ open, onClose, inline = false, section }: Settin
               providerLabel_={localizedProviderLabel(t, draft.providerId)}
               providerHasKey={!creatingProviderProfile && draft.profileId === provider.profileId && providerHasKey}
               desktop={desktop}
-            />
-            <ReasoningSection
-              hook={reasoningHook}
-              context={sectionContext}
-              isSaved={reasoningDraftIsSaved}
             />
             <ContextPolicySection
               hook={contextPolicyHook}

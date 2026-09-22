@@ -5,7 +5,9 @@ import { createReviewerSubAgentTool } from './createReviewerSubAgentTool'
 export const createInspectSubAgentTool = (): AgentTool => createReviewerSubAgentTool({
   kind: 'inspect',
   toolName: 'inspect_subagent',
-  runtimeVersion: '5',
+  // v6：子会话 system prompt 按 UI 语言解析 zh-CN/en 双语模板，并支持设置页按
+  // 语言保存的用户覆写（promptLocalizationHost 执行期注入）。schema 不变。
+  runtimeVersion: '6',
   label: '审查 Task Spec',
   promptSnippet: '委派一个只读审查子 Agent，对照 Domain Spec 与规范审查 Task Spec 的完备性、可验证性与歧义，返回通过/不通过与问题清单。',
   promptGuidelines: [

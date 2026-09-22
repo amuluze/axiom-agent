@@ -8,7 +8,7 @@ import type {
   ModelTransport,
 } from '@/agent/core/types'
 import { createBranchMessageCopies } from '@/agent/session/branch'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { AgentSession } from './AgentSession'
 import type { AgentMutationJournal, AgentSessionJournalEntry } from './mutationJournal'
 
@@ -256,7 +256,11 @@ class RecordingMutationJournal implements AgentMutationJournal {
 
 const createQueuedMessageSession = (
   transport: ModelTransport,
-  modes: { steeringMode?: 'one-at-a-time' | 'all'; followUpMode?: 'one-at-a-time' | 'all' } = {},
+  modes: {
+    steeringMode?: 'one-at-a-time' | 'all'
+    followUpMode?: 'one-at-a-time' | 'all'
+    autoDrain?: boolean
+  } = {},
 ): AgentSession => new AgentSession({
   sessionId: 'queued-message-session',
   systemPrompt: 'system',
@@ -424,8 +428,8 @@ describe('AgentSession rich runtime input', () => {
       if (event.type === 'agent_start') promptRunId = event.runId
     })
 
-    expect(await session.nextTurn('carry into normal prompt')).toBe(true)
-    expect(await session.nextTurn('second queued context')).toBe(true)
+    expect((await session.nextTurn('carry into normal prompt')).accepted).toBe(true)
+    expect((await session.nextTurn('second queued context')).accepted).toBe(true)
     expect(session.pendingNextTurnCount).toBe(2)
     await session.continue()
     expect(transport.requests[0]?.messages.map((message) => message.content))
@@ -1457,14 +1461,14 @@ describe('AgentSession runtime updates', () => {
     const run = session.prompt('start')
     await transport.firstRequestStarted
 
-    expect(await session.steer({
+    expect((await session.steer({
       id: 'queued-custom',
       role: 'custom',
       customType: 'runtime-note',
       content: 'remember this',
       data: { priority: 1 },
       createdAt: 2,
-    })).toBe(true)
+    })).accepted).toBe(true)
     expect(session.hasQueuedMessages()).toBe(true)
 
     transport.release()
@@ -1508,7 +1512,7 @@ describe('AgentSession durable mutation journal', () => {
     expect(journal.entries.size).toBe(0)
 
     releaseAppend()
-    expect(await enqueue).toBe(true)
+    expect((await enqueue).accepted).toBe(true)
     expect(session.pendingNextTurnCount).toBe(1)
     expect([...journal.entries.values()]).toEqual([
       expect.objectContaining({ kind: 'queue', queueKind: 'next-turn', status: 'pending' }),
@@ -1538,7 +1542,7 @@ describe('AgentSession durable mutation journal', () => {
     })
     const run = session.prompt('start')
     await transport.firstRequestStarted
-    expect(await session.steer('durable steering')).toBe(true)
+    expect((await session.steer('durable steering')).accepted).toBe(true)
 
     transport.release()
     await run
@@ -1651,7 +1655,7 @@ describe('AgentSession queued messages', () => {
     await transport.firstRequestStarted
 
     expect(session.canQueueMessages).toBe(true)
-    expect(await session.steer('change direction')).toBe(true)
+    expect((await session.steer('change direction')).accepted).toBe(true)
     expect(session.pendingSteeringCount).toBe(1)
     expect(session.pendingFollowUpCount).toBe(0)
 
@@ -1674,7 +1678,7 @@ describe('AgentSession queued messages', () => {
     const run = session.prompt('start')
     await transport.firstRequestStarted
 
-    expect(await session.followUp('one more thing')).toBe(true)
+    expect((await session.followUp('one more thing')).accepted).toBe(true)
     expect(session.pendingFollowUpCount).toBe(1)
 
     transport.release()
@@ -1695,8 +1699,8 @@ describe('AgentSession queued messages', () => {
     const run = session.prompt('start')
     await transport.firstRequestStarted
 
-    expect(await session.steer('queued steering')).toBe(true)
-    expect(await session.followUp('queued follow-up')).toBe(true)
+    expect((await session.steer('queued steering')).accepted).toBe(true)
+    expect((await session.followUp('queued follow-up')).accepted).toBe(true)
     await session.clearQueuedMessages()
     expect(session.pendingSteeringCount).toBe(0)
     expect(session.pendingFollowUpCount).toBe(0)
@@ -1714,8 +1718,8 @@ describe('AgentSession queued messages', () => {
     const run = session.prompt('start')
     await transport.firstRequestStarted
 
-    expect(await session.steer('inspect the failing test')).toBe(true)
-    expect(await session.followUp('then summarize the fix')).toBe(true)
+    expect((await session.steer('inspect the failing test')).accepted).toBe(true)
+    expect((await session.followUp('then summarize the fix')).accepted).toBe(true)
     expect(session.queuedMessages.map(({ kind, content }) => ({ kind, content }))).toEqual([
       { kind: 'steering', content: 'inspect the failing test' },
       { kind: 'follow-up', content: 'then summarize the fix' },
@@ -1729,6 +1733,31 @@ describe('AgentSession queued messages', () => {
     session.abort()
     transport.release()
     await run
+  })
+
+  it('follows a steering steer by a plain reply without re-answering the original task', async () => {
+    // 行为断言（而非「注入了 steering」这类内部实现断言）：被 steering 引导后的后续轮
+    // 必须只面向 steering 响应，不得重新回答被中断的原始任务——否则用户会感觉
+    // 「我发的补充又被当成新问题从头做了一遍」。
+    const transport = new QueuedMessageTransport()
+    const session = createQueuedMessageSession(transport)
+    const run = session.prompt('start')
+    await transport.firstRequestStarted
+
+    expect((await session.steer('actually use the component test style instead')).accepted)
+      .toBe(true)
+    transport.release()
+    await run
+
+    expect(transport.requests).toHaveLength(2)
+    const followUp = transport.requests[1]!
+    // steering 进入了模型上下文，且是最后一个用户消息。
+    expect(followUp.messages.at(-1)).toMatchObject({
+      role: 'user',
+      content: 'actually use the component test style instead',
+    })
+    // 引导轮不再有新的工具调用（否则就是「被引导后又跑去做原任务」）。
+    expect(followUp.tools).toEqual([])
   })
 
   it('supports one-at-a-time and all steering delivery modes', async () => {
@@ -1759,6 +1788,559 @@ describe('AgentSession queued messages', () => {
       'first',
       'second',
     ])
+  })
+
+  it('holds the queue at turn boundaries when autoDrain is off and only releases a manually sent item', async () => {
+    // 对齐 ZCode autoDrain=false：turn 边界不自动出队，队列项原地待命；
+    // sendQueuedNow 把目标项提升到 steering 队首并放行一次（不依赖全局开关）。
+    const transport = new QueuedMessageTransport()
+    const session = createQueuedMessageSession(transport, { autoDrain: false })
+    const run = session.prompt('start')
+    await transport.firstRequestStarted
+
+    expect((await session.steer('queued while paused')).accepted).toBe(true)
+    expect((await session.followUp('also paused')).accepted).toBe(true)
+    expect(session.queuedMessages).toHaveLength(2)
+
+    // 自动发送关闭时 run 正常结束（队列不参与续跑），队列项仍留在内存队列。
+    transport.release()
+    await run
+
+    expect(transport.requests).toHaveLength(1)
+    expect(session.queuedMessages.map((message) => message.content)).toEqual([
+      'queued while paused',
+      'also paused',
+    ])
+    expect(session.recoveredMessages).toEqual([])
+  })
+
+  it('releases exactly the targeted item on sendQueuedNow and keeps the rest queued', async () => {
+    const transport = new QueuedMessageTransport()
+    const session = createQueuedMessageSession(transport, { autoDrain: false })
+    const run = session.prompt('start')
+    await transport.firstRequestStarted
+
+    expect((await session.steer('first')).accepted).toBe(true)
+    expect((await session.followUp('second')).accepted).toBe(true)
+    const second = session.queuedMessages.find((message) => message.content === 'second')!
+
+    // 放行后目标项被提升到 steering 队首（不再按原 follow-up 顺序）。
+    expect(await session.sendQueuedNow(second.id)).toEqual({ accepted: true, id: second.id })
+    expect(session.queuedMessages.map((message) => message.kind)).toEqual(['steering', 'steering'])
+    // 武装目标随放行暴露：UI 据此渲染「已放行，等待注入」的即时反馈。
+    expect(session.armedQueueMessageId).toBe(second.id)
+
+    transport.release()
+    await run
+
+    // 消费后武装目标清空；只有被放行的那条进入模型上下文，另一条仍留在队列（不自动跟进）。
+    expect(session.armedQueueMessageId).toBeUndefined()
+    expect(transport.requests).toHaveLength(2)
+    expect(transport.requests[1]?.messages.at(-1)?.content).toBe('second')
+    expect(session.queuedMessages.map((message) => message.content)).toEqual(['first'])
+  })
+
+  it('clears the armed marker when an aborted run recovers leftovers as drafts (autoDrain on)', async () => {
+    // 回归：autoDrain 开启时中断结算把残留搬运为恢复草稿，armed id 指向的已不是
+    // 队列项——残留会让 armedQueueMessageId 投影携带跨 run 的脏目标。
+    const transport = new QueuedMessageTransport()
+    const session = createQueuedMessageSession(transport)
+    const run = session.prompt('start')
+    await transport.firstRequestStarted
+
+    await session.steer('leftover-a')
+    const armedAcceptance = await session.steer('leftover-b')
+    if (!armedAcceptance.accepted) throw new Error('steer should be accepted')
+    expect(await session.sendQueuedNow(armedAcceptance.id)).toEqual({
+      accepted: true,
+      id: armedAcceptance.id,
+    })
+    expect(session.armedQueueMessageId).toBe(armedAcceptance.id)
+
+    session.abort()
+    transport.release()
+    await run
+
+    expect(session.armedQueueMessageId).toBeUndefined()
+    expect(session.recoveredMessages).toHaveLength(2)
+  })
+
+  it('exposes current queue modes for host-side settings reconciliation', () => {
+    const session = createQueuedMessageSession(new QueuedMessageTransport(), {
+      steeringMode: 'all',
+      followUpMode: 'one-at-a-time',
+      autoDrain: false,
+    })
+    expect(session.queueModes).toEqual({
+      steering: 'all',
+      followUp: 'one-at-a-time',
+      autoDrain: false,
+    })
+    session.setQueueModes('one-at-a-time', 'all')
+    session.setAutoDrain(true)
+    expect(session.queueModes).toEqual({
+      steering: 'one-at-a-time',
+      followUp: 'all',
+      autoDrain: true,
+    })
+  })
+
+  it('reindexes queue orders when midpoint insertion exhausts float precision', async () => {
+    // 回归：同两个邻居之间反复中点插值（每次插在上一个插入项与队首之间）约 52 次
+    // 后触及 double 精度极限，order 不再严格介于两邻之间——此前会静默插错位置，
+    // 现在触发整型重排兜底，插入位置始终与用户意图一致。
+    const transport = new QueuedMessageTransport()
+    const session = createQueuedMessageSession(transport, { autoDrain: false })
+    const run = session.prompt('start')
+    await transport.firstRequestStarted
+
+    expect((await session.steer('anchor-a')).accepted).toBe(true)
+    expect((await session.steer('anchor-b')).accepted).toBe(true)
+    const anchorA = session.queuedMessages[0]!.id
+
+    for (let index = 0; index < 60; index += 1) {
+      const accepted = await session.steer(`nested-${index}`)
+      if (!accepted.accepted) throw new Error('steer should be accepted')
+      const moved = await session.moveQueuedMessage(accepted.id, {
+        kind: 'steering',
+        placement: { position: 'below', anchorId: anchorA },
+      })
+      expect(moved.updated).toBe(true)
+    }
+
+    transport.release()
+    const result = await run
+    expect(result.reason).toBe('completed')
+
+    const display = session.queuedMessages.map((message) => message.content)
+    expect(display[0]).toBe('anchor-a')
+    expect(display[1]).toBe('nested-59')
+    expect(display[60]).toBe('nested-0')
+    expect(display.at(-1)).toBe('anchor-b')
+    expect(display).toHaveLength(62)
+  })
+
+  it('releases only the targeted item under the all delivery mode and keeps the rest queued', async () => {
+    // 模式 `all` 的批量语义属于自动出队；逐条放行必须只消费一条，否则「立即发送这一条」
+    // 会连带把队列整批塞进当前上下文。
+    const transport = new QueuedMessageTransport()
+    const session = createQueuedMessageSession(transport, {
+      steeringMode: 'all',
+      autoDrain: false,
+    })
+    const run = session.prompt('start')
+    await transport.firstRequestStarted
+
+    expect((await session.steer('first')).accepted).toBe(true)
+    expect((await session.steer('second')).accepted).toBe(true)
+    const first = session.queuedMessages[0]!
+    expect(await session.sendQueuedNow(first.id)).toEqual({ accepted: true, id: first.id })
+
+    transport.release()
+    await run
+
+    // 第二轮的上下文只多出被放行的那一条（不是整批）。
+    expect(transport.requests).toHaveLength(2)
+    expect(transport.requests[1]?.messages.map((message) => message.content)).toEqual([
+      'start',
+      'answer-1',
+      'first',
+    ])
+    expect(session.queuedMessages.map((message) => message.content)).toEqual(['second'])
+  })
+
+  it('resumes automatic draining after setAutoDrain(true) and rejects sendQueuedNow while idle', async () => {
+    const transport = new QueuedMessageTransport()
+    const session = createQueuedMessageSession(transport, { autoDrain: false })
+    const run = session.prompt('start')
+    await transport.firstRequestStarted
+    expect((await session.steer('resumed')).accepted).toBe(true)
+
+    // 暂停期间队列项不出队；切换 autoDrain 作废悬挂的武装目标（方向切换后不得注入旧目标）。
+    const idleArm = await session.sendQueuedNow()
+    expect(idleArm).toEqual({ accepted: true, id: session.queuedMessages[0]?.id })
+    session.setAutoDrain(true)
+    expect(session.armedQueueMessageId).toBeUndefined()
+
+    // 切回自动后按常规 turn 边界消费。
+    transport.release()
+    await run
+
+    expect(transport.requests.at(-1)?.messages.at(-1)?.content).toBe('resumed')
+    expect(session.queuedMessages).toEqual([])
+
+    // 未运行时没有可注入的 run：立即发送按 runtime-not-accepting 拒绝（idle 路径由 store 层承担）。
+    expect(await session.sendQueuedNow()).toEqual({
+      accepted: false,
+      reason: 'runtime-not-accepting',
+    })
+  })
+
+  it('rejects queue writes with a reason instead of reporting a silent failure', async () => {
+    const transport = new QueuedMessageTransport()
+    const session = createQueuedMessageSession(transport)
+    const run = session.prompt('start')
+    await transport.firstRequestStarted
+
+    // 空输入：createQueuedMessage 无内容可入队。
+    expect(await session.steer('   ')).toEqual({ accepted: false, reason: 'empty-input' })
+
+    // 队列项不存在：编辑/移动/删除都按 unknown-message 拒绝（消息可能已被注入）。
+    expect(await session.editQueuedMessage('missing', 'text')).toEqual({
+      updated: false,
+      reason: 'unknown-message',
+    })
+    expect(await session.moveQueuedMessage('missing', {      kind: 'steering',
+      placement: { position: 'top' },
+    })).toEqual({ updated: false, reason: 'unknown-message' })
+    expect(await session.deleteQueuedMessage('missing')).toEqual({
+      updated: false,
+      reason: 'unknown-message',
+    })
+
+    session.abort()
+    transport.release()
+    await run
+
+    // run 结束后结算窗口关闭：入队被拒（不再是「排了但没投递」的静默失败）。
+    expect(await session.steer('too late')).toEqual({
+      accepted: false,
+      reason: 'runtime-not-accepting',
+    })
+  })
+
+  it('edits a queued message in place, keeping its kind, position, images and id', async () => {
+    const journal = new RecordingMutationJournal()
+    const transport = new QueuedMessageTransport()
+    const session = createQueuedMessageSession(transport)
+    // 带图片的会话（journal 版便于核对 durable 重写）。
+    const journalSession = new AgentSession({
+      sessionId: 'queued-message-session',
+      systemPrompt: 'system',
+      model: { provider: 'test', model: 'model' },
+      transport,
+      mutationJournal: journal,
+    })
+    void session
+    const run = journalSession.prompt('start')
+    await transport.firstRequestStarted
+
+    const image = { type: 'image' as const, source: { type: 'base64' as const, mediaType: 'image/png', data: 'cG5n' } }
+    await journalSession.steer('', [image])
+    await journalSession.followUp('second')
+    const [first] = journalSession.queuedMessages
+    const originalEntryId = journal.entries.get([...journal.entries.keys()][0]!)?.id
+
+    const result = await journalSession.editQueuedMessage(first!.id, 'edited text')
+    expect(result).toEqual({ updated: true, messageId: first!.id, kind: 'steering' })
+
+    // 编辑保留：id、kind、顺序位置与图片块。
+    expect(journalSession.queuedMessages.map(({ id, kind, content }) => ({ id, kind, content }))).toEqual([
+      { id: first!.id, kind: 'steering', content: 'edited text' },
+      { id: journalSession.queuedMessages[1]!.id, kind: 'follow-up', content: 'second' },
+    ])
+    expect(journalSession.queuedMessages[0]!.images).toEqual([image])
+
+    // durable 重写：新 entry 承载编辑后的 payload，旧 entry 已 discarded，同一 message.id
+    // 不会留下两个 pending（恢复时会命中重复 ID 校验）。
+    const pendingQueueEntries = [...journal.entries.values()].filter(
+      (entry) => entry.kind === 'queue' && entry.status === 'pending',
+    )
+    expect(pendingQueueEntries).toHaveLength(2)
+    const rewritten = pendingQueueEntries.find(
+      (entry) => entry.kind === 'queue' && entry.message.id === first!.id,
+    )
+    expect(rewritten).toMatchObject({ message: { id: first!.id, content: 'edited text' } })
+    expect((rewritten as { order?: number }).order).toBeDefined()
+    const previous = [...journal.entries.values()].find((entry) => entry.id === originalEntryId)
+    expect(previous?.status).toBe('discarded')
+
+    journalSession.abort()
+    transport.release()
+    await run
+  })
+
+  it('reorders within a queue and promotes across queues against the displayed order', async () => {
+    const transport = new QueuedMessageTransport()
+    const session = createQueuedMessageSession(transport)
+    const run = session.prompt('start')
+    await transport.firstRequestStarted
+
+    await session.steer('steer-a')
+    await session.followUp('follow-a')
+    await session.followUp('follow-b')
+    const contents = () => session.queuedMessages.map((message) => message.content)
+    expect(contents()).toEqual(['steer-a', 'follow-a', 'follow-b'])
+
+    // 同队列重排：follow-b 移到队首（同 kind，位置变）。
+    const followB = session.queuedMessages.find((message) => message.content === 'follow-b')!
+    expect(await session.moveQueuedMessage(followB.id, {
+      kind: 'follow-up',
+      placement: { position: 'top' },
+    })).toEqual({ updated: true, messageId: followB.id, kind: 'follow-up' })
+    expect(contents()).toEqual(['follow-b', 'steer-a', 'follow-a'])
+
+    // 跨队列提升：follow-b → steering 队首（下一个 turn 边界即注入）。
+    expect(await session.promoteQueuedMessage(followB.id)).toEqual({
+      updated: true,
+      messageId: followB.id,
+      kind: 'steering',
+    })
+    expect(contents()).toEqual(['follow-b', 'steer-a', 'follow-a'])
+    expect(session.queuedMessages[0]!.kind).toBe('steering')
+    expect(session.pendingSteeringCount).toBe(2)
+    expect(session.pendingFollowUpCount).toBe(1)
+
+    // 删除：单条移除且不影响其它项。
+    const steerA = session.queuedMessages.find((message) => message.content === 'steer-a')!
+    expect(await session.deleteQueuedMessage(steerA.id)).toEqual({
+      updated: true,
+      messageId: steerA.id,
+      kind: 'steering',
+    })
+    expect(contents()).toEqual(['follow-b', 'follow-a'])
+
+    session.abort()
+    transport.release()
+    await run
+  })
+
+  it('promotes a queued follow-up so it drains on the next turn instead of at task end', async () => {
+    const transport = new QueuedMessageTransport()
+    const session = createQueuedMessageSession(transport)
+    const run = session.prompt('start')
+    await transport.firstRequestStarted
+
+    await session.followUp('bring this forward')
+    const queued = session.queuedMessages[0]!
+    expect(await session.promoteQueuedMessage(queued.id)).toMatchObject({ updated: true })
+
+    transport.release()
+    const result = await run
+
+    expect(result.reason).not.toBe('aborted')
+    // 提升后的项在下一个 turn 边界注入（与 steering 同一路径）。
+    expect(transport.requests).toHaveLength(2)
+    expect(transport.requests[1]?.messages.at(-1)).toMatchObject({
+      role: 'user',
+      content: 'bring this forward',
+    })
+  })
+
+  it('keeps a moved queue item at its explicit order after a restart', async () => {
+    const journal = new RecordingMutationJournal()
+    const transport = new QueuedMessageTransport()
+    const session = new AgentSession({
+      sessionId: 'queued-order-restart',
+      systemPrompt: 'system',
+      model: { provider: 'test', model: 'model' },
+      transport,
+      mutationJournal: journal,
+    })
+    const run = session.prompt('start')
+    await transport.firstRequestStarted
+
+    await session.steer('first')
+    await session.steer('second')
+    const second = session.queuedMessages.find((message) => message.content === 'second')!
+    await session.moveQueuedMessage(second.id, {
+      kind: 'steering',
+      placement: { position: 'top' },
+    })
+    expect(session.queuedMessages.map((message) => message.content)).toEqual(['second', 'first'])
+
+    // 崩溃态：entry 停在 consuming（而非 abort 后的 recovered 草稿），恢复扫描会把它回退
+    // 成 pending 并作为可运行队列项重建——此时顺序必须按 payload.order 而非 sequence。
+    session.abort()
+    transport.release()
+    await run
+    const pending = [...journal.entries.values()].filter(
+      (entry) => entry.kind === 'queue' && entry.status === 'pending',
+    )
+    expect(pending).toHaveLength(2)
+
+    const restarted = new AgentSession({
+      sessionId: 'queued-order-restart',
+      systemPrompt: 'system',
+      model: { provider: 'test', model: 'model' },
+      transport: new QueuedMessageTransport(),
+      mutationJournal: journal,
+      journalEntries: pending.map((entry) => ({
+        ...entry,
+        status: 'pending' as const,
+        recoveredAt: undefined,
+      })),
+    })
+    // 恢复顺序按 payload.order（重排后第二条的 order 小于第一条），而不是重写 entry 的 sequence。
+    expect(restarted.queuedMessages.map((message) => message.content)).toEqual(['second', 'first'])
+  })
+
+  it('keeps both sides untouched when the previous queue entry cannot be discarded', async () => {
+    // 重写 = 先 append 新 entry 再 discard 旧 entry。discard 失败必须补偿丢弃新 entry，
+    // 否则同一 message.id 会留下两个 pending 条目（恢复时 fail-closed），且内存与
+    // durable 状态分叉。
+    class RejectingDiscardJournal extends RecordingMutationJournal {
+      rejectDiscard = true
+
+      override async discard(entryIds: string[]): Promise<void> {
+        if (this.rejectDiscard) {
+          // 只让「旧 entry 的 discard」失败一次：补偿路径（丢弃新 entry）必须放行。
+          this.rejectDiscard = false
+          throw new Error('discard unavailable')
+        }
+        return super.discard(entryIds)
+      }
+    }
+    const journal = new RejectingDiscardJournal()
+    const transport = new QueuedMessageTransport()
+    const session = new AgentSession({
+      sessionId: 'queued-rewrite-compensation',
+      systemPrompt: 'system',
+      model: { provider: 'test', model: 'model' },
+      transport,
+      mutationJournal: journal,
+    })
+    const run = session.prompt('start')
+    await transport.firstRequestStarted
+
+    await session.steer('original')
+    const messageId = session.queuedMessages[0]!.id
+    await expect(session.editQueuedMessage(messageId, 'edited')).rejects.toThrow('discard unavailable')
+
+    // 内存未被改写，且 journal 里没有残留 pending 的新 entry（补偿已丢弃它）。
+    expect(session.queuedMessages.map((message) => message.content)).toEqual(['original'])
+    const pending = [...journal.entries.values()].filter(
+      (entry) => entry.kind === 'queue' && entry.status === 'pending',
+    )
+    expect(pending).toHaveLength(1)
+    expect(pending[0]).toMatchObject({ message: { id: messageId, content: 'original' } })
+
+    session.abort()
+    transport.release()
+    await run
+  })
+
+  it('exposes queued images so restoring to the composer cannot silently drop them', async () => {
+    const transport = new QueuedMessageTransport()
+    const session = createQueuedMessageSession(transport)
+    const run = session.prompt('start')
+    await transport.firstRequestStarted
+
+    const image = { type: 'image' as const, source: { type: 'base64' as const, mediaType: 'image/png', data: 'cG5n' } }
+    await session.steer('', [image])
+    await session.followUp('text only')
+
+    expect(session.queuedMessages[0]).toMatchObject({ content: '', images: [image] })
+    expect(session.queuedMessages[1]).toMatchObject({ content: 'text only', images: [] })
+
+    const restored = await session.restoreQueuedMessage(session.queuedMessages[0]!.id)
+    expect(restored?.images).toEqual([image])
+
+    session.abort()
+    transport.release()
+    await run
+  })
+
+  it('does not leave a drained queue consumption replayable when its persistence listener fails', async () => {
+    // 锁定：store 持久化监听器抛错（「Session message 与 queue journal 消费事实
+    // 不匹配」正是该抛错形态）时，emit 既不得跳过内存消费事实清理（否则
+    // drainedQueueKinds / queueJournalEntryIds 会带着已结束 run 的消费事实跨 run
+    // 边界存活，后续 run 重放它即被持久化校验再拒，每次重试必败），也不得把消息
+    // 弄丢（journal 必须回退 pending 并重新入队，见文末断言）。
+    class GatedTransport implements ModelTransport {
+      readonly requests: ModelRequest[] = []
+      private held = new Set<number>()
+      private openings = new Map<number, Array<() => void>>()
+
+      hold(index: number): void {
+        this.held.add(index)
+      }
+
+      open(index: number): void {
+        this.held.delete(index)
+        for (const resolve of this.openings.get(index) ?? []) resolve()
+        this.openings.delete(index)
+      }
+
+      private waitForOpen(index: number, signal: AbortSignal): Promise<void> | undefined {
+        if (!this.held.has(index)) return undefined
+        return new Promise<void>((resolve, reject) => {
+          const onAbort = (): void => reject(new DOMException('Aborted', 'AbortError'))
+          signal.addEventListener('abort', onAbort, { once: true })
+          const waiters = this.openings.get(index) ?? []
+          this.openings.set(index, waiters)
+          waiters.push(() => {
+            signal.removeEventListener('abort', onAbort)
+            resolve()
+          })
+        })
+      }
+
+      async *stream(request: ModelRequest, signal: AbortSignal): AsyncIterable<ModelStreamEvent> {
+        const index = this.requests.push(request) - 1
+        await this.waitForOpen(index, signal)
+        yield { type: 'start' }
+        yield { type: 'text_delta', contentIndex: 0, delta: `resp-${index}` }
+        yield { type: 'done', stopReason: 'stop' }
+      }
+    }
+
+    const messageEnds: Array<{ id: string; consumedJournalEntryId?: string }> = []
+    const transport = new GatedTransport()
+    const journal = new RecordingMutationJournal()
+    const session = new AgentSession({
+      sessionId: 'stale-drained-state',
+      systemPrompt: 'system',
+      model: { provider: 'test', model: 'model' },
+      transport,
+      mutationJournal: journal,
+    })
+    // 监听器模拟 store 持久化：首次消费落库失败（真实形态——监听器抛错）。
+    let failing = true
+    session.subscribe((event) => {
+      if (event.type !== 'message_end' || event.message.role !== 'user') return
+      messageEnds.push({
+        id: event.message.id,
+        ...(event.consumedJournalEntryId
+          ? { consumedJournalEntryId: event.consumedJournalEntryId }
+          : {}),
+      })
+      if (failing && event.consumedJournalEntryId) {
+        failing = false
+        throw new Error('Session message 与 queue journal 消费事实不匹配')
+      }
+    })
+
+    transport.hold(0)
+    const first = session.prompt('start')
+    await vi.waitFor(() => expect(transport.requests.length).toBe(1))
+    await session.steer('继续')
+    transport.open(0)
+    // turn 2 起点：steering 被 drain 并 append，message_end 触发首次落库失败 →
+    // run A 结束，该 append 留在内存未落库（drained 状态本应随之清理）
+    await vi.waitFor(() => expect(messageEnds.length).toBeGreaterThan(0))
+    await first.catch(() => undefined)
+
+    const staleEntryId = messageEnds.find((entry) => entry.consumedJournalEntryId)
+      ?.consumedJournalEntryId
+    expect(staleEntryId).toBeDefined()
+
+    // run A 失败后：消息不得丢，也不得把已结束 run 的消费事实留在 durable journal 里。
+    // journal 回退 pending（不再停在 consuming / consumer_run_id=run A），消息在 run
+    // 收尾时转为恢复草稿交回输入窗口，重启后仍可恢复。
+    expect(journal.operations).toContain(`pending:${staleEntryId}`)
+    expect(journal.operations).toContain(`recovered:${staleEntryId}`)
+    const preserved = journal.entries.get(staleEntryId as string)
+    expect(preserved).toMatchObject({ status: 'pending', recoveredAt: expect.any(Number) })
+    expect(preserved?.consumerRunId).toBeUndefined()
+    expect(await session.takeQueuedMessages()).toEqual([
+      expect.objectContaining({ kind: 'steering', content: '继续' }),
+    ])
+
+    // 重试不得重放失效条目：已结束 run 的消费事实已随回退清除。
+    messageEnds.length = 0
+    await session.retry().catch(() => undefined)
+    expect(messageEnds.filter((entry) => entry.consumedJournalEntryId === staleEntryId)).toEqual([])
   })
 
   it('keeps stopped queued messages recoverable instead of carrying them into the next run', async () => {
@@ -1843,7 +2425,7 @@ describe('AgentSession queued messages', () => {
     const session = createQueuedMessageSession(transport)
     const run = session.prompt('start')
 
-    expect(await session.steer('drained before abort')).toBe(true)
+    expect((await session.steer('drained before abort')).accepted).toBe(true)
     session.abort()
     await run
 
@@ -1862,7 +2444,7 @@ describe('AgentSession queued messages', () => {
     })
     const run = session.prompt('start')
 
-    expect(await session.steer('recover despite event failure')).toBe(true)
+    expect((await session.steer('recover despite event failure')).accepted).toBe(true)
     session.abort()
     await expect(run).rejects.toThrow('persistence failed')
 
@@ -1889,8 +2471,8 @@ describe('AgentSession queued messages', () => {
     const run = session.prompt('start')
     await transport.firstRequestStarted
 
-    expect(await session.steer('already drained')).toBe(true)
-    expect(await session.steer('still queued')).toBe(true)
+    expect((await session.steer('already drained')).accepted).toBe(true)
+    expect((await session.steer('still queued')).accepted).toBe(true)
     expect(session.pendingSteeringCount).toBe(2)
 
     transport.release()
@@ -1933,8 +2515,8 @@ describe('AgentSession queued messages', () => {
 
     expect(session.isRunning).toBe(true)
     expect(session.canQueueMessages).toBe(false)
-    expect(await session.steer('too late')).toBe(false)
-    expect(await session.followUp('also too late')).toBe(false)
+    expect((await session.steer('too late')).accepted).toBe(false)
+    expect((await session.followUp('also too late')).accepted).toBe(false)
 
     const idle = session.waitForIdle()
     releaseAgentEnd()
@@ -2172,5 +2754,130 @@ describe('AgentSession branch continuation', () => {
     expect(copiedHistory.map((message) => message.id)).toContain(session.checkpoint?.throughMessageId)
     expect(sourceHistory.map((message) => message.id)).not.toContain(session.checkpoint?.throughMessageId)
     expect(session.checkpoint?.sessionId).toBe('retry-compaction')
+  })
+})
+
+describe('AgentSession turn aborted marker', () => {
+  it('appends a turn-aborted marker when the user aborts mid-run', async () => {
+    const transport = new QueuedMessageTransport()
+    const session = createQueuedMessageSession(transport)
+    const run = session.prompt('start')
+    await transport.firstRequestStarted
+    session.abort()
+    transport.release()
+    const result = await run
+
+    expect(result.reason).toBe('aborted')
+    expect(result.turns).toBeGreaterThan(0)
+    const marker = session.messages.at(-1)
+    expect(marker).toMatchObject({ role: 'custom', customType: 'turn-aborted', data: { reason: 'user-abort' } })
+  })
+
+  it('does not append a marker when a run completes normally', async () => {
+    const transport = new ResumeTransport()
+    const session = new AgentSession({
+      sessionId: 'no-abort-marker',
+      systemPrompt: 'system',
+      model: { provider: 'test', model: 'model' },
+      transport,
+    })
+    const result = await session.prompt('hello')
+
+    expect(result.reason).toBe('completed')
+    expect(session.messages.some((message) => message.role === 'custom')).toBe(false)
+  })
+
+  it('surfaces the marker to the model on the next request as a wrapped user message', async () => {
+    const transport = new QueuedMessageTransport()
+    const session = createQueuedMessageSession(transport)
+    const run = session.prompt('start')
+    await transport.firstRequestStarted
+    session.abort()
+    transport.release()
+    await run
+
+    await session.prompt('continue from where it stopped')
+
+    expect(transport.requests).toHaveLength(2)
+    const marker = transport.requests[1]?.messages.find((message) =>
+      message.role === 'user' && message.content.includes('<turn-aborted>'))
+    expect(marker).toBeDefined()
+    expect(marker?.content).toContain('被用户中断')
+  })
+})
+
+describe('AgentSession post-turn idle compaction', () => {
+  /** 构造落在「软水位之上、硬阈值之下」字节数的会话：seed 一条大消息，使请求
+   * 字节 > requestByteThreshold × 0.9（软线）但 < requestByteThreshold（硬线）——
+   * 运行中不压缩，run 正常收口后空闲压缩应当自动触发。 */
+  const IDLE_COMPACTION_POLICY = {
+    contextWindow: 1_000_000,
+    reserveTokens: 16_384,
+    keepRecentTokens: 20_000,
+    requestByteThreshold: 512 * 1024,
+    hardRequestByteLimit: 2 * 1024 * 1024,
+  }
+
+  it('compacts in the idle gap after a completed run at the soft watermark', async () => {
+    const transport = new ResumeTransport()
+    const session = new AgentSession({
+      sessionId: 'idle-compaction',
+      systemPrompt: 'system',
+      model: { provider: 'test', model: 'model' },
+      transport,
+      contextPolicy: IDLE_COMPACTION_POLICY,
+      messages: [
+        { id: 'big-u1', role: 'user', content: `history ${'x'.repeat(500_000)}`, createdAt: 1 },
+        { id: 'big-a1', role: 'assistant', content: 'done reading', toolCalls: [], stopReason: 'stop', createdAt: 2 },
+      ],
+    })
+
+    const result = await session.prompt('final check')
+
+    expect(result.reason).toBe('completed')
+    // 运行中没有触发压缩（请求未超硬线）：首个请求就是普通对话请求
+    expect(transport.requests).toHaveLength(2)
+    expect(transport.requests[0]?.messages.some((message) => message.id.startsWith('context-summary:'))).toBe(false)
+    // run 结算后的空隙里按软水位完成压缩（第二个请求是摘要请求）
+    expect(transport.requests[1]?.systemPrompt.includes('上下文压缩器')).toBe(true)
+    expect(session.checkpoint?.reason).toBe('byte_threshold')
+    // 500KB 的大消息超出 keepRecent 尾窗，成为被摘要的压缩边界
+    expect(session.checkpoint?.throughMessageId).toBe('big-u1')
+  })
+
+  it('does not compact after a run below the soft watermark', async () => {
+    const transport = new ResumeTransport()
+    const session = new AgentSession({
+      sessionId: 'idle-compaction-below',
+      systemPrompt: 'system',
+      model: { provider: 'test', model: 'model' },
+      transport,
+      contextPolicy: IDLE_COMPACTION_POLICY,
+    })
+
+    const result = await session.prompt('tiny prompt')
+
+    expect(result.reason).toBe('completed')
+    expect(transport.requests).toHaveLength(1)
+    expect(session.checkpoint ?? null).toBeNull()
+  })
+
+  it('skips idle compaction when the run already compacted (no double summarize)', async () => {
+    const transport = new CompactingTransport()
+    const session = new AgentSession({
+      sessionId: 'idle-compaction-after-run',
+      systemPrompt: 'system',
+      model: { provider: 'test', model: 'model' },
+      transport,
+      messages: [
+        { id: 'old-u1', role: 'user', content: 'old goal', createdAt: 1 },
+        { id: 'old-a1', role: 'assistant', content: 'old answer', toolCalls: [], stopReason: 'stop', createdAt: 2 },
+      ],
+    })
+
+    await session.prompt('keep going')
+
+    // 1 次普通请求（运行中同步压缩）+ 1 次摘要请求；空闲压缩因本 run 已压缩而跳过
+    expect(transport.requests).toHaveLength(2)
   })
 })

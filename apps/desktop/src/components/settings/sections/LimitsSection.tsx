@@ -2,7 +2,9 @@ import { LockKeyhole } from 'lucide-react'
 import {
   DEFAULT_AGENT_LIMITS_SETTINGS,
   MAX_TOOL_CALLS_LIMIT,
+  MAX_TOTAL_TOKENS_LIMIT,
   MAX_TURNS_LIMIT,
+  MIN_TOTAL_TOKENS_LIMIT,
   type AgentLimitsSettings,
 } from '@/agent/runtime/agentLimitsSettings'
 import type { AgentLimitsDraftHook, SettingsSectionContext } from './types'
@@ -51,6 +53,21 @@ export const LimitsSection = ({ hook, context, isSaved }: LimitsSectionProps) =>
             })}
             type="number"
             value={draft.maxToolCalls}
+          />
+        </label>
+        <label>
+          {t('settings.limits.maxTotalTokens')}
+          <input
+            disabled={busy}
+            max={MAX_TOTAL_TOKENS_LIMIT}
+            min={MIN_TOTAL_TOKENS_LIMIT}
+            onChange={(event) => setDraft({
+              ...draft,
+              maxTotalTokens: Number(event.target.value),
+            })}
+            step={10_000}
+            type="number"
+            value={draft.maxTotalTokens}
           />
         </label>
       </div>

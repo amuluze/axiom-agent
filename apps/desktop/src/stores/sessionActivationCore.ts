@@ -56,6 +56,9 @@ export interface AgentCoreProjection {
   pendingNextTurnCount: number
   queuedMessages: QueuedMessageSnapshot[]
   recoveredQueuedMessages: QueuedMessageSnapshot[]
+  /** 每个会话的待发送条数（含后台运行中的会话）：侧栏据此显示排队徽标。
+   *  可选：激活路径不改写它（保留其它会话的计数），由事件 reducer 增量维护。 */
+  sessionQueueCounts?: Record<string, number>
   providerSetupRequired: boolean
   /**
    * 流式期间尚未提交的 assistant 消息草稿：每个 text_delta / thinking_delta
@@ -90,6 +93,7 @@ export const applySessionActivationState = (
     pendingNextTurnCount: number
     queuedMessages: QueuedMessageSnapshot[]
     recoveredQueuedMessages: QueuedMessageSnapshot[]
+    armedQueueMessageId: string | null
   },
   contextUsage: AgentCoreProjection['contextUsage'],
   providerSetupRequired: boolean,
@@ -116,6 +120,7 @@ export const applySessionActivationState = (
     pendingNextTurnCount: queuedMessageState.pendingNextTurnCount,
     queuedMessages: queuedMessageState.queuedMessages,
     recoveredQueuedMessages: queuedMessageState.recoveredQueuedMessages,
+    armedQueueMessageId: queuedMessageState.armedQueueMessageId,
     streamingDraft: null,
     ...(options.state ?? {}),
     providerSetupRequired,
@@ -140,7 +145,25 @@ export const queuedMessageStateFor = (runtime: AgentHarness) => ({
   pendingNextTurnCount: runtime.pendingNextTurnCount,
   queuedMessages: runtime.queuedMessages,
   recoveredQueuedMessages: runtime.recoveredMessages,
+  armedQueueMessageId: runtime.armedQueueMessageId ?? null,
 })
+
+/**
+ * 会话待发送条数的增量更新：计数归零即删除键（随事件自清理，不随会话数增长），
+ * 未变化时返回原对象引用，避免每个后台事件都触发侧栏重渲染。
+ */
+export const withSessionQueueCount = (
+  current: Record<string, number>,
+  sessionId: string,
+  count: number,
+): Record<string, number> => {
+  const previous = current[sessionId] ?? 0
+  if (previous === count && (count > 0 || !(sessionId in current))) return current
+  const next = { ...current }
+  if (count > 0) next[sessionId] = count
+  else delete next[sessionId]
+  return next
+}
 
 /**
  * 流式重放阴影：messageId → 当前 streamingDraft 各 contentBlock 的 contentIndex
@@ -181,6 +204,7 @@ export const applySessionEvent = (
       endReason: null,
       error: null,
       compactionRunning: false,
+      queuedMessages: [],
     }
     if (event.type === 'tool_execution_start') {
       projection.activeTools = {
@@ -213,7 +237,15 @@ export const applySessionEvent = (
       projection.compactionRunning = false
       projection.error = event.errorMessage ?? projection.error
     }
+    // 队列投影随事件刷新（含后台会话）：侧栏据此显示排队条数，避免只在激活会话时可见。
+    const queuedState = queuedMessageStateFor(boundRuntime)
+    projection.queuedMessages = queuedState.queuedMessages
     setRuntimeProjection(boundSessionId, projection)
+    const sessionQueueCounts = withSessionQueueCount(
+      state.sessionQueueCounts ?? {},
+      boundSessionId,
+      queuedState.queuedMessages.length,
+    )
 
     let sessions = state.sessions
     const updateStored = (update: (stored: StoredAgentSession) => StoredAgentSession): void => {
@@ -261,16 +293,18 @@ export const applySessionEvent = (
     }
 
     if (state.activeSessionId !== boundSessionId) {
-      // 后台会话事件只允许更新 sidebar sessions。store 的 streamingDraft 只可能属于
+      // 后台会话事件只允许更新 sidebar sessions（以及会话维度的队列计数：运行中的
+      // 后台会话要能在侧栏显示排队条数）。store 的 streamingDraft 只可能属于
       // 活动会话（非活动事件在上文即 return，从不写 store），切走遗留草稿已由各
       // 切换路径（applySessionActivationState / activateCachedRuntimeSession）统一置
       // null。此处绝不能清空 streamingDraft，否则后台会话的 tool/流式事件会撕裂
       // 前台正在流式的消息渲染。
-      return { sessions }
+      return { sessions, sessionQueueCounts }
     }
     const base = {
       sessions,
-      ...queuedMessageStateFor(boundRuntime),
+      sessionQueueCounts,
+      ...queuedState,
     }
 
     switch (event.type) {

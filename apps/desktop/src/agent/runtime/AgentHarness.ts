@@ -25,6 +25,11 @@ import {
 } from '@/agent/session/branchSummary'
 import type { BranchSummarySource } from '@/agent/session/branch'
 import type { QueueDeliveryMode } from './queueSettings'
+import type {
+  QueueAcceptance,
+  QueueMoveTarget,
+  QueueMutationResult,
+} from './queueContracts'
 import {
   AgentSession,
   type AgentAbortSettlement,
@@ -674,6 +679,12 @@ export class AgentHarness {
   get pendingNextTurnCount(): number { return this.session.pendingNextTurnCount }
   get queuedMessages(): QueuedMessageSnapshot[] { return this.session.queuedMessages }
   get recoveredMessages(): QueuedMessageSnapshot[] { return this.session.recoveredMessages }
+  /** sendQueuedNow 的武装目标：点击「立即发送」已接受、等待 turn 边界注入的队列项。 */
+  get armedQueueMessageId(): string | undefined { return this.session.armedQueueMessageId }
+  /** 当前队列模式（投递档 + autoDrain）：宿主在缓存激活等边界对齐全局设置用。 */
+  get queueModes(): { steering: QueueDeliveryMode; followUp: QueueDeliveryMode; autoDrain: boolean } {
+    return this.session.queueModes
+  }
   get messages(): AgentMessage[] { return this.session.messages }
   get checkpoint(): ContextCheckpoint | null { return this.session.checkpoint }
   get runtimeContext(): AgentContext { return this.session.runtimeContext }
@@ -718,25 +729,73 @@ export class AgentHarness {
     return this.runInPhase('retry', 'invalid_state', () => this.session.retry())
   }
 
-  async steer(content: string, images?: ImageContentBlock[]): Promise<boolean> {
+  async steer(content: string, images?: ImageContentBlock[]): Promise<QueueAcceptance> {
     this.assertActive('steer')
     const accepted = await this.session.steer(content, images)
-    if (accepted) this.emitQueueUpdate()
+    if (accepted.accepted) this.emitQueueUpdate()
     return accepted
   }
 
-  async followUp(content: string, images?: ImageContentBlock[]): Promise<boolean> {
+  async followUp(content: string, images?: ImageContentBlock[]): Promise<QueueAcceptance> {
     this.assertActive('followUp')
     const accepted = await this.session.followUp(content, images)
-    if (accepted) this.emitQueueUpdate()
+    if (accepted.accepted) this.emitQueueUpdate()
     return accepted
   }
 
-  async nextTurn(content: string, images?: ImageContentBlock[]): Promise<boolean> {
+  async nextTurn(content: string, images?: ImageContentBlock[]): Promise<QueueAcceptance> {
     this.assertActive('nextTurn')
     const accepted = await this.session.nextTurn(content, images)
-    if (accepted) this.emitQueueUpdate()
+    if (accepted.accepted) this.emitQueueUpdate()
     return accepted
+  }
+
+  /** 手动放行一条队列项（对齐 ZCode sendQueuedNow）：移到 steering 队首并武装立即注入。 */
+  async sendQueuedNow(messageId?: string): Promise<QueueAcceptance> {
+    this.assertActive('sendQueuedNow')
+    const accepted = await this.session.sendQueuedNow(messageId)
+    if (accepted.accepted) this.emitQueueUpdate()
+    return accepted
+  }
+
+  setAutoDrain(enabled: boolean): void {
+    this.assertActive('setAutoDrain')
+    this.session.setAutoDrain(enabled)
+  }
+
+  async editQueuedMessage(
+    messageId: string,
+    content: string,
+    images?: ImageContentBlock[],
+  ): Promise<QueueMutationResult> {
+    this.assertActive('editQueuedMessage')
+    const result = await this.session.editQueuedMessage(messageId, content, images)
+    if (result.updated) this.emitQueueUpdate()
+    return result
+  }
+
+  async moveQueuedMessage(
+    messageId: string,
+    target: QueueMoveTarget,
+  ): Promise<QueueMutationResult> {
+    this.assertActive('moveQueuedMessage')
+    const result = await this.session.moveQueuedMessage(messageId, target)
+    if (result.updated) this.emitQueueUpdate()
+    return result
+  }
+
+  async promoteQueuedMessage(messageId: string): Promise<QueueMutationResult> {
+    this.assertActive('promoteQueuedMessage')
+    const result = await this.session.promoteQueuedMessage(messageId)
+    if (result.updated) this.emitQueueUpdate()
+    return result
+  }
+
+  async deleteQueuedMessage(messageId: string): Promise<QueueMutationResult> {
+    this.assertActive('deleteQueuedMessage')
+    const result = await this.session.deleteQueuedMessage(messageId)
+    if (result.updated) this.emitQueueUpdate()
+    return result
   }
 
   async clearQueuedMessages(): Promise<void> {
@@ -1093,9 +1152,14 @@ export class AgentHarness {
       allowedOperations: Object.freeze(allowedOperations.slice()),
       can: (operation) => allowedOperations.includes(operation),
       requestAbort: () => requireAllowed('request_abort', () => this.requestAbort()),
-      steer: (content, images) => requireAllowed('steer', () => this.steer(content, images)),
-      followUp: (content, images) => requireAllowed('follow_up', () => this.followUp(content, images)),
-      nextTurn: (content, images) => requireAllowed('next_turn', () => this.nextTurn(content, images)),
+      // 回调上下文面向 hook handler，只暴露「是否被接受」这一位信息：拒绝原因（ack）是给
+      // UI/store 的，扩到这里会改动已封存的 hook 契约。
+      steer: (content, images) => requireAllowed('steer', async () =>
+        (await this.steer(content, images)).accepted),
+      followUp: (content, images) => requireAllowed('follow_up', async () =>
+        (await this.followUp(content, images)).accepted),
+      nextTurn: (content, images) => requireAllowed('next_turn', async () =>
+        (await this.nextTurn(content, images)).accepted),
       appendMessage: (message) => requireAllowed('append_message', () => this.appendMessage(message)),
       scheduleRuntimeUpdate: (update) => requireAllowed(
         'schedule_runtime_update',

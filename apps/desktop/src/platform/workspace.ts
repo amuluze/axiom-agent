@@ -347,6 +347,8 @@ export const findWorkspaceFiles = async (request: {
   pattern: string
   path?: string
   limit?: number
+  /** 只遍历到指定深度（1 = 工作区顶层）；缺省不限。 */
+  maxDepth?: number
   signal: AbortSignal
   workspacePath?: string
 }): Promise<WorkspaceFindResult> => {
@@ -357,6 +359,7 @@ export const findWorkspaceFiles = async (request: {
       pattern: request.pattern,
       ...(request.path !== undefined ? { path: request.path } : {}),
       ...(request.limit !== undefined ? { limit: request.limit } : {}),
+      ...(request.maxDepth !== undefined ? { maxDepth: request.maxDepth } : {}),
     },
     ...(request.workspacePath ? { workspacePath: request.workspacePath } : {}),
   })

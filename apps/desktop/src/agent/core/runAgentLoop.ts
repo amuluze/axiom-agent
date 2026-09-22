@@ -18,6 +18,7 @@ import {
   buildTurnSnapshot,
 } from './turnHelpers'
 import { errorText } from './abort'
+import { impliesMessageNotPersisted } from './persistenceBarrier'
 import { createOrchestrationFailureMessage } from './diagnostics'
 import {
   runtimeToolsSnapshot,
@@ -39,6 +40,7 @@ import type {
   AgentMutationEvent,
   AgentMutationReceipt,
   AgentRunEndReason,
+  AgentRunTokenUsage,
   AgentTool,
   AgentTurnSavePoint,
   AfterToolCall,
@@ -163,6 +165,12 @@ const noOpSink: AgentEventSink = () => undefined
 /** snapshotAgentContext 的本地别名，主循环中多处使用，保留以减少改动面。 */
 const snapshotContext = snapshotAgentContext
 
+/** 按 id 原地移除消息：保持数组引用不变，避免影响持有同一数组的调用方与快照投影。 */
+const removeMessageById = (messages: AgentMessage[], id: string): void => {
+  const index = messages.findIndex((message) => message.id === id)
+  if (index >= 0) messages.splice(index, 1)
+}
+
 const mergeLimits = (limits: Partial<AgentLimits> | undefined): AgentLimits => ({
   ...DEFAULT_AGENT_LIMITS,
   ...limits,
@@ -170,22 +178,48 @@ const mergeLimits = (limits: Partial<AgentLimits> | undefined): AgentLimits => (
 
 export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentLoopResult> => {
   const rawEmit = options.emit ?? noOpSink
-  const emit: AgentEventSink = (event) => {
-    if (event.type === 'message_end' && event.message.role === 'assistant') {
-      // message_end 是持久化屏障：store 监听器在此落库。把 assistant 消息登记进 runtime
-      // history 放在转发给监听器之前，消除"store 已写而 history 缺"的非原子窗口——即使
-      // 监听器抛错让 run 走失败路径，context.messages 与 agent_end 事件也保持一致。
-      // 仅处理 assistant：user/custom（appendMessage）与 tool（emitToolResults）消息
-      // 由各自的显式 push 路径登记，避免重复。
-      if (!context.messages.some((message) => message.id === event.message.id)) {
-        context.messages.push(event.message)
-        newMessages.push(event.message)
-      }
+  const emit: AgentEventSink = async (event) => {
+    // message_end 是持久化屏障（store 监听器在此落库）：assistant 与 tool 消息统一在这里
+    // 登记进 runtime history，登记紧贴转发结果——转发失败（未落库）即回滚，既不留
+    // "store 已写而 history 缺"的窗口，也不留"history 有而 store 无"的边界失配。
+    // 工具结果必须走这条路径：批量工具结果逐条 emit，若第 k 条落库失败，前 k-1 条
+    // 已落库——只由主循环在整批返回后统一 push 的话它们会丢掉，DB 领先内存。
+    // user/custom 消息由 appendMessage 显式登记（它同样在 message_end 失败时回滚）。
+    const registrable = event.type === 'message_end'
+      && (event.message.role === 'assistant' || event.message.role === 'tool')
+      ? event.message
+      : undefined
+    let registered: AgentMessage | undefined
+    if (registrable && !context.messages.some((message) => message.id === registrable.id)) {
+      context.messages.push(registrable)
+      newMessages.push(registrable)
+      registered = registrable
     }
-    return rawEmit(snapshotAgentEvent(event))
+    try {
+      await rawEmit(snapshotAgentEvent(event))
+    } catch (error) {
+      // 监听器抛错即该消息未落库（见 persistenceBarrier 的默认语义）：刚登记的消息必须
+      // 回滚。否则 Turn Save Point 的 newMessageCount 会把未落库消息计入，与已持久化消息
+      // 边界永久失配——补偿 Save Point 被 Rust 校验拒绝（「Turn Save Point 与已持久化消息
+      // 边界不一致」），会话此后每次结算必败。
+      if (registered && impliesMessageNotPersisted(error)) {
+        removeMessageById(context.messages, registered.id)
+        removeMessageById(newMessages, registered.id)
+      }
+      throw error
+    }
   }
   const limits = mergeLimits(options.limits)
   const budgetThresholds = computeBudgetThresholds(limits)
+  // run 级计费 token 累计（P0-3b，对齐 codex rollout budget 的计费口径）：只统计
+  // 带 usage 的 assistant 响应，billable = output + 非缓存 input——缓存命中的重复
+  // 输入不推进预算。maxTotalTokens 未配置时照常累计（结果可观测），只是不提醒。
+  const tokenUsage: AgentRunTokenUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    billableTokens: 0,
+    totalTokens: 0,
+  }
   const runId = createId('run')
   const controller = new AbortController()
   const runStartedAt = Date.now()
@@ -221,7 +255,18 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
     await emit({ type: 'message_start', runId, message: appended })
     context.messages.push(appended)
     newMessages.push(appended)
-    await emit({ type: 'message_end', runId, message: appended })
+    try {
+      await emit({ type: 'message_end', runId, message: appended })
+    } catch (error) {
+      // 与 emit 的 assistant 回滚同理：message_end 落库失败的消息不属于持久化边界。
+      // 队列消息由 AgentSession 侧恢复回队列（journal entry 回退 pending 并重新入队），
+      // 这里只把内存边界回滚到与持久化事实一致。
+      if (impliesMessageNotPersisted(error)) {
+        removeMessageById(context.messages, appended.id)
+        removeMessageById(newMessages, appended.id)
+      }
+      throw error
+    }
   }
 
   const applyTurnUpdate = async (
@@ -475,8 +520,8 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
       for (const pending of pendingMessages) await appendMessage(pending)
       pendingMessages = []
 
-      // 预算提示注入（纯函数，见 turnHelpers.ts）：按轮次/工具调用剩余量生成软/硬提醒。
-      const budgetNotices = buildBudgetNotices(turns, toolCalls, limits, budgetThresholds)
+      // 预算提示注入（纯函数，见 turnHelpers.ts）：按轮次/工具调用/token 累计量生成软/硬提醒。
+      const budgetNotices = buildBudgetNotices(turns, toolCalls, limits, budgetThresholds, tokenUsage)
       const budgetAwareSystemPrompt = appendBudgetNoticesToSystemPrompt(
         temporarySystemPrompt ?? context.systemPrompt,
         budgetNotices,
@@ -497,6 +542,14 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
         options.providerLifecycle,
         budgetAwareSystemPrompt,
       )
+      if (assistant.usage) {
+        tokenUsage.inputTokens += assistant.usage.inputTokens
+        tokenUsage.outputTokens += assistant.usage.outputTokens
+        tokenUsage.totalTokens += assistant.usage.totalTokens
+          || assistant.usage.inputTokens + assistant.usage.outputTokens
+        tokenUsage.billableTokens += assistant.usage.outputTokens
+          + Math.max(0, assistant.usage.inputTokens - (assistant.usage.cacheReadTokens ?? 0))
+      }
       // assistant 已由 emit 拦截在 message_end 时登记进 context/newMessages。
 
       let toolResults: ToolResultMessage[] = []
@@ -550,9 +603,15 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
         }
         toolResults = batch.messages
         allToolsTerminate = batch.allTerminate
+        // 工具结果已在各自 message_end（持久化屏障）处登记；这里只兜底尚未登记的残留
+        // （宿主替换了 emit 实现等差异），避免重复登记。
         for (const result of toolResults) {
-          context.messages.push(result)
-          newMessages.push(result)
+          if (!context.messages.some((message) => message.id === result.id)) {
+            context.messages.push(result)
+          }
+          if (!newMessages.some((message) => message.id === result.id)) {
+            newMessages.push(result)
+          }
         }
         context = activateToolResults(context, toolResults)
       }
@@ -709,6 +768,7 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
     unconsumedMessages: snapshotAgentMessages(pendingMessages),
     turns,
     toolCalls,
+    tokenUsage: { ...tokenUsage },
     errorMessage,
     context: snapshotContext(context),
     transport,

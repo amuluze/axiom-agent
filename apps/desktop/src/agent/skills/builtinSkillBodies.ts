@@ -1,8 +1,15 @@
+import type { ResolvedLanguage } from '@/i18n/locale'
+import type { BuiltinSkillOverrideEntry } from '@/config/builtinPromptOverrides'
+
 /**
  * 内置 SDD 工作流 Skill 正文（单一数据源）。
  *
  * 这 6 个 Skill 是**有正文的可加载指令**，经 load_skill 双通道返回
  * （项目 .axiom/skills/ 同名覆盖优先，否则回退到本模块）。
+ *
+ * 正文按语言双变体维护：zh-CN 是基线语言（历史契约字段，SPV/SDD 段只派生 name
+ * 不受影响），en 为等价翻译——语言由 promptLocalizationHost 按 UI 偏好解析，
+ * 用户可在设置页按语言覆写 description/body（config/builtinPromptOverrides）。
  */
 
 /**
@@ -11,20 +18,29 @@
  * 排除的动态注入之列——本常量补上这道契约缺口，由
  * builtinSkillBodiesVersionContract.test.ts 与 contracts/builtin-skill-bodies-version.json
  * 做指纹单射绑定：改正文必须 bump 本版本（npm run sync:builtin-skill-version 写回）。
+ * v8：正文重构为 zh-CN/en 双语言变体（zh-CN 逐字节不变），指纹覆盖全部语言变体。
  */
-export const BUILTIN_SKILL_BODIES_VERSION = 7
+export const BUILTIN_SKILL_BODIES_VERSION = 8
+
+export type BuiltinPromptLanguage = ResolvedLanguage
+
+export interface BuiltinSkillBodyVariant {
+  description: string
+  body: string
+}
 
 export interface BuiltinSkillBody {
   name: string
-  description: string
-  body: string
+  'zh-CN': BuiltinSkillBodyVariant
+  en: BuiltinSkillBodyVariant
 }
 
 export const BUILTIN_SKILL_BODIES: readonly BuiltinSkillBody[] = [
   {
     name: 'domain',
-    description: '根据用户要求围绕项目特定功能，按 Spec 书写规范生成 Domain Spec 到 .specs/domain/。',
-    body: `# 目的
+    'zh-CN': {
+      description: '根据用户要求围绕项目特定功能，按 Spec 书写规范生成 Domain Spec 到 .specs/domain/。',
+      body: `# 目的
 
 把用户围绕特定功能的领域要求，按照 Spec 书写规范（.specs/domain/spec-authoring.md）收敛成一份可验证的 Domain Spec，写入工作区 .specs/domain/ 目录。Domain Spec 定义核心领域概念、规则与不变量，是后续 Task Spec 与实现的最高约束来源，生命周期最长、永不归档。
 
@@ -53,12 +69,47 @@ export const BUILTIN_SKILL_BODIES: readonly BuiltinSkillBody[] = [
 
 # 退出条件
 
-Domain Spec 符合 spec-authoring.md 的约束空间定义、每条关键约束可验证、与既有文档无冲突。之后由主 Agent 决定是否经 brainstorm/diagnose 引用它生成 Task Spec，或直接进入实现。`
+Domain Spec 符合 spec-authoring.md 的约束空间定义、每条关键约束可验证、与既有文档无冲突。之后由主 Agent 决定是否经 brainstorm/diagnose 引用它生成 Task Spec，或直接进入实现。`,
+    },
+    en: {
+      description: 'Turn the user request around a specific feature into a verifiable Domain Spec under .specs/domain/, following the spec authoring conventions.',
+      body: `# Purpose
+
+Converge the user's domain requirements for a specific feature into one verifiable Domain Spec, following the spec authoring conventions (.specs/domain/spec-authoring.md), and write it into the workspace .specs/domain/ directory. The Domain Spec defines core domain concepts, rules and invariants; it is the highest binding source for subsequent Task Specs and implementation, has the longest lifecycle and is never archived.
+
+# When to enter
+
+The user explicitly asks to generate or extend a Domain Spec; or the requirement introduces new business concepts, long-lived invariants or architectural boundaries that need domain constraints settled before brainstorm/diagnose. If a usable Domain Spec already exists, do not regenerate it—revise and extend the existing document first.
+
+# Required inputs
+
+- The user's requirement description for the specific feature.
+- Existing Domain Specs with role="domain" in <available_docs>, plus .specs/domain/spec-authoring.md (the spec authoring conventions).
+- Relevant .docs/ implementation notes and code (separate "long-term constraints" from "current implementation facts").
+
+# Execution steps
+
+1. Read .specs/domain/spec-authoring.md and the existing Domain Specs first; check whether the feature's domain boundary is already covered. On name collisions or overlap, revise the existing document or pick a more specific topic; never rewrite files owned by other documents.
+2. Verify .docs/ and code with read-only tools; separate "confirmed domain facts" from "domain rules the user must decide". Anything verifiable should not be asked of the user.
+3. Only ask what the repository cannot answer: domain concept boundaries, rule and invariant trade-offs, error and failure semantics, non-functional constraints. One question at a time with a recommendation and trade-offs; never mix implementation work into a questioning round.
+4. Organize the Domain Spec per spec-authoring.md: core concepts, rules and invariants, state model, error conditions and failure semantics, result constraints (security/compatibility/migration etc.).
+5. Every key constraint must be objectively decidable (met / not met); describe only "what the system must do and what may or may not happen". Avoid implementation content such as concrete file paths (except managed-directory references), technology choices and execution steps—implementation guidance belongs in the Plan.
+6. Use lowercase kebab-case topic words for the file name (e.g. sandbox-policy) and write to .specs/domain/<topic>.md; if a document with the same name exists, revise it instead of overwriting.
+
+# Outputs
+
+- .specs/domain/<topic>.md (Domain Spec).
+
+# Exit criteria
+
+The Domain Spec fits the constraint space defined by spec-authoring.md, every key constraint is verifiable, and it conflicts with no existing document. Afterwards the main Agent decides whether to reference it via brainstorm/diagnose to produce a Task Spec, or to proceed straight to implementation.`,
+    },
   },
   {
     name: 'brainstorm',
-    description: '与用户对话澄清需求，产出 Task Spec 并同步检查/更新 Domain Spec。',
-    body: `# 目的
+    'zh-CN': {
+      description: '与用户对话澄清需求，产出 Task Spec 并同步检查/更新 Domain Spec。',
+      body: `# 目的
 
 把用户的一个模糊需求，通过与用户的问答收敛成一份可验证的 Task Spec，写入工作区 .specs/tasks/ 目录；若需求触及长期业务边界，先修订 .specs/domain/ 的 Domain Spec，而不是先写代码。
 
@@ -88,12 +139,48 @@ Domain Spec 符合 spec-authoring.md 的约束空间定义、每条关键约束�
 
 # 退出条件
 
-Task Spec 已完整且每条验收可验证、Domain Spec 已同步。之后由主 Agent 决定调用 inspect_subagent 审查；审查不通过则回到本 Skill 继续完善。`
+Task Spec 已完整且每条验收可验证、Domain Spec 已同步。之后由主 Agent 决定调用 inspect_subagent 审查；审查不通过则回到本 Skill 继续完善。`,
+    },
+    en: {
+      description: 'Clarify requirements with the user, produce a Task Spec, and check/update the Domain Spec in sync.',
+      body: `# Purpose
+
+Converge one vague user requirement into a verifiable Task Spec through Q&A with the user, written into the workspace .specs/tasks/ directory; if the requirement touches long-lived business boundaries, revise the Domain Spec under .specs/domain/ first instead of writing code.
+
+# When to enter
+
+New features, complex refactors, or requirements with unclear boundaries where "what the system must satisfy" needs to be settled before implementation. After the user describes the requirement, before any implementation.
+
+# Required inputs
+
+- The user's requirement description.
+- The detected project docs index (<available_docs> in the system prompt): read the relevant Domain Specs under .specs/domain/ and the implementation notes in .docs/ first; confirm which parts are long-term constraints and which are current facts.
+- Existing code and tests (facts verifiable with read-only tools must not be asked of the user).
+
+# Execution steps
+
+1. Gather evidence first: read the relevant Domain Specs, .docs/ and code; separate "confirmed facts", "product intent still requiring the user's decision", "scope/risk decisions", and "most likely out of scope".
+2. If a fact can be verified from the repository, do not ask the user; only ask about product intent, preferences, scope boundaries and risk tolerance—the questions a repository cannot answer.
+3. Ask exactly one highest-value question at a time with your recommendation and trade-offs, then stop and wait for the answer; never mix implementation work into a questioning round.
+4. Gradually land conclusions into the Task Spec under .specs/tasks/: goal, scope, acceptance criteria (each objectively decidable as met / not met), boundary and failure semantics, exclusions. Use lowercase kebab-case topic words for the task-id (e.g. fix-login-timeout); the Plan (.plans/<task-id>.md) and later references of the same task reuse the same id; on name collisions with existing Specs use a more specific id and never rewrite files owned by others.
+5. If the requirement touches long-lived invariants or business boundaries, revise the Domain Spec under .specs/domain/ in sync and have the Task Spec reference it, instead of re-inventing domain rules inside the Task Spec.
+6. Once no pending product decisions remain, produce the final Task Spec and stop.
+
+# Outputs
+
+- .specs/tasks/<task-id>.md (Task Spec).
+- Revised .specs/domain/*.md (Domain Spec) when applicable.
+
+# Exit criteria
+
+The Task Spec is complete with every acceptance criterion verifiable, and the Domain Spec is in sync. Afterwards the main Agent decides to call inspect_subagent for review; if the review fails, return to this Skill and keep refining.`,
+    },
   },
   {
     name: 'diagnose',
-    description: '复现问题、定位根因并生成修复 Task Spec（含 Domain Spec 同步）。',
-    body: `# 目的
+    'zh-CN': {
+      description: '复现问题、定位根因并生成修复 Task Spec（含 Domain Spec 同步）。',
+      body: `# 目的
 
 把一个 bug 或异常行为，收敛成「可复现 + 根因明确 + 可验证修复」的 Task Spec，写入 .specs/tasks/；若问题暴露的是长期约束缺失，同步修订 .specs/domain/ 的 Domain Spec。
 
@@ -121,12 +208,46 @@ Task Spec 已完整且每条验收可验证、Domain Spec 已同步。之后由�
 
 # 退出条件
 
-根因明确、修复 Task Spec 完整且可验证。之后由主 Agent 决定调用 inspect_subagent 审查；不通过则回到本 Skill 继续完善。`
+根因明确、修复 Task Spec 完整且可验证。之后由主 Agent 决定调用 inspect_subagent 审查；不通过则回到本 Skill 继续完善。`,
+    },
+    en: {
+      description: 'Reproduce the problem, locate the root cause, and produce a fix Task Spec (with Domain Spec sync).',
+      body: `# Purpose
+
+Converge a bug or misbehavior into a Task Spec that is "reproducible + root-caused + verifiably fixable", written into .specs/tasks/; if the problem exposes a missing long-term constraint, revise the Domain Spec under .specs/domain/ in sync.
+
+# When to enter
+
+Complex fixes: symptoms clear but root cause unknown, possibly involving cross-layer timing or existing invariants. Trivial one-line fixes do not use this Skill.
+
+# Required inputs
+
+- The problem symptoms (errors, logs, reproduction steps).
+- The <available_docs> index: read the Domain Specs under .specs/domain/ (invariants, state transitions, error semantics) and the runtime/handover docs in .docs/ first.
+- Existing tests (to locate "which test locks this down").
+
+# Execution steps
+
+1. Reproduce: use read-only tools (read/grep/find) to confirm the symptom reproduces stably and record the reproduction conditions; if the session has command execution granted, run the relevant tests to help reproduce when necessary.
+2. Root-cause analysis: trace the call chain to the root cause; explain "why it is wrong", not just "where it is wrong"; check against the Domain Spec whether an existing invariant was violated.
+3. If the root cause exposes a structural gap in the Domain Spec (rather than an implementation bug), add the constraint under .specs/domain/ first, then have the fix Task Spec reference it.
+4. Produce the fix Task Spec: goal (what is fixed), scope (only the necessary code), acceptance (which test/observation locks the fix down), regression risk. Follow the brainstorm task-id convention (lowercase kebab-case topic words; on collisions use a more specific id).
+
+# Outputs
+
+- .specs/tasks/<task-id>.md (fix Task Spec).
+- Revised .specs/domain/*.md when applicable.
+
+# Exit criteria
+
+The root cause is clear and the fix Task Spec is complete and verifiable. Afterwards the main Agent decides to call inspect_subagent for review; if it fails, return to this Skill and keep refining.`,
+    },
   },
   {
     name: 'plan',
-    description: '依据 Task Spec 制定可落地的实施方案 Plan。',
-    body: `# 目的
+    'zh-CN': {
+      description: '依据 Task Spec 制定可落地的实施方案 Plan。',
+      body: `# 目的
 
 把一份已定稿的 Task Spec，拆解成可落地的实施方案 Plan，写入 .plans/。Plan 只描述「准备怎么实现」，不反向覆盖 Domain Spec、不重写 Task Spec 的验收定义。
 
@@ -152,12 +273,44 @@ Task Spec 已通过审查（inspect_subagent 通过）之后、编码之前。
 
 # 退出条件
 
-Plan 覆盖全部验收、步骤可落地、风险已识别。之后由主 Agent 决定调用 examine_subagent 检查；不通过则回到本 Skill 继续优化。`
+Plan 覆盖全部验收、步骤可落地、风险已识别。之后由主 Agent 决定调用 examine_subagent 检查；不通过则回到本 Skill 继续优化。`,
+    },
+    en: {
+      description: 'Turn a finalized Task Spec into an actionable implementation Plan.',
+      body: `# Purpose
+
+Break a finalized Task Spec into an actionable implementation Plan, written into .plans/. The Plan only describes "how implementation is going to happen"; it must not override the Domain Spec nor rewrite the Task Spec's acceptance definitions.
+
+# When to enter
+
+After the Task Spec has passed review (inspect_subagent passed), before coding.
+
+# Required inputs
+
+- The finalized Task Spec (.specs/tasks/<task-id>.md).
+- Relevant Domain Specs and the implementation notes in .docs/ (to confirm reusable components and constraints).
+
+# Execution steps
+
+1. Map each acceptance criterion of the Task Spec to concrete implementation steps and verification actions (every acceptance must answer "which change + which test/command locks it down").
+2. Decompose the implementation steps with ordering and dependencies; flag key risks and rollback/idempotency semantics.
+3. Make technology choices and boundaries explicit; prefer reusing the project's existing conventions and proven components; introduce no unnecessary abstraction.
+4. If the implementation path reveals ambiguity or conflicts in the Task Spec or Domain Spec, stop and report back; never rewrite Specs on your own authority.
+
+# Outputs
+
+- .plans/<task-id>.md (implementation Plan).
+
+# Exit criteria
+
+The Plan covers all acceptance criteria, its steps are actionable, and risks are identified. Afterwards the main Agent decides to call examine_subagent for inspection; if it fails, return to this Skill and keep refining.`,
+    },
   },
   {
     name: 'implement',
-    description: '按 Plan 推进编码，测试驱动，产出可验证的代码与测试。',
-    body: `# 目的
+    'zh-CN': {
+      description: '按 Plan 推进编码，测试驱动，产出可验证的代码与测试。',
+      body: `# 目的
 
 按已定稿的 Plan 实现代码，遵循测试驱动：先写失败测试、再写最小实现、最后重构，产出代码 + 测试 + 验证证据。
 
@@ -186,12 +339,47 @@ Plan 已通过检查（examine_subagent 通过）之后。
 
 # 退出条件
 
-Plan 覆盖的验收都有对应测试通过、typecheck 通过。之后由主 Agent 决定调用 review_subagent 审查；不通过则回到本 Skill 继续修改。`
+Plan 覆盖的验收都有对应测试通过、typecheck 通过。之后由主 Agent 决定调用 review_subagent 审查；不通过则回到本 Skill 继续修改。`,
+    },
+    en: {
+      description: 'Implement code plan-driven and test-first, producing verifiable code and tests.',
+      body: `# Purpose
+
+Implement code following the finalized Plan, test-first: write the failing test first, then the minimal implementation, then refactor—producing code + tests + verification evidence.
+
+# When to enter
+
+After the Plan has passed inspection (examine_subagent passed).
+
+# Required inputs
+
+- The finalized Plan (.plans/<task-id>.md).
+- The corresponding Task Spec and Domain Spec (implementation is bound by them).
+
+# Execution steps
+
+1. Understand the existing conventions of the files being changed first (style, imports, dependencies); keep changes consistent with the surrounding code.
+2. Proceed sub-step by sub-step in Plan order; for each sub-step: write the failing test (RED) → run tests to confirm failure → write the minimal implementation (GREEN) → refactor (tests stay green). For changes where tests do not apply (config, styling, pure docs), use type checking, build, or item-by-item self-review as that sub-step's verification action.
+3. If implementation reveals the Plan to be wrong, infeasible, or conflicting with the actual code structure, stop and return to plan for revision, re-pass examine_subagent after revising, and only then continue implementing—never silently deviate from the Plan; only trivial adjustments (step ordering, naming) may proceed directly, noted in the verification evidence.
+4. Follow the project's own hard constraints and coding conventions (e.g. immutability boundaries, error handling, input validation); no hardcoding, no leftover debug code; perform write operations under the host's approval conventions and never attempt to bypass them.
+5. Run the relevant tests after each sub-step; before declaring completion re-read the changes checking for leftover debug code, unused imports, and style inconsistencies.
+6. Record verification evidence (typecheck, tests, command results when necessary) for the finish phase to reference.
+
+# Outputs
+
+- Implementation code + tests (*.test.* in the same directory).
+- Verification evidence (test/typecheck results).
+
+# Exit criteria
+
+Every acceptance criterion covered by the Plan has a corresponding passing test, and typecheck passes. Afterwards the main Agent decides to call review_subagent for review; if it fails, return to this Skill and keep fixing.`,
+    },
   },
   {
     name: 'finish',
-    description: '收尾：刷新文档对齐、任务分支提交推送、汇总验证证据与遗留项。',
-    body: `# 目的
+    'zh-CN': {
+      description: '收尾：刷新文档对齐、任务分支提交推送、汇总验证证据与遗留项。',
+      body: `# 目的
 
 在实现与审查通过后收尾：让说明系统（.docs/、AGENTS.md/CLAUDE.md 与相关索引）与当前实现重新对齐，在任务分支上提交推送，汇总验证证据与遗留待办。
 
@@ -222,7 +410,43 @@ Plan 覆盖的验收都有对应测试通过、typecheck 通过。之后由主 A
 
 # 退出条件
 
-说明系统与实现对齐、验证证据齐全、改动已按 Git 分支规则在任务分支提交推送、遗留项已显式列出。`
+说明系统与实现对齐、验证证据齐全、改动已按 Git 分支规则在任务分支提交推送、遗留项已显式列出。`,
+    },
+    en: {
+      description: 'Wrap up: refresh docs alignment, commit and push the task branch, summarize verification evidence and leftovers.',
+      body: `# Purpose
+
+Wrap up after implementation and review pass: re-align the explanation system (.docs/, AGENTS.md/CLAUDE.md and related indexes) with the current implementation, commit and push on the task branch, and summarize verification evidence and leftover todos.
+
+# When to enter
+
+After the code changes have passed review (review_subagent passed).
+
+# Required inputs
+
+- This task's Task Spec, Plan, code changes and verification evidence; on the simple path (implement straight into this Skill, no Task Spec/Plan) use the user request and review/self-check conclusions as the baseline—do not write retroactive Specs just to close out.
+- The <available_docs> index: judge which implementation-side docs (.docs/) need refreshing to reflect current implementation facts.
+
+# Execution steps
+
+1. Refresh the parts of implementation-side docs (.docs/) made stale by this change—they record "how the system currently runs", not long-term design intent (long-term constraints stay in the Domain Spec).
+2. If this change altered the project's convention entry points (commands, architecture boundaries, handover lists described in AGENTS.md/CLAUDE.md), update them in sync.
+3. Archive this task's Task Spec and Plan: mark status: done in the frontmatter of the matching documents under .specs/tasks/ and .plans/ (update the status field if frontmatter exists, otherwise prepend a frontmatter block). Archived docs leave the <available_docs> active index but remain traceable; Domain Specs and .docs/ are long-term/living documents and are never archived. Skip this step on the simple path (no Task Spec/Plan).
+4. Summarize verification evidence: typecheck, tests, necessary command results, forming the closing conclusion—for full-chain tasks state "which Task Spec, constrained by which Domain Specs, verified by which checks"; for simple tasks state "which user request, verified by which checks".
+5. Commit and push: follow the system prompt's "# Git branch rules"—confirm the current branch first; committing/pushing directly on main or master is strictly forbidden; commit on the task branch (branch prefix per that section, default feat-, suffix the task-id or a short topic; commit messages follow the project's own conventions) and push to the remote branch of the same name; commands needing outbound network declare network: true per the security boundary. Unless the user explicitly asked not to commit or arranged branches differently.
+6. List leftover items (uncovered edges, follow-up suggestions) without expanding scope. All write operations and commands run under the host's approval conventions; never attempt to bypass them.
+
+# Outputs
+
+- Refreshed .docs/ and AGENTS.md/CLAUDE.md (when necessary).
+- Archived (status: done) Task Spec and Plan (when present).
+- Commits on the task branch (pushed, unless the user arranged otherwise).
+- Closing summary (verification evidence + leftovers).
+
+# Exit criteria
+
+The explanation system is aligned with the implementation, verification evidence is complete, changes are committed and pushed on the task branch per the Git branch rules, and leftover items are explicitly listed.`,
+    },
   },
 ]
 
@@ -231,3 +455,20 @@ export const BUILTIN_SKILL_BODY_NAMES: readonly string[] = BUILTIN_SKILL_BODIES.
 /** 按 name 查找内置正文 Skill；未命中返回 null。 */
 export const findBuiltinSkillBody = (name: string): BuiltinSkillBody | null =>
   BUILTIN_SKILL_BODIES.find((skill) => skill.name === name) ?? null
+
+/**
+ * 解析某语言下的生效变体：覆写字段（设置页保存，per-language）优先，未覆写字段
+ * 回落该语言内置默认。override 缺省时返回内置变体本身（无拷贝）。
+ */
+export const resolveBuiltinSkillVariant = (
+  skill: BuiltinSkillBody,
+  language: BuiltinPromptLanguage,
+  override?: BuiltinSkillOverrideEntry,
+): BuiltinSkillBodyVariant => {
+  const base = skill[language]
+  if (!override) return base
+  return {
+    description: override.description ?? base.description,
+    body: override.body ?? base.body,
+  }
+}

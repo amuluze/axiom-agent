@@ -212,15 +212,29 @@ fn web_redirect_policy() -> reqwest::redirect::Policy {
 /// 点击后由前端调用。与 web_fetch 不同——这是用户主动点击的有意行为，
 /// 不把内容带回模型，因此不限制公网主机（允许 localhost / 内网 dev server）；
 /// 但仍拒绝非 http/https 协议与带凭据 URL，避免 file://、javascript: 等
-/// 协议滥用（等价浏览器地址栏语义）。macOS 经 `/usr/bin/open` 打开，
-/// 不经 shell（无注入面）。
+/// 协议滥用（等价浏览器地址栏语义）。macOS 经 `/usr/bin/open`，Linux 经
+/// `xdg-open`（freedesktop 约定在 PATH；缺失时报错文案含工具名，用户可自行
+/// 安装 xdg-utils），Windows 经 `rundll32 FileProtocolHandler`（explorer.exe
+/// 退出码不可靠——成功也常返回 1；cmd start 有 shell 注入面），均不经 shell。
+/// 用 `cfg!` 运行时分派而非 `#[cfg]`：三个臂在所有平台上都参与编译与类型
+/// 检查——Windows 主机尚缺（docs/windows-support.md），macOS 构建即能锁住
+/// 全部平台臂的语法与契约。
 #[tauri::command]
 pub fn open_external_url(url: String) -> Result<(), String> {
     validate_external_url(&url)?;
-    let status = std::process::Command::new("/usr/bin/open")
+    let (mut command, opener): (std::process::Command, &str) = if cfg!(target_os = "macos") {
+        (std::process::Command::new("/usr/bin/open"), "/usr/bin/open")
+    } else if cfg!(target_os = "linux") {
+        (std::process::Command::new("xdg-open"), "xdg-open")
+    } else {
+        let mut command = std::process::Command::new("rundll32");
+        command.arg("url.dll,FileProtocolHandler");
+        (command, "rundll32")
+    };
+    let status = command
         .arg(&url)
         .status()
-        .map_err(|error| format!("failed to launch system browser: {error}"))?;
+        .map_err(|error| format!("failed to launch system browser ({opener}): {error}"))?;
     if !status.success() {
         return Err(format!("system browser exited with {status}"));
     }

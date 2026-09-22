@@ -55,7 +55,9 @@ export const createExploreSubAgentTool = (): AgentTool => ({
     '子 Agent 只读，不能写文件、执行命令或请求审批。',
     '探索因预算中止返回 partial 或报错时：基于已有证据直接收口，或把 scope 收窄到未覆盖部分后重新委派；不要以同等规模重复委派（配额按父 run 累计，大范围重试会更快触顶）。',
   ],
-  runtimeVersion: '10',
+  // v11：子会话 system prompt 按 UI 语言解析 zh-CN/en 双语模板，并支持设置页按
+  // 语言保存的用户覆写（promptLocalizationHost 执行期注入）。schema 不变。
+  runtimeVersion: '11',
   recoveryPolicy: 'never',
   requiresApproval: false,
   executionMode: 'sequential',

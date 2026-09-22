@@ -1,7 +1,6 @@
 import { AlertTriangle } from 'lucide-react'
 import type { AssistantMessage } from '@/agent/core/types'
 import { useAgentStore } from '@/stores/agentStore'
-import { useUiStore } from '@/stores/uiStore'
 import { useT } from '@/i18n'
 
 interface ErrorCardProps {
@@ -14,7 +13,6 @@ interface ErrorCardProps {
 export const ErrorCard = ({ messageId, error, message }: ErrorCardProps) => {
   const { t } = useT()
   const retryFailedAssistant = useAgentStore((state) => state.retryFailedAssistant)
-  const setRuntimeRailOpen = useUiStore((state) => state.setRuntimeRailOpen)
   const headline = message?.providerError?.userMessage ?? error
   const detail = headline === error ? undefined : error
   return (
@@ -28,13 +26,6 @@ export const ErrorCard = ({ messageId, error, message }: ErrorCardProps) => {
         {detail ? <p className="session__error-card-detail">{detail}</p> : null}
       </div>
       <div className="session__error-card-actions">
-        <button
-          type="button"
-          className="session__error-card-button"
-          onClick={() => setRuntimeRailOpen(true)}
-        >
-          {t('app.session.error.viewLogs')}
-        </button>
         <button
           type="button"
           className="session__error-card-button"

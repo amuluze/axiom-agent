@@ -24,7 +24,8 @@ export const createReviewSubAgentTool = (
 ): AgentTool => createReviewerSubAgentTool({
   kind: 'review',
   toolName: 'review_subagent',
-  runtimeVersion: '7',
+  // v8：子会话 system prompt 双语模板 + 用户覆写支持（同 inspect v6）。schema 不变。
+  runtimeVersion: '8',
   diffMaxLength: MAX_DIFF_LENGTH,
   capabilities: options.capabilities,
   label: '审查代码改动',

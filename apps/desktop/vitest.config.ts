@@ -28,13 +28,15 @@ export default defineConfig({
         statements: 77,
         functions: 78,
         branches: 69,
-        // components 交互 UI 覆盖弱于核心逻辑，目录级阈值防止被全局聚合稀释（istanbul 基线
-        // 65.3%/51.7%，按防退化设下限）。
+        // components 交互 UI 覆盖弱于核心逻辑，目录级阈值防止被全局聚合稀释。
+        // 实测（istanbul）：63.7% lines / 65.4% stmts / 65.3% funcs / 56.5% branch；
+        // 阈值取实测值下探约 1.5 个点作为防退化下限——原 50% 的 branch 下限比真实
+        // 基线低 6 个点，等于对该维度不设防。
         'src/components/**': {
-          lines: 60,
-          statements: 63,
-          functions: 62,
-          branches: 50,
+          lines: 62,
+          statements: 64,
+          functions: 64,
+          branches: 55,
         },
       },
     },

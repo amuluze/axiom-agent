@@ -244,7 +244,8 @@ describe('SessionView', () => {
     const html = renderToStaticMarkup(createElement(SessionView))
     expect(html).toContain('session__runtime-error')
     expect(html).toContain('分支边界消息不存在于当前会话')
-    expect(html).toContain('查看日志')
+    // 查看日志按钮已随运行轨迹面板下线移除，错误条只展示错误文本
+    expect(html).not.toContain('查看日志')
   })
 
   it('offers only the same-session retry action for a failed assistant response', () => {

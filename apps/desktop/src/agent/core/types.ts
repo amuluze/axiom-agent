@@ -556,6 +556,12 @@ export interface AgentLimits {
   maxDurationMs: number
   maxMessageBytes: number
   maxInlineToolResultBytes: number
+  /**
+   * 单次 run 的计费 token 预算（软限制，按阈值注入提醒，不做硬停）：
+   * 计费口径为 output + 非缓存 input（对齐 codex rollout budget 的加权思路），
+   * 缓存命中的重复输入不计入。缺省 undefined = 不限制（不累计提醒）。
+   */
+  maxTotalTokens?: number
 }
 
 export const DEFAULT_AGENT_LIMITS: AgentLimits = {
@@ -564,6 +570,11 @@ export const DEFAULT_AGENT_LIMITS: AgentLimits = {
   maxDurationMs: 15 * 60 * 1000,
   maxMessageBytes: 1024 * 1024,
   maxInlineToolResultBytes: 256 * 1024,
+  // 计费 token 软预算默认开启（2M billable）。量级依据：输出 + 非缓存输入口径下，
+  // 走缓存的正常长会话整轮 run 难以触及；只有无缓存的重复大上下文循环（跑偏/
+  // 失败重试的典型形态）会在 run 中后段触发 75%/90% 提醒，推动模型收口。仅注入
+  // 提醒不硬停——硬边界仍由轮次/工具/时长兜底。
+  maxTotalTokens: 2_000_000,
 }
 
 /**
@@ -578,6 +589,10 @@ export interface BudgetThresholds {
   turnHardNotice: number
   /** 剩余工具调用 ≤ 此值 → 工具预算提醒(合并检索)。约 25%。 */
   toolCallNotice: number
+  /** 计费 token 累计 ≥ maxTotalTokens × 此值 → token 软提醒。约 75%。 */
+  tokenSoftNotice: number
+  /** 计费 token 累计 ≥ maxTotalTokens × 此值 → token 硬提醒。约 90%。 */
+  tokenHardNotice: number
 }
 
 /**
@@ -591,6 +606,8 @@ export const computeBudgetThresholds = (limits: AgentLimits): BudgetThresholds =
   turnSoftNotice: Math.max(4, Math.ceil(limits.maxTurns * 0.5)),
   turnHardNotice: Math.max(3, Math.ceil(limits.maxTurns * 0.1)),
   toolCallNotice: Math.max(20, Math.ceil(limits.maxToolCalls * 0.25)),
+  tokenSoftNotice: Math.round(limits.maxTotalTokens !== undefined ? limits.maxTotalTokens * 0.75 : Number.POSITIVE_INFINITY),
+  tokenHardNotice: Math.round(limits.maxTotalTokens !== undefined ? limits.maxTotalTokens * 0.9 : Number.POSITIVE_INFINITY),
 })
 
 export type AgentRunEndReason =
@@ -884,6 +901,16 @@ export type AgentEvent =
 
 export type AgentEventSink = (event: AgentEvent) => void | Promise<void>
 
+/** run 级累计 token 用量（对齐 codex rollout budget 的计费口径：output + 非缓存 input）。 */
+export interface AgentRunTokenUsage {
+  inputTokens: number
+  outputTokens: number
+  /** output + (input − cacheRead)：缓存命中的重复输入不计费。 */
+  billableTokens: number
+  /** 各次响应 totalTokens 的朴素和（仅作参考总量，不用于预算判定）。 */
+  totalTokens: number
+}
+
 export interface AgentLoopResult {
   runId: string
   reason: AgentRunEndReason
@@ -892,6 +919,8 @@ export interface AgentLoopResult {
   unconsumedMessages: AgentMessage[]
   turns: number
   toolCalls: number
+  /** 本次 run 的累计 token 用量（仅统计带 usage 的 assistant 响应）。 */
+  tokenUsage: AgentRunTokenUsage
   errorMessage?: string
   context: AgentContext
   transport: ModelTransport

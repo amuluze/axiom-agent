@@ -14,6 +14,8 @@ export interface BrowserSettings {
   executablePath: string
   /** 无头模式（默认）；有头模式浏览器窗口对用户可见。 */
   headless: boolean
+  /** 忽略 HTTPS 证书校验（仅本隔离实例，自签/测试场景）；spawn 参数，改后需重启浏览器生效。 */
+  ignoreCertificateErrors: boolean
 }
 
 const BROWSER_SETTINGS_STORAGE_KEY = 'axiom.browser.config.v1'
@@ -22,6 +24,7 @@ const DEFAULT_BROWSER_SETTINGS: BrowserSettings = {
   enabled: false,
   executablePath: '',
   headless: true,
+  ignoreCertificateErrors: false,
 }
 
 export const loadBrowserSettings = (): BrowserSettings => {
@@ -39,6 +42,10 @@ export const loadBrowserSettings = (): BrowserSettings => {
       executablePath:
         typeof record.executablePath === 'string' ? record.executablePath : '',
       headless: typeof record.headless === 'boolean' ? record.headless : true,
+      ignoreCertificateErrors:
+        typeof record.ignoreCertificateErrors === 'boolean'
+          ? record.ignoreCertificateErrors
+          : false,
     }
   } catch {
     return { ...DEFAULT_BROWSER_SETTINGS }

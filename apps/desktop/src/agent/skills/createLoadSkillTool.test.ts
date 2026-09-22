@@ -1,6 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { AgentTool, AgentToolExecutionContext } from '@/agent/core/types'
 import { createFakeAgentEnvironment } from '@/agent/tools/__fixtures__/fakeAgentEnvironment'
+import { installPromptLocalizationHost } from '@/agent/prompt/promptLocalizationHost'
+import { EMPTY_BUILTIN_PROMPT_OVERRIDES } from '@/config/builtinPromptOverrides'
 import { bindActiveProjectSkillSnapshot } from './activeProjectSkills'
 import { hashSkillContent } from './canonical'
 import { SkillChangedError, createLoadSkillTool } from './createLoadSkillTool'
@@ -35,6 +37,15 @@ describe('createLoadSkillTool', () => {
   let tool: AgentTool
   let files: Record<string, string>
 
+  // 内置回退的语言/覆写经本地化宿主注入：用例内安装临时宿主，结束后恢复默认
+  //（zh-CN + 空覆写），避免污染同进程其它用例。
+  afterEach(() => {
+    installPromptLocalizationHost({
+      resolveLanguage: () => 'zh-CN',
+      getOverrides: () => EMPTY_BUILTIN_PROMPT_OVERRIDES,
+    })
+  })
+
   beforeEach(() => {
     files = {}
     tool = createLoadSkillTool({
@@ -60,7 +71,7 @@ describe('createLoadSkillTool', () => {
 
   it('运行时版本与恢复策略正确', () => {
     expect(tool.name).toBe('load_skill')
-    expect(tool.runtimeVersion).toBe('5')
+    expect(tool.runtimeVersion).toBe('6')
     expect(tool.recoveryPolicy).toBe('idempotent')
   })
 
@@ -76,6 +87,45 @@ describe('createLoadSkillTool', () => {
     expect((result.details as { source?: unknown } | null)?.source).toBe('builtin')
     expect((result.details as { name?: unknown } | null)?.name).toBe('brainstorm')
     expect((result.details as { contentSha256?: unknown } | null)?.contentSha256).toBe('')
+  })
+
+  it('内置回退按宿主解析语言返回对应变体（en → 英文正文）', async () => {
+    bindActiveProjectSkillSnapshot({ schemaVersion: 1, skills: [] })
+    installPromptLocalizationHost({
+      resolveLanguage: () => 'en',
+      getOverrides: () => EMPTY_BUILTIN_PROMPT_OVERRIDES,
+    })
+    const result = await tool.execute({ name: 'brainstorm' }, context())
+    expect(result.content).toContain('# Purpose')
+    expect(result.content).not.toContain('# 目的')
+    expect((result.details as { source?: unknown } | null)?.source).toBe('builtin')
+  })
+
+  it('设置页保存的 per-language 覆写优先、未覆写字段回落内置默认', async () => {
+    bindActiveProjectSkillSnapshot({ schemaVersion: 1, skills: [] })
+    installPromptLocalizationHost({
+      resolveLanguage: () => 'zh-CN',
+      getOverrides: () => ({
+        version: 1,
+        skills: { domain: { 'zh-CN': { body: '自定义领域正文' } } },
+        subagents: {},
+      }),
+    })
+    const result = await tool.execute({ name: 'domain' }, context())
+    // 工厂缺省 capabilities=[]：正文后追加审查能力说明（属既有语义），此处验证覆写正文生效。
+    expect(result.content).toContain('自定义领域正文')
+    expect(result.content).toContain('# 当前会话能力说明')
+    // en 覆写不影响 zh-CN 返回；zh-CN 未覆写 description 字段无载体（正文口径）。
+    installPromptLocalizationHost({
+      resolveLanguage: () => 'en',
+      getOverrides: () => ({
+        version: 1,
+        skills: { domain: { 'zh-CN': { body: '自定义领域正文' } } },
+        subagents: {},
+      }),
+    })
+    const enResult = await tool.execute({ name: 'domain' }, context())
+    expect(enResult.content).toContain('# Purpose')
   })
 
   it('未授予 subagent:review 时内置正文追加自查能力说明（静态正文感知能力环境）', async () => {

@@ -2,24 +2,22 @@ import { create } from 'zustand'
 import {
   clearConnectPlatformConfig,
   connectPlatform,
-  createConnectPairingCode,
   disconnectPlatform,
   getConnectConfig,
-  saveConnectPlatformConfig,
   setConnectWorkspace,
   startWechatLogin,
   unpairConnectBinding,
   type ConnectConfigSummary,
-  type ConnectPairingCode,
   type ConnectPlatform,
   type ConnectPlatformStatus,
   type ConnectWechatQr,
 } from '@/platform/connect'
 
 /**
- * 连接面板的投影状态：配置摘要 / 各平台连接状态 / 配对码 / 微信扫码会话。
+ * 连接弹窗的投影状态：配置摘要 / 各平台连接状态 / 微信扫码会话。
  * 聊天消息不入 store —— 入站消息由 connectService 直接路由到 agentStore，
- * 避免把外部不可信文本塞进 React 状态树。
+ * 避免把外部不可信文本塞进 React 状态树。飞书/钉钉无配置入口（设计稿仅微信），
+ * 但状态摘要与历史绑定仍按后端契约完整投影。
  */
 
 const EMPTY_PLATFORMS: ConnectPlatformStatus[] = [
@@ -38,29 +36,23 @@ export interface ConnectReplyError {
 interface ConnectState {
   loaded: boolean
   config: ConnectConfigSummary
-  /** 面板操作进行中标记（连接/断开/保存），防止重复触发。 */
+  /** 弹窗操作进行中标记（连接/断开），防止重复触发。 */
   actionBusy: boolean
   /**
-   * 面板动作失败原因（连接/断开、切换远程目录、扫码登录、生成配对码、解除配对）。
+   * 弹窗动作失败原因（连接/断开、切换远程目录、扫码登录、解除配对）。
    * 这些失败此前一律被静默吞掉——用户只看到「点了没反应」，无从判断是没生效还是出错。
    */
   actionError: string | null
-  pairing: ConnectPairingCode | null
   wechatLogin: ConnectWechatQr | null
   wechatLoginMessage: string | null
   replyError: ConnectReplyError | null
   refresh: () => Promise<void>
   applyStatus: (status: ConnectPlatformStatus) => void
   applyPaired: () => Promise<void>
-  savePlatformConfig: (
-    platform: ConnectPlatform,
-    credential: { appId?: string; appSecret?: string; clientId?: string; clientSecret?: string; token?: string },
-  ) => Promise<string | null>
   clearPlatformConfig: (platform: ConnectPlatform) => Promise<string | null>
   connect: (platform: ConnectPlatform) => Promise<string | null>
   disconnect: (platform: ConnectPlatform) => Promise<string | null>
   changeWorkspace: (workspacePath: string | null) => Promise<void>
-  newPairingCode: () => Promise<void>
   unpair: (platform: ConnectPlatform, chatId: string, userId: string) => Promise<void>
   beginWechatLogin: () => Promise<void>
   setWechatLoginMessage: (message: string | null) => void
@@ -78,7 +70,6 @@ export const useConnectStore = create<ConnectState>((set, get) => ({
   config: { workspacePath: null, bindings: [], platforms: EMPTY_PLATFORMS },
   actionBusy: false,
   actionError: null,
-  pairing: null,
   wechatLogin: null,
   wechatLoginMessage: null,
   replyError: null,
@@ -106,19 +97,6 @@ export const useConnectStore = create<ConnectState>((set, get) => ({
 
   applyPaired: async () => {
     await get().refresh()
-  },
-
-  savePlatformConfig: async (platform, credential) => {
-    set({ actionBusy: true })
-    try {
-      await saveConnectPlatformConfig(platform, credential)
-      await get().refresh()
-      return null
-    } catch (error) {
-      return errorMessage(error)
-    } finally {
-      set({ actionBusy: false })
-    }
   },
 
   clearPlatformConfig: async (platform) => {
@@ -180,15 +158,6 @@ export const useConnectStore = create<ConnectState>((set, get) => ({
       } catch {
         // 读回失败不回退已落盘的写入。
       }
-    } catch (error) {
-      set({ actionError: errorMessage(error) })
-    }
-  },
-
-  newPairingCode: async () => {
-    try {
-      const pairing = await createConnectPairingCode()
-      set({ pairing, actionError: null })
     } catch (error) {
       set({ actionError: errorMessage(error) })
     }

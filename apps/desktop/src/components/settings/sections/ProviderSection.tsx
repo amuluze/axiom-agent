@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Sparkles, Zap, KeyRound, LockKeyhole, Plus, Trash2, Eye, EyeOff } from 'lucide-react'
+import { Sparkles, Zap, KeyRound, LockKeyhole, Plus, Trash2, Eye, EyeOff, ExternalLink } from 'lucide-react'
 import {
   BUILTIN_PROVIDER_RUNTIME,
   listModelsForProfile,
@@ -7,7 +7,9 @@ import {
   type ProviderProfileDraft,
   type ProviderKind,
 } from '@/agent/transport/provider'
+import { PROVIDER_CONSTANTS } from '@/agent/transport/generatedProviderData'
 import { RUNTIME_POLICY } from '@/config/runtimePolicy'
+import { openExternalUrl } from '@/platform/webAccess'
 import { localizedProviderLabel } from '@/i18n/providerLabels'
 import type { ProviderDraftHook, SettingsSectionContext } from './types'
 import { useT } from '@/i18n'
@@ -45,6 +47,17 @@ export const ProviderSection = ({ hook, context, providerLabel_, providerHasKey,
     deleteProviderKey,
   } = hook
   const { busy, providerMessage, settingsError } = context
+  // 订阅型 provider 的官方入口与邀请/优惠链接（数据来自 providers.json，未声明则不渲染）。
+  const providerLinks = (() => {
+    if (draft.providerId === 'demo') return undefined
+    try {
+      const descriptor = BUILTIN_PROVIDER_RUNTIME.getProvider(draft.providerId)
+      return descriptor.website || descriptor.inviteUrl ? descriptor : undefined
+    } catch {
+      return undefined
+    }
+  })()
+
   // API Key 的明文核对开关：掩码输入防窥探，粘贴后可临时切明文检查。
   const [showKey, setShowKey] = useState(false)
   const keyStored = providerHasKey && draftIsSaved
@@ -224,14 +237,46 @@ export const ProviderSection = ({ hook, context, providerLabel_, providerHasKey,
           </label>
         </div>
       )}
+      {providerLinks && (
+        <p className="provider-links" role="note">
+          <ExternalLink size={13} aria-hidden />
+          <span>{t('settings.provider.linksNote', { provider: providerLabel_ })}</span>
+          {providerLinks.website && (
+            <a
+              href={providerLinks.website}
+              onClick={(event) => {
+                event.preventDefault()
+                void openExternalUrl(providerLinks.website as string).catch(() => undefined)
+              }}
+              rel="noreferrer noopener"
+              target="_blank"
+            >
+              {t('settings.provider.officialSite')}
+            </a>
+          )}
+          {providerLinks.inviteUrl && (
+            <a
+              href={providerLinks.inviteUrl}
+              onClick={(event) => {
+                event.preventDefault()
+                void openExternalUrl(providerLinks.inviteUrl as string).catch(() => undefined)
+              }}
+              rel="noreferrer noopener"
+              target="_blank"
+            >
+              {t('settings.provider.inviteLink')}
+            </a>
+          )}
+        </p>
+      )}
       {draft.providerId !== 'demo' && (
         <div className="settings-grid">
           <label>
             {t('settings.provider.timeout')}
             <input
               disabled={busy}
-              max={300}
-              min={1}
+              max={PROVIDER_CONSTANTS.timeoutMaxMs / 1000}
+              min={PROVIDER_CONSTANTS.timeoutMinMs / 1000}
               onChange={(event) => setDraft({ ...draft, timeoutMs: Number(event.target.value) * 1000 })}
               type="number"
               value={Math.round(draft.timeoutMs / 1000)}
@@ -241,8 +286,8 @@ export const ProviderSection = ({ hook, context, providerLabel_, providerHasKey,
             {t('settings.provider.maxOutputTokens')}
             <input
               disabled={busy}
-              max={64000}
-              min={1}
+              max={PROVIDER_CONSTANTS.maxOutputMax}
+              min={PROVIDER_CONSTANTS.maxOutputMin}
               onChange={(event) => setDraft({ ...draft, maxOutputTokens: Number(event.target.value) })}
               type="number"
               value={draft.maxOutputTokens}
@@ -252,8 +297,8 @@ export const ProviderSection = ({ hook, context, providerLabel_, providerHasKey,
             {t('settings.provider.contextWindow')}
             <input
               disabled={busy}
-              max={2000000}
-              min={8192}
+              max={PROVIDER_CONSTANTS.contextMax}
+              min={PROVIDER_CONSTANTS.contextMin}
               onChange={(event) => setDraft({ ...draft, contextWindow: Number(event.target.value) })}
               type="number"
               value={draft.contextWindow}

@@ -27,10 +27,10 @@ const createContext = (
 })
 
 describe('createReviewerSubAgentTool 契约版本', () => {
-  it('三个审查工具版本独立：inspect/examine v5（子工具集新增 web 工具），review v7（同批）', () => {
-    expect(createInspectSubAgentTool().runtimeVersion).toBe('5')
-    expect(createExamineSubAgentTool().runtimeVersion).toBe('5')
-    expect(createReviewSubAgentTool().runtimeVersion).toBe('7')
+  it('三个审查工具版本独立：inspect/examine v6（system prompt 双语模板 + 用户覆写），review v8（同批）', () => {
+    expect(createInspectSubAgentTool().runtimeVersion).toBe('6')
+    expect(createExamineSubAgentTool().runtimeVersion).toBe('6')
+    expect(createReviewSubAgentTool().runtimeVersion).toBe('8')
   })
 })
 

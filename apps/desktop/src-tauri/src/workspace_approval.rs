@@ -3,8 +3,6 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
-    fs::File,
-    io::Read,
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -356,8 +354,7 @@ async fn confirm_interactive(app: &tauri::AppHandle, request: &WorkspaceApproval
 
 fn random_token() -> Result<String, String> {
     let mut bytes = [0_u8; 32];
-    File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(&mut bytes))
+    crate::platform_process::fill_random(&mut bytes)
         .map_err(|error| format!("failed to generate workspace approval lease: {error}"))?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
@@ -529,11 +526,9 @@ pub(crate) async fn request_workspace_approval_lease(
         }
         WorkspaceApprovalConfirmationMode::SandboxSafe => {
             if !sandbox::sandbox_available() {
-                return Err(
-                    "OS sandbox (sandbox-exec) is unavailable; single-step approval requires \
-                     the sandbox"
-                        .into(),
-                );
+                return Err(sandbox::sandbox_unavailable_error(
+                    "single-step approval requires the sandbox",
+                ));
             }
             let command = required_string(&request.input, "command")?;
             let declared_network = request

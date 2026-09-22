@@ -349,6 +349,9 @@ export class OpenAIResponsesTransport implements ModelTransport {
       body: prepared.body,
       secretId: request.auth?.secretId ?? this.config.secretId,
       timeoutMs: prepared.timeoutMs,
+      // 取请求期的模型 id（而非构造期快照）：多协议 provider 据此选 wire，且切模型后不会失配。
+      modelId: request.model.model,
+      sessionId: request.sessionId,
     }
     const slots = new Map<number, ResponseSlot>()
     const endedThinking = new Set<number>()
@@ -607,7 +610,12 @@ export class OpenAIResponsesTransport implements ModelTransport {
       }
     }
     if (!terminal) {
-      const error = classifyProviderError({ message: 'OpenAI Responses 流在终态事件前结束' })
+      // 按 network 分类（可重试）：截断是传输层瞬时故障，显式 kind 跳过模式推断；
+      // 自动重试由 isSafeAutoRetryFailure 的安全门槛把关。
+      const error = classifyProviderError({
+        message: 'OpenAI Responses 流在终态事件前结束',
+        kind: 'network',
+      })
       yield { type: 'error', message: error.message, error }
       return
     }

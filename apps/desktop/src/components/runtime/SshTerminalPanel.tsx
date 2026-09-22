@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
-import { ChevronUp, File, Folder, FolderPlus, Loader2, RefreshCw, Server, SquareTerminal, Upload, X } from 'lucide-react'
+import { ChevronUp, File, Folder, FolderPlus, Loader2, MonitorOff, RefreshCw, Server, SquareTerminal, Upload, X } from 'lucide-react'
 import { ensureSshEvents, useSshStore, type SshSessionPhase } from '@/stores/sshStore'
 import type { RemoteDirEntry } from '@/platform/sshSession'
 import {
@@ -127,6 +127,15 @@ export const SshTerminalPanel = () => {
 
   // 激活主机变化（主机行点击或选择器清空）：切显示对应实例并 fit+focus；
   // 未连接则自动连接。切回「未选择主机」同样切换——各实例缓冲保留隐藏。
+  // Linux 限制：SSH 交互终端与本地终端共用 macOS 原生 keyDown 手势门，Linux
+  // 无等价物，Rust 侧 Open/Write 已 fail-closed——不自动连接，由终端区呈现说明
+  //（详见 docs/linux-support.md；SSH Agent 工具与 SFTP 不受影响）。
+  const operatingSystem = useUiStore((state) => state.operatingSystem)
+  // 非 macOS 平台（Linux/Windows）均无手势门等价实现：Rust 侧 Open/Write 已 fail-closed。
+  const isUnsupportedPlatform = operatingSystem !== 'macos'
+  const unsupportedHintKey = operatingSystem === 'windows'
+    ? 'app.sshView.terminal.windowsUnsupported'
+    : 'app.sshView.terminal.linuxUnsupported'
   useEffect(() => {
     if (!activeHostId) {
       autoConnectedRef.current.clear()
@@ -141,11 +150,12 @@ export const SshTerminalPanel = () => {
     }
     if (!currentHosts.some((entry) => entry.id === activeHostId)) return
     fitFocus(activeHostId)
+    if (isUnsupportedPlatform) return
     if (autoConnectedRef.current.has(activeHostId)) return
     autoConnectedRef.current.add(activeHostId)
     clearUnexpectedClose(activeHostId)
     connectHost(activeHostId)
-  }, [activeHostId, clearUnexpectedClose, fitFocus, connectHost])
+  }, [activeHostId, clearUnexpectedClose, fitFocus, connectHost, isUnsupportedPlatform])
 
   const activeHost = hosts.find((entry) => entry.id === activeHostId) ?? null
   const phase: SshSessionPhase | null = (activeHostId && sessions[activeHostId]) || null
@@ -407,18 +417,26 @@ export const SshTerminalPanel = () => {
         </button>
       </div>
 
-      {/* 每主机一个独立终端实例（隐藏容器保活）：激活的可见，其余 display:none。 */}
+      {/* 每主机一个独立终端实例（隐藏容器保活）：激活的可见，其余 display:none。
+          Linux 限制：手势门不可实现（见上方 effect 注释），终端区只呈现说明。 */}
       <div className="sshview__term">
         <div className="sshview__term-body">
-          {hosts.map((host) => (
-            <div
-              key={host.id}
-              className="sshview__term-slot"
-              ref={getSlotRef(host.id)}
-              hidden={host.id !== activeHostId}
-              aria-hidden={host.id !== activeHostId}
-            />
-          ))}
+          {isUnsupportedPlatform
+            ? (
+              <div className="terminal-panel__empty" role="status">
+                <MonitorOff size={18} />
+                <p>{t(unsupportedHintKey)}</p>
+              </div>
+            )
+            : hosts.map((host) => (
+              <div
+                key={host.id}
+                className="sshview__term-slot"
+                ref={getSlotRef(host.id)}
+                hidden={host.id !== activeHostId}
+                aria-hidden={host.id !== activeHostId}
+              />
+            ))}
         </div>
       </div>
 

@@ -23,12 +23,19 @@ interface BuiltinSkillBodiesVersionContract {
 }
 
 // 规范序列化：数组顺序即声明顺序（冻结的数据源），字段定序保证跨版本确定性。
+// v8 起正文按语言双变体（zh-CN/en）——全部语言变体都是模型可见内容，一并入指纹。
 const computeCanonicalDigest = (): string => {
   const canonical = JSON.stringify(
-    BUILTIN_SKILL_BODIES.map(({ name, description, body }) => ({
+    BUILTIN_SKILL_BODIES.map(({ name, 'zh-CN': zh, en }) => ({
       name,
-      description,
-      body: body.replace(/\r\n/gu, '\n'),
+      'zh-CN': {
+        description: zh.description,
+        body: zh.body.replace(/\r\n/gu, '\n'),
+      },
+      en: {
+        description: en.description,
+        body: en.body.replace(/\r\n/gu, '\n'),
+      },
     })),
   )
   return createHash('sha256').update(canonical).digest('hex')

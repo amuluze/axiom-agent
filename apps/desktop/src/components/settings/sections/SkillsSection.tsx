@@ -1,10 +1,12 @@
-import { useState } from 'react'
-import { AlertTriangle, Check, RefreshCw, Sparkles, X } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { AlertTriangle, Check, PencilLine, RefreshCw, Sparkles, X } from 'lucide-react'
 import { useAgentStore } from '@/stores/agentStore'
 import { useUiStore } from '@/stores/uiStore'
-import { BUILTIN_SKILL_BODIES, BUILTIN_SKILL_BODIES_VERSION } from '@/agent/skills/builtinSkillBodies'
+import { BUILTIN_SKILL_BODIES, BUILTIN_SKILL_BODIES_VERSION, resolveBuiltinSkillVariant } from '@/agent/skills/builtinSkillBodies'
 import { formatAvailableSkills } from '@/agent/skills/formatAvailableSkills'
 import { hasProjectSkillChanges } from '@/agent/skills/diffProjectSkills'
+import { getBuiltinPromptOverrides } from '@/config/builtinPromptOverrides'
+import { BuiltinPromptEditorDialog, type BuiltinPromptEditorTarget } from '../BuiltinPromptEditorDialog'
 import { useT } from '@/i18n'
 
 /**
@@ -19,7 +21,7 @@ import { useT } from '@/i18n'
  *   失效，长历史可能增加摘要模型调用成本」提示），确认后才原子应用。
  */
 export const SkillsSection = () => {
-  const { t } = useT()
+  const { t, language } = useT()
   const projectSkillsEnabled = useUiStore((state) => state.projectSkillsEnabled)
   const setProjectSkillsEnabled = useUiStore((state) => state.setProjectSkillsEnabled)
   const authorizedWorkspace = useAgentStore((state) => state.authorizedWorkspace)
@@ -31,6 +33,11 @@ export const SkillsSection = () => {
   const [previewing, setPreviewing] = useState(false)
   const [applying, setApplying] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  // 内置提示词编辑弹窗目标 + 覆写版本号（保存后 bump 触发重渲染）；覆写本身存
+  // config 叶子模块，渲染值经 useMemo 在版本号变化时重新读取。
+  const [editingTarget, setEditingTarget] = useState<BuiltinPromptEditorTarget | null>(null)
+  const [overridesRevision, setOverridesRevision] = useState(0)
+  const overrides = useMemo(() => getBuiltinPromptOverrides(), [overridesRevision])
 
   const handlePreview = async (): Promise<void> => {
     setPreviewing(true)
@@ -76,20 +83,50 @@ export const SkillsSection = () => {
         {t('settings.skills.builtinHint', { version: BUILTIN_SKILL_BODIES_VERSION })}
       </p>
       <ul className="settings__skill-list">
-        {BUILTIN_SKILL_BODIES.map((skill) => (
-          <li key={skill.name} className="settings__skill-item">
-            <div className="settings__skill-name">
-              {skill.name}
-              <span className="settings__badge">{t('settings.skills.badge.builtin')}</span>
-              {projectNames.has(skill.name) && (
-                <span className="settings__badge settings__badge--shadowed">{t('settings.skills.badge.shadowed')}</span>
-              )}
-            </div>
-            <div className="settings__skill-desc">{skill.description}</div>
-            <div className="settings__skill-meta">{t('settings.skills.builtinMeta')}</div>
-          </li>
-        ))}
+        {BUILTIN_SKILL_BODIES.map((skill) => {
+          const overrideEntry = overrides.skills[skill.name]
+          const customized = overrideEntry !== undefined && Object.keys(overrideEntry).length > 0
+          const description = resolveBuiltinSkillVariant(
+            skill,
+            language,
+            overrideEntry?.[language],
+          ).description
+          return (
+            <li key={skill.name} className="settings__skill-item">
+              <div className="settings__skill-name">
+                {skill.name}
+                <span className="settings__badge">{t('settings.skills.badge.builtin')}</span>
+                {customized && (
+                  <span className="settings__badge settings__badge--shadowed">
+                    {t('settings.promptEditor.modified')}
+                  </span>
+                )}
+                {projectNames.has(skill.name) && (
+                  <span className="settings__badge settings__badge--shadowed">{t('settings.skills.badge.shadowed')}</span>
+                )}
+              </div>
+              <div className="settings__skill-desc">{description}</div>
+              <div className="settings__skill-meta">{t('settings.skills.builtinMeta')}</div>
+              <div className="settings__skill-actions">
+                <button
+                  type="button"
+                  className="settings__icon-button"
+                  onClick={() => setEditingTarget({ kind: 'skill', name: skill.name })}
+                >
+                  <PencilLine size={13} />
+                  {t('settings.skills.edit')}
+                </button>
+              </div>
+            </li>
+          )
+        })}
       </ul>
+
+      <BuiltinPromptEditorDialog
+        onClose={() => setEditingTarget(null)}
+        onSaved={() => setOverridesRevision((value) => value + 1)}
+        target={editingTarget}
+      />
 
       {/* 项目级技能区 */}
       <div className="section-title" style={{ marginTop: 'var(--space-6)' }}>

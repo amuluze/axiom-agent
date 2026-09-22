@@ -30,8 +30,9 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::platform_process::signal_process_group;
+use crate::platform_process::TreeSignal;
 use crate::ssh::find_host;
-use crate::terminal::signal_process_group;
 
 const SSH_AGENT_GRANT_EVENT: &str = "axiom:ssh-agent-grant";
 /// 远程命令默认/最长执行时长（wall-clock；到期杀本地 ssh 进程组）。
@@ -43,6 +44,8 @@ const MAX_EXEC_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_EXEC_COMMAND_CHARS: usize = 64 * 1024;
 const MAX_HOST_REF_CHARS: usize = 255;
 /// 连接复用：ControlPersist 让 master 在命令间存活，重复 exec 免重复认证。
+/// （仅 unix ControlMaster 路径消费；Windows 直连降级保留编译。）
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 const CONTROL_PERSIST: &str = "10m";
 const CONNECT_TIMEOUT_SECONDS: u32 = 10;
 const KEEPALIVE_INTERVAL_SECONDS: u32 = 15;
@@ -285,6 +288,8 @@ fn agent_socket_path(data_root: &Path, socket_key: &str) -> PathBuf {
 
 /// agent askpass 助手脚本（内容常量，与终端通道同款；app 生命周期内复用一份，
 /// 退出回收时删除）。密码经 `AXIOM_SSH_PASSWORD` 环境变量按进程注入。
+/// （仅 unix 消费；Windows 密码主机 fail-closed，路径函数保留供回收清理。）
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 const AGENT_ASKPASS_BODY: &str = "#!/bin/sh\nprintf '%s\\n' \"$AXIOM_SSH_PASSWORD\"\n";
 
 fn agent_askpass_path(data_root: &Path) -> PathBuf {
@@ -292,41 +297,69 @@ fn agent_askpass_path(data_root: &Path) -> PathBuf {
 }
 
 fn ensure_agent_askpass_script(data_root: &Path) -> Result<PathBuf, String> {
-    let path = agent_askpass_path(data_root);
-    if path.exists() {
-        return Ok(path);
+    #[cfg(not(unix))]
+    {
+        // askpass 助手是 POSIX shell 脚本，Windows OpenSSH 的 SSH_ASKPASS 需要
+        // 可执行 PE，无法复用。密码认证主机在 Windows Phase 0 fail-closed
+        // （密码主机方案重估见 docs/windows-support.md §0.2），请改用密钥认证
+        // 或 ~/.ssh/config 登记。
+        let _ = data_root;
+        Err(
+            "SSH 密码认证暂不支持 Windows：askpass 助手依赖 POSIX shell，请使用密钥认证或在 ~/.ssh/config 中登记主机".into(),
+        )
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| format!("创建 ssh 配置目录失败：{error}"))?;
-    }
-    std::fs::write(&path, AGENT_ASKPASS_BODY)
-        .map_err(|error| format!("写入 askpass 脚本失败：{error}"))?;
     #[cfg(unix)]
     {
+        let path = agent_askpass_path(data_root);
+        if path.exists() {
+            return Ok(path);
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("创建 ssh 配置目录失败：{error}"))?;
+        }
+        std::fs::write(&path, AGENT_ASKPASS_BODY)
+            .map_err(|error| format!("写入 askpass 脚本失败：{error}"))?;
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
             .map_err(|error| format!("加固 askpass 脚本权限失败：{error}"))?;
+        Ok(path)
     }
-    Ok(path)
+}
+
+#[cfg(unix)]
+fn build_agent_exec_args_unix_control_options(socket: &Path) -> Vec<String> {
+    vec![
+        "ControlMaster=auto".into(),
+        format!("ControlPath={}", socket.display()),
+        format!("ControlPersist={CONTROL_PERSIST}"),
+    ]
 }
 
 fn build_agent_exec_args(socket: &Path, target: &AgentSshTarget, command: &str) -> Vec<String> {
-    let mut args = vec![
-        "-o".into(),
-        "ControlMaster=auto".into(),
-        "-o".into(),
-        format!("ControlPath={}", socket.display()),
-        "-o".into(),
-        format!("ControlPersist={CONTROL_PERSIST}"),
-        "-o".into(),
-        format!("ConnectTimeout={CONNECT_TIMEOUT_SECONDS}"),
-        "-o".into(),
-        format!("ServerAliveInterval={KEEPALIVE_INTERVAL_SECONDS}"),
-        "-o".into(),
-        format!("ServerAliveCountMax={KEEPALIVE_COUNT_MAX}"),
-        "-o".into(),
-        format!("StrictHostKeyChecking={STRICT_HOST_KEY}"),
-    ];
+    // Control* 连接复用参数仅 unix：Windows OpenSSH 不支持 ControlMaster
+    // （unix socket 语义），传入会直接报错——省略即显式退化为每命令直连
+    // （docs/windows-support.md §0.2）。
+    #[cfg(unix)]
+    let control_options = build_agent_exec_args_unix_control_options(socket);
+    #[cfg(not(unix))]
+    let control_options: Vec<String> = {
+        let _ = socket;
+        Vec::new()
+    };
+    let mut args: Vec<String> = Vec::new();
+    for option in control_options {
+        args.push("-o".into());
+        args.push(option);
+    }
+    args.push("-o".into());
+    args.push(format!("ConnectTimeout={CONNECT_TIMEOUT_SECONDS}"));
+    args.push("-o".into());
+    args.push(format!("ServerAliveInterval={KEEPALIVE_INTERVAL_SECONDS}"));
+    args.push("-o".into());
+    args.push(format!("ServerAliveCountMax={KEEPALIVE_COUNT_MAX}"));
+    args.push("-o".into());
+    args.push(format!("StrictHostKeyChecking={STRICT_HOST_KEY}"));
     if target.batch_mode {
         args.push("-o".into());
         args.push("BatchMode=yes".into());
@@ -418,6 +451,8 @@ fn load_ssh_password(app: &AppHandle, secret_id: &str) -> Result<Option<String>,
 // 会话授权（原生对话框三选一锚定；TS 镜像只用于免卡片）
 // ---------------------------------------------------------------------------
 
+// 对话框选择枚举：macOS 为 NSAlert 三按钮 sheet，其它平台由两步 dialog 映射
+//（见 show_ssh_exec_dialog 的 not(macos) 臂）。
 enum SshExecDialogChoice {
     AllowOnce,
     AllowSession,
@@ -503,8 +538,65 @@ async fn show_ssh_exec_dialog(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (app, host, command);
-        Err("仅 macOS 支持 SSH 远程执行审批".into())
+        // 非 macOS：tauri-plugin-dialog（GTK 后端）没有三按钮形态，用两步对话
+        // 映射三选一——第一步「是否允许」，第二步「是否记住本会话授权」。安全
+        // 语义与 NSAlert 版一致：原生对话框手势不可伪造，受陷渲染进程无法凭空
+        // 制造授权；「记住」是唯一的授权写入来源。非阻塞 show + oneshot 等待
+        // （与 workspace_approval::confirm_interactive 同款形态，避免阻塞 async
+        // runtime 线程）。
+        use tauri::Manager as _;
+        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+        let preview: String = command.chars().take(240).collect();
+        let truncated = if command.chars().count() > 240 { "…[已截断]" } else { "" };
+        let ask = |title: String, body: String, ok: &str, cancel: &str| {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let mut dialog = app
+                .dialog()
+                .message(body)
+                .title(title)
+                .kind(MessageDialogKind::Warning)
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    ok.to_string(),
+                    cancel.to_string(),
+                ));
+            if let Some(window) = app.get_webview_window("main") {
+                dialog = dialog.parent(&window);
+            }
+            dialog.show(move |confirmed| {
+                let _ = sender.send(confirmed);
+            });
+            receiver
+        };
+
+        let allowed = ask(
+            format!("允许 Axiom 在远程主机「{host}」上执行命令？"),
+            format!(
+                "命令预览：{preview}{truncated}\n\n使用你的 SSH 配置与凭据连接该主机；输出经脱敏后交付给 Agent。"
+            ),
+            "允许",
+            "拒绝",
+        )
+        .await
+        .map_err(|_| "SSH 审批对话框意外关闭".to_string())?;
+        if !allowed {
+            return Ok(SshExecDialogChoice::Denied);
+        }
+        // 第二步的 cancel（含 GTK 直接关窗）语义 = 不记住，仅此一次——命令已
+        // 经第一步允许，跳过记住不构成额外授权面。
+        let remember = ask(
+            format!("本会话内记住主机「{host}」的授权？"),
+            "记住后，本次会话内对该主机的后续命令不再逐条确认（应用重启后失效）。".to_string(),
+            "本会话内允许",
+            "仅此一次",
+        )
+        .await
+        .map_err(|_| "SSH 审批对话框意外关闭".to_string())?;
+        Ok(if remember {
+            SshExecDialogChoice::AllowSession
+        } else {
+            SshExecDialogChoice::AllowOnce
+        })
     }
 }
 
@@ -600,6 +692,8 @@ impl SshAgentState {
         }
     }
 
+    /// 登记 master socket（仅 unix ControlMaster 路径调用；Windows 保留编译）。
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     fn register_socket(&self, socket_key: &str, path: PathBuf, destination: &str) {
         if let Ok(mut sockets) = self.sockets.lock() {
             sockets.insert(
@@ -751,10 +845,9 @@ async fn exec_remote_command(
         process.env("DISPLAY", ":0");
         process.env("AXIOM_SSH_PASSWORD", password);
     }
-    {
-        use std::os::unix::process::CommandExt;
-        process.as_std_mut().process_group(0);
-    }
+    // 独立进程组（unix）：超时按组终止；Windows 无进程组，spawn no-op，
+    // 树终止由 platform_process 的 taskkill /T 兜底。
+    crate::platform_process::spawn_in_new_process_group(process.as_std_mut());
     let mut child = process
         .spawn()
         .map_err(|error| format!("启动 ssh 进程失败：{error}"))?;
@@ -779,9 +872,9 @@ async fn exec_remote_command(
         _ = tokio::time::sleep_until(deadline) => {
             timed_out = true;
             if let Some(process_id) = process_id {
-                let _ = signal_process_group(process_id, libc::SIGTERM);
+                let _ = signal_process_group(process_id, TreeSignal::Graceful);
                 tokio::time::sleep(Duration::from_millis(TERMINATION_GRACE_MS)).await;
-                let _ = signal_process_group(process_id, libc::SIGKILL);
+                let _ = signal_process_group(process_id, TreeSignal::Force);
             }
             child.wait().await
         }
@@ -790,7 +883,12 @@ async fn exec_remote_command(
     let stderr = stderr_task.await.unwrap_or_default();
 
     let state = app.state::<SshAgentState>();
+    // master socket 仅 unix 有（Windows 无 ControlMaster，不注册即退出回收
+    // 链路无 socket 可清理）。
+    #[cfg(unix)]
     state.register_socket(&socket_key, socket, &target.destination);
+    #[cfg(not(unix))]
+    let _ = (&state, &socket_key, &socket);
 
     // 非零退出码常见于远端命令自身失败：stderr 原样交付模型自愈，不算执行错误。
     Ok(SshAgentExecOutcome {
@@ -1113,8 +1211,12 @@ mod tests {
         };
         let args = build_agent_exec_args(socket, &key_target, "ls -la");
         let joined = args.join(" ");
-        assert!(joined.contains("ControlMaster=auto"));
-        assert!(joined.contains("ControlPersist=10m"));
+        // Control* 复用参数仅 unix（Windows OpenSSH 不支持，见 build_agent_exec_args）。
+        #[cfg(unix)]
+        {
+            assert!(joined.contains("ControlMaster=auto"));
+            assert!(joined.contains("ControlPersist=10m"));
+        }
         assert!(joined.contains("ConnectTimeout=10"));
         assert!(joined.contains("StrictHostKeyChecking=accept-new"));
         assert!(joined.contains("BatchMode=yes"));
@@ -1160,6 +1262,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn askpass_script_written_owner_only_and_idempotent() {
         use std::os::unix::fs::PermissionsExt;
         let home = temporary_directory();

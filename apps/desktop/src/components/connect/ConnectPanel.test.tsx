@@ -85,3 +85,31 @@ describe('ConnectPanel 回发失败提示', () => {
     expect(html).toContain('aria-label="关闭回发失败提示"')
   })
 })
+
+describe('ConnectPanel 弹窗结构（.pen B9OLF/llrFR）', () => {
+  it('渲染居中模态：遮罩 + 弹窗 + 徽章头部（标题/副标题/关闭钮）', () => {
+    const html = renderToStaticMarkup(createElement(ConnectPanel))
+    expect(html).toContain('connect-backdrop')
+    expect(html).toContain('connect-dialog')
+    expect(html).toContain('connect-dialog__badge')
+    expect(html).toContain('connect-dialog__subtitle')
+    expect(html).toContain('扫码登录微信个人号，即可在微信里远程操控当前工作区。')
+  })
+
+  it('按设计稿收敛为仅微信：聊天平台只有微信卡片（含扫码入口），无飞书/钉钉配置卡与配对区', () => {
+    const html = renderToStaticMarkup(createElement(ConnectPanel))
+    expect(html).toContain('connect-panel__brand--weixin')
+    expect(html).toContain('扫码登录微信')
+    expect(html).toContain('扫码后自动绑定为可操控 Axiom 的账号')
+    expect(html).not.toContain('connect-panel__brand--feishu')
+    expect(html).not.toContain('connect-panel__brand--dingtalk')
+    expect(html).not.toContain('connect-panel__pairing')
+    expect(html).not.toContain('connect-panel__platform-form')
+  })
+
+  it('动作失败横幅带警示图标（设计稿 llrFR Error Banner 形态）', () => {
+    mocks.actionError = '无法写入连接配置'
+    const html = renderToStaticMarkup(createElement(ConnectPanel))
+    expect(html).toContain('connect-panel__banner-icon')
+  })
+})

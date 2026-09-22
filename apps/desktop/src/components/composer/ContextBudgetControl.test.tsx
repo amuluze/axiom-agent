@@ -4,9 +4,9 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ContextBudgetUsage, ContextCheckpoint } from '@/agent/context/types'
 import {
   ContextBudgetPanel,
+  ContextBudgetSummary,
   contextBudgetPercent,
   formatContextBytes,
-  formatTokens,
 } from './ContextBudgetControl'
 
 const usage: ContextBudgetUsage = {
@@ -53,12 +53,6 @@ const renderPanel = (overrides: Partial<Parameters<typeof ContextBudgetPanel>[0]
 )
 
 describe('context budget formatting', () => {
-  it('keeps sub-kilo token counts plain and abbreviates the rest', () => {
-    expect(formatTokens(999)).toBe('999')
-    expect(formatTokens(90_000)).toBe('90.0K')
-    expect(formatTokens(123_456)).toBe('123K')
-  })
-
   it('formats request bytes as KiB below 1 MiB and MiB beyond', () => {
     expect(formatContextBytes(1024 * 500)).toBe('500 KiB')
     expect(formatContextBytes(1024 * 1024 + 4096)).toBe('1.00 MiB')
@@ -67,6 +61,16 @@ describe('context budget formatting', () => {
   it('derives the display percent from the higher of token/byte waterlines', () => {
     expect(contextBudgetPercent(usage)).toBe(45)
     expect(contextBudgetPercent({ ...usage, tokenPercent: 10, bytePercent: 80 })).toBe(80)
+  })
+})
+
+describe('ContextBudgetSummary', () => {
+  it('renders the waterline with its token and byte limits', () => {
+    const html = renderToStaticMarkup(createElement(ContextBudgetSummary, { usage }))
+    expect(html).toContain('上下文预算')
+    expect(html).toContain('45%')
+    expect(html).toContain('90.0K / 200K tokens')
+    expect(html).toContain('500 KiB / 2.00 MiB')
   })
 })
 

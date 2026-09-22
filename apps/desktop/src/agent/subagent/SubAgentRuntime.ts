@@ -32,6 +32,7 @@ import { buildExploreSystemPrompt, type ExplorePromptOptions } from './explore/b
 import { buildInspectSystemPrompt } from './reviewers/buildInspectPrompt'
 import { buildExamineSystemPrompt } from './reviewers/buildExaminePrompt'
 import { buildReviewSystemPrompt } from './reviewers/buildReviewPrompt'
+import { getBuiltinPromptOverrides, resolvePromptLanguage } from '@/agent/prompt/promptLocalizationHost'
 import { probeScopeEntries } from './scopeProbe'
 
 /** 父工具 deadline 前预留清理时间，避免后台 API 消耗。 */
@@ -70,13 +71,18 @@ export interface SubAgentRuntimeOptions {
 /**
  * 按委派种类分发 system prompt builder。四类共享同一组通用选项（scope/workspaceRoot/
  * budget/contextWindow），差异只在 builder 内部渲染的角色与审查要点。
+ * 语言与用户覆写经 promptLocalizationHost 在执行期解析（UI 偏好 + 设置页按语言
+ * 保存的模板覆写）；宿主缺省 zh-CN + 无覆写（SSR/单测确定性基线）。
  */
 const buildSubAgentSystemPrompt = (kind: SubAgentKind, opts: ExplorePromptOptions): string => {
+  const language = resolvePromptLanguage()
+  const overrideTemplate = getBuiltinPromptOverrides().subagents[kind]?.[language]?.prompt
+  const localization = { language, ...(overrideTemplate !== undefined ? { overrideTemplate } : {}) }
   switch (kind) {
-    case 'explore': return buildExploreSystemPrompt(opts)
-    case 'inspect': return buildInspectSystemPrompt(opts)
-    case 'examine': return buildExamineSystemPrompt(opts)
-    case 'review': return buildReviewSystemPrompt(opts)
+    case 'explore': return buildExploreSystemPrompt(opts, localization)
+    case 'inspect': return buildInspectSystemPrompt(opts, localization)
+    case 'examine': return buildExamineSystemPrompt(opts, localization)
+    case 'review': return buildReviewSystemPrompt(opts, localization)
     default: throw new SubAgentExecutionError(`不支持的 SubAgent 种类：${String(kind)}`)
   }
 }
@@ -184,6 +190,10 @@ export const createSubAgentRuntime = (options: SubAgentRuntimeOptions = {}): Sub
           maxDurationMs: Math.max(0, childDeadline - Date.now()),
           maxMessageBytes: budget.maxMessageBytes,
           maxInlineToolResultBytes: budget.maxInlineToolResultBytes,
+          // 显式退出主 Agent 的 token 软预算默认值：子 Agent 的预算纪律由
+          // SubAgentBudgetLedger 独有（output/请求/时长），两套预算提醒并存
+          // 只会产生相互矛盾的收口指令。
+          maxTotalTokens: undefined,
         },
         toolExecution: 'sequential',
         providerLifecycle: binding.providerLifecycle,

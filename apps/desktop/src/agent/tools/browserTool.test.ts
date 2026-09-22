@@ -51,6 +51,12 @@ describe('browserTool validate', () => {
     expect(tool.validate({ action: 'respond_dialog', tabId: 't1', accept: false }).ok).toBe(true)
     expect(tool.validate({ action: 'console', tabId: 't1' }).ok).toBe(true)
     expect(tool.validate({ action: 'console', tabId: 't1', limit: 30 }).ok).toBe(true)
+    expect(tool.validate({ action: 'dblclick', tabId: 't1', ref: 42 }).ok).toBe(true)
+    expect(tool.validate({ action: 'set_viewport', tabId: 't1', width: 375, height: 667 }).ok).toBe(true)
+    expect(tool.validate({ action: 'set_viewport', tabId: 't1' }).ok).toBe(true)
+    expect(tool.validate({ action: 'downloads' }).ok).toBe(true)
+    expect(tool.validate({ action: 'downloads', limit: 5 }).ok).toBe(true)
+    expect(tool.validate({ action: 'read_download', name: 'report.json' }).ok).toBe(true)
   })
 
   it('rejects invalid select_tab/select_option/upload_file arguments', () => {
@@ -102,6 +108,22 @@ describe('browserTool validate', () => {
     expect(tool.validate({ action: 'console', tabId: 't1', limit: 201 }).ok).toBe(false)
     expect(tool.validate({ action: 'console', tabId: 't1', limit: 1.5 }).ok).toBe(false)
     expect(tool.validate({ action: 'console' }).ok).toBe(false)
+  })
+
+  it('rejects invalid dblclick/set_viewport/downloads/read_download arguments', () => {
+    expect(tool.validate({ action: 'dblclick', tabId: 't1' }).ok).toBe(false)
+    expect(tool.validate({ action: 'dblclick', tabId: 't1', ref: 0 }).ok).toBe(false)
+    expect(tool.validate({ action: 'set_viewport', tabId: 't1', width: 375 }).ok).toBe(false)
+    expect(tool.validate({ action: 'set_viewport', tabId: 't1', height: 667 }).ok).toBe(false)
+    expect(tool.validate({ action: 'set_viewport', tabId: 't1', width: 0, height: 667 }).ok).toBe(false)
+    expect(tool.validate({ action: 'set_viewport', tabId: 't1', width: 10001, height: 667 }).ok).toBe(false)
+    expect(tool.validate({ action: 'set_viewport', tabId: 't1', width: 1.5, height: 667 }).ok).toBe(false)
+    expect(tool.validate({ action: 'downloads', limit: 0 }).ok).toBe(false)
+    expect(tool.validate({ action: 'downloads', limit: 51 }).ok).toBe(false)
+    expect(tool.validate({ action: 'read_download' }).ok).toBe(false)
+    expect(tool.validate({ action: 'read_download', name: '  ' }).ok).toBe(false)
+    expect(tool.validate({ action: 'read_download', name: '../escape.txt' }).ok).toBe(false)
+    expect(tool.validate({ action: 'read_download', name: 'a/b.txt' }).ok).toBe(false)
   })
 })
 
@@ -384,13 +406,95 @@ describe('browserTool execute', () => {
     })
     expect(environment.browser.command).not.toHaveBeenCalled()
   })
+
+  it('forwards dblclick and set_viewport as camelCase requests and renders viewport outcomes', async () => {
+    const dbl = createFakeAgentEnvironment({ browserCommand: respondsWith({ type: 'done' }) })
+    const dblTool = createBrowserTool(dbl)
+    await dblTool.execute({ action: 'dblclick', tabId: 't1', ref: 42 }, baseContext())
+    expect(dbl.browser.command).toHaveBeenCalledWith({ action: 'dblClick', tabId: 't1', ref: 42 })
+
+    const viewport = createFakeAgentEnvironment({
+      browserCommand: respondsWith({ type: 'viewportApplied', width: 375, height: 667 }),
+    })
+    const viewportTool = createBrowserTool(viewport)
+    const result = await viewportTool.execute(
+      { action: 'set_viewport', tabId: 't1', width: 375, height: 667 },
+      baseContext(),
+    )
+    expect(viewport.browser.command).toHaveBeenCalledWith({
+      action: 'setViewport',
+      tabId: 't1',
+      width: 375,
+      height: 667,
+    })
+    expect(result.content).toContain('375x667')
+
+    const cleared = createFakeAgentEnvironment({
+      browserCommand: respondsWith({ type: 'viewportApplied' }),
+    })
+    const clearedTool = createBrowserTool(cleared)
+    const clearedResult = await clearedTool.execute({ action: 'set_viewport', tabId: 't1' }, baseContext())
+    expect(cleared.browser.command).toHaveBeenCalledWith({ action: 'setViewport', tabId: 't1' })
+    expect(clearedResult.content).toContain('回自然视口')
+  })
+
+  it('renders download listings with absolute paths and forwards read_download', async () => {
+    const list = createFakeAgentEnvironment({
+      browserCommand: respondsWith({
+        type: 'downloadList',
+        directory: '/Users/x/.axiom/browser/downloads',
+        entries: [
+          { name: 'report.json', path: '/Users/x/.axiom/browser/downloads/report.json', sizeBytes: 42, modifiedAt: 1 },
+        ],
+      }),
+    })
+    const listTool = createBrowserTool(list)
+    const listResult = await listTool.execute({ action: 'downloads' }, baseContext())
+    expect(list.browser.command).toHaveBeenCalledWith({ action: 'downloads' })
+    expect(listResult.content).toContain('report.json')
+    expect(listResult.content).toContain('/Users/x/.axiom/browser/downloads/report.json')
+
+    const content = createFakeAgentEnvironment({
+      browserCommand: respondsWith({
+        type: 'downloadContent',
+        name: 'report.json',
+        path: '/Users/x/.axiom/browser/downloads/report.json',
+        sizeBytes: 42,
+        truncated: false,
+        content: '{"ok":true}',
+      }),
+    })
+    const contentTool = createBrowserTool(content)
+    const contentResult = await contentTool.execute(
+      { action: 'read_download', name: 'report.json' },
+      baseContext(),
+    )
+    expect(content.browser.command).toHaveBeenCalledWith({ action: 'readDownload', name: 'report.json' })
+    expect(contentResult.content).toContain('{"ok":true}')
+  })
+
+  it('notes truncation for oversized download content', async () => {
+    const environment = createFakeAgentEnvironment({
+      browserCommand: respondsWith({
+        type: 'downloadContent',
+        name: 'big.log',
+        path: '/Users/x/.axiom/browser/downloads/big.log',
+        sizeBytes: 999999,
+        truncated: true,
+        content: 'partial',
+      }),
+    })
+    const tool = createBrowserTool(environment)
+    const result = await tool.execute({ action: 'read_download', name: 'big.log' }, baseContext())
+    expect(result.content).toContain('内容已截断')
+  })
 })
 
 describe('browserTool contract metadata', () => {
   it('declares never-recovery and serialized execution for stateful browser actions', () => {
     const tool = createBrowserTool(createFakeAgentEnvironment())
     expect(tool.name).toBe('browser')
-    expect(tool.runtimeVersion).toBe('4')
+    expect(tool.runtimeVersion).toBe('6')
     expect(tool.recoveryPolicy).toBe('never')
     expect(tool.requiresApproval).toBe(false)
     expect(tool.executionMode).toBe('sequential')

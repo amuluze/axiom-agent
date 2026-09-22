@@ -3,20 +3,29 @@ import { useAgentStore } from '@/stores/agentStore'
 import { useConnectStore } from '@/stores/connectStore'
 import { useUiStore } from '@/stores/uiStore'
 import { pollWechatLogin, type ConnectPlatform, type ConnectWechatLoginStatus } from '@/platform/connect'
-import { Loader2, MessageSquareText, Plug, QrCode, Trash2, Unplug, X } from 'lucide-react'
-import { DingtalkIcon, FeishuIcon, getPlatformLabel, WeixinIcon } from '@/components/connect/ConnectIcons'
+import { CircleAlert, Loader2, MessageSquareText, Plug, QrCode, Trash2, Unplug, X } from 'lucide-react'
+import { getPlatformLabel } from '@/components/connect/ConnectIcons'
 import { useT } from '@/i18n'
 
 /**
- * 连接面板：侧边栏底部的浮层。管理三平台（飞书 / 钉钉 / 微信个人号）的
- * 凭证配置、连接启停、配对绑定与微信扫码登录，以及远程会话工作目录。
+ * 连接弹窗（.pen B9OLF 常态 / llrFR 操作失败态）：全屏遮罩上的居中模态。
+ * 按设计稿范围收敛为仅微信个人号（扫码登录 / 单聊）+ 远程会话工作目录 +
+ * 已配对聊天；飞书/钉钉后端能力保留但暂无配置入口。
  */
 
-const PLATFORM_ICONS: Record<ConnectPlatform, ReactNode> = {
-  feishu: <FeishuIcon size={14} />,
-  dingtalk: <DingtalkIcon size={14} />,
-  weixin: <WeixinIcon size={14} />,
+/** 品牌色块内的白字 glyph：设计语言为「品牌底色圆角方块 + 单字」。
+ * 三平台全保留——已配对聊天列表可能仍含飞书/钉钉的历史绑定。 */
+const PLATFORM_GLYPHS: Record<ConnectPlatform, string> = {
+  feishu: '飞',
+  dingtalk: '钉',
+  weixin: '微',
 }
+
+const PlatformBadge = ({ platform, small = false }: { platform: ConnectPlatform; small?: boolean }) => (
+  <span className={`connect-panel__brand connect-panel__brand--${platform}${small ? ' connect-panel__brand--sm' : ''}`} aria-hidden="true">
+    {PLATFORM_GLYPHS[platform]}
+  </span>
+)
 
 const getStatusLabel = (status: string, t: (key: string) => string): string => {
   switch (status) {
@@ -102,9 +111,10 @@ const WechatLoginFlow = () => {
     return stopPolling
   }, [wechatLogin, clearWechatLogin, refresh, setWechatLoginMessage, stopPolling])
 
+  // 未开始扫码：设计稿 Login Row——accent 主按钮与提示语横排。
   if (!wechatLogin) {
     return (
-      <div className="connect-panel__login-empty">
+      <div className="connect-panel__login-row">
         <button
           type="button"
           className="connect-panel__button connect-panel__button--primary"
@@ -153,145 +163,72 @@ const WechatLoginFlow = () => {
   )
 }
 
-interface PlatformCardProps {
-  platform: ConnectPlatform
-}
-
-const PlatformCard = ({ platform }: PlatformCardProps) => {
+/** 设计稿「聊天平台」唯一卡片：微信个人号（扫码登录，无需凭证表单）。 */
+const WechatCard = () => {
   const { t } = useT()
   const platforms = useConnectStore((state) => state.config.platforms)
   const actionBusy = useConnectStore((state) => state.actionBusy)
-  const savePlatformConfig = useConnectStore((state) => state.savePlatformConfig)
   const clearPlatformConfig = useConnectStore((state) => state.clearPlatformConfig)
   const connect = useConnectStore((state) => state.connect)
   const disconnect = useConnectStore((state) => state.disconnect)
-  const entry = platforms.find((item) => item.platform === platform)
-  const [editing, setEditing] = useState(false)
-  const [form, setForm] = useState<Record<string, string>>({})
-  const [error, setError] = useState<string | null>(null)
-
-  const configured = entry?.configured ?? false
+  const entry = platforms.find((item) => item.platform === 'weixin')
   const status = entry?.status ?? 'unconfigured'
   const busy = actionBusy
-
-  const fields = platform === 'feishu'
-    ? [
-        { key: 'appId', label: t('app.connect.platform.fields.feishu.appId'), placeholder: t('app.connect.platform.fields.feishu.appIdPlaceholder'), secret: false },
-        { key: 'appSecret', label: t('app.connect.platform.fields.feishu.appSecret'), placeholder: t('app.connect.platform.fields.feishu.appSecretPlaceholder'), secret: true },
-      ]
-    : platform === 'dingtalk'
-      ? [
-          { key: 'clientId', label: t('app.connect.platform.fields.dingtalk.clientId'), placeholder: t('app.connect.platform.fields.dingtalk.clientIdPlaceholder'), secret: false },
-          { key: 'clientSecret', label: t('app.connect.platform.fields.dingtalk.clientSecret'), placeholder: t('app.connect.platform.fields.dingtalk.clientSecretPlaceholder'), secret: true },
-        ]
-      : []
-
-  const startEdit = (): void => {
-    setForm({})
-    setError(null)
-    setEditing(true)
-  }
-
-  const save = async (): Promise<void> => {
-    if (platform === 'weixin') return
-    setError(null)
-    const errorMessage = await savePlatformConfig(platform, form)
-    if (errorMessage) setError(errorMessage)
-    else setEditing(false)
-  }
-
-  const isConfigured = platform === 'weixin' || configured
-
   return (
     <section className="connect-panel__platform">
+      {/* 设计稿 Head Row：品牌块 + 名称 + 状态 chip 在左，动作在右（同一行） */}
       <div className="connect-panel__platform-header">
-        <span className="connect-panel__platform-icon">{PLATFORM_ICONS[platform]}</span>
-        <span className="connect-panel__platform-name">{getPlatformLabel(platform, t)}</span>
+        <PlatformBadge platform="weixin" />
+        <span className="connect-panel__platform-name">{getPlatformLabel('weixin', t)}</span>
         <span className={`connect-panel__status connect-panel__status--${status}`}>
           {getStatusLabel(status, t) ?? status}
         </span>
         {entry?.credentialHint && (
           <span className="connect-panel__credential-hint" title={t('app.connect.platform.credentialHint')}>{entry.credentialHint}</span>
         )}
-      </div>
-      {entry?.message && status === 'error' && (
-        <div className="connect-panel__platform-error">{entry.message}</div>
-      )}
-      {!editing && (
+        <span className="connect-panel__spacer" />
         <div className="connect-panel__platform-actions">
-          {!isConfigured && (
-            <button type="button" className="connect-panel__button" onClick={startEdit}>
-              {t('app.connect.platform.configure')}
-            </button>
-          )}
-          {isConfigured && status !== 'connected' && (
+          {status !== 'connected' && (
             <button
               type="button"
-              className="connect-panel__button connect-panel__button--primary"
+              className="connect-panel__button"
               disabled={busy}
-              onClick={() => { void connect(platform) }}
+              onClick={() => { void connect('weixin') }}
             >
               <Plug size={12} />
               {t('app.connect.platform.connect')}
             </button>
           )}
-          {isConfigured && status === 'connected' && (
+          {status === 'connected' && (
             <button
               type="button"
               className="connect-panel__button"
               disabled={busy}
-              onClick={() => { void disconnect(platform) }}
+              onClick={() => { void disconnect('weixin') }}
             >
               <Unplug size={12} />
               {t('app.connect.platform.disconnect')}
             </button>
           )}
-          {isConfigured && (
-            <button
-              type="button"
-              className="connect-panel__button connect-panel__button--danger"
-              title={t('app.connect.platform.credentialHint')}
-              onClick={() => {
-                const confirmed = window.confirm(t('app.connect.platform.removeConfirm', { platform: getPlatformLabel(platform, t) }))
-                if (!confirmed) return
-                void clearPlatformConfig(platform)
-              }}
-            >
-              <Trash2 size={12} />
-            </button>
-          )}
+          <button
+            type="button"
+            className="connect-panel__button connect-panel__button--danger"
+            title={t('app.connect.platform.credentialHint')}
+            aria-label={t('app.connect.platform.clearCredential')}
+            onClick={() => {
+              const confirmed = window.confirm(t('app.connect.platform.removeConfirm', { platform: getPlatformLabel('weixin', t) }))
+              if (!confirmed) return
+              void clearPlatformConfig('weixin')
+            }}
+          >
+            <Trash2 size={12} />
+          </button>
         </div>
+      </div>
+      {entry?.message && status === 'error' && (
+        <div className="connect-panel__platform-error">{entry.message}</div>
       )}
-      {editing && (
-        <div className="connect-panel__platform-form">
-          {fields.map((field) => (
-            <label className="connect-panel__field" key={field.key}>
-              <span>{field.label}</span>
-              <input
-                type={field.secret ? 'password' : 'text'}
-                placeholder={field.placeholder}
-                value={form[field.key] ?? ''}
-                onChange={(event) => setForm((current) => ({ ...current, [field.key]: event.target.value }))}
-              />
-            </label>
-          ))}
-          {error && <div className="connect-panel__platform-error">{error}</div>}
-          <div className="connect-panel__platform-form-actions">
-            <button
-              type="button"
-              className="connect-panel__button connect-panel__button--primary"
-              disabled={busy}
-              onClick={() => { void save() }}
-            >
-              {t('app.connect.platform.save')}
-            </button>
-            <button type="button" className="connect-panel__button" onClick={() => setEditing(false)}>
-              {t('app.connect.platform.cancel')}
-            </button>
-          </div>
-        </div>
-      )}
-      {platform === 'weixin' && <WechatLoginFlow />}
+      <WechatLoginFlow />
     </section>
   )
 }
@@ -315,17 +252,16 @@ const BindingsSection = () => {
         const key = `${binding.platform}:${binding.chatId}:${binding.userId}`
         return (
           <li className="connect-panel__binding" key={key}>
-            <span className="connect-panel__binding-icon">{PLATFORM_ICONS[binding.platform]}</span>
-            <span className="connect-panel__binding-name">
-              {binding.userName || binding.userId}
-              <span className="connect-panel__binding-meta">
-                {getPlatformLabel(binding.platform, t)} · {binding.chatType === 'group' ? t('app.connect.bindings.meta.group') : t('app.connect.bindings.meta.direct')}
-              </span>
+            <PlatformBadge platform={binding.platform} small />
+            <span className="connect-panel__binding-name">{binding.userName || binding.userId}</span>
+            <span className="connect-panel__binding-meta">
+              {getPlatformLabel(binding.platform, t)} · {binding.chatType === 'group' ? t('app.connect.bindings.meta.group') : t('app.connect.bindings.meta.direct')}
             </span>
             <button
               type="button"
               className="connect-panel__binding-remove"
               title={t('app.connect.bindings.remove')}
+              aria-label={t('app.connect.bindings.remove')}
               disabled={removing[key]}
               onClick={() => {
                 const confirmed = window.confirm(t('app.connect.platform.unpairConfirm', { platform: getPlatformLabel(binding.platform, t) }))
@@ -342,40 +278,6 @@ const BindingsSection = () => {
         )
       })}
     </ul>
-  )
-}
-
-const PairingSection = () => {
-  const { t } = useT()
-  const pairing = useConnectStore((state) => state.pairing)
-  const newPairingCode = useConnectStore((state) => state.newPairingCode)
-  const expiresAt = pairing ? pairing.expiresAt - Date.now() : 0
-  const expired = pairing !== null && expiresAt <= 0
-  return (
-    <section className="connect-panel__section">
-      <div className="connect-panel__section-title">{t('app.connect.section.pairing')}</div>
-      {pairing && !expired && (
-        <div className="connect-panel__pairing">
-          <span className="connect-panel__pairing-label">
-            {t('app.connect.pairing.label')}
-          </span>
-          <code className="connect-panel__pairing-code">/bind {pairing.code}</code>
-          <span className="connect-panel__hint">
-            {t('app.connect.pairing.hint', { seconds: Math.ceil(expiresAt / 1000) })}
-          </span>
-        </div>
-      )}
-      {pairing && expired && (
-        <div className="connect-panel__hint">{t('app.connect.pairing.expired')}</div>
-      )}
-      <button
-        type="button"
-        className="connect-panel__button"
-        onClick={() => { void newPairingCode() }}
-      >
-        {pairing ? t('app.connect.pairing.regenerate') : t('app.connect.pairing.generate')}
-      </button>
-    </section>
   )
 }
 
@@ -399,7 +301,7 @@ const WorkspaceSection = () => {
         <span className="connect-panel__hint">{t('app.connect.workspace.hint')}</span>
       ) : (
         <select
-          className="connect-panel__select"
+          className={`connect-panel__select${workspacePath ? '' : ' connect-panel__select--empty'}`}
           value={workspacePath ?? ''}
           onChange={(event) => { void changeWorkspace(event.target.value || null) }}
         >
@@ -422,76 +324,89 @@ export const ConnectPanel = () => {
   const refresh = useConnectStore((state) => state.refresh)
   const replyError = useConnectStore((state) => state.replyError)
   const clearReplyError = useConnectStore((state) => state.clearReplyError)
-  // 动作失败（连接/切换目录/扫码登录/配对码…）：此前被静默吞掉，面板没有任何反馈，
-  // 用户只能看到「点了没反应」。现在一律投影成可见的失败提示条。
+  // 动作失败（连接/切换目录/扫码登录/解除配对…）：此前被静默吞掉，面板没有任何反馈，
+  // 用户只能看到「点了没反应」。现在一律投影成可见的失败提示条（设计稿 llrFR 顶部横幅）。
   const actionError = useConnectStore((state) => state.actionError)
   const setActionError = useConnectStore((state) => state.setActionError)
   const bindingsCount = useConnectStore((state) => state.config.bindings.length)
   useEffect(() => {
     void refresh().catch(() => undefined)
   }, [refresh])
+  // Esc 关闭（与反馈弹窗同一交互）。
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setConnectPanelOpen(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [setConnectPanelOpen])
   return (
-    <aside className="connect-panel" role="dialog" aria-label={t('app.connect.header.title')}>
-      <div className="connect-panel__header">
-        <span className="connect-panel__header-title">{t('app.connect.header.title')}</span>
-        <button
-          type="button"
-          className="connect-panel__close"
-          aria-label={t('app.connect.closeAria')}
-          onClick={() => setConnectPanelOpen(false)}
-        >
-          <X size={14} />
-        </button>
-      </div>
-      <div className="connect-panel__body">
-        {replyError && (
-          <div className="connect-panel__reply-error" role="alert">
-            <span className="connect-panel__reply-error-text">
-              {t('app.connect.replyError', { platform: getPlatformLabel(replyError.platform, t), message: replyError.message })}
-            </span>
-            <button
-              type="button"
-              className="connect-panel__reply-error-close"
-              aria-label={t('app.connect.replyErrorCloseAria')}
-              title={t('app.connect.replyErrorCloseTitle')}
-              onClick={clearReplyError}
-            >
-              <X size={12} />
-            </button>
+    <div className="connect-backdrop" role="presentation">
+      <aside className="connect-dialog" role="dialog" aria-modal="true" aria-label={t('app.connect.header.title')}>
+        <div className="connect-dialog__header">
+          <span className="connect-dialog__badge">
+            <Plug size={16} />
+          </span>
+          <div className="connect-dialog__heading">
+            <h2 className="connect-dialog__title">{t('app.connect.header.title')}</h2>
+            <p className="connect-dialog__subtitle">{t('app.connect.header.subtitle')}</p>
           </div>
-        )}
-        {actionError && (
-          <div className="connect-panel__action-error" role="alert">
-            <span className="connect-panel__reply-error-text">
-              {t('app.connect.actionError', { message: actionError })}
-            </span>
-            <button
-              type="button"
-              className="connect-panel__reply-error-close"
-              aria-label={t('app.connect.actionErrorCloseAria')}
-              title={t('app.connect.actionErrorCloseTitle')}
-              onClick={() => setActionError(null)}
-            >
-              <X size={12} />
-            </button>
-          </div>
-        )}
-        <WorkspaceSection />
-        <section className="connect-panel__section">
-          <div className="connect-panel__section-title">{t('app.connect.section.platforms')}</div>
-          <div className="connect-panel__platforms">
-            <PlatformCard platform="feishu" />
-            <PlatformCard platform="dingtalk" />
-            <PlatformCard platform="weixin" />
-          </div>
-        </section>
-        <PairingSection />
-        <section className="connect-panel__section">
-          <div className="connect-panel__section-title">{t('app.connect.section.bindings', { count: bindingsCount })}</div>
-          <BindingsSection />
-        </section>
-        {!loaded && <div className="connect-panel__loading">{t('app.connect.loading')}</div>}
-      </div>
-    </aside>
+          <button
+            type="button"
+            className="connect-dialog__close"
+            aria-label={t('app.connect.closeAria')}
+            onClick={() => setConnectPanelOpen(false)}
+          >
+            <X size={15} />
+          </button>
+        </div>
+        <div className="connect-dialog__body">
+          {replyError && (
+            <div className="connect-panel__reply-error" role="alert">
+              <CircleAlert size={14} className="connect-panel__banner-icon" />
+              <span className="connect-panel__reply-error-text">
+                {t('app.connect.replyError', { platform: getPlatformLabel(replyError.platform, t), message: replyError.message })}
+              </span>
+              <button
+                type="button"
+                className="connect-panel__reply-error-close"
+                aria-label={t('app.connect.replyErrorCloseAria')}
+                title={t('app.connect.replyErrorCloseTitle')}
+                onClick={clearReplyError}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          )}
+          {actionError && (
+            <div className="connect-panel__action-error" role="alert">
+              <CircleAlert size={14} className="connect-panel__banner-icon" />
+              <span className="connect-panel__reply-error-text">
+                {t('app.connect.actionError', { message: actionError })}
+              </span>
+              <button
+                type="button"
+                className="connect-panel__reply-error-close"
+                aria-label={t('app.connect.actionErrorCloseAria')}
+                title={t('app.connect.actionErrorCloseTitle')}
+                onClick={() => setActionError(null)}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          )}
+          <WorkspaceSection />
+          <section className="connect-panel__section">
+            <div className="connect-panel__section-title">{t('app.connect.section.platforms')}</div>
+            <WechatCard />
+          </section>
+          <section className="connect-panel__section">
+            <div className="connect-panel__section-title">{t('app.connect.section.bindings', { count: bindingsCount })}</div>
+            <BindingsSection />
+          </section>
+          {!loaded && <div className="connect-panel__loading">{t('app.connect.loading')}</div>}
+        </div>
+      </aside>
+    </div>
   )
 }

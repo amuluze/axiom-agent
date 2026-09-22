@@ -1,7 +1,6 @@
 import type { CSSProperties } from 'react'
 import type { ContextPolicySettings } from '@/agent/context/types'
 import type { QueueModeSettings } from '@/agent/runtime/queueSettings'
-import type { ReasoningSettings } from '@/agent/runtime/reasoningSettings'
 import type { AgentLimitsSettings } from '@/agent/runtime/agentLimitsSettings'
 import type { StoredAgentSession, StorageStats } from '@/persistence/types'
 import type { ProviderProfile, ProviderProfileDraft } from '@/agent/transport/provider'
@@ -35,17 +34,6 @@ export interface ProviderDraftHook {
   saveProvider: (apiKey: string) => Promise<{ saved: boolean; ready?: boolean }>
   testProvider: () => Promise<boolean>
   deleteProviderKey: () => Promise<boolean>
-}
-
-export interface ReasoningDraftHook {
-  draft: ReasoningSettings
-  apiFormat: ProviderProfileDraft['apiFormat']
-  /** 当前 Profile 的最大输出 token，用于推导 Thinking 预算输入框上限。 */
-  maxOutputTokens: number
-  /** 当前 draft 模型是否声明支持推理；false 时区块提示「设置不会生效」。 */
-  supportsReasoning: boolean
-  save: (settings: ReasoningSettings) => Promise<boolean>
-  setDraft: (settings: ReasoningSettings) => void
 }
 
 export interface ContextPolicyDraftHook {

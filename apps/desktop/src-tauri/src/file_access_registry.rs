@@ -99,13 +99,10 @@ fn registry_write(file: &Path, paths: &HashSet<PathBuf>) -> Result<(), String> {
         .map_err(|error| format!("failed to encode authorized files registry: {error}"))?;
     let mut temporary = NamedTempFile::new_in(parent)
         .map_err(|error| format!("failed to stage authorized files registry: {error}"))?;
-    {
-        use std::os::unix::fs::PermissionsExt;
-        temporary
-            .as_file()
-            .set_permissions(fs::Permissions::from_mode(0o600))
-            .map_err(|error| format!("failed to secure authorized files registry: {error}"))?;
-    }
+    crate::storage_paths::secure_owner_only_file(
+        temporary.as_file(),
+        "failed to secure authorized files registry",
+    )?;
     temporary
         .write_all(&encoded)
         .and_then(|()| temporary.as_file_mut().sync_all())
@@ -178,6 +175,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn writes_with_owner_only_permissions() {
         use std::os::unix::fs::PermissionsExt;
         let directory = temporary_directory();
@@ -206,6 +204,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn rejects_symlinked_registry() {
         let directory = temporary_directory();
         let real = directory.join("real.json");

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   applySessionEvent,
+  withSessionQueueCount,
   type AgentCoreProjection,
   type SessionEventBindings,
 } from './sessionActivationCore'
@@ -313,5 +314,22 @@ describe('applySessionEvent — streamingDraft flow', () => {
     expect(stateRef.current.streamingDraft).toBeNull()
     expect(stateRef.current.messages).toHaveLength(1)
     expect(stateRef.current.messages[0]?.id).toBe('t1')
+  })
+})
+
+describe('withSessionQueueCount', () => {
+  it('按会话维护待发送条数：新增、更新、归零删除', () => {
+    expect(withSessionQueueCount({}, 'a', 2)).toEqual({ a: 2 })
+    expect(withSessionQueueCount({ a: 2 }, 'b', 1)).toEqual({ a: 2, b: 1 })
+    expect(withSessionQueueCount({ a: 2, b: 1 }, 'a', 3)).toEqual({ a: 3, b: 1 })
+    // 归零即删除键：计数不随会话数单调增长。
+    expect(withSessionQueueCount({ a: 3, b: 1 }, 'a', 0)).toEqual({ b: 1 })
+  })
+
+  it('未变化时返回原对象引用，避免后台事件引发无谓重渲染', () => {
+    const current = { a: 2 }
+    expect(withSessionQueueCount(current, 'a', 2)).toBe(current)
+    expect(withSessionQueueCount(current, 'b', 0)).toBe(current)
+    expect(withSessionQueueCount(current, 'a', 0)).not.toBe(current)
   })
 })

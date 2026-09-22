@@ -1,5 +1,6 @@
 import type { ProjectSkillInventorySnapshot } from './types'
-import { BUILTIN_SKILL_BODIES } from './builtinSkillBodies'
+import { BUILTIN_SKILL_BODIES, resolveBuiltinSkillVariant, type BuiltinPromptLanguage } from './builtinSkillBodies'
+import type { BuiltinPromptOverridesState } from '@/config/builtinPromptOverrides'
 
 /**
  * 把「项目 Skill + 内置 Skill」合并格式化为 `<available_skills>` 块，作为
@@ -10,6 +11,10 @@ import { BUILTIN_SKILL_BODIES } from './builtinSkillBodies'
  * - 内置 Skill（builtinSkillBodies，SDD 工作流 6 项）默认可见，去重后追加；
  * - 两者都受 32 KiB metadata 硬预算约束，按「项目 → 内置」顺序装入。
  *
+ * 本地化（可选参数，缺省 zh-CN + 无覆写 = 历史行为）：内置 Skill 的 description
+ * 按生效语言取变体，设置页保存的 per-language 覆写优先（body 覆写与本清单无关，
+ * 只作用于 load_skill 返回口）。调用方经 promptLocalizationHost 传入运行时值。
+ *
  * 约束：
  * - name、description、source 必须 XML escape；
  * - 不注入正文、绝对路径或可执行命令；
@@ -19,6 +24,13 @@ import { BUILTIN_SKILL_BODIES } from './builtinSkillBodies'
 
 /** 注入提示词的 Skill metadata 总字节硬上限。 */
 export const AVAILABLE_SKILLS_METADATA_BUDGET_BYTES = 32 * 1024
+
+export interface AvailableSkillsLocalization {
+  /** 内置 Skill description 的语言；缺省 zh-CN。 */
+  language?: BuiltinPromptLanguage
+  /** 内置技能覆写表（只消费 description 字段）；缺省无覆写。 */
+  skillOverrides?: BuiltinPromptOverridesState['skills']
+}
 
 const escapeXml = (value: string): string =>
   value.replace(/[<>&"']/gu, (char) => {
@@ -47,7 +59,10 @@ export interface FormattedAvailableSkills {
 
 export const formatAvailableSkills = (
   snapshot: ProjectSkillInventorySnapshot,
+  localization: AvailableSkillsLocalization = {},
 ): FormattedAvailableSkills => {
+  const language = localization.language ?? 'zh-CN'
+  const skillOverrides = localization.skillOverrides ?? {}
   const projectNames = new Set(snapshot.skills.map((skill) => skill.name))
   const project: VisibleSkill[] = snapshot.skills.map((skill) => ({
     name: skill.name,
@@ -59,7 +74,7 @@ export const formatAvailableSkills = (
     .filter((skill) => !projectNames.has(skill.name))
     .map((skill) => ({
       name: skill.name,
-      description: skill.description,
+      description: resolveBuiltinSkillVariant(skill, language, skillOverrides[skill.name]?.[language]).description,
       sourceKind: 'builtin',
       disableModelInvocation: false,
     }))

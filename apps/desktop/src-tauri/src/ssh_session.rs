@@ -12,6 +12,10 @@
 //! 即会话键。断开 = 进程组 SIGTERM → 宽限 → SIGKILL（复用本地终端时序）；
 //! 应用退出同步 reap（macOS 关窗走 Cocoa 终止路径，drop 不可靠，见 lib.rs）。
 
+// Linux 上 SSH 交互终端 fail-closed（dispatch 的 Open/Write 臂）：open_session
+// 及其依赖保持编译以维持跨平台类型检查，dead_code 豁免仅限非 macOS。
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+
 use base64::Engine as _;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
@@ -23,11 +27,13 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::platform_process::{signal_process_group, TreeSignal};
 use crate::ssh::{validate_host_input, SshCommandResponse};
-use crate::terminal::{
-    consume_stdin_gesture, signal_process_group, spawn_stdin_writer, TerminalGestureState,
-    USER_GESTURE_WINDOW,
-};
+use crate::terminal::spawn_stdin_writer;
+// 手势门是 macOS 专属（NSEvent local monitor）：非 macOS 上 SSH 终端与本地终端
+// 同一理由 fail-closed（见 terminal.rs 的 terminal_unsupported_message 注释）。
+#[cfg(target_os = "macos")]
+use crate::terminal::{consume_stdin_gesture, TerminalGestureState, USER_GESTURE_WINDOW};
 
 const SSH_EVENT: &str = "axiom:ssh-event";
 const READ_BUFFER_BYTES: usize = 8 * 1024;
@@ -170,7 +176,7 @@ impl SshSessionState {
         handle.cancel.store(true, Ordering::SeqCst);
         if let Ok(pid_slot) = handle.pid.lock() {
             if let Some(pid) = *pid_slot {
-                let _ = signal_process_group(pid, libc::SIGKILL);
+                let _ = signal_process_group(pid, TreeSignal::Force);
             }
         }
         true
@@ -224,7 +230,7 @@ impl SshSessionState {
         false
     }
 
-    /// 应用退出前的同步兜底回收：跳过宽限直接 SIGKILL 进程组，并删除残留
+    /// 应用退出前的同步兜底回收：跳过宽限直接强杀进程组，并删除残留
     /// 的 askpass 助手脚本。
     pub(crate) fn reap_for_exit(&self) {
         let Ok(mut sessions) = self.sessions.lock() else {
@@ -232,7 +238,7 @@ impl SshSessionState {
         };
         for (_, session) in sessions.drain() {
             if let Some(process_id) = session.process_id {
-                let _ = signal_process_group(process_id, 9);
+                let _ = signal_process_group(process_id, TreeSignal::Force);
             }
             if let Some(script) = &session.askpass_script {
                 let _ = std::fs::remove_file(script);
@@ -334,13 +340,33 @@ fn find_ssh_on_path(paths: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf>
     None
 }
 
-/// X_OK 语义的文件性检查：普通文件 + 任一执行位（目录/命名管道等一律不算
-/// 可执行程序，与 execvp 能落地的对象一致）。
+/// X_OK 语义的文件性检查：unix 为普通文件 + 任一执行位（目录/命名管道等一律
+/// 不算可执行程序，与 execvp 能落地的对象一致）；Windows 以可执行扩展名近似
+/// （PATH 搜索的实际目标只会是 .exe）。
 fn is_executable_file(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => return false,
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(windows)]
+    {
+        matches!(
+            path.extension().and_then(|extension| extension.to_str()),
+            Some(extension) if extension.eq_ignore_ascii_case("exe")
+        )
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        true
+    }
 }
 
 /// OpenSession 实际用于拉起连接的目标字段（自注册表条目防御性再校验后）。
@@ -565,9 +591,9 @@ async fn open_session(
 
         if killed {
             if let Some(process_id) = process_id {
-                let _ = signal_process_group(process_id, libc::SIGTERM);
+                let _ = signal_process_group(process_id, TreeSignal::Graceful);
                 tokio::time::sleep(Duration::from_millis(TERMINATION_GRACE_MS)).await;
-                let _ = signal_process_group(process_id, libc::SIGKILL);
+                let _ = signal_process_group(process_id, TreeSignal::Force);
             }
         }
 
@@ -592,7 +618,7 @@ async fn open_session(
 /// 双检冲突时的自清理：spawn 出的 ssh 进程尚未注册，直接按 PID 杀进程组。
 fn signal_process_group_or_pid(process_id: Option<u32>) {
     if let Some(process_id) = process_id {
-        let _ = signal_process_group(process_id, libc::SIGKILL);
+        let _ = signal_process_group(process_id, TreeSignal::Force);
     }
 }
 
@@ -1252,6 +1278,24 @@ fn run_upload(context: UploadContext<'_>) -> Result<UploadOutcome, String> {
     }
 }
 
+/// 非 macOS 的 SSH 交互终端 fail-closed 文案（按平台取因，与本地终端同因：
+/// 原生 keyDown 手势门无平台等价物）。
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn ssh_interactive_terminal_unsupported_message() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        "SSH 交互终端仅支持 macOS：Linux 上无法实现输入手势门，为防止注入已禁用该通道（docs/linux-support.md）"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "SSH 交互终端仅支持 macOS：Windows 上暂无可信输入手势门等价实现，为防止注入已禁用该通道（docs/windows-support.md）"
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        "SSH 交互终端仅支持 macOS"
+    }
+}
+
 /// 会话动作统一入口（由 ssh.rs 的 ssh_command 分发调用）。
 pub(crate) async fn dispatch_session_action(
     app: AppHandle,
@@ -1259,35 +1303,59 @@ pub(crate) async fn dispatch_session_action(
 ) -> Result<SshCommandResponse, String> {
     match action {
         SshSessionAction::Open { host_id, cols, rows } => {
-            open_session(app, host_id, cols, rows).await
+            #[cfg(target_os = "macos")]
+            {
+                open_session(app, host_id, cols, rows).await
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                // 非 macOS 限制：SSH 交互终端与本地终端共用原生 keyDown 手势门
+                // （terminal.rs 的 terminal_unsupported_message 注释），手势门
+                // 不可实现则整条通道 fail-closed——SSH Agent 工具（模型侧一次性
+                // 命令执行）不受影响，用户交互式 SSH 请使用系统终端。
+                let _ = (&app, &host_id, cols, rows);
+                Err(ssh_interactive_terminal_unsupported_message().to_string())
+            }
         }
         SshSessionAction::Write { host_id, data } => {
-            let host_id = validate_host_id(&host_id)?;
-            if data.len() > MAX_SSH_STDIN_BYTES {
-                return Err("SSH 终端写入超出安全上限".into());
+            #[cfg(target_os = "macos")]
+            {
+                let host_id = validate_host_id(&host_id)?;
+                if data.len() > MAX_SSH_STDIN_BYTES {
+                    return Err("SSH 终端写入超出安全上限".into());
+                }
+                // 与本地终端同一手势门：每次写入消费一个「终端聚焦时的原生
+                // keyDown」配额（单次消费、2s 时效），写入总量被真实按键所限。
+                let gesture = app.state::<std::sync::Arc<TerminalGestureState>>();
+                consume_stdin_gesture(gesture.inner(), USER_GESTURE_WINDOW)?;
+                let state = app.state::<SshSessionState>();
+                let sessions = state
+                    .sessions
+                    .lock()
+                    .map_err(|_| "SSH 会话状态锁已中毒".to_string())?;
+                let session = sessions
+                    .get(host_id)
+                    .ok_or_else(|| "SSH 会话未激活".to_string())?;
+                let writer = session
+                    .writer
+                    .lock()
+                    .map_err(|_| "SSH 终端写端锁已中毒".to_string())?;
+                // 投递而非直写（无界通道 send 永不阻塞）：阻塞面隔离在专用写线程，
+                // tokio worker 与 signal_close 收尾链路不被停滞的 PTY 写卡住。
+                writer
+                    .send(data.into_bytes())
+                    .map_err(|error| format!("投递 SSH 终端输入失败：{error}"))?;
+                Ok(SshCommandResponse::Ack)
             }
-            // 与本地终端同一手势门：每次写入消费一个「终端聚焦时的原生
-            // keyDown」配额（单次消费、2s 时效），写入总量被真实按键所限。
-            let gesture = app.state::<std::sync::Arc<TerminalGestureState>>();
-            consume_stdin_gesture(gesture.inner(), USER_GESTURE_WINDOW)?;
-            let state = app.state::<SshSessionState>();
-            let sessions = state
-                .sessions
-                .lock()
-                .map_err(|_| "SSH 会话状态锁已中毒".to_string())?;
-            let session = sessions
-                .get(host_id)
-                .ok_or_else(|| "SSH 会话未激活".to_string())?;
-            let writer = session
-                .writer
-                .lock()
-                .map_err(|_| "SSH 终端写端锁已中毒".to_string())?;
-            // 投递而非直写（无界通道 send 永不阻塞）：阻塞面隔离在专用写线程，
-            // tokio worker 与 signal_close 收尾链路不被停滞的 PTY 写卡住。
-            writer
-                .send(data.into_bytes())
-                .map_err(|error| format!("投递 SSH 终端输入失败：{error}"))?;
-            Ok(SshCommandResponse::Ack)
+            #[cfg(not(target_os = "macos"))]
+            {
+                // Open 已 fail-closed，正常不会有活跃会话；写入同样拒绝（纵深防御）。
+                let _ = (&app, &host_id, &data);
+                Err(format!(
+                    "{}（输入手势门）",
+                    ssh_interactive_terminal_unsupported_message()
+                ))
+            }
         }
         SshSessionAction::Resize { host_id, cols, rows } => {
             let host_id = validate_host_id(&host_id)?;
@@ -1942,7 +2010,9 @@ mod tests {
     /// 覆盖 zsh（glob 无匹配即失败的原始 bug 场景）与 sh 两种登录 shell，
     /// 以及空格/中文/单引号/隐藏文件/子目录/空目录/HOME 重定向下
     /// `~`/`~/…` 波浪号展开各类形态。
+    /// （依赖宿主 zsh/sh 登录 shell，unix-only。）
     #[test]
+    #[cfg(unix)]
     fn remote_list_command_executes_under_hostile_login_shells_and_parses() {
         fn run_login_shell(shell: &str, command: &str) -> (bool, Vec<u8>, String) {
             let output = std::process::Command::new(shell)
@@ -2135,6 +2205,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn writes_and_removes_askpass_script_with_owner_only_permissions() {
         use std::os::unix::fs::PermissionsExt;
         let directory = temporary_directory();
@@ -2271,7 +2342,10 @@ mod tests {
         program
     }
 
+    // 以下 PATH 扫描测试验证 unix exec-bit 语义；Windows 上 SSH 交互终端
+    // fail-closed（无手势门），扫描逻辑保留编译但不承载平台行为。
     #[test]
+    #[cfg(unix)]
     fn resolves_ssh_preferring_first_executable_on_path() {
         let root = temporary_directory();
         let bin = root.join("bin");
@@ -2285,6 +2359,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn path_lookup_skips_non_executables_and_directories() {
         let root = temporary_directory();
         // 主目录同名目录陷阱：名为 ssh 的目录（如 ~/ssh）只查 exists 会被
@@ -2300,6 +2375,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn path_lookup_skips_empty_entries_and_missing_dirs() {
         let root = temporary_directory();
         let real = make_fake_ssh(&root.join("bin"), true);

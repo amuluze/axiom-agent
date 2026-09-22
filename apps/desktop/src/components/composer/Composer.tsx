@@ -6,14 +6,22 @@ import {
   useState,
   type ChangeEvent,
   type ClipboardEvent as ReactClipboardEvent,
+  type DragEvent as ReactDragEvent,
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react'
-import { ArrowUp, ChevronDown, Folder, FolderOpen, Pencil, ShieldCheck, Square, X } from 'lucide-react'
+import { ArrowUp, Check, ChevronDown, FileText, Folder, FolderOpen, GripVertical, Hash, Pencil, ShieldCheck, ShieldOff, Sparkles, Square, Trash2, X } from 'lucide-react'
 import { useAgentStore } from '@/stores/agentStore'
 import { useUiStore } from '@/stores/uiStore'
 import type { AccessMode } from '@/stores/uiStore'
 import type { AuthorizedWorkspace } from '@/platform/workspace'
+import type { QueuedMessageSnapshot } from '@/agent/runtime/AgentSession'
+import type {
+  QueueAcceptance,
+  QueueMoveTarget,
+  QueueMutationResult,
+  QueueRejectionReason,
+} from '@/agent/runtime/queueContracts'
 import { MentionPopover } from '@/components/composer/MentionPopover'
 import { useUpwardMenuClamp } from '@/components/composer/useUpwardMenuClamp'
 import {
@@ -22,16 +30,23 @@ import {
   parseMentions,
   type ActiveMention,
   type MentionCandidate,
+  type ParsedMention,
 } from '@/components/composer/mentionParser'
+import {
+  mergeFileCandidates,
+  useWorkspaceFileCandidates,
+} from '@/components/composer/useWorkspaceFileCandidates'
 import {
   isCaretOnFirstLine,
   loadComposerHistory,
   recordComposerHistoryEntry,
 } from '@/components/composer/inputHistory'
 import { useMentionCandidates } from '@/components/composer/useMentionCandidates'
+import { splitMentionSegments } from '@/components/composer/mentionHighlight'
 import {
   MAX_PASTE_IMAGES,
   ImageTooLargeError,
+  attachmentFromImageBlock,
   compressPastedImage,
   imageFilesFromClipboard,
   objectUrlForFile,
@@ -40,7 +55,7 @@ import {
 } from '@/components/composer/imagePaste'
 import { resolveModelDescriptor } from '@/agent/transport/modelCatalog'
 import { ContextBudgetControl } from '@/components/composer/ContextBudgetControl'
-import { SessionUsageControl } from '@/components/composer/SessionUsageControl'
+import { ReasoningPicker } from '@/components/composer/ReasoningPicker'
 import { useT } from '@/i18n'
 import { localizedProviderLabel } from '@/i18n/providerLabels'
 import type { ImageContentBlock } from '@/agent/core/types'
@@ -81,14 +96,14 @@ export const isComposerAvailable = (state: ComposerAvailability): boolean => (
 )
 
 export const deliverQueuedContent = async (
-  action: (content: string, images?: ImageContentBlock[]) => Promise<boolean>,
+  action: (content: string, images?: ImageContentBlock[]) => Promise<QueueAcceptance>,
   content: string,
   onAccepted: () => void,
   images?: ImageContentBlock[],
-): Promise<boolean> => {
-  const accepted = await action(content, images)
-  if (accepted) onAccepted()
-  return accepted
+): Promise<QueueAcceptance> => {
+  const acceptance = await action(content, images)
+  if (acceptance.accepted) onAccepted()
+  return acceptance
 }
 
 export interface ComposerKeyEvent {
@@ -132,6 +147,28 @@ export const isComposerHistoryKey = (event: ComposerHistoryKeyEvent, composing =
   && event.nativeEvent.keyCode !== 229
 )
 
+/** chip 的类型标签与图标：目录/文件按标签尾斜杠约定判定（目录 token 以 / 结尾，
+    见 formatMentionToken——折叠 token 不携带元数据，类型只能编码进文本），
+    技能/会话按 trigger 区分。displayLabel 去掉目录尾斜杠仅供展示。 */
+export const mentionChipMeta = (
+  mention: ParsedMention,
+): { Icon: typeof FileText; kindKey: string; displayLabel: string } => {
+  if (mention.kind === 'skill') {
+    return { Icon: Sparkles, kindKey: 'app.mention.kind.skill', displayLabel: mention.label }
+  }
+  if (mention.kind === 'thread') {
+    return { Icon: Hash, kindKey: 'app.mention.kind.thread', displayLabel: mention.label }
+  }
+  if (mention.label.endsWith('/')) {
+    return {
+      Icon: Folder,
+      kindKey: 'app.mention.kind.directory',
+      displayLabel: mention.label.slice(0, -1),
+    }
+  }
+  return { Icon: FileText, kindKey: 'app.mention.kind.file', displayLabel: mention.label }
+}
+
 const mentionKey = (mention: ActiveMention | null): string | null => mention
   ? `${mention.kind}:${mention.triggerStart}:${mention.queryEnd}:${mention.query}`
   : null
@@ -141,6 +178,9 @@ const queueKindKey = (kind: string): string => {
   if (kind === 'follow-up') return 'app.composer.queueKind.followUp'
   return 'app.composer.queueKind.nextTurn'
 }
+
+const queueRejectionKey = (reason: QueueRejectionReason): string =>
+  `app.composer.queue.reject.${reason}`
 
 interface ComposerAttachment {
   id: string
@@ -175,11 +215,28 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
   const [budgetMenuOpen, setBudgetMenuOpen] = useState(false)
   const [dismissedMentionKey, setDismissedMentionKey] = useState<string | null>(null)
+  // 提及弹层的目录下钻状态：工作区相对路径，null = 工作区根。
+  const [mentionBrowseDir, setMentionBrowseDir] = useState<string | null>(null)
   // 粘贴截图附件：chips 预览 + 随消息一起发送；attachHint 为临时错误提示。
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [attachHint, setAttachHint] = useState<string | null>(null)
   const attachHintTimerRef = useRef<number | null>(null)
+  // 排队被拒的原因：不再静默吞掉（结算窗口关闭 / 目标队列项已被消费等）。
+  const [queueRejection, setQueueRejection] = useState<QueueRejectionReason | null>(null)
+  // 队列项行内编辑态：id 为编辑中的队列项，draft 为其文本。
+  const [queueEditId, setQueueEditId] = useState<string | null>(null)
+  const [queueEditDraft, setQueueEditDraft] = useState('')
+  // 拖拽排序的在拖项：grip 把手发起，整行 draggable；落在目标行上/下半决定 above/below。
+  const [draggingId, setDraggingId] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  // 提及高亮层：只画 token 背景，随 textarea 滚动同步位移。
+  const highlightRef = useRef<HTMLDivElement | null>(null)
+  const syncHighlightScroll = useCallback((event: { currentTarget: HTMLTextAreaElement }) => {
+    const layer = highlightRef.current
+    if (!layer) return
+    layer.scrollTop = event.currentTarget.scrollTop
+    layer.scrollLeft = event.currentTarget.scrollLeft
+  }, [])
   const composingRef = useRef(false)
   // 输入历史浏览态：index -1 表示草稿态；进入浏览前把草稿存入 draftRef，
   // ↓ 越过最新一条时恢复。放 ref 而非 state——只有 input 驱动渲染。
@@ -264,6 +321,12 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
   const queueFollowUp = useAgentStore((state) => state.queueFollowUp)
   const clearQueuedMessages = useAgentStore((state) => state.clearQueuedMessages)
   const restoreQueuedMessage = useAgentStore((state) => state.restoreQueuedMessage)
+  const editQueuedMessage = useAgentStore((state) => state.editQueuedMessage)
+  const moveQueuedMessage = useAgentStore((state) => state.moveQueuedMessage)
+  const deleteQueuedMessage = useAgentStore((state) => state.deleteQueuedMessage)
+  const sendQueuedNow = useAgentStore((state) => state.sendQueuedNow)
+  const saveQueueAutoDrain = useAgentStore((state) => state.saveQueueAutoDrain)
+  const queueAutoDrain = useAgentStore((state) => state.queueModeSettings.autoDrain)
   const editUserMessage = useAgentStore((state) => state.editUserMessage)
   const activeSessionId = useAgentStore((state) => state.activeSessionId)
   const discardRecoveredMessage = useAgentStore((state) => state.discardRecoveredMessage)
@@ -290,6 +353,7 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
   const pendingNextTurnCount = useAgentStore((state) => state.pendingNextTurnCount)
   const queuedMessages = useAgentStore((state) => state.queuedMessages)
   const recoveredQueuedMessages = useAgentStore((state) => state.recoveredQueuedMessages)
+  const armedQueueMessageId = useAgentStore((state) => state.armedQueueMessageId)
   const accessMode = useUiStore((state) => state.accessMode)
   const setAccessMode = useUiStore((state) => state.setAccessMode)
   const messageEditRequest = useUiStore((state) => state.messageEditRequest)
@@ -305,6 +369,7 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
     sessionBusy,
     compactionRunning,
   })
+  const hasQueuedMessages = pendingSteeringCount > 0 || pendingFollowUpCount > 0 || pendingNextTurnCount > 0
   const placeholder = providerSetupRequired
     ? t('app.composer.placeholder.provider')
     : sessionBusy
@@ -315,9 +380,11 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
           ? t('app.composer.placeholder.compacting')
           : running
             ? t('app.composer.placeholder.steering')
-            : variant === 'new-task'
-              ? t('app.composer.placeholder.default')
-              : t('app.composer.placeholder.newTask')
+            : hasQueuedMessages
+              ? t('app.composer.placeholder.queued')
+              : variant === 'new-task'
+                ? t('app.composer.placeholder.default')
+                : t('app.composer.placeholder.newTask')
 
   const clearAcceptedInput = useCallback(() => {
     setInput('')
@@ -342,6 +409,13 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
   useEffect(() => () => {
     if (attachHintTimerRef.current !== null) window.clearTimeout(attachHintTimerRef.current)
   }, [])
+
+  // 队列提示与行内编辑态按会话隔离：切会话后残留的拒绝原因/编辑目标不得延续到新会话。
+  useEffect(() => {
+    setQueueRejection(null)
+    setQueueEditId(null)
+    setQueueEditDraft('')
+  }, [activeSessionId])
 
   // 附件的函数式读取：粘贴压缩是异步链，避免闭包里的旧列表覆盖并发新增。
   const attachmentsRef = useRef<ComposerAttachment[]>([])
@@ -423,13 +497,17 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
     }
 
     if (running) {
-      return deliverQueuedContent(
+      const acceptance = await deliverQueuedContent(
         delivery === 'follow-up' ? queueFollowUp : queueSteering,
         content,
         accept,
         images.length > 0 ? images : undefined,
       )
+      // 入队被拒（结算窗口关闭等）时保留输入并解释原因，不再静默丢弃。
+      setQueueRejection(acceptance.accepted ? null : acceptance.reason)
+      return acceptance.accepted
     }
+    setQueueRejection(null)
 
     const latest = useAgentStore.getState()
     if (!isComposerAvailable({
@@ -486,6 +564,19 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
   const detectedMentionKey = mentionKey(detectedMention)
   const activeMention = detectedMentionKey === dismissedMentionKey ? null : detectedMention
   const candidatesByKind = useMentionCandidates()
+  // `@` 模式的自动工作区候选（防抖检索 + 手动引用合并）：无工作区/非 Tauri 时空列表。
+  const workspaceFileCandidates = useWorkspaceFileCandidates(
+    activeMention?.kind === 'file' ? activeMention.query : null,
+    mentionBrowseDir,
+  )
+  // 弹层关闭即回到工作区根：下钻态不跨会话/跨次提及残留。
+  useEffect(() => {
+    if (!activeMention) setMentionBrowseDir(null)
+  }, [activeMention])
+  const mentionCandidatesByKind = useMemo(() => ({
+    ...candidatesByKind,
+    file: mergeFileCandidates(candidatesByKind.file, workspaceFileCandidates),
+  }), [candidatesByKind, workspaceFileCandidates])
 
   // 以历史条目整体替换输入并把光标挪到末尾（终端习惯）；
   // 程序化赋值不走 onChange，浏览态得以保留。
@@ -577,10 +668,111 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
     setInput((current) => current.trim()
       ? `${current.trimEnd()}\n\n${restored.content}`
       : restored.content)
+    // 图片块回填为附件：不回填就等于「恢复编辑」静默丢图。
+    const restoredAttachments = restored.images.flatMap((block) => {
+      const attachment = attachmentFromImageBlock(block)
+      if (!attachment) return []
+      attachmentIdCounter += 1
+      return [{ id: `attachment-${attachmentIdCounter}`, ...attachment }]
+    })
+    if (restoredAttachments.length > 0) {
+      setAttachments((current) => [...current, ...restoredAttachments])
+    }
     setDismissedMentionKey(null)
     historyIndexRef.current = -1
     queueMicrotask(() => textareaRef.current?.focus())
   }, [restoreQueuedMessage])
+
+  /** 队列项行内编辑：打开时把当前文本带入编辑态（图片保留在队列项里，不进入编辑态）。 */
+  const beginQueueEdit = useCallback((message: QueuedMessageSnapshot) => {
+    setQueueEditId(message.id)
+    setQueueEditDraft(message.content)
+  }, [])
+
+  const cancelQueueEdit = useCallback(() => {
+    setQueueEditId(null)
+    setQueueEditDraft('')
+  }, [])
+
+  // 队列操作统一收敛拒绝原因：不再静默吞掉（结算窗口关闭、队列项已被消费等）。
+  const runQueueMutation = useCallback(async (
+    operation: () => Promise<QueueMutationResult>,
+  ): Promise<boolean> => {
+    const result = await operation()
+    setQueueRejection(result.updated ? null : result.reason)
+    return result.updated
+  }, [])
+
+  const submitQueueEdit = useCallback(async (message: QueuedMessageSnapshot) => {
+    const updated = await runQueueMutation(() => editQueuedMessage(message.id, queueEditDraft))
+    if (updated) cancelQueueEdit()
+  }, [cancelQueueEdit, editQueuedMessage, queueEditDraft, runQueueMutation])
+
+  /** 上移/下移/置顶/提升为引导：全部表达为「相对显示序的移动」。 */
+  const moveQueueItem = useCallback(async (
+    messageId: string,
+    target: QueueMoveTarget,
+  ) => runQueueMutation(() => moveQueuedMessage(messageId, target)), [moveQueuedMessage, runQueueMutation])
+
+  // 拖拽排序（取代上移/下移/置顶按钮）：显示序即 drain 序，跨类别 above/below 移动
+  // 由 moveQueuedMessage 按落点重建队列；「提升为引导」由「立即」覆盖（steering 队首 + 武装）。
+  const onQueueDragStart = useCallback((messageId: string, event: ReactDragEvent<HTMLLIElement>) => {
+    setDraggingId(messageId)
+    if (event.dataTransfer) {
+      event.dataTransfer.setData('text/plain', messageId)
+      event.dataTransfer.effectAllowed = 'move'
+    }
+  }, [])
+
+  const onQueueDragOver = useCallback((messageId: string, event: ReactDragEvent<HTMLLIElement>) => {
+    if (!draggingId || draggingId === messageId) return
+    event.preventDefault()
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  }, [draggingId])
+
+  const onQueueDrop = useCallback((targetId: string, event: ReactDragEvent<HTMLLIElement>) => {
+    event.preventDefault()
+    const sourceId = draggingId ?? event.dataTransfer?.getData('text/plain') ?? null
+    setDraggingId(null)
+    if (!sourceId || sourceId === targetId) return
+    const source = queuedMessages.find((message) => message.id === sourceId)
+    if (!source) return
+    // 行中线上半 → 插到目标上方，下半 → 下方；jsdom/测试事件无几何信息时默认「下方」。
+    const rect = event.currentTarget.getBoundingClientRect()
+    const before = event.clientY < rect.top + rect.height / 2
+    void moveQueueItem(sourceId, {
+      kind: source.kind,
+      placement: { position: before ? 'above' : 'below', anchorId: targetId },
+    })
+  }, [draggingId, moveQueueItem, queuedMessages])
+
+  // 键盘重排（拖拽的等价操作）：⌥↑/⌥↓ 相对显示序移动一行。行内编辑态与文本输入
+  // 目标不拦截（编辑框的 ⌥↑ 仍是光标语义）。
+  const onQueueRowKeyDown = useCallback((
+    message: QueuedMessageSnapshot,
+    index: number,
+    event: ReactKeyboardEvent<HTMLLIElement>,
+  ) => {
+    if (!event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+    if (queueEditId === message.id) return
+    const target = event.target instanceof HTMLElement
+      && (event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement)
+      ? null
+      : (event.key === 'ArrowUp' ? queuedMessages[index - 1] : queuedMessages[index + 1])
+    if (!target) return
+    event.preventDefault()
+    void moveQueueItem(message.id, {
+      kind: message.kind,
+      placement: { position: event.key === 'ArrowUp' ? 'above' : 'below', anchorId: target.id },
+    })
+  }, [moveQueueItem, queueEditId, queuedMessages])
+
+  /** 立即发送一条队列项：运行中注入当前 run，空闲时取出该条走完整发送链路。 */
+  const sendQueueItemNow = useCallback(async (messageId: string) => {
+    const acceptance = await sendQueuedNow(messageId)
+    setQueueRejection(acceptance.accepted ? null : acceptance.reason)
+  }, [sendQueuedNow])
 
   // 「编辑消息」请求到达时回填原文并聚焦：请求本身由提交或放弃消费。
   // 编辑链路仅支持文本，进入编辑态时丢弃未发送的图片附件。
@@ -606,13 +798,28 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
   }, [clearAcceptedInput, setMessageEditRequest])
 
   const mentionBadges = useMemo(() => parseMentions(input), [input])
+  const highlightSegments = useMemo(
+    () => splitMentionSegments(input, mentionBadges),
+    [input, mentionBadges],
+  )
+
+  /** chip 上的移除：按 token 完整范围切掉引用，并合并两侧空白。
+      合并用两个空格：与 formatMentionToken 的尾随双空格一致，否则删掉中间一个引用后
+      剩下的两个引用会塔回单空格、胶囊重新粘在一起（散文场景多一个空格无副作用）。 */
+  const removeMention = useCallback((mention: ParsedMention) => {
+    const before = input.slice(0, mention.tokenStart).replace(/\s+$/u, '')
+    const after = input.slice(mention.tokenEnd).replace(/^\s+/u, '')
+    const next = before.length > 0 && after.length > 0 ? `${before}  ${after}` : `${before}${after}`
+    setInput(next)
+    setCaret(next.length)
+    queueMicrotask(() => textareaRef.current?.focus())
+  }, [input])
   const recentWorkspaces = useMemo(
     () => recentWorkspaceEntries(authorizedWorkspaces, recentWorkspacePaths ?? []),
     [authorizedWorkspaces, recentWorkspacePaths],
   )
   const project = authorizedWorkspace?.name ?? t('app.composer.project.choose')
   const currentAccessMode = accessModeOptions.find((option) => option.value === accessMode) ?? accessModeOptions[0]!
-  const hasQueuedMessages = pendingSteeringCount > 0 || pendingFollowUpCount > 0 || pendingNextTurnCount > 0
 
   return (
     <form className="composer" onSubmit={submit} aria-label="Composer">
@@ -684,34 +891,237 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
           )}
         </div>
       </div>
+        {hasQueuedMessages && (
+          <div aria-live="polite" className="composer__queue" role="status">
+            {!queueAutoDrain && (
+              // 暂停通知（设计稿 W3wHMK）：中断后队列保留，「继续」恢复自动逐条发送。
+              <>
+                <div className="composer__queue-head">
+                  <span className="composer__queue-head-text">{t('app.composer.queue.pausedNotice')}</span>
+                  <button
+                    className="composer__queue-textbtn"
+                    onClick={() => { void clearQueuedMessages() }}
+                    type="button"
+                  >
+                    {t('app.composer.queue.clear')}
+                  </button>
+                  <button
+                    className="composer__queue-textbtn"
+                    onClick={() => { saveQueueAutoDrain(true) }}
+                    type="button"
+                  >
+                    {t('app.composer.queue.resume')}
+                  </button>
+                </div>
+                <div className="composer__queue-divider" />
+              </>
+            )}
+            <ul className="composer__queue-list">
+              {queuedMessages.map((message, index) => (
+                <li
+                  data-dragging={draggingId === message.id || undefined}
+                  draggable={queueEditId !== message.id}
+                  key={message.id}
+                  onDragEnd={() => { setDraggingId(null) }}
+                  onDragOver={(event) => { onQueueDragOver(message.id, event) }}
+                  onDragStart={(event) => { onQueueDragStart(message.id, event) }}
+                  onDrop={(event) => { onQueueDrop(message.id, event) }}
+                  onKeyDown={(event) => { onQueueRowKeyDown(message, index, event) }}
+                >
+                  {queueEditId === message.id ? (
+                    <>
+                      <textarea
+                        aria-label={t('app.composer.queue.editAria')}
+                        className="composer__queue-edit"
+                        onChange={(event) => setQueueEditDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Escape') {
+                            event.preventDefault()
+                            cancelQueueEdit()
+                          } else if (event.key === 'Enter' && !event.shiftKey) {
+                            event.preventDefault()
+                            void submitQueueEdit(message)
+                          }
+                        }}
+                        value={queueEditDraft}
+                      />
+                      <span className="composer__queue-note">
+                        {message.images.length > 0
+                          ? t('app.composer.queue.imagesKept', { count: message.images.length })
+                          : null}
+                      </span>
+                      <div className="composer__queue-actions">
+                        <button
+                          aria-label={t('app.composer.queue.save')}
+                          className="composer__queue-textbtn"
+                          onClick={() => { void submitQueueEdit(message) }}
+                          type="button"
+                        >
+                          <Check size={12} />
+                          <span>{t('app.composer.queue.save')}</span>
+                        </button>
+                        <button
+                          aria-label={t('app.composer.queue.cancel')}
+                          className="composer__queue-iconbtn"
+                          onClick={cancelQueueEdit}
+                          type="button"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <span className="composer__queue-grip" title={t('app.composer.queue.gripTitle')}>
+                        <GripVertical aria-hidden="true" size={14} />
+                      </span>
+                      <span className="composer__queue-kind">{t(queueKindKey(message.kind))}</span>
+                      <span className="composer__queue-preview">
+                        {message.content || t('app.composer.queue.imagesOnly', { count: message.images.length })}
+                      </span>
+                      {message.content && message.images.length > 0 && (
+                        <span className="composer__queue-note">
+                          {t('app.composer.queue.images', { count: message.images.length })}
+                        </span>
+                      )}
+                      <div className="composer__queue-actions">
+                        <button
+                          aria-label={message.id === armedQueueMessageId
+                            ? t('app.composer.queue.armed')
+                            : running
+                              ? t('app.composer.queue.sendNow')
+                              : t('app.composer.queue.sendNowNewRun')}
+                          className={message.id === armedQueueMessageId
+                            ? 'composer__queue-send composer__queue-send--armed'
+                            : 'composer__queue-send'}
+                          // 「队首引导会被自动消费」只在运行中成立：空闲时（崩溃恢复、
+                          // 暂停期残留）禁用会让唯一入口失效，应允许点击走新 run 发送。
+                          disabled={running && index === 0 && message.kind === 'steering' && queueAutoDrain}
+                          onClick={() => { void sendQueueItemNow(message.id) }}
+                          title={message.id === armedQueueMessageId ? t('app.composer.queue.armed') : undefined}
+                          type="button"
+                        >
+                          <ArrowUp size={13} />
+                          <span>{t('app.composer.queue.sendNowShort')}</span>
+                        </button>
+                        <button
+                          aria-label={t('app.composer.queue.edit')}
+                          className="composer__queue-iconbtn composer__queue-iconbtn--edit"
+                          onClick={() => beginQueueEdit(message)}
+                          type="button"
+                        >
+                          <Pencil size={15} />
+                        </button>
+                        <button
+                          aria-label={t('app.composer.queue.delete')}
+                          className="composer__queue-iconbtn composer__queue-iconbtn--delete"
+                          onClick={() => { void runQueueMutation(() => deleteQueuedMessage(message.id)) }}
+                          type="button"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </li>
+              ))}
+            </ul>
+            {queueRejection && (
+              <div aria-live="polite" className="composer__queue-hint" role="status">
+                {t(queueRejectionKey(queueRejection))}
+              </div>
+            )}
+          </div>
+        )}
+        {recoveredQueuedMessages.length > 0 && (
+          // 恢复草稿卡（设计稿 K38RI）：accent 低饱和描边与待发送队列区分。
+          <div aria-live="polite" className="composer__queue composer__queue--recovered" role="status">
+            <div className="composer__queue-head">
+              <span className="composer__queue-head-text">
+                {t('app.composer.queue.recovered', { count: recoveredQueuedMessages.length })}
+              </span>
+            </div>
+            <div className="composer__queue-divider" />
+            <ul className="composer__queue-list">
+              {recoveredQueuedMessages.map((message) => (
+                <li key={message.id}>
+                  <span className="composer__queue-preview">{message.content}</span>
+                  <button
+                    className="composer__queue-textbtn"
+                    onClick={() => { void restoreToComposer(message.id) }}
+                    type="button"
+                  >
+                    {t('app.composer.queue.restore')}
+                  </button>
+                  <button
+                    className="composer__queue-textbtn composer__queue-textbtn--discard"
+                    onClick={() => { void discardRecoveredMessage(message.id) }}
+                    type="button"
+                  >
+                    {t('app.composer.queue.discard')}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       <div className="composer__input-wrap" style={{ position: 'relative' }}>
         {activeMention && (
           <MentionPopover
             active={activeMention}
-            candidates={candidatesByKind[activeMention.kind]}
+            candidates={mentionCandidatesByKind[activeMention.kind]}
             onClose={() => setDismissedMentionKey(detectedMentionKey)}
             onSelect={insertMention}
             onAuthorizeFile={() => { void authorizeFile() }}
             onAuthorizeDirectory={() => { void authorizeDirectory() }}
+            browsePath={mentionBrowseDir}
+            onEnterDirectory={(candidate) => {
+              setMentionBrowseDir(candidate.relativePath ?? null)
+              // 下钻 = 「浏览该目录」：清掉已输入的检索词，展示新目录的内容。
+              if (!activeMention) return
+              const next = input.slice(0, activeMention.triggerStart + 1)
+              setInput(next)
+              setCaret(next.length)
+            }}
+            onExitDirectory={() => setMentionBrowseDir((current) => {
+              if (!current) return null
+              const parent = current.split('/').slice(0, -1).join('/')
+              return parent.length > 0 ? parent : null
+            })}
           />
         )}
-        <textarea
-          aria-label={t('app.composer.aria.send')}
-          className="composer__textarea"
-          disabled={!composerAvailable}
-          onChange={onChange}
-          onCompositionEnd={() => { composingRef.current = false }}
-          onCompositionStart={() => { composingRef.current = true }}
-          onKeyDown={onKeyDown}
-          onPaste={onPaste}
-          onSelect={onSelectEvent}
-          onClick={onSelectEvent}
-          onKeyUp={onSelectEvent}
-          placeholder={placeholder}
-          ref={textareaRef}
-          rows={3}
-          value={input}
-        />
+        <div className="composer__editor">
+          <div aria-hidden className="composer__editor-highlight" ref={highlightRef}>
+            {highlightSegments.map((segment, index) => (
+              segment.isMention
+                ? (
+                  <span className="composer__mention-token" key={index}>
+                    {segment.text}
+                  </span>
+                )
+                : <span key={index}>{segment.text}</span>
+            ))}
+            {'\u200b'}
+          </div>
+          <textarea
+            aria-label={t('app.composer.aria.send')}
+            className="composer__textarea"
+            disabled={!composerAvailable}
+            onChange={onChange}
+            onCompositionEnd={() => { composingRef.current = false }}
+            onCompositionStart={() => { composingRef.current = true }}
+            onKeyDown={onKeyDown}
+            onPaste={onPaste}
+            onScroll={syncHighlightScroll}
+            onSelect={onSelectEvent}
+            onClick={onSelectEvent}
+            onKeyUp={onSelectEvent}
+            placeholder={placeholder}
+            ref={textareaRef}
+            rows={3}
+            value={input}
+          />
+        </div>
         {attachHint && (
           <div aria-live="polite" className="composer__attach-hint" role="status">
             {attachHint}
@@ -759,53 +1169,28 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
         )}
         {mentionBadges.length > 0 && (
           <div className="composer__mention-badges" aria-label={t('app.composer.badgesAria')}>
-            {mentionBadges.map((badge) => (
-              <span className="composer__mention-badge" key={`${badge.kind}-${badge.start}-${badge.id ?? badge.label}`}>
-                {badge.kind} · {badge.label}
-              </span>
-            ))}
-          </div>
-        )}
-        {hasQueuedMessages && (
-          <div aria-live="polite" className="composer__queue" role="status">
-            <div className="composer__queue-heading">
-              <span>
-                {t('app.composer.queue.pending', { steering: pendingSteeringCount, followUp: pendingFollowUpCount, nextTurn: pendingNextTurnCount })}
-              </span>
-              <button onClick={() => { void clearQueuedMessages() }} type="button">{t('app.composer.queue.clear')}</button>
-            </div>
-            <ul className="composer__queue-list">
-              {queuedMessages.map((message) => (
-                <li key={message.id}>
-                  <span className="composer__queue-kind">{t(queueKindKey(message.kind))}</span>
-                  <span className="composer__queue-preview">{message.content}</span>
-                  <button onClick={() => { void restoreToComposer(message.id) }} type="button">{t('app.composer.queue.restore')}</button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {recoveredQueuedMessages.length > 0 && (
-          <div aria-live="polite" className="composer__queue composer__queue--recovered" role="status">
-            <div className="composer__queue-heading">
-              <span>{t('app.composer.queue.recovered', { count: recoveredQueuedMessages.length })}</span>
-            </div>
-            <ul className="composer__queue-list">
-              {recoveredQueuedMessages.map((message) => (
-                <li key={message.id}>
-                  <span className="composer__queue-kind">{t(queueKindKey(message.kind))}</span>
-                  <span className="composer__queue-preview">{message.content}</span>
-                  <button onClick={() => { void restoreToComposer(message.id) }} type="button">{t('app.composer.queue.restore')}</button>
+            {mentionBadges.map((badge) => {
+              const { Icon: BadgeIcon, kindKey, displayLabel } = mentionChipMeta(badge)
+              return (
+                <span
+                  className="composer__mention-badge"
+                  key={`${badge.kind}-${badge.tokenStart}-${badge.id ?? badge.label}`}
+                  title={badge.id ?? badge.label}
+                >
+                  <BadgeIcon className="composer__mention-badge-icon" size={12} />
+                  <span className="composer__mention-badge-kind">{t(kindKey)}</span>
+                  <span className="composer__mention-badge-label">{displayLabel}</span>
                   <button
-                    className="composer__queue-discard"
-                    onClick={() => { void discardRecoveredMessage(message.id) }}
+                    aria-label={t('app.composer.mention.remove')}
+                    className="composer__mention-badge-remove"
+                    onClick={() => removeMention(badge)}
                     type="button"
                   >
-                    {t('app.composer.queue.discard')}
+                    <X size={10} />
                   </button>
-                </li>
-              ))}
-            </ul>
+                </span>
+              )
+            })}
           </div>
         )}
         <div className="composer__controls">
@@ -815,10 +1200,10 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
               className="composer__access-mode"
               data-mode={accessMode}
               aria-expanded={accessMenuOpen}
-              aria-label={t('app.composer.access.aria')}
+              aria-label={t('app.composer.access.ariaCurrent', { mode: t(currentAccessMode.labelKey) })}
               onClick={() => toggleMenu('access')}
             >
-              <ShieldCheck size={14} />
+              {accessMode === 'no-approval' ? <ShieldOff size={14} /> : <ShieldCheck size={14} />}
               <span>{t(currentAccessMode.labelKey)}</span>
               <ChevronDown size={13} />
             </button>
@@ -843,7 +1228,6 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
             )}
           </div>
           <span className="composer__controls-spacer" />
-          {variant === 'session' && <SessionUsageControl />}
           {variant === 'session' && (
             <ContextBudgetControl
               containerRef={budgetPickerRef}
@@ -902,11 +1286,14 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
               </div>
             )}
           </div>
+          <ReasoningPicker disabled={running || sessionBusy || providerSaving} />
           {running && (
             <button
               className="composer__follow-up"
+              aria-label={t('app.composer.followUpTitle')}
               disabled={!composerAvailable || (!input.trim() && attachments.length === 0)}
               onClick={() => { void deliverInput('follow-up') }}
+              title={t('app.composer.followUpTitle')}
               type="button"
             >
               {t('app.composer.followUp')}

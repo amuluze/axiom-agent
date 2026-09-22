@@ -102,6 +102,18 @@ describe('systemPromptSections', () => {
       expect(section).toContain('把 scope 收窄到未覆盖部分后重新委派')
     })
 
+    it('web:browser 段含调度指引：视觉/交互验证优先内置 browser，排除替代通道', () => {
+      const section = buildCapabilitySection('web:browser')
+      expect(section).toContain('优先使用内置 browser')
+      // 替代通道的排除要点名：curl 看不到渲染、web_fetch 够不到 localhost、
+      // computer 是用户真实桌面、验证责任不得交还用户。
+      expect(section).toContain('curl 只拿得到 HTML 文本')
+      expect(section).toContain('web_fetch 只达公网够不到 localhost')
+      expect(section).toContain('不要让用户自己打开浏览器查看')
+      // 未启用时不许用 curl 伪装验证完成。
+      expect(section).toContain('不要转用 curl 伪装验证完成')
+    })
+
     it('subagent:review 段指引预算中止处理：partial 收口或收窄 scope 重审', () => {
       const section = buildCapabilitySection('subagent:review', ['subagent:review', 'workspace:execute'])
       expect(section).toContain('预算用尽会返回 partial 或报错')

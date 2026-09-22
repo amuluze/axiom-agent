@@ -488,3 +488,143 @@ describe('SqliteSessionRepository recordEvent ledger', () => {
     }))
   })
 })
+
+describe('SqliteSessionRepository 队列项顺序（payload.order）', () => {
+  const sessionRow = (id: string) => ({
+    id,
+    title: 't',
+    system_prompt: 'system',
+    model_provider: 'test',
+    model_id: 'model',
+    reasoning_json: null,
+    active_tool_names_json: '[]',
+    provider_config_json: null,
+    runtime_manifest_json: null,
+    status: 'idle',
+    created_at: 1,
+    updated_at: 2,
+    message_count: 0,
+    parent_session_id: null,
+    forked_from_message_id: null,
+    branch_kind: null,
+    retried_message_id: null,
+  })
+
+  const createRepository = async (pendingJournal: unknown[] = []) => {
+    const database = {
+      recoverSessionRepository: vi.fn(async () => ({ recoveredRuns: 0 })),
+      initializeSessionRuntimeDefaults: vi.fn(async () => undefined),
+      migrateSessionProviderProfiles: vi.fn(async () => undefined),
+      select: vi.fn(async (operation: string) => operation === 'sessions' ? [sessionRow('s-order')] : []),
+      loadSessionSnapshot: vi.fn(async () => ({
+        session: sessionRow('s-order'),
+        messages: [],
+        latestCheckpoint: null,
+        pendingJournal,
+      })),
+      appendSessionJournalEntry: vi.fn(async (_request: {
+        id: string
+        sessionId: string
+        sequence: number
+        kind: string
+        queueKind: string | null
+        payloadJson: string
+        createdAt: number
+      }) => undefined),
+    }
+    vi.spyOn(NativeSessionDatabase, 'open')
+      .mockResolvedValue(database as unknown as NativeSessionDatabase)
+    const { SqliteSessionRepository } = await import('./SqliteSessionRepository')
+    const repository = await SqliteSessionRepository.open()
+    return { repository, database }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('把显式 order 编入 payload_json（重排后位置不再由 sequence 决定）', async () => {
+    const { repository, database } = await createRepository()
+    await repository.appendJournalEntry('s-order', {
+      id: 'journal-order',
+      sessionId: 's-order',
+      sequence: 7,
+      kind: 'queue',
+      queueKind: 'steering',
+      message: { id: 'm1', role: 'user', content: 'moved', createdAt: 1 },
+      order: 2.5,
+      status: 'pending',
+      createdAt: 3,
+    })
+    const request = database.appendSessionJournalEntry.mock.calls[0]?.[0] as {
+      sequence: number
+      payloadJson: string
+    }
+    expect(request.sequence).toBe(7)
+    expect(JSON.parse(request.payloadJson)).toEqual({
+      message: { id: 'm1', role: 'user', content: 'moved', createdAt: 1 },
+      order: 2.5,
+    })
+  })
+
+  it('恢复时读出 order；无 order 的旧 payload 回落到 undefined 以兼容旧会话', async () => {
+    const pendingJournal = [
+      {
+        id: 'journal-with-order',
+        session_id: 's-order',
+        sequence: 5,
+        kind: 'queue',
+        queue_kind: 'steering',
+        payload_json: JSON.stringify({
+          message: { id: 'm-moved', role: 'user', content: 'moved', createdAt: 1 },
+          order: 0.5,
+        }),
+        status: 'pending',
+        consumer_run_id: null,
+        created_at: 4,
+        recovered_at: null,
+      },
+      {
+        id: 'journal-legacy',
+        session_id: 's-order',
+        sequence: 6,
+        kind: 'queue',
+        queue_kind: 'follow-up',
+        payload_json: JSON.stringify({
+          message: { id: 'm-legacy', role: 'user', content: 'legacy', createdAt: 2 },
+        }),
+        status: 'pending',
+        consumer_run_id: null,
+        created_at: 5,
+        recovered_at: null,
+      },
+    ]
+    const { repository } = await createRepository(pendingJournal)
+    const snapshot = await repository.loadSession('s-order')
+    expect(snapshot.journalEntries).toEqual([
+      expect.objectContaining({ id: 'journal-with-order', order: 0.5 }),
+      expect.objectContaining({ id: 'journal-legacy' }),
+    ])
+    expect((snapshot.journalEntries[1] as { order?: number }).order).toBeUndefined()
+  })
+
+  it('拒绝格式非法的 order（不静默丢弃损坏的队列顺序）', async () => {
+    const pendingJournal = [{
+      id: 'journal-bad-order',
+      session_id: 's-order',
+      sequence: 5,
+      kind: 'queue',
+      queue_kind: 'steering',
+      payload_json: JSON.stringify({
+        message: { id: 'm1', role: 'user', content: 'bad', createdAt: 1 },
+        order: 'first',
+      }),
+      status: 'pending',
+      consumer_run_id: null,
+      created_at: 4,
+      recovered_at: null,
+    }]
+    const { repository } = await createRepository(pendingJournal)
+    await expect(repository.loadSession('s-order')).rejects.toThrow('queue journal order 无效')
+  })
+})

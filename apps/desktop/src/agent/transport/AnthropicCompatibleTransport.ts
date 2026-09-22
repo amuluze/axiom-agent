@@ -359,6 +359,9 @@ export class AnthropicCompatibleTransport implements ModelTransport {
       body: prepared.body,
       secretId: request.auth?.secretId ?? this.config.secretId,
       timeoutMs: prepared.timeoutMs,
+      // 取请求期的模型 id（而非构造期快照）：多协议 provider 据此选 wire，且切模型后不会失配。
+      modelId: request.model.model,
+      sessionId: request.sessionId,
     }
     const toolIndexes = new Set<number>()
     const thinkingIndexes = new Set<number>()
@@ -538,8 +541,11 @@ export class AnthropicCompatibleTransport implements ModelTransport {
     if (started && !messageStopSeen) {
       // 已收到 message_start 但流在 message_stop 前关闭：截断的响应不能
       // 以干净 stop 落盘。发出 error 事件让循环以 stopReason 'error' 结束。
+      // 按 network 分类（可重试）：截断是传输层瞬时故障，显式 kind 跳过模式推断；
+      // 自动重试由 isSafeAutoRetryFailure 的安全门槛把关。
       const error = classifyProviderError({
         message: 'Anthropic-compatible Provider 流在 message_stop 前中断，响应不完整',
+        kind: 'network',
       })
       yield { type: 'error', message: error.message, error }
       return

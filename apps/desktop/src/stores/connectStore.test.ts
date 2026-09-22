@@ -18,9 +18,7 @@ vi.mock('@/platform/connect', () => ({
   getConnectConfig: mocks.getConnectConfig,
   connectPlatform: mocks.connectPlatform,
   disconnectPlatform: vi.fn(),
-  saveConnectPlatformConfig: vi.fn(),
   clearConnectPlatformConfig: vi.fn(),
-  createConnectPairingCode: vi.fn(),
   unpairConnectBinding: vi.fn(),
 }))
 

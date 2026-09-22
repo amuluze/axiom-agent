@@ -50,44 +50,63 @@ export interface ProviderTransportCompatibilityMigration {
 }
 
 export const PROVIDER_TRANSPORT_MIGRATIONS: readonly ProviderTransportCompatibilityMigration[] = [
+  // v10：三个 transport 的流截断守卫（OpenAI-compatible 缺 [DONE]/finish_reason、
+  // Anthropic 缺 message_stop、Responses 缺终态事件）从 unknown 不可重试改判为
+  // network 可重试，交由 AgentSession 自动重试接管；wire 协议与持久化格式不变。
+  // 刻意跳过已烧掉的 v7/v8/v9（历史窗口版本号），保持「同版本号 ⇒ 同语义」；
+  // 单跳解析要求 previousVersion 直连 live currentVersion，历史条目全部指向 v10。
+  //
   // v6：Provider Profile 文档/secretId 解析完全下沉 Rust（provider_profiles 权威），
   // transport 的 httpStream 默认经宿主注入；wire 协议仍为 providerId + endpoint。
-  // 单跳解析要求 previousVersion 直连 live currentVersion，因此旧条目全部指向 v6。
   //
   // v7（openai v8/v9）：SSE 合帧与工具参数漂移修复曾随未合入主干的改动 bump 到
-  // v7/v8/v9，该窗口内持久化的会话带这些版本；回滚到 v6 后必须补反向单跳条目，
-  // 否则旧会话恢复会被拒绝（Provider 依赖不匹配）。所有一等公民 provider 同样
-  // 曾在 v7 短暂停留，逐一补 7→6。
+  // v7/v8/v9，该窗口内持久化的会话带这些版本；主干曾回滚到 v6，v10 起这些版本
+  // 经显式迁移直连新 live。所有一等公民 provider 同样曾在 v7 短暂停留，逐一补 7→10。
   { providerId: 'demo', previousVersion: '1', currentVersion: '3' },
   { providerId: 'demo', previousVersion: '2', currentVersion: '3' },
-  { providerId: 'generic-anthropic-compatible', previousVersion: '1', currentVersion: '6' },
-  { providerId: 'generic-anthropic-compatible', previousVersion: '2', currentVersion: '6' },
-  { providerId: 'generic-anthropic-compatible', previousVersion: '3', currentVersion: '6' },
-  { providerId: 'generic-anthropic-compatible', previousVersion: '4', currentVersion: '6' },
-  { providerId: 'generic-anthropic-compatible', previousVersion: '5', currentVersion: '6' },
-  { providerId: 'generic-anthropic-compatible', previousVersion: '7', currentVersion: '6' },
-  { providerId: 'generic-openai-compatible', previousVersion: '1', currentVersion: '6' },
-  { providerId: 'generic-openai-compatible', previousVersion: '2', currentVersion: '6' },
-  { providerId: 'generic-openai-compatible', previousVersion: '3', currentVersion: '6' },
-  { providerId: 'generic-openai-compatible', previousVersion: '4', currentVersion: '6' },
-  { providerId: 'generic-openai-compatible', previousVersion: '5', currentVersion: '6' },
-  { providerId: 'generic-openai-compatible', previousVersion: '7', currentVersion: '6' },
-  { providerId: 'openai', previousVersion: '1', currentVersion: '6' },
-  { providerId: 'openai', previousVersion: '2', currentVersion: '6' },
-  { providerId: 'openai', previousVersion: '3', currentVersion: '6' },
-  { providerId: 'openai', previousVersion: '4', currentVersion: '6' },
-  { providerId: 'openai', previousVersion: '5', currentVersion: '6' },
-  { providerId: 'openai', previousVersion: '7', currentVersion: '6' },
-  { providerId: 'openai', previousVersion: '8', currentVersion: '6' },
-  { providerId: 'openai', previousVersion: '9', currentVersion: '6' },
-  // 一等公民 provider 在 v7 窗口内曾 bump 到 7，回滚后补单跳。
-  { providerId: 'zhipu-glm', previousVersion: '7', currentVersion: '6' },
-  { providerId: 'deepseek', previousVersion: '7', currentVersion: '6' },
-  { providerId: 'minimax-chat', previousVersion: '7', currentVersion: '6' },
-  { providerId: 'ollama', previousVersion: '7', currentVersion: '6' },
-  { providerId: 'gemini', previousVersion: '7', currentVersion: '6' },
-  { providerId: 'kimi', previousVersion: '7', currentVersion: '6' },
-  { providerId: 'kimi-coding', previousVersion: '7', currentVersion: '6' },
+  { providerId: 'generic-anthropic-compatible', previousVersion: '1', currentVersion: '10' },
+  { providerId: 'generic-anthropic-compatible', previousVersion: '2', currentVersion: '10' },
+  { providerId: 'generic-anthropic-compatible', previousVersion: '3', currentVersion: '10' },
+  { providerId: 'generic-anthropic-compatible', previousVersion: '4', currentVersion: '10' },
+  { providerId: 'generic-anthropic-compatible', previousVersion: '5', currentVersion: '10' },
+  { providerId: 'generic-anthropic-compatible', previousVersion: '6', currentVersion: '10' },
+  { providerId: 'generic-anthropic-compatible', previousVersion: '7', currentVersion: '10' },
+  { providerId: 'generic-openai-compatible', previousVersion: '1', currentVersion: '10' },
+  { providerId: 'generic-openai-compatible', previousVersion: '2', currentVersion: '10' },
+  { providerId: 'generic-openai-compatible', previousVersion: '3', currentVersion: '10' },
+  { providerId: 'generic-openai-compatible', previousVersion: '4', currentVersion: '10' },
+  { providerId: 'generic-openai-compatible', previousVersion: '5', currentVersion: '10' },
+  { providerId: 'generic-openai-compatible', previousVersion: '6', currentVersion: '10' },
+  { providerId: 'generic-openai-compatible', previousVersion: '7', currentVersion: '10' },
+  { providerId: 'openai', previousVersion: '1', currentVersion: '10' },
+  { providerId: 'openai', previousVersion: '2', currentVersion: '10' },
+  { providerId: 'openai', previousVersion: '3', currentVersion: '10' },
+  { providerId: 'openai', previousVersion: '4', currentVersion: '10' },
+  { providerId: 'openai', previousVersion: '5', currentVersion: '10' },
+  { providerId: 'openai', previousVersion: '6', currentVersion: '10' },
+  { providerId: 'openai', previousVersion: '7', currentVersion: '10' },
+  { providerId: 'openai', previousVersion: '8', currentVersion: '10' },
+  { providerId: 'openai', previousVersion: '9', currentVersion: '10' },
+  // custom-* 与 orcarouter 自引入起即 v6，当前发布存量的会话都带 v6。
+  { providerId: 'custom-openai-compatible', previousVersion: '6', currentVersion: '10' },
+  { providerId: 'custom-anthropic-compatible', previousVersion: '6', currentVersion: '10' },
+  { providerId: 'orcarouter', previousVersion: '6', currentVersion: '10' },
+  // 一等公民 provider 在 v7 窗口内曾 bump 到 7，现与当前发布存量 v6 一并直连 v10。
+  { providerId: 'zhipu-glm', previousVersion: '6', currentVersion: '10' },
+  { providerId: 'zhipu-glm', previousVersion: '7', currentVersion: '10' },
+  { providerId: 'deepseek', previousVersion: '6', currentVersion: '10' },
+  { providerId: 'deepseek', previousVersion: '7', currentVersion: '10' },
+  { providerId: 'minimax-chat', previousVersion: '6', currentVersion: '10' },
+  { providerId: 'minimax-chat', previousVersion: '7', currentVersion: '10' },
+  { providerId: 'ollama', previousVersion: '6', currentVersion: '10' },
+  { providerId: 'ollama', previousVersion: '7', currentVersion: '10' },
+  { providerId: 'gemini', previousVersion: '6', currentVersion: '10' },
+  { providerId: 'gemini', previousVersion: '7', currentVersion: '10' },
+  { providerId: 'kimi', previousVersion: '6', currentVersion: '10' },
+  { providerId: 'kimi', previousVersion: '7', currentVersion: '10' },
+  { providerId: 'kimi-coding', previousVersion: '6', currentVersion: '10' },
+  { providerId: 'kimi-coding', previousVersion: '7', currentVersion: '10' },
+  { providerId: 'opencode-go', previousVersion: '1', currentVersion: '2' },
 ]
 
 const RUNTIME_HOOK_COMPATIBILITY_MIGRATIONS: readonly RuntimeHookCompatibilityMigration[] = [

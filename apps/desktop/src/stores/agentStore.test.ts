@@ -481,6 +481,38 @@ describe('agentStore session activation', () => {
     await expect(useAgentStore.getState().deleteSession(runningSessionId)).resolves.toBe(true)
   })
 
+  it('queues a steering message into a running background session and surfaces the count', async () => {
+    // 后台运行中的会话不再只能 stop：sendToSession 走 steering（下一个 turn 边界注入），
+    // 并把待发送条数写入 sessionQueueCounts（侧栏徽标数据源）。
+    const { useAgentStore } = await import('./agentStore')
+    const previousActiveSessionId = useAgentStore.getState().activeSessionId
+    const workspace = { path: '/repo/queued-bg', name: 'queued-bg', gitBranch: null }
+    useAgentStore.setState({ authorizedWorkspace: workspace, authorizedWorkspaces: [workspace] })
+    await expect(useAgentStore.getState().createNewSession('/repo/queued-bg')).resolves.toBe(true)
+    const runningSessionId = useAgentStore.getState().activeSessionId!
+
+    // 挂起 message_end：run 仍在进行（acceptingQueuedMessages 仍为 true），会话随后切到后台。
+    const inFlight = repository.blockNextEvent(runningSessionId, 'message_end')
+    const running = useAgentStore.getState().send('background alpha')
+    await inFlight
+    await expect(useAgentStore.getState().createNewSession('/repo/queued-bg')).resolves.toBe(true)
+    const foregroundSessionId = useAgentStore.getState().activeSessionId!
+    expect(foregroundSessionId).not.toBe(runningSessionId)
+
+    await expect(useAgentStore.getState().sendToSession(runningSessionId, 'queued while running'))
+      .resolves.toBe(true)
+    expect(useAgentStore.getState().sessionQueueCounts[runningSessionId]).toBe(1)
+
+    repository.releaseEvent()
+    await running
+
+    // 队列消费后计数归零并从映射中清除（不随会话数单调增长）。
+    expect(useAgentStore.getState().sessionQueueCounts[runningSessionId]).toBeUndefined()
+    await expect(useAgentStore.getState().deleteSession(foregroundSessionId)).resolves.toBe(true)
+    await expect(useAgentStore.getState().selectSession(previousActiveSessionId!)).resolves.toBe(true)
+    await expect(useAgentStore.getState().deleteSession(runningSessionId)).resolves.toBe(true)
+  })
+
   it('activates a prepared successor after deleting the active session', async () => {
     const { useAgentStore } = await import('./agentStore')
     const deletedSessionId = useAgentStore.getState().activeSessionId
@@ -555,16 +587,25 @@ describe('agentStore session activation', () => {
     await useAgentStore.getState().initialize()
     expect(useAgentStore.getState().runtimeLifecycle).toBe('ready')
 
-    expect(useAgentStore.getState().saveQueueModes({ steering: 'all', followUp: 'all' })).toBe(true)
+    expect(useAgentStore.getState().saveQueueModes({
+      steering: 'all',
+      followUp: 'all',
+      autoDrain: true,
+    })).toBe(true)
     expect(useAgentStore.getState().queueModeSettings).toMatchObject({
       steering: 'all',
       followUp: 'all',
     })
 
-    expect(useAgentStore.getState().saveAgentLimits({ maxTurns: 8, maxToolCalls: 24 })).toBe(true)
+    expect(useAgentStore.getState().saveAgentLimits({
+      maxTurns: 8,
+      maxToolCalls: 24,
+      maxTotalTokens: 1_000_000,
+    })).toBe(true)
     expect(useAgentStore.getState().agentLimitsSettings).toMatchObject({
       maxTurns: 8,
       maxToolCalls: 24,
+      maxTotalTokens: 1_000_000,
     })
 
     // demo provider 不支持 reasoning，normalize 会按能力回落为 off。
@@ -582,6 +623,124 @@ describe('agentStore session activation', () => {
     await expect(useAgentStore.getState().compactContext()).resolves.toBe(true)
     await useAgentStore.getState().continueConversation()
     expect(useAgentStore.getState().running).toBe(false)
+  })
+
+  it('手动压缩期间切换会话：压缩结果不串写到新会话的全局视图', async () => {
+    const { useAgentStore } = await import('./agentStore')
+    const sessionAId = await ensureBoundSession(useAgentStore)
+    await useAgentStore.getState().send('compaction crosstalk seed')
+    expect(useAgentStore.getState().messages.length).toBeGreaterThanOrEqual(2)
+
+    // 阻塞 compaction_end 落库，让压缩悬停在 in-flight，期间切到新会话 B。
+    const barrierEntered = repository.blockNextEvent(sessionAId, 'compaction_end')
+    const compacting = useAgentStore.getState().compactContext()
+    await barrierEntered
+    await expect(useAgentStore.getState().createNewSession('/repo/axiom')).resolves.toBe(true)
+    const sessionBId = useAgentStore.getState().activeSessionId!
+    expect(sessionBId).not.toBe(sessionAId)
+    // 压缩仍属于 A：B 激活后全局 running 已按 B 投影复位。
+    expect(useAgentStore.getState().running).toBe(false)
+
+    repository.releaseEvent()
+    await expect(compacting).resolves.toBe(true)
+    const after = useAgentStore.getState()
+    expect(after.activeSessionId).toBe(sessionBId)
+    // 修复点：完成路径不得把 A 的检查点/用量写进 B 的全局视图。
+    expect(after.contextCheckpoint).toBeNull()
+    expect(after.running).toBe(false)
+
+    // 切回 A：压缩检查点经该会话投影/harness 恢复可见。
+    await expect(useAgentStore.getState().selectSession(sessionAId)).resolves.toBe(true)
+    expect(useAgentStore.getState().contextCheckpoint).not.toBeNull()
+  })
+
+  it('idle sendQueuedNow 取出队首队列项走完整发送链路启动新 run', async () => {
+    const { useAgentStore } = await import('./agentStore')
+    await ensureBoundSession(useAgentStore)
+
+    // 空闲时 next-turn 队列独立于运行状态，可直接入队。
+    const accepted = await useAgentStore.getState().queueNextTurn('queued for immediate send')
+    if (!accepted.accepted) throw new Error('queueNextTurn should be accepted')
+    expect(useAgentStore.getState().queuedMessages).toHaveLength(1)
+
+    // 空闲放行：restore 取出该条后复用 send 全链路（demo transport 同步完成 run）。
+    const result = await useAgentStore.getState().sendQueuedNow(accepted.id)
+    expect(result.accepted).toBe(true)
+
+    const state = useAgentStore.getState()
+    expect(state.running).toBe(false)
+    expect(state.error).toBeNull()
+    expect(state.queuedMessages).toHaveLength(0)
+    expect(state.messages.some((message) => (
+      message.role === 'user' && message.content.includes('queued for immediate send')
+    ))).toBe(true)
+  })
+
+  it('idle sendQueuedNow 空队列返回 unknown-message 且不启动 run', async () => {
+    const { useAgentStore } = await import('./agentStore')
+    await ensureBoundSession(useAgentStore)
+    await useAgentStore.getState().clearQueuedMessages()
+
+    const result = await useAgentStore.getState().sendQueuedNow()
+    expect(result).toEqual({ accepted: false, reason: 'unknown-message' })
+    expect(useAgentStore.getState().running).toBe(false)
+  })
+
+  it('idle sendQueuedNow 在 send 前置不满足时拒绝且不移出队列项', async () => {
+    // 回归：restore 会把队列项移出队列并 discard journal；此前若 send 因前置
+    // 不满足早退（Provider 未配置等），内容既不在队列也不在输入框——静默丢失。
+    const { useAgentStore } = await import('./agentStore')
+    await ensureBoundSession(useAgentStore)
+    await useAgentStore.getState().clearQueuedMessages()
+
+    const accepted = await useAgentStore.getState().queueNextTurn('blocked immediate send')
+    if (!accepted.accepted) throw new Error('queueNextTurn should be accepted')
+
+    useAgentStore.setState({ providerSetupRequired: true })
+    try {
+      const result = await useAgentStore.getState().sendQueuedNow(accepted.id)
+      expect(result).toEqual({ accepted: false, reason: 'runtime-not-accepting' })
+      expect(useAgentStore.getState().error).toContain('Provider')
+      expect(useAgentStore.getState().queuedMessages).toHaveLength(1)
+    } finally {
+      useAgentStore.setState({ providerSetupRequired: false })
+    }
+  })
+
+  it('缓存激活时对齐全局队列模式：后台会话沿用切换期间变更的 autoDrain', async () => {
+    // 回归：缓存 harness 不经 createRuntimeSession 重建；用户在别的会话上关掉
+    // 「自动逐条发送」后切回该会话，若不对齐，Composer 开关与会话实际 drain 行为漂移。
+    const { useAgentStore } = await import('./agentStore')
+    const previousActiveSessionId = useAgentStore.getState().activeSessionId
+    expect(useAgentStore.getState().saveQueueAutoDrain(true)).toBe(true)
+    const workspace = { path: '/repo/cached-queue-modes', name: 'cached-queue-modes', gitBranch: null }
+    useAgentStore.setState({ authorizedWorkspace: workspace, authorizedWorkspaces: [workspace] })
+    await expect(useAgentStore.getState().createNewSession('/repo/cached-queue-modes')).resolves.toBe(true)
+    const backgroundSessionId = useAgentStore.getState().activeSessionId!
+
+    // 后台 run 挂起在 message_end（acceptingQueuedMessages 仍为 true），随后切走并关闭自动发送。
+    const inFlight = repository.blockNextEvent(backgroundSessionId, 'message_end')
+    const running = useAgentStore.getState().send('cached modes alpha')
+    await inFlight
+    await expect(useAgentStore.getState().createNewSession('/repo/cached-queue-modes')).resolves.toBe(true)
+    const foregroundSessionId = useAgentStore.getState().activeSessionId!
+    expect(useAgentStore.getState().saveQueueAutoDrain(false)).toBe(true)
+
+    // 切回运行中的后台会话（缓存激活路径）：队列模式对齐为 autoDrain=false。
+    await expect(useAgentStore.getState().selectSession(backgroundSessionId)).resolves.toBe(true)
+    await useAgentStore.getState().sendToSession(backgroundSessionId, 'queued in paused era')
+    expect(useAgentStore.getState().sessionQueueCounts[backgroundSessionId]).toBe(1)
+
+    repository.releaseEvent()
+    await running
+
+    // run 结束但自动发送已暂停：队列项不被消费，计数保留（对齐前会归零）。
+    expect(useAgentStore.getState().sessionQueueCounts[backgroundSessionId]).toBe(1)
+    await useAgentStore.getState().clearQueuedMessages()
+    await expect(useAgentStore.getState().selectSession(foregroundSessionId)).resolves.toBe(true)
+    await expect(useAgentStore.getState().deleteSession(backgroundSessionId)).resolves.toBe(true)
+    await expect(useAgentStore.getState().selectSession(previousActiveSessionId!)).resolves.toBe(true)
+    expect(useAgentStore.getState().saveQueueAutoDrain(true)).toBe(true)
   })
 
 })

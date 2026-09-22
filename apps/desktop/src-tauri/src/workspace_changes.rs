@@ -232,19 +232,6 @@ enum SourceIdentity {
     Directory(String),
 }
 
-fn validate_request_id(request_id: &str) -> Result<&str, String> {
-    let request_id = request_id.trim();
-    let valid = !request_id.is_empty()
-        && request_id.len() <= 128
-        && request_id.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
-        });
-    if !valid {
-        return Err("workspace change request ID contains unsupported characters".into());
-    }
-    Ok(request_id)
-}
-
 fn validate_relative_path(raw_path: &str) -> Result<PathBuf, String> {
     let raw_path = raw_path.trim();
     if raw_path.is_empty() || raw_path.len() > 16 * 1024 {
@@ -664,8 +651,7 @@ fn sync_parent(path: &Path) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "workspace change target has no parent".to_string())?;
-    std::fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
+    crate::storage_paths::sync_directory(parent)
         .map_err(|error| format!("failed to sync workspace change directory: {error}"))
 }
 
@@ -1160,8 +1146,7 @@ fn remove_transaction(transaction: &Path) -> Result<(), String> {
         .ok_or_else(|| "workspace transaction has no parent".to_string())?;
     std::fs::remove_dir_all(transaction)
         .map_err(|error| format!("failed to clean workspace transaction: {error}"))?;
-    std::fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
+    crate::storage_paths::sync_directory(parent)
         .map_err(|error| format!("failed to sync workspace transaction parent: {error}"))
 }
 
@@ -1182,8 +1167,7 @@ fn cleanup_committed_transaction(transaction: &Path) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("failed to clean workspace journal: {error}")),
     }
-    std::fs::File::open(transaction)
-        .and_then(|directory| directory.sync_all())
+    crate::storage_paths::sync_directory(transaction)
         .map_err(|error| format!("failed to sync committed workspace transaction: {error}"))
 }
 
@@ -1271,8 +1255,7 @@ fn cleanup_restore_transaction(transaction: &Path, remove_trash: bool) -> Result
             ))
         }
     }
-    std::fs::File::open(transaction)
-        .and_then(|directory| directory.sync_all())
+    crate::storage_paths::sync_directory(transaction)
         .map_err(|error| format!("failed to sync workspace restore transaction: {error}"))
 }
 
@@ -1557,8 +1540,7 @@ fn execute_prepared(
             std::fs::create_dir(&initializing_trash)
                 .map_err(|error| format!("failed to create workspace trash area: {error}"))
         })?;
-    std::fs::File::open(initializing.path())
-        .and_then(|directory| directory.sync_all())
+    crate::storage_paths::sync_directory(initializing.path())
         .map_err(|error| format!("failed to sync workspace transaction: {error}"))?;
 
     let mut journal = TransactionJournal {
@@ -1657,7 +1639,11 @@ fn execute_prepared(
                     std::fs::copy(&target, &backup).map_err(|error| {
                         format!("failed to copy workspace rollback backup: {error}")
                     })?;
-                    std::fs::File::open(&backup)
+                    // FlushFileBuffers 需要写权限句柄：只读 File::open + sync_all
+                    // 在 Windows 上返回 ACCESS_DENIED（unix 两者皆可）。
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(&backup)
                         .and_then(|file| file.sync_all())
                         .map_err(|error| {
                             format!("failed to sync workspace rollback backup: {error}")
@@ -1794,7 +1780,7 @@ fn apply_impl(
     app_data: &Path,
     request: WorkspaceChangeRequest,
 ) -> Result<WorkspaceChangeResult, String> {
-    let request_id = validate_request_id(&request.request_id)?.to_string();
+    let request_id = crate::request_id::validate_request_id("workspace change", &request.request_id)?.to_string();
     let prepared = prepare_changes(root, &request.operations)?;
     execute_prepared(
         root,
@@ -1811,7 +1797,7 @@ fn restore_impl(
     recovery_base: &Path,
     recovery_id: &str,
 ) -> Result<WorkspaceChangeResult, String> {
-    let recovery_id = validate_request_id(recovery_id)?;
+    let recovery_id = crate::request_id::validate_request_id("workspace change", recovery_id)?;
     let transaction = recovery_base
         .join(workspace_fingerprint(root))
         .join(recovery_id);
@@ -2002,7 +1988,7 @@ fn validate_transaction_identity(
     workspace: &str,
     require_existing_workspace: bool,
 ) -> Result<Option<PathBuf>, String> {
-    let validated_request_id = validate_request_id(request_id)?;
+    let validated_request_id = crate::request_id::validate_request_id("workspace change", request_id)?;
     if transaction.file_name().and_then(|name| name.to_str()) != Some(validated_request_id) {
         return Err("workspace transaction request ID does not match its directory".into());
     }
@@ -2214,7 +2200,7 @@ fn clean_initializing_transaction(
     if let Some(journal) = journal {
         if journal.version != TRANSACTION_VERSION
             || !journal.actions.is_empty()
-            || validate_request_id(&journal.request_id).is_err()
+            || crate::request_id::validate_request_id("workspace change", &journal.request_id).is_err()
         {
             return Err("initializing workspace transaction journal is invalid".into());
         }

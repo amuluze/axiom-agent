@@ -71,6 +71,11 @@ const DEFAULT_FIND_LIMIT: usize = 20;
 const MAX_FIND_LIMIT: usize = 50;
 const MAX_FIND_LINE_CHARS: usize = 300;
 
+const MAX_DOWNLOAD_LIST: usize = 50;
+const DEFAULT_DOWNLOAD_LIST: usize = 20;
+/// 下载文本读回上限：对齐快照的 200 KiB 字符预算量级。
+const MAX_DOWNLOAD_CONTENT_BYTES: usize = 200 * 1024;
+
 /// 首启就绪超时：默认 10s 在高负载机器（负载 10+）上会被瞬时波动打穿——
 /// 模型/IDE/系统服务共跑时 Chrome 首次初始化可达 20s+。25s 覆盖后重试成本
 /// 可接受（复用运行时返回零等待，失败路径只多等）。
@@ -94,6 +99,19 @@ const STATUS_WATCH_INTERVAL: Duration = Duration::from_secs(1);
 /// Chromium 系浏览器 bundle 名（macOS 可执行文件名与 bundle 名一致的约定）。
 const BROWSER_EXECUTABLE_NAMES: &[&str] = &["Google Chrome", "Chromium", "Microsoft Edge", "Brave Browser"];
 
+/// display 名 → Linux 二进制名集合（auto 探测按此序取第一个已安装者；路径
+/// 前缀与 /opt vendor 落点见 `engine_candidate_paths` 的 linux 分支）。
+#[cfg(target_os = "linux")]
+fn linux_engine_binaries(display_name: &str) -> &'static [&'static str] {
+    match display_name {
+        "Google Chrome" => &["google-chrome-stable", "google-chrome-beta", "google-chrome"],
+        "Chromium" => &["chromium", "chromium-browser"],
+        "Microsoft Edge" => &["microsoft-edge-stable", "microsoft-edge"],
+        "Brave Browser" => &["brave-browser", "brave"],
+        _ => &[],
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 请求 / 响应契约（TS 侧 platform/browserSession.ts 逐字镜像）
 // ---------------------------------------------------------------------------
@@ -108,6 +126,10 @@ pub struct BrowserSpawnConfig {
     pub executable_path: String,
     #[serde(default = "default_headless")]
     pub headless: bool,
+    /// 忽略 HTTPS 证书校验（--ignore-certificate-errors）：仅作用于本隔离实例
+    /// （自签/测试场景）。spawn 参数，改后需重启浏览器生效。
+    #[serde(default)]
+    pub ignore_certificate_errors: bool,
 }
 
 fn default_headless() -> bool {
@@ -125,6 +147,10 @@ pub enum BrowserCommandRequest {
     Status,
     EnsureRunning { config: BrowserSpawnConfig },
     Shutdown,
+    /// 清理隔离 profile 的数据（设置页操作，不暴露给模型）：cache 档删 HTTP
+    /// 缓存/Cache Storage/Service Worker，保留 Cookie 与站点登录态；all 档删除
+    /// 整个 profile 重建（不可撤销）。浏览器运行中拒绝——文件级清理必须先关闭。
+    ClearProfileData { mode: String },
     Tabs,
     NewTab {
         #[serde(default)]
@@ -132,6 +158,26 @@ pub enum BrowserCommandRequest {
     },
     CloseTab { tab_id: String },
     ActivateTab { tab_id: String },
+    /// 双击：与 click 同一坐标注入管线（getBoxModel 中心点），第二段
+    /// Input.dispatchMouseEvent 携带 clickCount=2。
+    DblClick { tab_id: String, r#ref: i64 },
+    /// 视口覆盖（响应式/设备尺寸测试）：width+height 同时给出 = 设置
+    /// Emulation.setDeviceMetricsOverride；同时缺省 = 清除覆盖回自然视口。
+    SetViewport {
+        tab_id: String,
+        #[serde(default)]
+        width: Option<u32>,
+        #[serde(default)]
+        height: Option<u32>,
+    },
+    /// 下载目录清单（recent-first）：文件由 profile Preferences 预置的自动
+    /// 下载落盘（下载动作无需先武装，点击下载链接触发即可）。
+    Downloads {
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    /// 下载文件文本读回（仅 UTF-8 文本，200 KiB 截断；路径钉死在下载目录内）。
+    ReadDownload { name: String },
     Navigate { tab_id: String, url: String },
     Snapshot { tab_id: String },
     Click { tab_id: String, r#ref: i64 },
@@ -326,7 +372,40 @@ pub enum BrowserCommandResponse {
     },
     ScreencastStarted,
     ConsoleLog { entries: Vec<ConsoleEntry> },
+    /// 视口覆盖结果：width/height 为 None 表示已清除覆盖（回自然视口）。
+    ViewportApplied {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        width: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        height: Option<u32>,
+    },
+    /// 下载目录清单（recent-first）：下载在 spawn 时经 profile Preferences
+    /// 自动落盘（prompt 关闭），模型经此观测产物。
+    DownloadList {
+        directory: String,
+        entries: Vec<DownloadEntry>,
+    },
+    /// 下载文件文本读回（~/.axiom 在 read 工具 deny 清单内，模型无法直读；
+    /// 只支持 UTF-8 文本且上限 200 KiB，二进制报错引导用户自行查看）。
+    DownloadContent {
+        name: String,
+        path: String,
+        size_bytes: u64,
+        truncated: bool,
+        content: String,
+    },
     Done,
+}
+
+/// 下载目录条目（recent-first，.crdownload 未完成文件被跳过）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadEntry {
+    pub name: String,
+    pub path: String,
+    pub size_bytes: u64,
+    /// Unix 毫秒时间戳。
+    pub modified_at: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +499,7 @@ fn expand_tilde(raw: &str, home: Option<&Path>) -> PathBuf {
 }
 
 /// 已知 bundle 的标准安装路径候选（/Applications 优先于 ~/Applications）。
+#[cfg(not(target_os = "linux"))]
 fn engine_candidate_paths(home: Option<&Path>, name: &str) -> Vec<PathBuf> {
     let mut candidates = vec![PathBuf::from("/Applications")
         .join(format!("{name}.app"))
@@ -432,6 +512,30 @@ fn engine_candidate_paths(home: Option<&Path>, name: &str) -> Vec<PathBuf> {
                 .join("Contents/MacOS")
                 .join(name),
         );
+    }
+    candidates
+}
+
+/// Linux 候选：发行版标准位（/usr/bin、/usr/local/bin）的已知二进制名 + 官方
+/// .deb/.rpm 的 /opt vendor 布局。auto 探测按 display → binary 序取首个已安装。
+#[cfg(target_os = "linux")]
+fn engine_candidate_paths(home: Option<&Path>, name: &str) -> Vec<PathBuf> {
+    let _ = home;
+    let mut candidates = Vec::new();
+    for binary in linux_engine_binaries(name) {
+        for prefix in ["/usr/bin", "/usr/local/bin"] {
+            candidates.push(PathBuf::from(prefix).join(binary));
+        }
+    }
+    // 官方 vendor 包的 /opt 布局（可执行名与发行版仓库名不同）。
+    match name {
+        "Google Chrome" => candidates.extend([
+            PathBuf::from("/opt/google/chrome/google-chrome"),
+            PathBuf::from("/opt/google/chrome-beta/google-chrome-beta"),
+        ]),
+        "Microsoft Edge" => candidates.push(PathBuf::from("/opt/microsoft/edge/microsoft-edge")),
+        "Brave Browser" => candidates.push(PathBuf::from("/opt/brave.com/brave/brave-browser")),
+        _ => {}
     }
     candidates
 }
@@ -454,8 +558,9 @@ fn detect_engines(home: Option<&Path>) -> Vec<BrowserEngineInfo> {
         .collect()
 }
 
-/// 校验显式可执行路径：必须命中 `/Applications` 或 `~/Applications` 下已知
-/// Chromium 系 bundle 的标准布局（`<Bundle>.app/Contents/MacOS/<Bundle>`）。
+/// 校验显式可执行路径：必须命中已知 Chromium 系引擎的标准安装布局——macOS 为
+/// `/Applications`/`~/Applications` 下 `.app` bundle，Linux 为发行版标准位/官方
+/// vendor 布局的已知二进制（见下方平台分派的 `validate_browser_executable_layout`）。
 /// allowlist 而非签名校验：spawn 面等价命令执行通道，收口到「用户可见安装的
 /// 浏览器」即可阻断受陷渲染进程注入任意二进制。
 fn validate_browser_executable(raw: &str, home: Option<&Path>) -> Result<(PathBuf, String), String> {
@@ -473,6 +578,7 @@ fn validate_browser_executable(raw: &str, home: Option<&Path>) -> Result<(PathBu
 
 /// 仅校验路径布局（bundle 名/目录结构/安装位置），不触文件系统——单测用
 /// 纯函数形态锁定 allowlist 矩阵，不依赖机器上是否真的装了浏览器。
+#[cfg(not(target_os = "linux"))]
 fn validate_browser_executable_layout(
     path: &Path,
     home: Option<&Path>,
@@ -504,6 +610,26 @@ fn validate_browser_executable_layout(
         return Err("浏览器必须安装在 /Applications 或 ~/Applications 下".into());
     }
     Ok(bundle_name.to_string())
+}
+
+/// Linux 版布局校验：显式路径必须命中「全部引擎候选集合」之一——标准安装位
+/// （/usr/bin、/usr/local/bin）的已知 Chromium 系二进制名或官方 vendor 的
+/// /opt 布局。集合即 allowlist（受陷渲染进程不可向系统包管理器目录写入），
+/// 与 macOS 的 bundle 布局约束同一安全语义。
+#[cfg(target_os = "linux")]
+fn validate_browser_executable_layout(
+    path: &Path,
+    _home: Option<&Path>,
+) -> Result<String, String> {
+    for name in BROWSER_EXECUTABLE_NAMES {
+        if engine_candidate_paths(None, name).contains(&path.to_path_buf()) {
+            return Ok((*name).to_string());
+        }
+    }
+    Err(format!(
+        "浏览器可执行文件必须是标准安装位的已知 Chromium 系二进制（/usr/bin、/usr/local/bin 或官方 /opt vendor 布局）：{}",
+        path.display()
+    ))
 }
 
 /// 解析最终可执行文件：空串走 auto 探测，否则走 allowlist 校验。
@@ -547,10 +673,14 @@ fn validate_navigation_url(raw: &str) -> Result<String, String> {
 
 /// Chrome 启动参数（纯函数供单测锁定）。安全要点：不加 `--remote-allow-origins`
 /// （页面 JS 带 Origin 的 WS 无法连 DevTools）；user-data-dir 由调用方注入。
-fn chrome_args(port: u16, user_data_dir: &Path, headless: bool) -> Vec<String> {
+fn chrome_args(port: u16, user_data_dir: &Path, headless: bool, ignore_certificate_errors: bool) -> Vec<String> {
     let mut args = Vec::new();
     if headless {
         args.push("--headless=new".into());
+    }
+    if ignore_certificate_errors {
+        // 仅本隔离实例关闭 HTTPS 校验（服务自签/测试场景）；不触碰用户浏览器。
+        args.push("--ignore-certificate-errors".into());
     }
     args.extend([
         format!("--remote-debugging-port={port}"),
@@ -598,58 +728,277 @@ fn browser_profile_dir(data_root: &Path) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// spawn 浏览器子进程（端口/headless 由调用方决定，供首航与自愈重试复用）。
-fn spawn_browser_process(
+/// 下载目录：下载在 spawn 前经 profile Preferences 预置（关闭保存对话框 +
+/// 固定 default_directory），点击/导航触发的下载自动落盘，模型经 downloads
+/// 动作观测产物、readDownload 受控读回（~/.axiom 对 read 工具 deny，模型无法直读）。
+fn browser_downloads_dir(data_root: &Path) -> Result<PathBuf, String> {
+    let dir = data_root.join("browser").join("downloads");
+    std::fs::create_dir_all(&dir).map_err(|error| format!("创建下载目录失败：{error}"))?;
+    crate::storage_paths::set_directory_permissions(&dir)?;
+    Ok(dir)
+}
+
+/// spawn 前预置下载偏好：只 merge download 两键，保留 Chrome 已写入的其余
+/// Preferences 状态（Chrome 退出时会重写该文件，每次 spawn 前重新补齐）。
+fn prepare_download_prefs(profile_dir: &Path, download_dir: &Path) -> Result<(), String> {
+    let default_dir = profile_dir.join("Default");
+    std::fs::create_dir_all(&default_dir)
+        .map_err(|error| format!("创建 profile Default 目录失败：{error}"))?;
+    let prefs_path = default_dir.join("Preferences");
+    let mut prefs: Value = std::fs::read_to_string(&prefs_path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_else(|| json!({}));
+    if !prefs.is_object() {
+        prefs = json!({});
+    }
+    prefs["download"]["default_directory"] = Value::String(download_dir.display().to_string());
+    prefs["download"]["prompt_for_download"] = Value::Bool(false);
+    let bytes = serde_json::to_vec(&prefs).map_err(|error| format!("序列化下载偏好失败：{error}"))?;
+    std::fs::write(&prefs_path, bytes).map_err(|error| format!("写入下载偏好失败：{error}"))
+}
+
+async fn list_downloads(download_dir: &Path, limit: usize) -> Result<BrowserCommandResponse, String> {
+    let dir = download_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<BrowserCommandResponse, String> {
+        let mut entries: Vec<DownloadEntry> = std::fs::read_dir(&dir)
+            .map_err(|error| format!("读取下载目录失败：{error}"))?
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let path = entry.path();
+                if !path.is_file() {
+                    return None;
+                }
+                let name = path.file_name()?.to_string_lossy().to_string();
+                // Chrome 未完成下载的临时后缀：跳过，完成后才出现在清单里。
+                if name.ends_with(".crdownload") {
+                    return None;
+                }
+                let metadata = entry.metadata().ok()?;
+                Some(DownloadEntry {
+                    name: name.clone(),
+                    path: path.to_string_lossy().to_string(),
+                    size_bytes: metadata.len(),
+                    modified_at: metadata
+                        .modified()
+                        .ok()?
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()?
+                        .as_millis() as u64,
+                })
+            })
+            .collect();
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.modified_at));
+        entries.truncate(limit);
+        Ok(BrowserCommandResponse::DownloadList {
+            directory: dir.to_string_lossy().to_string(),
+            entries,
+        })
+    })
+    .await
+    .map_err(|error| format!("下载清单任务失败：{error}"))?
+}
+
+async fn read_download(download_dir: &Path, name: &str) -> Result<BrowserCommandResponse, String> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name == "." || name == ".." {
+        return Err("下载文件名不合法".into());
+    }
+    let dir_canonical = std::fs::canonicalize(download_dir)
+        .map_err(|error| format!("解析下载目录失败：{error}"))?;
+    let target = dir_canonical.join(name);
+    let canonical = std::fs::canonicalize(&target)
+        .map_err(|_| "下载文件不存在（可能仍在下载或已被清理）".to_string())?;
+    if !canonical.starts_with(&dir_canonical) {
+        return Err("下载文件路径异常，已拒绝读取".into());
+    }
+    tokio::task::spawn_blocking(move || -> Result<BrowserCommandResponse, String> {
+        let metadata = std::fs::metadata(&canonical)
+            .map_err(|error| format!("读取下载元数据失败：{error}"))?;
+        let size = metadata.len();
+        let bytes = std::fs::read(&canonical).map_err(|error| format!("读取下载文件失败：{error}"))?;
+        let truncated = bytes.len() > MAX_DOWNLOAD_CONTENT_BYTES;
+        let slice = if truncated {
+            &bytes[..MAX_DOWNLOAD_CONTENT_BYTES]
+        } else {
+            &bytes[..]
+        };
+        let content = String::from_utf8(slice.to_vec()).map_err(|_| {
+            format!("该文件不是 UTF-8 文本（共 {size} 字节）：文本读回仅支持文本文件，二进制文件请在系统中直接打开")
+        })?;
+        Ok(BrowserCommandResponse::DownloadContent {
+            name: canonical
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            path: canonical.to_string_lossy().to_string(),
+            size_bytes: size,
+            truncated,
+            content,
+        })
+    })
+    .await
+    .map_err(|error| format!("下载读回任务失败：{error}"))?
+}
+
+/// cache 档删除的已知缓存子目录（Chrome user-data-dir 布局）：保留 Cookies、
+/// Local Storage、Sessions 等登录态/站点数据。白名单常量，无路径拼接逃逸面。
+const PROFILE_CACHE_SUBDIRS: &[&str] = &[
+    "Cache",
+    "Code Cache",
+    "GPUCache",
+    "DawnCache",
+    "GrShaderCache",
+    "ShaderCache",
+    "Service Worker",
+];
+
+fn browser_runtime_alive(state: &BrowserSessionState) -> Result<bool, String> {
+    let mut guard = state
+        .0
+        .lock()
+        .map_err(|_| "browser state lock poisoned".to_string())?;
+    let Some(runtime) = guard.as_mut() else {
+        return Ok(false);
+    };
+    runtime
+        .child
+        .try_wait()
+        .map(|status| status.is_none())
+        .map_err(|error| error.to_string())
+}
+
+/// 清理隔离 profile 的数据（设置页专用，不暴露给模型）。运行中拒绝——文件级
+/// 清理与在写进程并发没有一致性可言；all 档先把真实路径钉死在数据根之内
+/// （canonicalize 后前缀校验，防 symlink 置换把删除面指到别处）再做 IO。
+async fn clear_profile_data(
+    data_root: &Path,
+    state: &BrowserSessionState,
+    mode: &str,
+) -> Result<BrowserCommandResponse, String> {
+    if mode != "cache" && mode != "all" {
+        return Err(format!("未知的清理模式：{mode}"));
+    }
+    if browser_runtime_alive(state)? {
+        return Err("浏览器正在运行，请先在 设置 → 浏览器 关闭后再清理数据".into());
+    }
+    let profile_dir = browser_profile_dir(data_root)?;
+    let canonical = std::fs::canonicalize(&profile_dir)
+        .map_err(|error| format!("解析 profile 目录失败：{error}"))?;
+    let data_root_canonical = std::fs::canonicalize(data_root)
+        .map_err(|error| format!("解析数据根目录失败：{error}"))?;
+    if !canonical.starts_with(&data_root_canonical) {
+        return Err("profile 目录位置异常（指向数据根之外），已拒绝清理".into());
+    }
+    let mode_for_io = mode.to_string();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        if mode_for_io == "all" {
+            return std::fs::remove_dir_all(&canonical)
+                .map_err(|error| format!("删除 profile 目录失败：{error}"));
+        }
+        for sub in PROFILE_CACHE_SUBDIRS {
+            let path = canonical.join(sub);
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => {}
+                // 未产生过对应缓存的全新 profile：目标本就不存在，幂等成功。
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!("删除缓存目录 {} 失败：{error}", path.display()))
+                }
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("清理任务失败：{error}"))??;
+    if mode == "all" {
+        // 重建空 profile（0700），下次 ensure_running 直接可用。
+        browser_profile_dir(data_root)?;
+    }
+    Ok(BrowserCommandResponse::Done)
+}
+
+/// spawn 浏览器子进程的同步实现：只由下方 spawn_blocking 包装层调用。
+fn spawn_browser_process_sync(
     executable: &Path,
     port: u16,
     profile_dir: &Path,
     headless: bool,
+    ignore_certificate_errors: bool,
+    download_dir: &Path,
 ) -> Result<Child, String> {
+    // 下载偏好必须在 Chrome 启动前落盘（Chrome 启动后读取一次并自行维护）。
+    prepare_download_prefs(profile_dir, download_dir)?;
     let mut command = Command::new(executable);
     command
-        .args(chrome_args(port, profile_dir, headless))
+        .args(chrome_args(port, profile_dir, headless, ignore_certificate_errors))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
     configure_browser_environment(&mut command);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        // 独立进程组：shutdown 时可以整组发信号，覆盖 Chrome 派生的辅助进程。
-        // tokio Command 未镜像该选项，落到内部 std Command 上设置。
-        command.as_std_mut().process_group(0);
-    }
+    // 独立进程组（unix）：shutdown 时可以整组发信号，覆盖 Chrome 派生的辅助
+    // 进程。Windows 无进程组，spawn no-op，树终止由 platform_process 的
+    // taskkill /T 兜底。
+    crate::platform_process::spawn_in_new_process_group(command.as_std_mut());
     command
         .spawn()
         .map_err(|error| format!("启动浏览器失败（{}）：{error}", executable.display()))
 }
 
+/// spawn 浏览器：`Command::spawn` 会同步等待 fork/exec 返回，在 tokio worker 上
+/// 直接调用会阻塞整条 worker 线程（首航与自愈重试都会走到这里）。
+async fn spawn_browser_process(
+    executable: &Path,
+    port: u16,
+    profile_dir: &Path,
+    headless: bool,
+    ignore_certificate_errors: bool,
+    download_dir: &Path,
+) -> Result<Child, String> {
+    let executable = executable.to_path_buf();
+    let profile_dir = profile_dir.to_path_buf();
+    let download_dir = download_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        spawn_browser_process_sync(
+            &executable,
+            port,
+            &profile_dir,
+            headless,
+            ignore_certificate_errors,
+            &download_dir,
+        )
+    })
+    .await
+    .map_err(|error| format!("浏览器启动任务失败：{error}"))?
+}
+
 fn process_alive(pid: i32) -> bool {
-    unsafe {
-        match libc::kill(pid, 0) {
-            0 => true,
-            // EPERM 也说明进程还在（无权限发信号）；只有 ESRCH 是已死。
-            _ => std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH),
-        }
-    }
+    crate::platform_process::process_alive(pid.max(0) as u32)
 }
 
 /// 组信号优先（覆盖 Chrome 派生的辅助进程）；pid 不是组长（历史版本 spawn
 /// 未设进程组）时回退单进程信号。
-fn signal_process(pid: i32, signal: i32) {
-    unsafe {
-        if libc::kill(-pid, signal) != 0 {
-            libc::kill(pid, signal);
-        }
-    }
+fn signal_process(pid: i32, signal: crate::platform_process::TreeSignal) {
+    crate::platform_process::signal_process_tree_best_effort(pid.max(0) as u32, signal);
 }
 
 /// 扫描命令行携带本 profile `--user-data-dir` 的进程。profile 目录 Axiom
 /// 独占，能命中的只会是 Axiom 自己 spawn 的浏览器实例（含上次应用异常
 /// 退出遗留的孤儿），不会误伤用户自己的浏览器。
-fn find_stale_profile_holders(profile_dir: &Path) -> Vec<i32> {
-    let Ok(output) = std::process::Command::new("/bin/ps")
+/// 扫描持有 profile 的进程（同步实现，只由 spawn_blocking 包装层与单测调用）。
+fn find_stale_profile_holders_sync(profile_dir: &Path) -> Vec<i32> {
+    #[cfg(windows)]
+    {
+        // Windows 无等价的进程命令行扫描原语（PowerShell/CIM 过重）：残留持有者
+        // 扫描首版降级为空。SingletonLock 清理仍安全——Windows Chrome 用命名
+        // 互斥量锁 profile，标记文件不存在时删除是无害 no-op；崩溃遗留的浏览器
+        // 实例需用户手动关闭（Windows 残留回收方案见 docs/windows-support.md §0.2）。
+        let _ = profile_dir;
+        Vec::new()
+    }
+    #[cfg(not(windows))]
+    {
+        let Ok(output) = std::process::Command::new("/bin/ps")
         .arg("axww")
         .arg("-o")
         .arg("pid=,command=")
@@ -667,18 +1016,25 @@ fn find_stale_profile_holders(profile_dir: &Path) -> Vec<i32> {
             command.contains(needle.as_str()).then_some(pid)
         })
         .collect()
+    }
 }
 
 /// 无活体持有者时清理残留单实例锁（SingletonLock/Socket/Cookie）。
 /// Axiom 崩溃/强杀不走 reap 路径，Chrome 退出后锁文件会原地残留——新实例
 /// 每次都要先博弈死锁再接管（实测接管耗时波动）。仅当扫描不到持有进程才
 /// 清理：有活体时删锁会给新实例开并发写同一 profile 的口子。
-fn cleanup_stale_locks_if_unheld(profile_dir: &Path) {
-    if find_stale_profile_holders(profile_dir).is_empty() {
-        for marker in ["SingletonLock", "SingletonSocket", "SingletonCookie"] {
-            let _ = std::fs::remove_file(profile_dir.join(marker));
+async fn cleanup_stale_locks_if_unheld(profile_dir: &Path) {
+    // `/bin/ps` 扫描与锁文件删除都在阻塞线程池完成：command 入口是 async，
+    // 在 worker 上同步等外部进程会拖住整条线程。
+    let dir = profile_dir.to_path_buf();
+    let _ = tokio::task::spawn_blocking(move || {
+        if find_stale_profile_holders_sync(&dir).is_empty() {
+            for marker in ["SingletonLock", "SingletonSocket", "SingletonCookie"] {
+                let _ = std::fs::remove_file(dir.join(marker));
+            }
         }
-    }
+    })
+    .await;
 }
 
 /// 终止持有 profile 的残留浏览器实例并清理单实例标记，返回是否真的终止了
@@ -686,12 +1042,17 @@ fn cleanup_stale_locks_if_unheld(profile_dir: &Path) {
 /// 单实例标记（symlink/socket）必须在持锁进程死后才清理，顺序颠倒会给
 /// 「标记已不在」的新实例开并发写同一 profile 的口子。
 async fn terminate_stale_profile_holders(profile_dir: &Path) -> bool {
-    let pids = find_stale_profile_holders(profile_dir);
+    let pids = {
+        let dir = profile_dir.to_path_buf();
+        tokio::task::spawn_blocking(move || find_stale_profile_holders_sync(&dir))
+            .await
+            .unwrap_or_default()
+    };
     if pids.is_empty() {
         return false;
     }
     for pid in &pids {
-        signal_process(*pid, libc::SIGTERM);
+        signal_process(*pid, crate::platform_process::TreeSignal::Graceful);
     }
     let deadline = std::time::Instant::now() + Duration::from_millis(STALE_HOLDER_GRACE_MS);
     while pids.iter().any(|pid| process_alive(*pid)) {
@@ -701,7 +1062,7 @@ async fn terminate_stale_profile_holders(profile_dir: &Path) -> bool {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     for pid in &pids {
-        signal_process(*pid, libc::SIGKILL);
+        signal_process(*pid, crate::platform_process::TreeSignal::Force);
     }
     for marker in ["SingletonLock", "SingletonSocket", "SingletonCookie"] {
         let _ = std::fs::remove_file(profile_dir.join(marker));
@@ -1370,7 +1731,7 @@ async fn ensure_running(
     let profile_dir = browser_profile_dir(data_root)?;
     // 无活体时清掉崩溃残留的单实例锁：省掉 Chrome 新实例的接管博弈
     // （崩溃/强杀不走 reap_browser_for_exit，锁会原地残留）。
-    cleanup_stale_locks_if_unheld(&profile_dir);
+    cleanup_stale_locks_if_unheld(&profile_dir).await;
     // 秒退自愈：Chrome 单实例机制会把命令转交给持有同一 profile 的存活实例
     // （上次应用异常退出遗留的孤儿）后立即退出。首航秒退时终止残留实例、
     // 清单实例标记并重试一次；重试仍秒退才把手动修复指引交给用户。
@@ -1378,7 +1739,16 @@ async fn ensure_running(
     let mut killed_stale = false;
     let (child, port, version) = loop {
         let port = pick_loopback_port()?;
-        let mut child = spawn_browser_process(&executable, port, &profile_dir, config.headless)?;
+        let download_dir = browser_downloads_dir(data_root)?;
+        let mut child = spawn_browser_process(
+            &executable,
+            port,
+            &profile_dir,
+            config.headless,
+            config.ignore_certificate_errors,
+            &download_dir,
+        )
+        .await?;
         match wait_ready_or_exit(port, &mut child).await {
             SpawnWaitOutcome::Ready(version) => break (child, port, version),
             SpawnWaitOutcome::TimedOut => {
@@ -1546,9 +1916,11 @@ pub fn reap_browser_for_exit(state: &BrowserSessionState) {
     let Some(pid) = runtime.child.id() else {
         return;
     };
-    unsafe {
-        libc::kill(-(pid as i32), libc::SIGTERM);
-    }
+    // 优雅退出优先：组信号让 Chrome 落盘 profile；宽限后 start_kill 兜底。
+    crate::platform_process::signal_process_tree_best_effort(
+        pid,
+        crate::platform_process::TreeSignal::Graceful,
+    );
     let deadline = std::time::Instant::now() + Duration::from_millis(TERMINATION_GRACE_MS);
     loop {
         match runtime.child.try_wait() {
@@ -1577,10 +1949,11 @@ async fn shutdown_browser(
     };
     if let Some(mut runtime) = runtime {
         if let Some(pid) = runtime.child.id() {
-            // 优雅退出优先：SIGTERM 让 Chrome 落盘 profile；宽限后 SIGKILL 兜底。
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGTERM);
-            }
+            // 优雅退出优先：组信号让 Chrome 落盘 profile；宽限后 start_kill 兜底。
+            crate::platform_process::signal_process_tree_best_effort(
+                pid,
+                crate::platform_process::TreeSignal::Graceful,
+            );
             let _ = tokio::time::timeout(
                 Duration::from_millis(TERMINATION_GRACE_MS),
                 runtime.child.wait(),
@@ -2187,6 +2560,7 @@ async fn dispatch_mouse(
     event_type: &str,
     x: f64,
     y: f64,
+    click_count: i32,
 ) -> Result<(), String> {
     tab.send(
         "Input.dispatchMouseEvent",
@@ -2196,11 +2570,20 @@ async fn dispatch_mouse(
             "y": y,
             "button": "left",
             "buttons": 1,
-            "clickCount": 1,
+            "clickCount": click_count,
         }),
     )
     .await
     .map(|_| ())
+}
+
+/// 双击序列：两段 press/release，第二段 clickCount=2——Chrome 的 Input 域
+/// 以 clickCount 区分连击语义（dblclick 事件由渲染器合成）。
+async fn dispatch_double_click(tab: &Arc<CdpTab>, x: f64, y: f64) -> Result<(), String> {
+    dispatch_mouse(tab, "mousePressed", x, y, 1).await?;
+    dispatch_mouse(tab, "mouseReleased", x, y, 1).await?;
+    dispatch_mouse(tab, "mousePressed", x, y, 2).await?;
+    dispatch_mouse(tab, "mouseReleased", x, y, 2).await
 }
 
 /// 悬停：mouseMoved 不携带按键状态——button/buttons 带上去会被页面当成
@@ -2433,6 +2816,9 @@ pub async fn browser_command(
             ensure_running(Some(&app), &data_root, &state, &config).await
         }
         BrowserCommandRequest::Shutdown => shutdown_browser(Some(&app), &state).await,
+        BrowserCommandRequest::ClearProfileData { mode } => {
+            clear_profile_data(&data_root, &state, &mode).await
+        }
         BrowserCommandRequest::Tabs => list_browser_tabs(&state).await,
         BrowserCommandRequest::NewTab { url } => {
             let validated = match url {
@@ -2481,9 +2867,66 @@ pub async fn browser_command(
         BrowserCommandRequest::Click { tab_id, r#ref } => {
             let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
             let (x, y) = ref_box_center(&tab, r#ref).await?;
-            dispatch_mouse(&tab, "mousePressed", x, y).await?;
-            dispatch_mouse(&tab, "mouseReleased", x, y).await?;
+            dispatch_mouse(&tab, "mousePressed", x, y, 1).await?;
+            dispatch_mouse(&tab, "mouseReleased", x, y, 1).await?;
             Ok(BrowserCommandResponse::Done)
+        }
+        BrowserCommandRequest::DblClick { tab_id, r#ref } => {
+            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            let (x, y) = ref_box_center(&tab, r#ref).await?;
+            dispatch_double_click(&tab, x, y).await?;
+            Ok(BrowserCommandResponse::Done)
+        }
+        BrowserCommandRequest::SetViewport { tab_id, width, height } => {
+            if width.is_some() != height.is_some() {
+                return Err(
+                    "视口设置需要 width 与 height 同时给出（或同时缺省以清除覆盖）".into(),
+                );
+            }
+            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            match (width, height) {
+                (Some(w), Some(h)) => {
+                    if w == 0 || h == 0 || w > 10_000 || h > 10_000 {
+                        return Err("视口尺寸需在 1-10000 像素之间".into());
+                    }
+                    // deviceScaleFactor 0 = 使用自然缩放；Emulation 域无需 enable。
+                    tab.send(
+                        "Emulation.setDeviceMetricsOverride",
+                        json!({
+                            "width": w,
+                            "height": h,
+                            "deviceScaleFactor": 0,
+                            "mobile": false,
+                        }),
+                    )
+                    .await
+                    .map_err(|error| format!("设置视口失败：{error}"))?;
+                    Ok(BrowserCommandResponse::ViewportApplied {
+                        width: Some(w),
+                        height: Some(h),
+                    })
+                }
+                _ => {
+                    tab.send("Emulation.clearDeviceMetricsOverride", json!({}))
+                        .await
+                        .map_err(|error| format!("清除视口覆盖失败：{error}"))?;
+                    Ok(BrowserCommandResponse::ViewportApplied {
+                        width: None,
+                        height: None,
+                    })
+                }
+            }
+        }
+        BrowserCommandRequest::Downloads { limit } => {
+            let resolved_limit = limit
+                .unwrap_or(DEFAULT_DOWNLOAD_LIST)
+                .clamp(1, MAX_DOWNLOAD_LIST);
+            let download_dir = browser_downloads_dir(&data_root)?;
+            list_downloads(&download_dir, resolved_limit).await
+        }
+        BrowserCommandRequest::ReadDownload { name } => {
+            let download_dir = browser_downloads_dir(&data_root)?;
+            read_download(&download_dir, &name).await
         }
         BrowserCommandRequest::Fill { tab_id, r#ref, text } => {
             if text.chars().count() > MAX_TEXT_INPUT_CHARS {
@@ -2765,8 +3208,8 @@ pub async fn browser_command(
             }
             let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
             let (x, y) = clamp_to_viewport(&tab, x, y).await;
-            dispatch_mouse(&tab, "mousePressed", x, y).await?;
-            dispatch_mouse(&tab, "mouseReleased", x, y).await?;
+            dispatch_mouse(&tab, "mousePressed", x, y, 1).await?;
+            dispatch_mouse(&tab, "mouseReleased", x, y, 1).await?;
             Ok(BrowserCommandResponse::Done)
         }
         BrowserCommandRequest::ScrollAt { tab_id, x, y, delta_x, delta_y } => {
@@ -2917,45 +3360,266 @@ mod tests {
         let layout = |raw: &str, home: Option<&Path>| {
             validate_browser_executable_layout(&expand_tilde(raw, home), home)
         };
-        // 标准布局通过（只查结构，不依赖机器是否真的安装）。
-        assert_eq!(
-            layout("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", None)
-                .expect("standard chrome layout"),
-            "Google Chrome"
-        );
-        assert_eq!(
-            layout(
-                "/Users/test/Applications/Chromium.app/Contents/MacOS/Chromium",
-                Some(Path::new("/Users/test")),
-            )
-            .expect("user applications layout"),
-            "Chromium"
-        );
-        // 结构性拒绝：任意二进制 / 非 Chromium bundle / 非标准布局 / 他人 home。
-        assert!(layout("/usr/bin/curl", None).is_err());
-        assert!(layout("/bin/sh", None).is_err());
-        assert!(layout("/Applications/Safari.app/Contents/MacOS/Safari", None).is_err());
-        assert!(layout("/Applications/Google Chrome.app/Contents/MacOS/helper", None).is_err());
-        assert!(layout("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", None).is_ok());
-        let stranger = "/Users/other/Applications/Chromium.app/Contents/MacOS/Chromium";
-        assert!(
-            layout(stranger, Some(Path::new("/Users/test"))).is_err(),
-            "他人 home 下的 Applications 不放行"
-        );
-        // 显式路径为空。
+        #[cfg(not(target_os = "linux"))]
+        {
+            // 标准布局通过（只查结构，不依赖机器是否真的安装）。
+            assert_eq!(
+                layout("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", None)
+                    .expect("standard chrome layout"),
+                "Google Chrome"
+            );
+            assert_eq!(
+                layout(
+                    "/Users/test/Applications/Chromium.app/Contents/MacOS/Chromium",
+                    Some(Path::new("/Users/test")),
+                )
+                .expect("user applications layout"),
+                "Chromium"
+            );
+            // 结构性拒绝：任意二进制 / 非 Chromium bundle / 非标准布局 / 他人 home。
+            assert!(layout("/usr/bin/curl", None).is_err());
+            assert!(layout("/bin/sh", None).is_err());
+            assert!(layout("/Applications/Safari.app/Contents/MacOS/Safari", None).is_err());
+            assert!(layout("/Applications/Google Chrome.app/Contents/MacOS/helper", None).is_err());
+            assert!(layout("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", None).is_ok());
+            let stranger = "/Users/other/Applications/Chromium.app/Contents/MacOS/Chromium";
+            assert!(
+                layout(stranger, Some(Path::new("/Users/test"))).is_err(),
+                "他人 home 下的 Applications 不放行"
+            );
+        }
+        #[cfg(target_os = "linux")]
+        {
+            // 发行版标准位与官方 /opt vendor 布局通过。
+            assert_eq!(
+                layout("/usr/bin/google-chrome-stable", None).expect("chrome stable"),
+                "Google Chrome"
+            );
+            assert_eq!(
+                layout("/usr/bin/chromium", None).expect("chromium"),
+                "Chromium"
+            );
+            assert_eq!(
+                layout("/usr/bin/microsoft-edge-stable", None).expect("edge"),
+                "Microsoft Edge"
+            );
+            assert_eq!(
+                layout("/opt/google/chrome/google-chrome", None).expect("vendor chrome"),
+                "Google Chrome"
+            );
+            assert_eq!(
+                layout("/opt/brave.com/brave/brave-browser", None).expect("vendor brave"),
+                "Brave Browser"
+            );
+            // 结构性拒绝：任意二进制（allowlist 外）/ 仿冒名 / 用户可写目录。
+            assert!(layout("/usr/bin/curl", None).is_err(), "allowlist 外二进制");
+            assert!(layout("/bin/sh", None).is_err());
+            assert!(
+                layout("/usr/bin/google-chrome-extra", None).is_err(),
+                "不在候选集合内的近形名"
+            );
+            assert!(
+                layout("/home/test/.local/bin/chromium", None).is_err(),
+                "用户可写目录不放行"
+            );
+            // 候选生成：display → 二进制序 + /opt vendor 落点齐全。
+            let candidates = engine_candidate_paths(None, "Google Chrome");
+            assert!(candidates.contains(&PathBuf::from("/usr/bin/google-chrome-stable")));
+            assert!(candidates.contains(&PathBuf::from("/opt/google/chrome/google-chrome")));
+        }
+        // 显式路径为空（两平台同拒）。
         assert!(validate_browser_executable("", None).is_err());
     }
 
     #[test]
     fn chrome_args_shape() {
         let dir = Path::new("/Users/x/.axiom/browser/profile");
-        let headless = chrome_args(9222, dir, true);
+        let headless = chrome_args(9222, dir, true, false);
         assert_eq!(headless[0], "--headless=new");
         assert!(headless.contains(&"--remote-debugging-port=9222".to_string()));
         assert!(headless.contains(&format!("--user-data-dir={}", dir.display())));
         assert!(!headless.iter().any(|arg| arg.starts_with("--remote-allow-origins")));
-        let headed = chrome_args(9223, dir, false);
+        let headed = chrome_args(9223, dir, false, false);
         assert!(!headed.iter().any(|arg| arg.starts_with("--headless")));
+    }
+
+    #[test]
+    fn chrome_args_certificate_flag() {
+        let dir = Path::new("/Users/x/.axiom/browser/profile");
+        let ignoring = chrome_args(9224, dir, true, true);
+        assert!(ignoring.contains(&"--ignore-certificate-errors".to_string()));
+        let strict = chrome_args(9225, dir, true, false);
+        assert!(!strict.iter().any(|arg| arg.starts_with("--ignore-certificate-errors")));
+    }
+
+    #[test]
+    fn prepare_download_prefs_merges_and_seeds() {
+        let profile = tempfile::tempdir().expect("profile root");
+        let download_dir = tempfile::tempdir().expect("download root");
+        // 首次：无 Preferences 文件 → 种子最小配置。
+        prepare_download_prefs(profile.path(), download_dir.path()).expect("seed prefs");
+        let prefs_path = profile.path().join("Default").join("Preferences");
+        let seeded: Value =
+            serde_json::from_str(&std::fs::read_to_string(&prefs_path).expect("read prefs")).expect("parse prefs");
+        assert_eq!(
+            seeded.pointer("/download/default_directory"),
+            Some(&Value::String(download_dir.path().display().to_string()))
+        );
+        assert_eq!(seeded.pointer("/download/prompt_for_download"), Some(&Value::Bool(false)));
+
+        // 第二次：Chrome 已写回的其它键必须保留，download 键被重新补齐。
+        let mut existing = seeded.clone();
+        existing["session"] = json!({"restore_on_startup": 4});
+        std::fs::write(&prefs_path, serde_json::to_vec(&existing).expect("serialize")).expect("write prefs");
+        prepare_download_prefs(profile.path(), download_dir.path()).expect("merge prefs");
+        let merged: Value =
+            serde_json::from_str(&std::fs::read_to_string(&prefs_path).expect("read prefs")).expect("parse prefs");
+        assert_eq!(merged.pointer("/session/restore_on_startup"), Some(&json!(4)));
+        assert_eq!(
+            merged.pointer("/download/default_directory"),
+            Some(&Value::String(download_dir.path().display().to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn downloads_listing_skips_partial_files_and_sorts_recent_first() {
+        let dir = tempfile::tempdir().expect("download root");
+        let old_path = dir.path().join("old.txt");
+        let new_path = dir.path().join("new.csv");
+        let partial_path = dir.path().join("partial.crdownload");
+        std::fs::write(&old_path, b"old").expect("write old");
+        std::fs::write(&new_path, b"new,data").expect("write new");
+        std::fs::write(&partial_path, b"partial").expect("write partial");
+        // old 早于 new：用 FileTimes 显式设定 modified 时间保证排序可断言。
+        {
+            use std::fs::FileTimes;
+            let file = std::fs::File::options().write(true).open(&old_path).expect("open old");
+            file.set_times(FileTimes::new().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000)))
+                .expect("set times old");
+            let file = std::fs::File::options().write(true).open(&new_path).expect("open new");
+            file.set_times(FileTimes::new().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000)))
+                .expect("set times new");
+        }
+        let response = list_downloads(dir.path(), 20).await.expect("list downloads");
+        let BrowserCommandResponse::DownloadList { directory, entries } = response else {
+            panic!("expected download list");
+        };
+        assert_eq!(directory, dir.path().to_string_lossy());
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, vec!["new.csv", "old.txt"]);
+        assert_eq!(entries[0].size_bytes, 8);
+    }
+
+    #[tokio::test]
+    async fn read_download_returns_text_and_rejects_binary_and_traversal() {
+        let dir = tempfile::tempdir().expect("download root");
+        std::fs::write(dir.path().join("report.json"), b"{\"ok\":true}").expect("write text");
+        std::fs::write(dir.path().join("blob.bin"), [0xFF, 0xFE, 0x00, 0x01]).expect("write binary");
+
+        let response = read_download(dir.path(), "report.json").await.expect("read text");
+        let BrowserCommandResponse::DownloadContent { name, content, truncated, .. } = response else {
+            panic!("expected download content");
+        };
+        assert_eq!(name, "report.json");
+        assert_eq!(content, "{\"ok\":true}");
+        assert!(!truncated);
+
+        assert!(read_download(dir.path(), "blob.bin").await.is_err());
+        assert!(read_download(dir.path(), "missing.txt").await.is_err());
+        assert!(read_download(dir.path(), "../escape.txt").await.is_err());
+    }
+
+    #[test]
+    fn request_contract_new_actions_deserialize() {
+        let request: BrowserCommandRequest =
+            serde_json::from_str(r#"{"action":"dblClick","tabId":"t1","ref":7}"#).expect("dblClick");
+        match request {
+            BrowserCommandRequest::DblClick { tab_id, r#ref } => {
+                assert_eq!(tab_id, "t1");
+                assert_eq!(r#ref, 7);
+            }
+            _ => panic!("wrong variant"),
+        }
+        let request: BrowserCommandRequest =
+            serde_json::from_str(r#"{"action":"setViewport","tabId":"t1","width":375,"height":667}"#)
+                .expect("setViewport");
+        match request {
+            BrowserCommandRequest::SetViewport { tab_id, width, height } => {
+                assert_eq!(tab_id, "t1");
+                assert_eq!(width, Some(375));
+                assert_eq!(height, Some(667));
+            }
+            _ => panic!("wrong variant"),
+        }
+        let request: BrowserCommandRequest =
+            serde_json::from_str(r#"{"action":"setViewport","tabId":"t1"}"#).expect("clear viewport");
+        match request {
+            BrowserCommandRequest::SetViewport { width, height, .. } => {
+                assert_eq!(width, None);
+                assert_eq!(height, None);
+            }
+            _ => panic!("wrong variant"),
+        }
+        let request: BrowserCommandRequest =
+            serde_json::from_str(r#"{"action":"downloads","limit":5}"#).expect("downloads");
+        match request {
+            BrowserCommandRequest::Downloads { limit } => assert_eq!(limit, Some(5)),
+            _ => panic!("wrong variant"),
+        }
+        let request: BrowserCommandRequest =
+            serde_json::from_str(r#"{"action":"readDownload","name":"report.json"}"#).expect("readDownload");
+        match request {
+            BrowserCommandRequest::ReadDownload { name } => assert_eq!(name, "report.json"),
+            _ => panic!("wrong variant"),
+        }
+        let response = BrowserCommandResponse::ViewportApplied { width: Some(375), height: Some(667) };
+        let encoded = serde_json::to_value(&response).expect("serialize viewportApplied");
+        assert_eq!(encoded.get("type").and_then(Value::as_str), Some("viewportApplied"));
+        assert_eq!(encoded.get("width"), Some(&json!(375)));
+    }
+
+    #[tokio::test]
+    async fn clear_profile_data_cache_keeps_login_data_and_is_idempotent() {
+        let data_root = tempfile::tempdir().expect("temp data root");
+        let profile = browser_profile_dir(data_root.path()).expect("profile dir");
+        for sub in ["Cache", "Code Cache", "Service Worker", "Cookies", "Local Storage"] {
+            std::fs::create_dir_all(profile.join(sub)).expect("seed subdir");
+        }
+        std::fs::write(profile.join("Cookies").join("cookies.sqlite"), "x").expect("seed cookie");
+        let state = BrowserSessionState(StdMutex::new(None));
+        let response = clear_profile_data(data_root.path(), &state, "cache")
+            .await
+            .expect("cache clear succeeds");
+        assert!(matches!(response, BrowserCommandResponse::Done));
+        // 缓存档：缓存目录消失，登录态目录原样保留；再跑一次幂等成功。
+        assert!(!profile.join("Cache").exists());
+        assert!(!profile.join("Code Cache").exists());
+        assert!(!profile.join("Service Worker").exists());
+        assert!(profile.join("Cookies").join("cookies.sqlite").exists());
+        assert!(profile.join("Local Storage").exists());
+        clear_profile_data(data_root.path(), &state, "cache")
+            .await
+            .expect("second cache clear is idempotent");
+    }
+
+    #[tokio::test]
+    async fn clear_profile_data_all_recreates_empty_profile_and_rejects_unknown_mode() {
+        let data_root = tempfile::tempdir().expect("temp data root");
+        let profile = browser_profile_dir(data_root.path()).expect("profile dir");
+        std::fs::create_dir_all(profile.join("Cookies")).expect("seed cookies");
+        let state = BrowserSessionState(StdMutex::new(None));
+        assert!(clear_profile_data(data_root.path(), &state, "wipe")
+            .await
+            .is_err());
+        let response = clear_profile_data(data_root.path(), &state, "all")
+            .await
+            .expect("all clear succeeds");
+        assert!(matches!(response, BrowserCommandResponse::Done));
+        assert!(!profile.join("Cookies").exists());
+        // profile 目录被重建（空），下次 ensure_running 直接可用。
+        assert!(profile.is_dir());
+        let rebuilt = std::fs::read_dir(&profile).expect("rebuilt dir").count();
+        assert_eq!(rebuilt, 0);
     }
 
     const AX_FIXTURE: &str = r#"{
@@ -3416,8 +4080,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn cleans_stale_locks_only_when_no_live_holder() {
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn cleans_stale_locks_only_when_no_live_holder() {
         let dir = std::env::temp_dir().join(format!("axiom-lock-cleanup-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let marker_exists = |name: &str| dir.join(name).exists();
@@ -3426,7 +4091,7 @@ mod tests {
         }
         // 已有一个假 profile 目录作为子集：锁文件都就位。
         assert!(marker_exists("SingletonLock"));
-        cleanup_stale_locks_if_unheld(&dir);
+        cleanup_stale_locks_if_unheld(&dir).await;
         assert!(!marker_exists("SingletonLock"), "无活体持有者时锁应被清理");
         assert!(!marker_exists("SingletonSocket"));
         assert!(!marker_exists("SingletonCookie"));
@@ -3439,7 +4104,7 @@ mod tests {
         for marker in ["SingletonLock", "SingletonSocket", "SingletonCookie"] {
             let _ = std::fs::write(dir.join(marker), b"x");
         }
-        cleanup_stale_locks_if_unheld(&dir);
+        cleanup_stale_locks_if_unheld(&dir).await;
         assert!(marker_exists("SingletonLock"), "有活体持有者时锁不得清理（防并发写口）");
         let _ = holder.kill();
         let _ = holder.wait();
@@ -3447,6 +4112,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn terminates_stale_profile_holder_process() {
         use std::os::unix::process::CommandExt;
         let dir = std::env::temp_dir().join(format!("axiom-stale-holder-test-{}", std::process::id()));
@@ -3465,17 +4131,17 @@ mod tests {
         let mut fake = spawn_fake(true);
         let pid = fake.id() as i32;
         assert!(
-            find_stale_profile_holders(&dir).contains(&pid),
+            find_stale_profile_holders_sync(&dir).contains(&pid),
             "扫描必须发现持有 profile 的进程"
         );
         assert!(
-            !find_stale_profile_holders(&dir).contains(&(unrelated.id() as i32)),
+            !find_stale_profile_holders_sync(&dir).contains(&(unrelated.id() as i32)),
             "不携带 --user-data-dir 的进程不得命中"
         );
         assert!(terminate_stale_profile_holders(&dir).await, "应报告已清理");
         let _ = fake.wait();
         assert!(
-            !find_stale_profile_holders(&dir).contains(&pid),
+            !find_stale_profile_holders_sync(&dir).contains(&pid),
             "清理后残留进程应已退出"
         );
         let _ = unrelated.kill();
@@ -3527,6 +4193,7 @@ mod tests {
             enabled: false,
             executable_path: String::new(),
             headless: true,
+            ignore_certificate_errors: false,
         };
         // 未启用的配置必须 fail-closed。
         assert!(ensure_running(None, data_root.path(), &state, &config).await.is_err());
@@ -3535,6 +4202,7 @@ mod tests {
             enabled: true,
             executable_path: engine.path.clone(),
             headless: true,
+            ignore_certificate_errors: false,
         };
         let response = ensure_running(None, data_root.path(), &state, &config).await.expect("browser starts");
         let BrowserCommandResponse::Status { running, version, .. } = response else {
@@ -3570,8 +4238,8 @@ mod tests {
             .and_then(|value| value.parse::<i64>().ok())
             .expect("button ref in snapshot");
         let (x, y) = ref_box_center(&tab_handle, button_ref).await.expect("box center");
-        dispatch_mouse(&tab_handle, "mousePressed", x, y).await.expect("press");
-        dispatch_mouse(&tab_handle, "mouseReleased", x, y).await.expect("release");
+        dispatch_mouse(&tab_handle, "mousePressed", x, y, 1).await.expect("press");
+        dispatch_mouse(&tab_handle, "mouseReleased", x, y, 1).await.expect("release");
 
         // 点击效果轮询（JS 执行是异步的）。
         let mut clicked = false;
@@ -3624,7 +4292,7 @@ mod tests {
         let stale_port = pick_loopback_port().expect("stale port");
         let mut stale_command = Command::new(&engine.path);
         stale_command
-            .args(chrome_args(stale_port, &profile_dir, true))
+            .args(chrome_args(stale_port, &profile_dir, true, false))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -3641,6 +4309,7 @@ mod tests {
             enabled: true,
             executable_path: engine.path.clone(),
             headless: true,
+            ignore_certificate_errors: false,
         };
         let response = ensure_running(None, data_root.path(), &state, &config)
             .await

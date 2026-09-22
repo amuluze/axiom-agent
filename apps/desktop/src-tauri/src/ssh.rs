@@ -124,13 +124,10 @@ fn hosts_write(file: &Path, hosts: &[SshHostEntry]) -> Result<(), String> {
     .map_err(|error| format!("编码 SSH 主机注册表失败：{error}"))?;
     let mut temporary = NamedTempFile::new_in(parent)
         .map_err(|error| format!("暂存 SSH 主机注册表失败：{error}"))?;
-    {
-        use std::os::unix::fs::PermissionsExt;
-        temporary
-            .as_file()
-            .set_permissions(fs::Permissions::from_mode(0o600))
-            .map_err(|error| format!("加固 SSH 主机注册表权限失败：{error}"))?;
-    }
+    crate::storage_paths::secure_owner_only_file(
+        temporary.as_file(),
+        "加固 SSH 主机注册表权限失败",
+    )?;
     temporary
         .write_all(&encoded)
         .and_then(|()| temporary.as_file_mut().sync_all())
@@ -798,6 +795,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn writes_with_owner_only_permissions() {
         use std::os::unix::fs::PermissionsExt;
         let directory = temporary_directory();
@@ -813,6 +811,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn rejects_symlinked_hosts_file() {
         let directory = temporary_directory();
         let real = directory.join("real.json");

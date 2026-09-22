@@ -9,6 +9,7 @@ import type { StoredAgentSession } from '@/persistence/types'
 const mocks = vi.hoisted(() => ({
   sessions: [] as StoredAgentSession[],
   awaitingApprovalSessionIds: [] as string[],
+  sessionQueueCounts: {} as Record<string, number>,
   authorizedWorkspace: null as {
     path: string
     name: string
@@ -63,6 +64,7 @@ vi.mock('@/stores/agentStore', async (importOriginal) => {
       ...original.useAgentStore.getState(),
       sessions: mocks.sessions,
       awaitingApprovalSessionIds: mocks.awaitingApprovalSessionIds,
+      sessionQueueCounts: mocks.sessionQueueCounts,
       authorizedWorkspace: mocks.authorizedWorkspace,
       authorizedWorkspaces: mocks.authorizedWorkspaces,
       createNewSession: mocks.createNewSession,
@@ -205,7 +207,7 @@ describe('Sidebar', () => {
     expect(html).not.toContain('aria-label="删除会话 alpha"')
   })
 
-  it('offers background quick-send only for idle sessions bound to an authorized workspace', () => {
+  it('offers background quick-send for running and idle sessions bound to an authorized workspace', () => {
     mocks.authorizedWorkspaces = [{ path: '/repo', name: 'repo' }]
     mocks.sessions = [
       stubSession({
@@ -227,8 +229,27 @@ describe('Sidebar', () => {
     ]
     const html = renderToStaticMarkup(createElement(Sidebar))
     expect(html).toContain('aria-label="向会话 idle task 发送消息"')
-    expect(html).not.toContain('aria-label="向会话 busy task 发送消息"')
+    // 运行中的后台会话可排队引导消息（不再只能停止），文案切换为排队语义。
+    expect(html).toContain('aria-label="向会话 busy task 发送消息"')
+    expect(html).toContain('该会话正在运行：消息作为引导排队')
+    // 工作区已撤销的会话仍不可发。
     expect(html).not.toContain('aria-label="向会话 unbound task 发送消息"')
+  })
+
+  it('shows the pending queue badge for a session with queued messages', () => {
+    mocks.authorizedWorkspaces = [{ path: '/repo', name: 'repo' }]
+    mocks.sessionQueueCounts = { busy: 3 }
+    mocks.sessions = [
+      stubSession({
+        id: 'busy',
+        title: 'busy task',
+        status: 'running',
+        workspace: { path: '/repo', name: 'repo' },
+      }),
+    ]
+    const html = renderToStaticMarkup(createElement(Sidebar))
+    expect(html).toContain('待发送 3 条')
+    expect(html).toContain('sidebar__task-queued')
   })
 
   it('groups sessions by workspace and shows each repository branch', () => {

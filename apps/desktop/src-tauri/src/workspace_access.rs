@@ -601,8 +601,7 @@ fn sync_parent_directory(path: &Path) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "workspace file has no parent directory".to_string())?;
-    std::fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
+    crate::storage_paths::sync_directory(parent)
         .map_err(|error| format!("failed to sync workspace directory: {error}"))
 }
 
@@ -1186,6 +1185,10 @@ pub(crate) struct WorkspaceFindRequest {
     pattern: String,
     path: Option<String>,
     limit: Option<usize>,
+    /// 只遍历到指定深度（1 = 工作区顶层）：提及弹层的空查询用它做
+    /// 「当前目录列举」。缺省 None = 不限深度（find 工具的递归语义）。
+    #[serde(default)]
+    max_depth: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1206,6 +1209,7 @@ fn find_impl(
     pattern: &str,
     raw_path: Option<&str>,
     limit: Option<usize>,
+    max_depth: Option<usize>,
 ) -> Result<WorkspaceFindResult, String> {
     let trimmed_pattern = pattern.trim();
     if trimmed_pattern.is_empty() {
@@ -1237,6 +1241,11 @@ fn find_impl(
         .require_git(false)
         .follow_links(false)
         .filter_entry(should_walk_entry);
+    // 深度受限时（顶层列举）不进入子目录：glob 的 `*` 跨分隔符，
+    // 仅靠 pattern 无法把结果限制在顶层。
+    if let Some(depth) = max_depth {
+        builder.max_depth(Some(depth));
+    }
 
     let mut matches = Vec::new();
     let mut truncated = false;
@@ -1278,19 +1287,6 @@ fn find_impl(
         matches,
         truncated,
     })
-}
-
-fn validate_request_id(request_id: &str) -> Result<&str, String> {
-    let request_id = request_id.trim();
-    if request_id.is_empty()
-        || request_id.len() > 128
-        || !request_id
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
-    {
-        return Err("workspace search request ID contains unsupported characters".into());
-    }
-    Ok(request_id)
 }
 
 #[tauri::command]
@@ -1585,7 +1581,7 @@ pub(crate) async fn search_workspace_text(
     request: WorkspaceSearchRequest,
     workspace_path: Option<String>,
 ) -> Result<WorkspaceSearchResult, String> {
-    let request_id = validate_request_id(&request.request_id)?.to_string();
+    let request_id = crate::request_id::validate_request_id("workspace search", &request.request_id)?.to_string();
     let root = authorized_root_for(&state, workspace_path.as_deref())?;
     let cancellation = Arc::new(AtomicBool::new(false));
     {
@@ -1637,7 +1633,7 @@ pub(crate) fn cancel_workspace_search(
     state: tauri::State<'_, WorkspaceAccessState>,
     request_id: String,
 ) -> Result<bool, String> {
-    let request_id = validate_request_id(&request_id)?;
+    let request_id = crate::request_id::validate_request_id("workspace search", &request_id)?;
     let registration = state
         .searches
         .lock()
@@ -1652,18 +1648,27 @@ pub(crate) fn cancel_workspace_search(
 }
 
 #[tauri::command]
-pub(crate) fn find_workspace_files(
-    state: tauri::State<'_, WorkspaceAccessState>,
+pub(crate) async fn find_workspace_files(
+    app: tauri::AppHandle,
     request: WorkspaceFindRequest,
     workspace_path: Option<String>,
 ) -> Result<WorkspaceFindResult, String> {
-    let root = authorized_root_for(&state, workspace_path.as_deref())?;
-    find_impl(
-        &root,
-        &request.pattern,
-        request.path.as_deref(),
-        request.limit,
-    )
+    // 检索要遍历工作区（query 无匹配时走完整棵树）：同步 command 在主线程执行
+    // 会卡 UI——Composer 提及弹层的防抖查询也走这条命令；整体移入 blocking
+    // 线程池，State 经 AppHandle 在闭包内解析（非 'static，不能捕获捕获期借用）。
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<WorkspaceAccessState>();
+        let root = authorized_root_for(&state, workspace_path.as_deref())?;
+        find_impl(
+            &root,
+            &request.pattern,
+            request.path.as_deref(),
+            request.limit,
+            request.max_depth,
+        )
+    })
+    .await
+    .map_err(|error| format!("workspace find task failed: {error}"))?
 }
 
 #[cfg(test)]
@@ -2122,7 +2127,7 @@ mod tests {
         std::fs::write(root.join(".gitignore"), "ignored.ts\n").unwrap();
         std::fs::write(root.join("ignored.ts"), "d").unwrap();
 
-        let result = find_impl(&root, "**/*.ts", None, None).unwrap();
+        let result = find_impl(&root, "**/*.ts", None, None, None).unwrap();
         let paths: Vec<&str> = result.matches.iter().map(|m| m.path.as_str()).collect();
         assert!(paths.contains(&"src/main.ts"));
         assert!(paths.contains(&"src/util.ts"));
@@ -2130,7 +2135,7 @@ mod tests {
         assert!(!paths.contains(&"README.md"));
 
         // Directories are distinguishable by kind.
-        let dirs = find_impl(&root, "src", None, None).unwrap();
+        let dirs = find_impl(&root, "src", None, None, None).unwrap();
         assert_eq!(dirs.matches.len(), 1);
         assert_eq!(dirs.matches[0].kind, "directory");
 
@@ -2144,9 +2149,28 @@ mod tests {
         for i in 0..10 {
             std::fs::write(root.join(format!("data/file{i}.txt")), "x").unwrap();
         }
-        let result = find_impl(&root, "**/*.txt", None, Some(3)).unwrap();
+        let result = find_impl(&root, "**/*.txt", None, Some(3), None).unwrap();
         assert_eq!(result.matches.len(), 3);
         assert!(result.truncated);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn find_segment_glob_matches_any_depth_and_is_case_insensitive_via_classes() {
+        // Composer 提及弹层的检索契约：`**/*[aA][pP][pP]*` 形态的 pattern
+        // （useWorkspaceFileCandidates 生成）必须命中任意深度的段名包含匹配，
+        // `**/` 前缀要能匹配零层目录（顶层文件不被漏掉），字符类实现大小写无关。
+        let root = temporary_directory();
+        std::fs::create_dir_all(root.join("nested/deep")).unwrap();
+        std::fs::write(root.join("App.tsx"), "a").unwrap();
+        std::fs::write(root.join("nested/mapP.txt"), "b").unwrap();
+        std::fs::write(root.join("nested/deep/unrelated.md"), "c").unwrap();
+
+        let result = find_impl(&root, "**/*[aA][pP][pP]*", None, None, None).unwrap();
+        let paths: Vec<&str> = result.matches.iter().map(|m| m.path.as_str()).collect();
+        assert!(paths.contains(&"App.tsx"));
+        assert!(paths.contains(&"nested/mapP.txt"));
+        assert_eq!(paths.len(), 2);
         std::fs::remove_dir_all(root).unwrap();
     }
 

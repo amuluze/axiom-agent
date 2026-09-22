@@ -252,8 +252,12 @@ describe('context budget and projection', () => {
         contentBlocks: [{ type: 'thinking', thinking: 'reason' }],
         toolCalls: [{ id: 'call-1', name: 'echo', rawArguments: '{}', arguments: {} }],
       },
+      {
+        id: 't-call-1', role: 'tool', toolCallId: 'call-1', toolName: 'echo',
+        content: 'ok', isError: false, createdAt: 4,
+      },
     ]
-    expect(buildContextProjection(history).map((message) => message.id)).toEqual(['u1', 'a-thinking-text', 'a-thinking-tool'])
+    expect(buildContextProjection(history).map((message) => message.id)).toEqual(['u1', 'a-thinking-text', 'a-thinking-tool', 't-call-1'])
   })
 
   it('fails closed when a restored checkpoint boundary is missing or splits tool results', () => {
@@ -339,7 +343,7 @@ describe('context budget and projection', () => {
         id: 'a1',
         role: 'assistant',
         content: '',
-        toolCalls: [{ id: 'call-1', name: 'browser', arguments: {} }],
+        toolCalls: [{ id: 'call-1', name: 'browser', arguments: {}, rawArguments: '{}' }],
         stopReason: 'stop',
         createdAt: 2,
       },
@@ -367,8 +371,8 @@ describe('context budget and projection', () => {
         role: 'assistant',
         content: '',
         toolCalls: [
-          { id: 'call-1', name: 'bash', arguments: {} },
-          { id: 'call-2', name: 'ls', arguments: {} },
+          { id: 'call-1', name: 'bash', arguments: {}, rawArguments: '{}' },
+          { id: 'call-2', name: 'ls', arguments: {}, rawArguments: '{}' },
         ],
         stopReason: 'stop',
         createdAt: 2,
@@ -396,8 +400,8 @@ describe('context budget and projection', () => {
         role: 'assistant',
         content: '',
         toolCalls: [
-          { id: 'call-1', name: 'bash', arguments: {} },
-          { id: 'call-2', name: 'screenshot', arguments: {} },
+          { id: 'call-1', name: 'bash', arguments: {}, rawArguments: '{}' },
+          { id: 'call-2', name: 'screenshot', arguments: {}, rawArguments: '{}' },
         ],
         stopReason: 'stop',
         createdAt: 2,
@@ -412,8 +416,10 @@ describe('context budget and projection', () => {
     const projection = buildContextProjection(history)
 
     expect(projection).toHaveLength(4)
-    expect(projection[2]).toMatchObject({ id: 't1' })
-    expect(projection[3]).toMatchObject({ role: 'tool', toolCallId: 'call-2', isError: true })
+    expect(projection[1]).toMatchObject({ id: 't1' })
+    // 占位紧随最后一个 tool 结果之后、user 消息之前（Provider 要求 tool 结果紧随 tool_calls 组）。
+    expect(projection[2]).toMatchObject({ role: 'tool', toolCallId: 'call-2', isError: true })
+    expect(projection[3]).toMatchObject({ id: 'u1' })
   })
 })
 

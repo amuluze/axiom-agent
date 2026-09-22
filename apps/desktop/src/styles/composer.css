@@ -101,7 +101,50 @@
   padding: 14px 14px 10px 14px;
 }
 
+/* 输入区叠层：高亮层在 textarea 之下，只画 token 胶囊底色，文字全由 textarea 渲染
+   ——这样光标、选区、IME 全部保持原生行为。两层必须共享完全相同的排版度量
+   （字号/行高/字体），否则胶囊会与文字错位。
+   inset 负值 + 等值 padding 把层盒向四周扩一圈：overflow: hidden（滚动同步需要）
+   会把行首/首行胶囊超出文本区的圆角端裁平，扩出的绘制余量让胶囊完整呈现，
+   padding 补偿回位保证文字度量与 textarea 仍逐像素一致。 */
+.composer__editor {
+  position: relative;
+}
+
+.composer__editor-highlight {
+  position: absolute;
+  inset: -5px;
+  padding: 5px;
+  overflow: hidden;
+  pointer-events: none;
+  color: transparent;
+  font-size: 1.0385rem;
+  line-height: 1.5;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+/* 引用胶囊：四周留出内边距把文字包住。水平方向用等值负 margin 抵消 padding
+   （行内元素的垂直 margin 不生效，垂直 padding 只扩背景、不推字），因此文字位置
+   分毫不动；圆角取全圆，与下方 chip 行的 999px 圆角同一语言；clone 保证折行逐段圆角。
+   底色与描边逐字取 chip（.composer__mention-badge）的配方，保持同一视觉语言；
+   文字颜色无法跟随（textarea 富文本着色会破坏原生光标/选区/IME），保持正文色。
+   垂直 padding 上 1 下 3 是光学居中补偿：背景按 em 盒（Inter 上 13/下 3）扩展，
+   而路径类墨迹是「上 10.3/下 2.6」，墨迹中心比 em 盒中心高约 1.2px——对称 padding
+   会让文字在胶囊里偏下，上下 padding 错位 2px 把墨迹视觉重心拉回胶囊中心。 */
+.composer__mention-token {
+  border-radius: 999px;
+  margin: 0 -4px;
+  padding: 1px 4px 3px;
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent);
+  box-decoration-break: clone;
+}
+
 .composer__textarea {
+  display: block;
+  position: relative;
+  z-index: 1;
   width: 100%;
   resize: none;
   border: 0;
@@ -122,6 +165,10 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  /* 兜底：控件一律不折行（见下方 nowrap 规则），空间实在不够时整组换行，
+     而不是把文字压成两行或让内容横向溢出被裁切。 */
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 
 .composer__access-mode {
@@ -130,17 +177,26 @@
   gap: 6px;
   padding: 4px 8px;
   border-radius: var(--radius-sm);
-  color: var(--accent-text);
+  color: var(--text-secondary);
   font-size: 1rem;
   font-weight: 500;
 }
 
+/* 免审批是「注意」而非「错误」：取琥珀警示色 + 淡底徽章。红色（--diff-red）留给
+   停止一类破坏性操作，不再作为「用户主动选择的模式」的常驻色。 */
 .composer__access-mode[data-mode='no-approval'] {
-  color: var(--diff-red);
+  color: var(--warn-text);
+  background: var(--warn-soft);
 }
 
 .composer__access-mode:hover {
   background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.composer__access-mode[data-mode='no-approval']:hover {
+  background: color-mix(in srgb, var(--warn) 20%, transparent);
+  color: var(--warn-text);
 }
 
 .composer__access-picker {
@@ -251,7 +307,25 @@
 }
 
 .composer__controls-spacer {
-  flex: 1;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* 交互控件不参与收缩、文字不折行：空间不足时优先牺牲可截断的模型名，
+   而不是把「免审批模式」「稍后跟进」压成两行。 */
+.composer__access-mode,
+.composer__follow-up,
+.composer__budget-trigger,
+.composer__usage,
+.composer__send,
+.composer__stop {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* 模型名是唯一可截断的交互项：它自带 ellipsis，允许先被压缩。 */
+.composer__model-selector {
+  min-width: 0;
 }
 
 /* 上下文预算入口：触发按钮常驻控制行左端，弹层向上展开（同其余菜单）。 */
@@ -259,26 +333,108 @@
   position: relative;
 }
 
-/* 最近一次模型响应的 token 用量（只读展示；数据来自已持久化的 assistant 消息 usage）。 */
+/* 最近一次模型响应的用量环（只读；数据来自已持久化的 assistant 消息 usage）。
+   弧长 = 缓存命中率，明细在悬浮/聚焦时展开——替代原来的四段长文本串，省下底栏横向空间。 */
 .composer__usage {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  padding: 4px 8px;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  /* 元素本体是按钮（键盘可达），但只承载数据展开，故清掉按钮外观与指针暗示。 */
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: default;
   border-radius: var(--radius-sm);
   color: var(--text-tertiary);
-  font-size: 0.9231rem;
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+  outline-offset: 2px;
 }
 
+.composer__usage:hover,
+.composer__usage:focus-visible {
+  background: var(--bg-hover);
+}
+
+/* 环本体：预算水位环与降级路径的命中率环共用同一段 conic-gradient，
+   --hit 由组件注入填充比例，--ring-fill 决定填充色（warn 态由预算入口覆盖）。 */
+.composer__budget-ring,
+.composer__usage-ring {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--ring-fill, var(--accent)) var(--hit, 0%),
+    color-mix(in srgb, var(--text-tertiary) 35%, transparent) 0
+  );
+  -webkit-mask: radial-gradient(circle closest-side, transparent 0 58%, #000 58%);
+  mask: radial-gradient(circle closest-side, transparent 0 58%, #000 58%);
+}
+
+.composer__usage-popover,
+.composer__budget-popover {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  /* 触发点位于控制行右侧，弹层右对齐防溢出（同其余菜单）。 */
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-popover);
+  color: var(--text-primary);
+  font-size: 0.9231rem;
+  white-space: nowrap;
+  z-index: 40;
+}
+
+/* 水位与用量两组数值含义无交集，用分隔线明确分区，避免水位被读成命中率。 */
+.composer__budget-popover > * + * {
+  margin-top: 2px;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.composer__budget-summary,
+.composer__usage-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.composer__popover-title {
+  color: var(--text-tertiary);
+  font-size: 0.8462rem;
+}
+
+.composer__popover-emphasis {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 口径算式：命中率的分母固定是「上报输入」，写出来让数值可自证。 */
+.composer__usage-formula {
+  color: var(--text-tertiary);
+  font-size: 0.8462rem;
+}
+
+/* 只剩环时热区收紧为与用量环同尺寸的方块，两处触发器的尺寸与 hover 底色才对得齐。 */
 .composer__budget-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 4px 8px;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
-  font-size: 0.9231rem;
 }
 
 .composer__budget-trigger:hover {
@@ -286,30 +442,13 @@
   color: var(--text-primary);
 }
 
-/* 迷你水位条位于 bg-input 背景之上，用 inset 描边保证轨道可见。 */
-.composer__budget-bar {
-  display: inline-block;
-  width: 36px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--bg-input);
-  box-shadow: inset 0 0 0 1px var(--border-subtle);
-  overflow: hidden;
-}
-
-.composer__budget-bar-fill {
-  display: block;
-  height: 100%;
-  background: var(--accent);
-  transition: width 120ms ease-out;
-}
-
 .composer__budget-trigger[data-status='warn'] {
   color: var(--warn-text);
 }
 
-.composer__budget-trigger[data-status='warn'] .composer__budget-bar-fill {
-  background: var(--warn);
+/* 需压缩时环与外圈文本一同转琥珀，与面板里的警示口径一致。 */
+.composer__budget-trigger[data-status='warn'] .composer__budget-ring {
+  --ring-fill: var(--warn);
 }
 
 .composer__budget-menu {
@@ -421,6 +560,55 @@
   gap: 2px;
 }
 
+/* ---- 推理强度选择（模型选择器右侧） ---- */
+
+.composer__reasoning {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 1rem;
+}
+
+.composer__reasoning:hover {
+  background: var(--bg-hover);
+}
+
+.composer__reasoning:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.composer__reasoning--off {
+  color: var(--text-muted);
+}
+
+.composer__reasoning-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  min-width: 180px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+  box-shadow: var(--shadow-popover);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.composer__reasoning-error {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-secondary);
+  font-size: 0.8846rem;
+  line-height: 1.5;
+}
+
 /* 上弹弹层整体钳高：会话页 Composer 贴近窗口底部、欢迎页垂直居中，
    静态 100vh 常量覆盖不了两种布局——打开菜单时 useUpwardMenuClamp 实测
    触发器顶缘上方空间写入 --composer-menu-available，回退值只兜未测量的一帧。
@@ -428,7 +616,8 @@
 .composer__workspace-menu,
 .composer__access-menu,
 .composer__model-menu,
-.composer__budget-menu {
+.composer__budget-menu,
+.composer__reasoning-menu {
   max-height: var(--composer-menu-available, min(560px, calc(100vh - 24px)));
   overflow-y: auto;
 }
@@ -437,6 +626,13 @@
   padding: 6px var(--space-3);
   color: var(--text-tertiary);
   font-size: 0.9231rem;
+}
+
+/* 待发送/恢复队列面板移至输入框上方后，作为 form 直接子元素撑满行宽；
+   设计稿 Composer Stack 的队列→卡片间距为 6px，form gap 10px 故收 4px */
+form.composer > .composer__queue {
+  width: 100%;
+  margin-bottom: -4px;
 }
 
 .composer__menu-list {
@@ -480,15 +676,17 @@
   background: var(--bg-hover);
 }
 
+/* 提及弹层（设计稿 NdCPW）：bg-card + subtle 描边 + 10px 圆角，内边距 4px、
+   区块间距 2px；上弹、左右贴输入框宽、最大高 320，覆盖在页面内容之上。 */
 .composer__mention-popover {
   position: absolute;
   bottom: calc(100% + var(--space-2));
   left: 0;
   right: 0;
   max-height: 320px;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
+  gap: 2px;
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -497,89 +695,272 @@
   z-index: 30;
 }
 
+/* 候选区独立滚动：动作行固定在滚动区之外，候选再多也不会把它挤出视野。 */
+.composer__mention-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.composer__mention-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 下钻面包屑：当前目录与「返回上级」，位于标题与候选之间。 */
+.composer__mention-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px 4px;
+  color: var(--text-tertiary);
+  font-size: 0.7692rem;
+}
+
+.composer__mention-crumb-up {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 4px;
+  border-radius: 6px;
+  color: var(--text-secondary);
+}
+
+.composer__mention-crumb-up:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.composer__mention-crumb-path {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 目录候选的「进入」入口：默认弱化，行 hover/键盘高亮时显现。 */
+.composer__mention-item-enter {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  color: var(--text-tertiary);
+  opacity: 0;
+  cursor: pointer;
+}
+
+.composer__mention-item:hover .composer__mention-item-enter,
+.composer__mention-item--active .composer__mention-item-enter,
+.composer__mention-item-enter:focus-visible {
+  opacity: 1;
+}
+
+.composer__mention-item-enter:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* 分区标题（已引用 / 工作区匹配）：弱于候选项，不参与高亮导航。 */
+.composer__mention-group {
+  padding: 5px 8px 1px;
+  color: var(--text-tertiary);
+  font-size: 0.7692rem;
+  letter-spacing: 0.4px;
+}
+
+/* 模式头（at-sign/sparkles/hash + 标题）：三级文字色、10px、0.6px 字距。 */
 .composer__mention-title {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px 4px 12px;
+  min-height: 22px;
+  padding: 0 8px;
   color: var(--text-tertiary);
-  font-size: 0.8462rem;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  font-size: 0.7692rem;
+  letter-spacing: 0.6px;
+}
+
+.composer__mention-divider {
+  flex: none;
+  height: 1px;
+  background: var(--border-subtle);
 }
 
 .composer__mention-item {
   display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  padding: 6px 12px;
-  border-radius: var(--radius-sm);
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
   color: var(--text-primary);
-  font-size: 1rem;
+  font-size: 0.8462rem;
   width: 100%;
   text-align: left;
 }
 
-.composer__mention-item--active {
+.composer__mention-item:hover {
   background: var(--bg-hover);
 }
 
-.composer__mention-item-label {
-  font-family: var(--font-mono);
+/* 键盘高亮与鼠标悬停区分：高亮取 accent 低饱和底 + 左侧色条。 */
+.composer__mention-item--active {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
+/* 候选图标（folder/file-text）：设计稿取二次文字色，与 13px 主文字同高。 */
+.composer__mention-item-icon {
+  flex: none;
+  color: var(--text-secondary);
+}
+
+.composer__mention-item-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 副标题可省略：手动引用的父目录路径不得挤占主标签。 */
 .composer__mention-item-hint {
+  flex: 0 1 auto;
+  max-width: 45%;
+  overflow: hidden;
   color: var(--text-tertiary);
-  font-size: 0.8846rem;
-  margin-left: auto;
+  font-size: 0.7692rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .composer__mention-empty {
-  padding: 8px 12px;
+  padding: 4px 8px;
   color: var(--text-tertiary);
-  font-size: 0.9231rem;
+  font-size: 0.8462rem;
 }
 
+/* 授权动作行固定区：不进滚动，随弹层高度收缩保持可见。 */
+.composer__mention-footer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 底部授权动作行（选择文件…/选择目录…）：候选之后的延续动作，动作间距 12px。 */
 .composer__mention-actions {
   display: flex;
-  gap: 4px;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--border-subtle);
-  margin-bottom: 2px;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 6px 8px;
 }
 
 .composer__mention-action {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 5px 9px;
-  border-radius: var(--radius-sm);
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 0.8462rem;
+}
+
+.composer__mention-action svg {
   color: var(--text-secondary);
-  font-size: 0.9231rem;
 }
 
 .composer__mention-action:hover {
   background: var(--bg-hover);
-  color: var(--text-primary);
+}
+
+.composer__mention-action:focus-visible {
+  outline: 1px solid var(--accent);
 }
 
 .composer__mention-badges {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 6px;
 }
 
+/* 引用 chip：图标 + 类型 + 名称，与粘贴截图缩略图行同一视觉层次。
+   描边取 accent 的同族低透明混合而非中性灰——灰描边压在青色底上显脏，
+   同族描边在 hover 时也能自然加深。 */
 .composer__mention-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 6px;
-  border-radius: var(--radius-sm);
+  gap: 5px;
+  max-width: 220px;
+  padding: 3px 7px 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
+  border-radius: 999px;
   background: var(--accent-soft);
   color: var(--accent-text);
-  font-family: var(--font-mono);
   font-size: 0.9231rem;
+  line-height: 1.45;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.composer__mention-badge:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.composer__mention-badge-icon {
+  flex: none;
+  opacity: 0.85;
+}
+
+/* 类型标签与名称同色系、低一度：中性灰在青色底上显脏，降不透明度保层级。 */
+.composer__mention-badge-kind {
+  flex: none;
+  color: var(--accent-text);
+  font-size: 0.7692rem;
+  letter-spacing: 0.02em;
+  opacity: 0.7;
+}
+
+.composer__mention-badge-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 移除按钮做成正圆形热区：裸「×」贴边太小，hover 给同族圆底衬出可点性。 */
+.composer__mention-badge-remove {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-right: -2px;
+  border-radius: 50%;
+  color: var(--accent-text);
+  opacity: 0.65;
+  transition: background-color 120ms ease, opacity 120ms ease;
+}
+
+.composer__mention-badge:hover .composer__mention-badge-remove {
+  opacity: 1;
+}
+
+.composer__mention-badge-remove:hover,
+.composer__mention-badge-remove:focus-visible {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  opacity: 1;
 }
 
 /* 粘贴截图附件：缩略图 chips 行（textarea 与控件行之间），错误提示同行内联。 */
@@ -635,58 +1016,103 @@
   color: var(--diff-red);
 }
 
+/* 队列卡片（设计稿 K38RI/W3wHMK）：bg-card + subtle 描边 + 8px 圆角的无内边距
+   竖排卡片；恢复草稿卡用 accent 低饱和描边区分。头部/分隔线/行内边距均按稿
+   （头 12px 16px、行 10px 16px、行内 gap 8px）。 */
 .composer__queue {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   background: var(--bg-card);
-  font-size: 0.8846rem;
+  font-size: 1rem;
 }
 
 .composer__queue--recovered {
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--border-subtle));
+  border-color: var(--accent-border-soft);
 }
 
-.composer__queue-heading,
-.composer__queue-list li {
+.composer__queue-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
 }
 
-.composer__queue-heading {
+.composer__queue-head-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-primary);
+}
+
+.composer__queue-divider {
+  flex: none;
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+/* 纯文字按钮（继续/清除未发送/恢复编辑/丢弃/保存）：设计稿明确无图标。 */
+.composer__queue-textbtn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border-radius: 6px;
   color: var(--text-secondary);
+  font-size: 0.9231rem;
+  white-space: nowrap;
 }
 
-.composer__queue-heading button,
-.composer__queue-list button {
-  margin-left: auto;
-  color: var(--accent-text);
+.composer__queue-textbtn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.composer__queue-textbtn--discard {
+  color: var(--diff-red);
+}
+
+.composer__queue-textbtn--discard:hover {
+  color: var(--diff-red);
+  background: var(--danger-soft);
 }
 
 .composer__queue-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .composer__queue-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   min-width: 0;
-  color: var(--text-secondary);
+  padding: 10px var(--space-4);
+}
+
+.composer__queue-list li[data-dragging] {
+  opacity: 0.5;
+}
+
+.composer__queue-grip {
+  flex: none;
+  color: var(--text-tertiary);
+  cursor: grab;
 }
 
 .composer__queue-kind {
-  flex: 0 0 auto;
+  flex: none;
   color: var(--text-tertiary);
+  font-size: 0.9231rem;
+  white-space: nowrap;
 }
 
 .composer__queue-preview {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--text-primary);
@@ -694,9 +1120,104 @@
   white-space: nowrap;
 }
 
-.composer__queue-list .composer__queue-discard {
-  margin-left: 0;
+.composer__queue-note {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: 0.9231rem;
+  white-space: nowrap;
+}
+
+/* 「立即」chip（bg-input 底 + arrow-up）：armed 时 accent 软底提示已放行待注入。 */
+.composer__queue-send {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 0.9231rem;
+  white-space: nowrap;
+}
+
+.composer__queue-send:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.composer__queue-send:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.composer__queue-send--armed,
+.composer__queue-send--armed:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+/* 行内图标按钮（pencil 编辑 / trash 删除）：设计稿 15px，二次/三级文字色。 */
+.composer__queue-iconbtn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border-radius: 6px;
+  color: var(--text-secondary);
+}
+
+.composer__queue-iconbtn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.composer__queue-iconbtn--delete {
+  color: var(--text-tertiary);
+}
+
+.composer__queue-iconbtn--delete:hover {
   color: var(--diff-red);
+  background: var(--danger-soft);
+}
+
+.composer__queue-textbtn:focus-visible,
+.composer__queue-send:focus-visible,
+.composer__queue-iconbtn:focus-visible {
+  outline: 1px solid var(--accent);
+}
+
+/* 队列项操作组：整组贴行末（preview 弹性占满，无需 margin 推挤）。 */
+.composer__queue-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.composer__queue-actions .composer__queue-textbtn,
+.composer__queue-actions .composer__queue-iconbtn {
+  margin-left: 0;
+}
+
+/* 队列项行内编辑：与预览同宽，保持行结构稳定。 */
+.composer__queue-edit {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input, var(--bg-card));
+  color: var(--text-primary);
+  font: inherit;
+  resize: vertical;
+}
+
+.composer__queue-hint {
+  padding: 0 var(--space-4) 10px;
+  color: var(--diff-red);
+  line-height: 1.4;
+  font-size: 0.9231rem;
 }
 
 /* 编辑已发送消息的提示条：与排队区同构，用 accent 边框区别于「待发送队列」。 */

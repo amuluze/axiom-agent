@@ -221,8 +221,7 @@ fn read_verified(app_data: &Path, path: &Path, content_hash: &str) -> Result<Vec
 }
 
 fn sync_directory(path: &Path) -> Result<(), String> {
-    File::open(path)
-        .and_then(|directory| directory.sync_all())
+    crate::storage_paths::sync_directory(path)
         .map_err(|error| format!("同步 Artifact 目录失败：{error}"))
 }
 

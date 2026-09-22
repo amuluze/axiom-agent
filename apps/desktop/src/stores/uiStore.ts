@@ -308,6 +308,9 @@ export const getProjectSkillsEnabled = (): boolean => useUiStore.getState().proj
 interface UiState {
   view: AppView
   settingsSection: SettingsSection
+  /** 运行 OS（'macos' | 'linux' | …，App 启动时经 platform/osRuntime 预热）。
+   * 平台限制提示（Linux 无终端/电脑控制等）的单一 UI 事实源。 */
+  operatingSystem: string
   sidebarCollapsed: boolean
   sidebarUserOverride: boolean
   sidebarCompact: boolean
@@ -341,6 +344,7 @@ interface UiState {
     patch: Partial<Pick<UiState, 'updatePhase' | 'availableUpdate' | 'updateProgress' | 'updateMessage'>>,
   ) => void
   setView: (view: AppView) => void
+  setOperatingSystem: (operatingSystem: string) => void
   setSettingsSection: (section: SettingsSection) => void
   toggleSidebar: () => void
   setSidebarCollapsed: (collapsed: boolean) => void
@@ -389,6 +393,7 @@ void setIdleSleepPrevention(loadPreventIdleSleep()).catch(() => undefined)
 export const useUiStore = create<UiState>((set, get) => ({
   view: 'new-task',
   settingsSection: 'general',
+  operatingSystem: 'macos',
   sidebarCollapsed: false,
   sidebarUserOverride: false,
   sidebarCompact: false,
@@ -425,6 +430,7 @@ export const useUiStore = create<UiState>((set, get) => ({
     set({ recentWorkspacePaths: next })
   },
   setView: (view) => set({ view }),
+  setOperatingSystem: (operatingSystem) => set({ operatingSystem }),
   setSettingsSection: (settingsSection) => set({ settingsSection }),
   toggleSidebar: () => set((state) => state.sidebarCompact
     ? { sidebarOverlayOpen: !state.sidebarOverlayOpen }

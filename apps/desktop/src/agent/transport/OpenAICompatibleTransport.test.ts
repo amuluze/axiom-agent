@@ -162,6 +162,9 @@ describe('OpenAICompatibleTransport', () => {
       providerId: 'generic-openai-compatible',
       secretId: 'provider.dynamic.api-key',
       endpoint: 'https://api.example.com/v1/chat/completions',
+      // 多协议 provider 的 wire 分发与上游会话归因都依赖这两个字段透传到 Rust。
+      modelId: 'model-a',
+      sessionId: 'session-1',
     })
     expect(captured?.body).not.toContain('provider.default.api-key')
     expect(transport.requestByteLength(request)).toBe(
@@ -333,7 +336,9 @@ describe('OpenAICompatibleTransport', () => {
     expect(events.some((event) => event.type === 'done')).toBe(false)
     if (errorEvent?.type === 'error') {
       expect(errorEvent.message).toContain('结束标记')
-      expect(errorEvent.error?.retryable).toBe(false)
+      // 截断按 network 分类：可重试，自动重试接管（isSafeAutoRetryFailure 安全门槛内）。
+      expect(errorEvent.error?.kind).toBe('network')
+      expect(errorEvent.error?.retryable).toBe(true)
     }
   })
 

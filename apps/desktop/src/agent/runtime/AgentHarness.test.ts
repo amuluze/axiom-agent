@@ -92,13 +92,18 @@ class AbortableTransport implements ModelTransport {
   }
 }
 
-const createHarness = (transport: ModelTransport = new StaticTransport(), tools: AgentTool[] = []) =>
+const createHarness = (
+  transport: ModelTransport = new StaticTransport(),
+  tools: AgentTool[] = [],
+  options: { autoDrain?: boolean } = {},
+) =>
   new AgentHarness({
     sessionId: 'session-1',
     systemPrompt: 'safe',
     model: { provider: 'test', model: 'model-1' },
     transport,
     tools,
+    ...options,
   })
 
 const testHookRegistration = (id: string, overrides: { priority?: number; timeoutMs?: number } = {}) => ({
@@ -270,6 +275,35 @@ describe('AgentHarness', () => {
     expect(abortEvents).toEqual([settlement])
   })
 
+  it('keeps paused queue items in the queue instead of the abort settlement when autoDrain is off', async () => {
+    // 契约分叉（invariants §5.2）：autoDrain=false 是「队列暂停」——abort 结算后
+    // steering/follow-up 残留不进 settlement.recovered，而是留在队列跨 run 存活；
+    // next-turn 的保留语义与 autoDrain 无关，不受门控影响。
+    const transport = new AbortableTransport()
+    const harness = createHarness(transport, [], { autoDrain: false })
+    const run = harness.prompt('run')
+    await transport.started
+    await harness.steer('paused steering')
+    await harness.followUp('paused follow-up')
+    await harness.nextTurn('preserve next turn')
+
+    const settlement = await harness.abort()
+    await run
+
+    expect(settlement.queues).toEqual({
+      consumedMessageIds: [],
+      recovered: [],
+      preservedNextTurn: [expect.objectContaining({ content: 'preserve next turn' })],
+      discardedMessageIds: [],
+    })
+    expect(harness.queuedMessages.map(({ kind, content }) => ({ kind, content }))).toEqual([
+      { kind: 'steering', content: 'paused steering' },
+      { kind: 'follow-up', content: 'paused follow-up' },
+      { kind: 'next-turn', content: 'preserve next turn' },
+    ])
+    expect(harness.recoveredMessages).toEqual([])
+  })
+
   it('shares one synchronous phase lock across rebound harness instances', async () => {
     const coordinator = new AgentHarnessOperationCoordinator()
     const transport = new AbortableTransport()
@@ -299,7 +333,7 @@ describe('AgentHarness', () => {
       .rejects.toMatchObject({ code: 'busy' })
     await expect(rebound.host.updateRuntime({ systemPrompt: 'overlap' }))
       .rejects.toMatchObject({ code: 'busy' })
-    expect(await rebound.nextTurn('allowed next turn')).toBe(true)
+    expect((await rebound.nextTurn('allowed next turn')).accepted).toBe(true)
 
     expect(first.requestAbort()).toBe(true)
     expect(first.requestAbort()).toBe(false)
@@ -475,13 +509,13 @@ describe('AgentHarness', () => {
               .rejects.toMatchObject({ code: 'busy' })
             break
           case 4:
-            expect(await harness.steer(`steer-${step}`)).toBe(true)
+            expect((await harness.steer(`steer-${step}`)).accepted).toBe(true)
             break
           case 5:
-            expect(await harness.followUp(`follow-up-${step}`)).toBe(true)
+            expect((await harness.followUp(`follow-up-${step}`)).accepted).toBe(true)
             break
           default:
-            expect(await harness.nextTurn(`next-turn-${step}`)).toBe(true)
+            expect((await harness.nextTurn(`next-turn-${step}`)).accepted).toBe(true)
             break
         }
       }

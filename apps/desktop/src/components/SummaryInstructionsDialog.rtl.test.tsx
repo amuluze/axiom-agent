@@ -62,4 +62,16 @@ describe('SummaryInstructionsDialog (RTL)', () => {
     await user.keyboard('{Escape}')
     expect(onCancel).toHaveBeenCalledTimes(1)
   })
+
+  it('父组件重渲染传入新 onCancel 引用时保留已输入的自定义指令', async () => {
+    const user = userEvent.setup()
+    const { rerender } = render(
+      <SummaryInstructionsDialog mode="compaction" onCancel={vi.fn()} onSubmit={vi.fn()} />,
+    )
+    await user.type(screen.getByPlaceholderText(/重点保留/), '保留关键决定')
+    // App 每次渲染都新建 onCancel 回调；重置 effect 若依赖它，弹层打开期间的
+    // 任意无关重渲染都会清空输入，手动压缩指令因此丢失。
+    rerender(<SummaryInstructionsDialog mode="compaction" onCancel={vi.fn()} onSubmit={vi.fn()} />)
+    expect(screen.getByPlaceholderText(/重点保留/)).toHaveValue('保留关键决定')
+  })
 })

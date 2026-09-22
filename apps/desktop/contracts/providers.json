@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
-  "description": "Provider 单一数据来源。修改后运行 `npm run generate:providers` 重新生成 Rust/TS 数据段并提交。版本推进纪律：纯数据增量（新增模型/新增 provider）transportVersion 保持 '6' 即可，semanticDigest 自动重算；改传输行为（probe 体/header/path 补全）必须手动 bump transportVersion 再重新生成。",
+  "description": "Provider 单一数据来源。修改后运行 `npm run generate:providers` 重新生成 Rust/TS 数据段并提交。版本推进纪律：纯数据增量（新增模型/新增 provider）transportVersion 保持 '10' 即可，semanticDigest 自动重算；改传输行为（probe 体/header/path 补全）必须手动 bump transportVersion 再重新生成。",
   "constants": {
     "timeoutMinMs": 1000,
     "timeoutMaxMs": 300000,
     "timeoutDefaultMs": 60000,
     "maxOutputMin": 1,
-    "maxOutputMax": 64000,
+    "maxOutputMax": 512000,
     "maxOutputDefault": 4096,
     "contextMin": 8192,
     "contextMax": 2000000,
@@ -20,7 +20,7 @@
       "id": "generic-openai-compatible",
       "label": "OpenAI Compatible",
       "apiFormat": "openai-compatible",
-      "transportVersion": "6",
+      "transportVersion": "10",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.openai-compatible.api-key",
@@ -44,7 +44,7 @@
       "id": "custom-openai-compatible",
       "label": "自定义（OpenAI）",
       "apiFormat": "openai-compatible",
-      "transportVersion": "6",
+      "transportVersion": "10",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.custom-openai-compatible.api-key",
@@ -69,7 +69,7 @@
       "id": "openai",
       "label": "OpenAI Responses",
       "apiFormat": "openai-responses",
-      "transportVersion": "6",
+      "transportVersion": "10",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.openai-responses.api-key",
@@ -93,7 +93,7 @@
       "id": "generic-anthropic-compatible",
       "label": "Anthropic Compatible",
       "apiFormat": "anthropic-compatible",
-      "transportVersion": "6",
+      "transportVersion": "10",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.generic-anthropic-compatible.api-key",
@@ -120,7 +120,7 @@
       "id": "custom-anthropic-compatible",
       "label": "自定义（Anthropic）",
       "apiFormat": "anthropic-compatible",
-      "transportVersion": "6",
+      "transportVersion": "10",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.custom-anthropic-compatible.api-key",
@@ -145,7 +145,7 @@
       "id": "zhipu-glm",
       "label": "GLM",
       "apiFormat": "openai-compatible",
-      "transportVersion": "6",
+      "transportVersion": "10",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.zhipu-glm.api-key",
@@ -218,7 +218,7 @@
       "id": "deepseek",
       "label": "DeepSeek",
       "apiFormat": "openai-compatible",
-      "transportVersion": "6",
+      "transportVersion": "10",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.deepseek.api-key",
@@ -267,7 +267,7 @@
       "id": "minimax-chat",
       "label": "MiniMax",
       "apiFormat": "openai-compatible",
-      "transportVersion": "6",
+      "transportVersion": "10",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.minimax-chat.api-key",
@@ -316,7 +316,7 @@
       "id": "ollama",
       "label": "Ollama",
       "apiFormat": "openai-compatible",
-      "transportVersion": "6",
+      "transportVersion": "10",
       "auth": {
         "kind": "none"
       },
@@ -387,7 +387,7 @@
       "id": "gemini",
       "label": "Google Gemini",
       "apiFormat": "openai-compatible",
-      "transportVersion": "6",
+      "transportVersion": "10",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.gemini.api-key",
@@ -444,7 +444,7 @@
       "id": "kimi",
       "label": "Kimi",
       "apiFormat": "openai-compatible",
-      "transportVersion": "6",
+      "transportVersion": "10",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.kimi.api-key",
@@ -493,7 +493,7 @@
       "id": "kimi-coding",
       "label": "Kimi Coding",
       "apiFormat": "anthropic-compatible",
-      "transportVersion": "6",
+      "transportVersion": "10",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.kimi-coding.api-key",
@@ -534,7 +534,7 @@
       "id": "orcarouter",
       "label": "OrcaRouter",
       "apiFormat": "openai-compatible",
-      "transportVersion": "6",
+      "transportVersion": "10",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.orcarouter.api-key",
@@ -600,6 +600,307 @@
           "maxOutputTokens": 16384,
           "input": ["text"],
           "supportsReasoning": true
+        }
+      ]
+    },
+    {
+      "id": "opencode-go",
+      "label": "OpenCode Go",
+      "apiFormat": "openai-compatible",
+      "transportVersion": "2",
+      "auth": {
+        "kind": "api-key",
+        "defaultSecretId": "provider.opencode-go.api-key",
+        "required": true
+      },
+      "supportedCapabilities": { "toolReferences": false, "toolSearch": false },
+      "trustedHosts": ["opencode.ai"],
+      "website": "https://opencode.ai/go",
+      "inviteUrl": "https://opencode.ai/go?ref=QQ1BKKXRTV",
+      "requestHeaders": { "user-agent": "Axiom/{version}" },
+      "sessionHeader": "x-opencode-session",
+      "defaultProfile": {
+        "profileId": "builtin.opencode-go",
+        "endpoint": "https://opencode.ai/zen/go/v1/chat/completions",
+        "modelId": "glm-5.3",
+        "timeoutMs": 60000,
+        "maxOutputTokens": 8192,
+        "contextWindow": 200000,
+        "capabilities": { "toolReferences": false, "toolSearch": false }
+      },
+      "legacySecretIdPrefixes": [],
+      "models": [
+        {
+          "modelId": "glm-5.3",
+          "label": "GLM-5.3 (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 32768,
+          "input": ["text"],
+          "supportsReasoning": true
+        },
+        {
+          "modelId": "glm-5.3-flash",
+          "label": "GLM-5.3 Flash (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 32768,
+          "input": ["text"],
+          "supportsReasoning": true
+        },
+        {
+          "modelId": "glm-5.2",
+          "label": "GLM-5.2 (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 32768,
+          "input": ["text"],
+          "supportsReasoning": true
+        },
+        {
+          "modelId": "glm-5.1",
+          "label": "GLM-5.1 (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 32768,
+          "input": ["text"],
+          "supportsReasoning": true
+        },
+        {
+          "modelId": "kimi-k3",
+          "label": "Kimi K3 (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 32768,
+          "input": ["text"],
+          "supportsReasoning": true
+        },
+        {
+          "modelId": "kimi-k2.7-code",
+          "label": "Kimi K2.7 Code (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 32768,
+          "input": ["text"],
+          "supportsReasoning": true
+        },
+        {
+          "modelId": "kimi-k2.6",
+          "label": "Kimi K2.6 (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 32768,
+          "input": ["text"],
+          "supportsReasoning": true
+        },
+        {
+          "modelId": "longcat-2.0",
+          "label": "LongCat-2.0 (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 16384,
+          "input": ["text"],
+          "supportsReasoning": false
+        },
+        {
+          "modelId": "deepseek-v4-pro",
+          "label": "DeepSeek V4 Pro (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 8192,
+          "input": ["text"],
+          "supportsReasoning": true
+        },
+        {
+          "modelId": "deepseek-v4-flash",
+          "label": "DeepSeek V4 Flash (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 8192,
+          "input": ["text"],
+          "supportsReasoning": true
+        },
+        {
+          "modelId": "deepseek-v4.1-flash",
+          "label": "DeepSeek V4.1 Flash (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 8192,
+          "input": ["text"],
+          "supportsReasoning": true
+        },
+        {
+          "modelId": "deepseek-v4-flash-vision-exp",
+          "label": "DeepSeek V4 Flash Vision Exp (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 8192,
+          "input": ["text", "image"],
+          "supportsReasoning": true
+        },
+        {
+          "modelId": "mimo-v2.5",
+          "label": "MiMo V2.5 (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 16384,
+          "input": ["text"],
+          "supportsReasoning": true
+        },
+        {
+          "modelId": "mimo-v2.5-pro",
+          "label": "MiMo V2.5 Pro (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 16384,
+          "input": ["text"],
+          "supportsReasoning": true
+        },
+        {
+          "modelId": "hy4-preview",
+          "label": "Hy4 Preview (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 16384,
+          "input": ["text"],
+          "supportsReasoning": false
+        },
+        {
+          "modelId": "hy3",
+          "label": "Hy3 (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 16384,
+          "input": ["text"],
+          "supportsReasoning": false
+        },
+        {
+          "modelId": "minimax-m3",
+          "label": "MiniMax M3 (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 32768,
+          "input": ["text"],
+          "supportsReasoning": true,
+          "wire": {
+            "apiFormat": "anthropic-compatible",
+            "endpoint": "https://opencode.ai/zen/go/v1/messages"
+          }
+        },
+        {
+          "modelId": "minimax-m2.7",
+          "label": "MiniMax M2.7 (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 32768,
+          "input": ["text"],
+          "supportsReasoning": true,
+          "wire": {
+            "apiFormat": "anthropic-compatible",
+            "endpoint": "https://opencode.ai/zen/go/v1/messages"
+          }
+        },
+        {
+          "modelId": "minimax-m2.5",
+          "label": "MiniMax M2.5 (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 32768,
+          "input": ["text"],
+          "supportsReasoning": true,
+          "wire": {
+            "apiFormat": "anthropic-compatible",
+            "endpoint": "https://opencode.ai/zen/go/v1/messages"
+          }
+        },
+        {
+          "modelId": "qwen3.8-max",
+          "label": "Qwen3.8 Max (via OpenCode Go)",
+          "contextWindow": 262144,
+          "maxOutputTokens": 32768,
+          "input": ["text"],
+          "supportsReasoning": true,
+          "wire": {
+            "apiFormat": "anthropic-compatible",
+            "endpoint": "https://opencode.ai/zen/go/v1/messages"
+          }
+        },
+        {
+          "modelId": "qwen3.8-flash",
+          "label": "Qwen3.8 Flash (via OpenCode Go)",
+          "contextWindow": 262144,
+          "maxOutputTokens": 32768,
+          "input": ["text"],
+          "supportsReasoning": true,
+          "wire": {
+            "apiFormat": "anthropic-compatible",
+            "endpoint": "https://opencode.ai/zen/go/v1/messages"
+          }
+        },
+        {
+          "modelId": "qwen3.7-max",
+          "label": "Qwen3.7 Max (via OpenCode Go)",
+          "contextWindow": 262144,
+          "maxOutputTokens": 32768,
+          "input": ["text"],
+          "supportsReasoning": true,
+          "wire": {
+            "apiFormat": "anthropic-compatible",
+            "endpoint": "https://opencode.ai/zen/go/v1/messages"
+          }
+        },
+        {
+          "modelId": "qwen3.7-plus",
+          "label": "Qwen3.7 Plus (via OpenCode Go)",
+          "contextWindow": 262144,
+          "maxOutputTokens": 32768,
+          "input": ["text"],
+          "supportsReasoning": true,
+          "wire": {
+            "apiFormat": "anthropic-compatible",
+            "endpoint": "https://opencode.ai/zen/go/v1/messages"
+          }
+        },
+        {
+          "modelId": "qwen3.6-plus",
+          "label": "Qwen3.6 Plus (via OpenCode Go)",
+          "contextWindow": 262144,
+          "maxOutputTokens": 32768,
+          "input": ["text"],
+          "supportsReasoning": true,
+          "wire": {
+            "apiFormat": "anthropic-compatible",
+            "endpoint": "https://opencode.ai/zen/go/v1/messages"
+          }
+        },
+        {
+          "modelId": "grok-4.6",
+          "label": "Grok 4.6 (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 32768,
+          "input": ["text"],
+          "supportsReasoning": true,
+          "wire": {
+            "apiFormat": "openai-responses",
+            "endpoint": "https://opencode.ai/zen/go/v1/responses"
+          }
+        },
+        {
+          "modelId": "gpt-5.6-luna",
+          "label": "GPT 5.6 Luna (via OpenCode Go)",
+          "contextWindow": 272000,
+          "maxOutputTokens": 32768,
+          "input": ["text"],
+          "supportsReasoning": true,
+          "wire": {
+            "apiFormat": "openai-responses",
+            "endpoint": "https://opencode.ai/zen/go/v1/responses"
+          }
+        },
+        {
+          "modelId": "muse-spark-1.3-contributor",
+          "label": "Muse Spark 1.3 Contributor (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 8192,
+          "input": ["text"],
+          "supportsReasoning": false,
+          "wire": {
+            "apiFormat": "openai-responses",
+            "endpoint": "https://opencode.ai/zen/go/v1/responses"
+          }
+        },
+        {
+          "modelId": "muse-spark-1.2-contributor",
+          "label": "Muse Spark 1.2 Contributor (via OpenCode Go)",
+          "contextWindow": 200000,
+          "maxOutputTokens": 8192,
+          "input": ["text"],
+          "supportsReasoning": false,
+          "wire": {
+            "apiFormat": "openai-responses",
+            "endpoint": "https://opencode.ai/zen/go/v1/responses"
+          }
         }
       ]
     }

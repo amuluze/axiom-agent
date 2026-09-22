@@ -1,4 +1,5 @@
 use crate::{
+    platform_process::{signal_process_group, TreeSignal},
     sandbox::{self, CommandTier},
     workspace_access::{authorized_root_for, WorkspaceAccessState},
     workspace_approval::WorkspaceApprovalState,
@@ -32,9 +33,12 @@ const TERMINATION_GRACE_MS: u64 = 500;
 /// 子进程环境透传白名单（浏览器会话等其它子进程通道同样复用：env_clear 后仅
 /// 保留这些与用户身份/语言相关的无敏感变量，API Key 一律不进入子进程）。
 pub(crate) const PASSTHROUGH_ENVIRONMENT: &[&str] = &[
-    "HOME", "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "SHELL", "TERM", "TMPDIR", "USER",
+    "CONTAINER_HOST", "DOCKER_HOST", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "SHELL",
+    "TERM", "TMPDIR", "USER",
 ];
-/// Shell used to execute workspace commands.
+/// Shell used to execute workspace commands（unix；Windows 运行期解析 Git for
+/// Windows 的 bash，见 [`default_shell_command`]）。
+#[cfg(unix)]
 const DEFAULT_SHELL: &str = "/bin/bash";
 /// 自由命令模型的最小安全基线：拒绝 sudo 提升权限。定位为"减速带"而非安全边界，
 /// 逐次审批才是主要安全阀。匹配命令上下文边界（行首/换行/分号/&&/|/子shell/$()），
@@ -307,19 +311,6 @@ enum PipeEvent {
     Error(CommandStream, String),
 }
 
-fn validate_request_id(value: &str) -> Result<&str, String> {
-    let value = value.trim();
-    if value.is_empty()
-        || value.len() > 128
-        || !value
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
-    {
-        return Err("workspace command request ID contains unsupported characters".into());
-    }
-    Ok(value)
-}
-
 fn resolve_command_cwd(root: &Path, raw_cwd: Option<&str>) -> Result<PathBuf, String> {
     let canonical_root = std::fs::canonicalize(root)
         .map_err(|error| format!("failed to resolve authorized workspace: {error}"))?;
@@ -359,7 +350,7 @@ fn validate_request(
     root: &Path,
     request: WorkspaceCommandRequest,
 ) -> Result<ValidatedCommand, String> {
-    let request_id = validate_request_id(&request.request_id)?.to_string();
+    let request_id = crate::request_id::validate_request_id("workspace command", &request.request_id)?.to_string();
     let workspace_root = std::fs::canonicalize(root)
         .map_err(|error| format!("failed to resolve authorized workspace: {error}"))?;
     let command = request.command.trim().to_string();
@@ -558,7 +549,84 @@ fn configure_environment(
     }
 }
 
+/// 构造执行命令的 bash：unix 固定 `/bin/bash`；Windows 解析 Git for Windows 的
+/// bash.exe——`C:\Windows\System32\bash.exe` 与 WindowsApps 下的同名文件是 WSL 桩，
+/// 会把命令投进 Linux 子系统（路径/环境语义完全不同），显式排除。解析结果进程内
+/// 缓存一次；找不到时 fail-closed 并给出可行动指引。
+fn default_shell_command(command: &str) -> Result<Command, String> {
+    #[cfg(unix)]
+    {
+        let mut bash = Command::new(DEFAULT_SHELL);
+        bash.arg("-c").arg(command);
+        Ok(bash)
+    }
+    #[cfg(windows)]
+    {
+        static RESOLVED_BASH: OnceLock<Option<PathBuf>> = OnceLock::new();
+        let bash = RESOLVED_BASH
+            .get_or_init(windows_bash_path)
+            .clone()
+            .ok_or_else(|| {
+                "未找到 bash.exe：Windows 上工作区命令经 Git for Windows 的 bash 执行，\
+                 请安装 Git for Windows（git-scm.com/download/win）后重启 Axiom"
+                    .to_string()
+            })?;
+        let mut bash = Command::new(bash);
+        bash.arg("-c").arg(command);
+        Ok(bash)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = command;
+        Err("workspace command execution is unsupported on this platform".into())
+    }
+}
+
+/// 定位 Windows 下的真实 bash.exe（仅 windows 目标编译）。
+#[cfg(windows)]
+fn windows_bash_path() -> Option<PathBuf> {
+    // 显式覆盖入口（便携/非标准安装）：AXIOM_BASH_PATH 指向具体 bash.exe。
+    if let Ok(custom) = std::env::var("AXIOM_BASH_PATH") {
+        let candidate = PathBuf::from(custom);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    // git.exe 同源优先：<git>\cmd\git.exe → <git>\bin\bash.exe（Git for Windows
+    // 标准布局），保证与用户实际使用的 git 同一发行版。
+    if let Ok(output) = std::process::Command::new("where").arg("git").output() {
+        if output.status.success() {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let git_path = PathBuf::from(line.trim());
+                if let Some(git_root) = git_path.parent().and_then(Path::parent) {
+                    let candidate = git_root.join("bin").join("bash.exe");
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+    }
+    // PATH 兜底：跳过 WSL 桩目录（System32 / WindowsApps）。
+    let path_var = std::env::var_os("PATH")?;
+    for directory in std::env::split_paths(&path_var) {
+        let candidate = directory.join("bash.exe");
+        if !candidate.is_file() {
+            continue;
+        }
+        let directory_lower = directory.to_string_lossy().to_ascii_lowercase();
+        let is_wsl_stub =
+            directory_lower.contains("system32") || directory_lower.ends_with("windowsapps");
+        if !is_wsl_stub {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 /// 沙箱宿主 HOME（seatbelt profile 参数与工具链配置洞的基准）。
+/// （仅沙箱路径消费；Windows 无沙箱后端，保留编译。）
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn host_home() -> Result<PathBuf, String> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -568,6 +636,8 @@ fn host_home() -> Result<PathBuf, String> {
 /// 创建会话级沙箱 tmpdir（`$TMPDIR/axiom-<request_id>/`），返回 canonical 化路径。
 /// canonicalize 必要：seatbelt 按解析后的 vnode 判定，`/tmp` 是 `/private/tmp` 的符号链接，
 /// 非 canonical 路径会导致文件操作被拒（冒烟实证）。
+/// （仅沙箱路径消费；Windows 无沙箱后端，保留编译。）
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn prepare_sandbox_tmpdir(request_id: &str) -> Result<PathBuf, String> {
     let base = std::env::var_os("TMPDIR")
         .map(PathBuf::from)
@@ -581,6 +651,9 @@ fn prepare_sandbox_tmpdir(request_id: &str) -> Result<PathBuf, String> {
 
 /// profile 文件目录：数据根下的应用私有路径（`~/.axiom/sandbox/`，0700）。
 /// 放共享 /tmp 存在被篡改为宽松规则的攻击面（docs/os-sandbox-plan.md §7.1）。
+/// 仅 seatbelt 后端需要（bwrap 参数即声明，无 profile 文件落盘，同时消除了
+/// 临时 .sb 文件的 TOCTOU 面）。
+#[cfg(target_os = "macos")]
 fn sandbox_profile_dir(home: &Path) -> Result<PathBuf, String> {
     let dir = crate::storage_paths::ensure_data_root_at(home)?.join("sandbox");
     std::fs::create_dir_all(&dir)
@@ -589,18 +662,23 @@ fn sandbox_profile_dir(home: &Path) -> Result<PathBuf, String> {
 }
 
 /// 沙箱会话序号：保证同进程内并发命令的 profile 文件 / 会话 tmpdir 命名唯一。
+/// （仅沙箱路径消费；Windows 无沙箱后端，保留编译。）
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 static SANDBOX_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// 命令结束后清理 profile 文件与会话 tmpdir。spawn 后 crash/SIGKILL 的残留由
 /// 下次初始化时的 mtime 清理兜底（docs/os-sandbox-plan.md §7.1）。
 struct SandboxArtifacts {
-    profile_path: PathBuf,
+    /// seatbelt profile 文件；bwrap 后端无 profile 文件（None，无需清理）。
+    profile_path: Option<PathBuf>,
     tmpdir: Option<PathBuf>,
 }
 
 impl Drop for SandboxArtifacts {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.profile_path);
+        if let Some(profile_path) = &self.profile_path {
+            let _ = std::fs::remove_file(profile_path);
+        }
         if let Some(tmpdir) = &self.tmpdir {
             let _ = std::fs::remove_dir_all(tmpdir);
         }
@@ -632,41 +710,26 @@ async fn read_pipe<R>(
     }
 }
 
-fn signal_process_group(process_id: u32, signal: i32) -> Result<bool, String> {
-    let result = unsafe { libc::kill(-(process_id as i32), signal) };
-    if result == 0 {
-        return Ok(true);
-    }
-    let error = std::io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::ESRCH) {
-        Ok(false)
-    } else {
-        Err(format!(
-            "failed to signal workspace command process group: {error}"
-        ))
-    }
-}
-
 async fn wait_after_termination(
     process_id: u32,
     wait: &mut std::pin::Pin<Box<impl std::future::Future<Output = std::io::Result<ExitStatus>>>>,
 ) -> Result<ExitStatus, String> {
-    let _ = signal_process_group(process_id, libc::SIGTERM)?;
+    let _ = signal_process_group(process_id, TreeSignal::Graceful)?;
     match timeout(Duration::from_millis(TERMINATION_GRACE_MS), wait.as_mut()).await {
         Ok(status) => status.map_err(|error| error.to_string()),
         Err(_) => {
-            let _ = signal_process_group(process_id, libc::SIGKILL)?;
+            let _ = signal_process_group(process_id, TreeSignal::Force)?;
             wait.as_mut().await.map_err(|error| error.to_string())
         }
     }
 }
 
 async fn terminate_remaining_process_group(process_id: u32) -> Result<(), String> {
-    if !signal_process_group(process_id, libc::SIGTERM)? {
+    if !signal_process_group(process_id, TreeSignal::Graceful)? {
         return Ok(());
     }
     sleep(Duration::from_millis(50)).await;
-    let _ = signal_process_group(process_id, libc::SIGKILL)?;
+    let _ = signal_process_group(process_id, TreeSignal::Force)?;
     Ok(())
 }
 
@@ -682,19 +745,20 @@ async fn execute_command<F>(
 where
     F: FnMut(WorkspaceCommandEvent) -> Result<(), String>,
 {
+    // 沙箱包装路径才赋值（cfg 裁剪后 Windows 上 mut 未消费）。
+    #[cfg_attr(target_os = "windows", allow(unused_mut))]
     let mut sandbox_artifacts: Option<SandboxArtifacts> = None;
     // 两级分类都优先在沙箱内执行（对齐 codex：网络命令 = 沙箱 + 网络启用，而非
     // 脱离沙箱裸跑）——写边界与凭据 deny 对网络命令同样生效，修复审批后的
     // `npm install` 可写全盘/读凭据的缺口。SandboxSafe 沙箱不可用时 fail-closed；
     // NetworkRequired 回退常规用户权限执行（该分级从不以沙箱为先决条件，审批闸
     // 已比 SandboxSafe 重一层——原生对话框/automatic 模式）。
-    let network_policy = match command.tier {        CommandTier::SandboxSafe => {
+    let network_policy = match command.tier {
+        CommandTier::SandboxSafe => {
             if !sandbox::sandbox_available() {
-                return Err(
-                    "OS sandbox (sandbox-exec) is unavailable; refusing to run a sandbox-tier \
-                     command without sandboxing"
-                        .into(),
-                );
+                return Err(sandbox::sandbox_unavailable_error(
+                    "refusing to run a sandbox-tier command without sandboxing",
+                ));
             }
             Some(sandbox::NetworkPolicy::LoopbackOnly)
         }
@@ -709,47 +773,91 @@ where
     // seatbelt deny 捕获器（沙箱路径才有；可观测性降级为 None 不阻断命令）。
     let mut denial_capture: Option<sandbox::SandboxDenialCapture> = None;
     let mut process = if let Some(network_policy) = network_policy {
-        // seatbelt 沙箱包装路径：sandbox-exec -D WORKSPACE=... -f profile.sb /bin/bash -c cmd。
-        // deny 捕获器先于命令派生启动（订阅建立需要时间；失败静默降级为无捕获）。
-        denial_capture = sandbox::SandboxDenialCapture::start();
-        let home = host_home()?;
-        // 沙箱会话 id：request_id + 进程内原子序号，保证并发命令（即使 request_id
-        // 相同，如测试并行 / retry）不共用 profile 文件与会话 tmpdir。
-        let sequence = SANDBOX_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let sandbox_id = format!("{}-{sequence}", command.request_id);
-        let sandbox_tmpdir = prepare_sandbox_tmpdir(&sandbox_id)?;
-        let sandbox_dir = sandbox_profile_dir(&home)?;
-        let profile = sandbox::generate_sandbox_profile(
-            &command.workspace_root,
-            &home,
-            &sandbox_tmpdir,
-            &sandbox_dir,
-            &sandbox_id,
-            network_policy,
-            sandbox::command_requires_vcs_credentials(&command.command),
-        )?;
-        let mut sandboxed = Command::new("/usr/bin/sandbox-exec");
-        sandboxed
-            .arg("-D")
-            .arg(format!("WORKSPACE={}", command.workspace_root.display()))
-            .arg("-D")
-            .arg(format!("HOME={}", home.display()))
-            .arg("-D")
-            .arg(format!("TMPDIR={}", sandbox_tmpdir.display()))
-            .arg("-f")
-            .arg(&profile.path)
-            .arg(DEFAULT_SHELL)
-            .arg("-c")
-            .arg(&command.command);
-        sandbox_artifacts = Some(SandboxArtifacts {
-            profile_path: profile.path,
-            tmpdir: Some(sandbox_tmpdir),
-        });
-        sandboxed
+        // 沙箱包装路径：macOS 为 sandbox-exec -D ... -f profile.sb /bin/bash -c cmd，
+        // Linux 为 bwrap [args] -- /bin/bash -c cmd。deny 捕获器先于命令派生启动
+        // （订阅建立需要时间；失败静默降级为无捕获——bwrap 无统一日志面，Linux 上
+        // 本就 spawn 失败返回 None，不阻断命令）。整个分支仅 macOS/Linux 参与编译；
+        // 其余平台 network_policy 恒为 None（SandboxSafe fail-closed、NetworkRequired
+        // 回退无沙箱路径），下方防御性不可达兜住类型。
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            denial_capture = sandbox::SandboxDenialCapture::start();
+            let home = host_home()?;
+            // 沙箱会话 id：request_id + 进程内原子序号，保证并发命令（即使 request_id
+            // 相同，如测试并行 / retry）不共用 profile 文件 / tmpdir / 会话命名空间。
+            let sequence = SANDBOX_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let sandbox_id = format!("{}-{sequence}", command.request_id);
+            let sandbox_tmpdir = prepare_sandbox_tmpdir(&sandbox_id)?;
+            #[cfg(target_os = "macos")]
+            let sandboxed = {
+                let sandbox_dir = sandbox_profile_dir(&home)?;
+                let profile = sandbox::generate_sandbox_profile(
+                    &command.workspace_root,
+                    &home,
+                    &sandbox_tmpdir,
+                    &sandbox_dir,
+                    &sandbox_id,
+                    network_policy,
+                    sandbox::command_requires_vcs_credentials(&command.command),
+                )?;
+                let mut wrapped = Command::new("/usr/bin/sandbox-exec");
+                wrapped
+                    .arg("-D")
+                    .arg(format!("WORKSPACE={}", command.workspace_root.display()))
+                    .arg("-D")
+                    .arg(format!("HOME={}", home.display()))
+                    .arg("-D")
+                    .arg(format!("TMPDIR={}", sandbox_tmpdir.display()))
+                    .arg("-f")
+                    .arg(&profile.path)
+                    .arg(DEFAULT_SHELL)
+                    .arg("-c")
+                    .arg(&command.command);
+                sandbox_artifacts = Some(SandboxArtifacts {
+                    profile_path: Some(profile.path),
+                    tmpdir: Some(sandbox_tmpdir),
+                });
+                wrapped
+            };
+            #[cfg(target_os = "linux")]
+            let sandboxed = {
+            // bwrap 参数生成是纯函数（macOS 构建同样单测其语义）；容器 socket 与
+            // resolv.conf 重绑目标在此读取宿主状态后传入。
+            let args = sandbox::generate_bwrap_args(&sandbox::BwrapSandboxSpec {
+                workspace_root: &command.workspace_root,
+                home: &home,
+                tmpdir: &sandbox_tmpdir,
+                network: network_policy,
+                allow_vcs_credentials: sandbox::command_requires_vcs_credentials(&command.command),
+                var_run_is_symlink: std::path::Path::new("/var/run")
+                    .symlink_metadata()
+                    .map(|meta| meta.file_type().is_symlink())
+                    .unwrap_or(false),
+                resolv_conf_rebind: sandbox::resolv_conf_rebind_path().as_deref(),
+                container_sockets: &sandbox::container_sockets_for_command(&home),
+            });
+            let mut wrapped = Command::new(sandbox::sandbox_program());
+            wrapped
+                .args(args)
+                .arg(DEFAULT_SHELL)
+                .arg("-c")
+                .arg(&command.command);
+            sandbox_artifacts = Some(SandboxArtifacts {
+                profile_path: None,
+                tmpdir: Some(sandbox_tmpdir),
+            });
+            wrapped
+        };
+            sandboxed
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            // 防御性不可达（见上）：本平台 network_policy 恒为 None。
+            let _ = network_policy;
+            unreachable!("sandboxed execution requires macOS or Linux")
+        }
     } else {
-        let mut plain = Command::new(DEFAULT_SHELL);
-        plain.arg("-c").arg(&command.command);
-        plain
+        default_shell_command(&command.command)?
     };
     process
         .current_dir(&command.cwd)
@@ -764,11 +872,9 @@ where
             .as_ref()
             .and_then(|artifacts| artifacts.tmpdir.as_deref()),
     );
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        process.as_std_mut().process_group(0);
-    }
+    // 独立进程组（unix）：取消/超时按组终止；Windows 无进程组可设（树终止走
+    // spawn 后挂载的 Job Object，见 platform_process::attach_process_job）。
+    crate::platform_process::spawn_in_new_process_group(process.as_std_mut());
 
     let started_at = Instant::now();
     let mut child: Child = process
@@ -777,6 +883,9 @@ where
     let process_id = child
         .id()
         .ok_or_else(|| "workspace command process ID is unavailable".to_string())?;
+    // Windows：挂入 KILL_ON_JOB_CLOSE 的 Job（取消/超时整树终止；收尾清残留
+    // 后台子进程）。unix：进程组已在 spawn 前设置，无需处理。
+    crate::platform_process::attach_process_job(process_id);
     // 沙箱命令的进程组 id == sandbox-exec 根进程 pid（process_group(0)），deny
     // 归属从这一刻起生效。
     if let Some(capture) = denial_capture.as_ref() {
@@ -870,6 +979,9 @@ where
     stderr_task
         .await
         .map_err(|error| format!("workspace command stderr task failed: {error}"))?;
+    // 命令收尾：摘除 Job（KILL_ON_JOB_CLOSE 清掉仍存活的残留后台子进程，
+    // 对齐 unix 组杀语义）。此后所有路径都已终止命令进程树。
+    crate::platform_process::detach_process_job(process_id);
     while let Ok(event) = pipe_receiver.try_recv() {
         match event {
             PipeEvent::Chunk(stream, bytes) => {
@@ -966,7 +1078,7 @@ pub(crate) fn cancel_workspace_command(
     request_id: String,
     state: State<'_, WorkspaceCommandState>,
 ) -> Result<bool, String> {
-    let request_id = validate_request_id(&request_id)?;
+    let request_id = crate::request_id::validate_request_id("workspace command", &request_id)?;
     let commands = state
         .commands
         .lock()
@@ -982,6 +1094,7 @@ pub(crate) fn cancel_workspace_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
     use tempfile::TempDir;
 
@@ -1004,7 +1117,9 @@ mod tests {
             .collect()
     }
 
+    // /usr/bin、/bin 是 unix 系统路径约定（Linux usrmerge/macOS 形态断言）。
     #[test]
+    #[cfg(unix)]
     fn appends_existing_toolchain_dirs_after_inherited_entries() {
         // GUI 启动形态：继承 launchd 最小 PATH，用户工具链目录全部缺失。
         let workspace = TempDir::new().unwrap();
@@ -1021,8 +1136,10 @@ mod tests {
 
         // 顺序：继承条目在前（不覆盖用户 shell 已注入的优先级），工具链在后。
         // 不断言总数——系统约定目录（/opt/homebrew 等）按机器是否安装追加，属预期。
-        assert_eq!(entries[0], PathBuf::from("/usr/bin"));
-        assert_eq!(entries[1], PathBuf::from("/bin"));
+        // 断言用 canonical 形态：Linux usrmerge 下 /bin 是 /usr/bin 的符号链接，
+        // canonicalize 后与 /usr/bin 合并（macOS 上 /bin 是真实目录，两种形态各自成立）。
+        assert_eq!(entries[0], std::fs::canonicalize("/usr/bin").unwrap());
+        assert_eq!(entries[1], std::fs::canonicalize("/bin").unwrap());
         for dir in [".local/share/mise/shims", ".cargo/bin", ".local/bin"] {
             let canonical = std::fs::canonicalize(home.path().join(dir)).unwrap();
             assert!(entries.contains(&canonical), "工具链目录应被追加: {dir}");
@@ -1267,25 +1384,35 @@ mod tests {
     #[test]
     fn resolves_only_real_directories_inside_the_authorized_workspace() {
         let workspace = TempDir::new().unwrap();
+        #[cfg_attr(target_os = "windows", allow(unused_variables))]
         let outside = TempDir::new().unwrap();
         std::fs::create_dir(workspace.path().join("nested")).unwrap();
-        symlink(outside.path(), workspace.path().join("outside-link")).unwrap();
+        #[cfg(unix)]
+        {
+            symlink(outside.path(), workspace.path().join("outside-link")).unwrap();
+            assert!(resolve_command_cwd(workspace.path(), Some("outside-link")).is_err());
+        }
         assert_eq!(
             resolve_command_cwd(workspace.path(), Some("nested")).unwrap(),
             std::fs::canonicalize(workspace.path().join("nested")).unwrap()
         );
         assert!(resolve_command_cwd(workspace.path(), Some("../outside")).is_err());
-        assert!(resolve_command_cwd(workspace.path(), Some("outside-link")).is_err());
     }
 
     #[tokio::test]
     async fn executes_a_shell_command_and_streams_output() {
         let workspace = TempDir::new().unwrap();
-        let command = validate_request(
-            workspace.path(),
-            request("echo hello world"),
-        )
-        .unwrap();
+        // NetworkRequired 是跨平台可执行的 tier 形态（Phase B：tier 由 lease 绑定传入）：
+        // macOS 走沙箱网络档（echo 在沙箱内可跑），Linux 暂无沙箱回退常规执行——
+        // 本用例验证的「执行 + 流式输出」路径与 tier 的沙箱包装无关。
+        let command = ValidatedCommand {
+            request_id: "echo-command".into(),
+            command: "echo hello world".into(),
+            cwd: workspace.path().to_path_buf(),
+            workspace_root: std::fs::canonicalize(workspace.path()).unwrap(),
+            timeout: None,
+            tier: CommandTier::NetworkRequired,
+        };
         let (_sender, receiver) = watch::channel(false);
         let mut output = Vec::new();
         let outcome = execute_command(command, receiver, |event| {
@@ -1316,7 +1443,9 @@ mod tests {
             cwd: workspace.path().to_path_buf(),
             workspace_root: std::fs::canonicalize(workspace.path()).unwrap(),
             timeout: None,
-            tier: CommandTier::SandboxSafe,
+            // NetworkRequired：跨平台可执行形态（Linux 暂无沙箱时 SandboxSafe 会被
+            // fail-closed 拒绝）；取消/进程组回收路径与 tier 的沙箱包装无关。
+            tier: CommandTier::NetworkRequired,
         };
         let (sender, receiver) = watch::channel(false);
         let cancel = tokio::spawn(async move {
@@ -1329,7 +1458,13 @@ mod tests {
             .unwrap();
         cancel.await.unwrap();
         assert!(outcome.cancelled);
-        assert!(started.elapsed() < Duration::from_secs(3));
+        // Windows 树终止经 taskkill 两跳（宽档对控制台程序无效后强档兜底），
+        // 单次调用本身可到秒级，预算放宽到 10s；unix 组信号保持 3s。
+        #[cfg(unix)]
+        let budget = Duration::from_secs(3);
+        #[cfg(windows)]
+        let budget = Duration::from_secs(10);
+        assert!(started.elapsed() < budget);
     }
 
     #[tokio::test]
@@ -1368,6 +1503,10 @@ mod tests {
         };
         let (_sender, receiver) = watch::channel(false);
         let mut output = Vec::new();
+        // started 仅用于 Windows 分支的回收时序断言（unix 分支按 pid 精确探测），
+        // 绑定本身随分支门控，避免非 Windows 构建的未使用告警。
+        #[cfg(target_os = "windows")]
+        let started = Instant::now();
         let outcome = execute_command(command, receiver, |event| {
             if let Some(chunk) = event.chunk {
                 output.extend(chunk);
@@ -1376,17 +1515,38 @@ mod tests {
         })
         .await
         .unwrap();
-        let process_id = String::from_utf8(output)
-            .unwrap()
-            .trim()
-            .parse::<i32>()
-            .unwrap();
         assert_eq!(outcome.exit_code, Some(0));
-        assert_eq!(unsafe { libc::kill(process_id, 0) }, -1);
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::ESRCH)
-        );
+        #[cfg(unix)]
+        {
+            // 后台 sleep 必须随进程组回收（unix 组信号）。清理是异步落地的
+            // （信号后内核回收），给一段重试窗口再断言 pid 已死（ESRCH 精确）。
+            let process_id = String::from_utf8(output)
+                .unwrap()
+                .trim()
+                .parse::<i32>()
+                .unwrap();
+            let mut reaped = false;
+            for _ in 0..100 {
+                if !crate::platform_process::process_alive(process_id as u32) {
+                    reaped = true;
+                    break;
+                }
+                sleep(Duration::from_millis(50)).await;
+            }
+            assert!(reaped, "background process must be reaped after command exit");
+        }
+        #[cfg(windows)]
+        {
+            // msys2 的 `$!` 是合成 pid（与 Windows pid 无关），无法按 pid 探测；
+            // 以时序断言回收语义：bash 正常退出后，若 Job 未回收持有管道写端的
+            // 后台 sleep，stdout_task 会阻塞到 sleep 自然超时（实测 30s）。
+            // 回收正常时管道 EOF 即刻到达（实测 <1s），预算放宽容忍并行满载。
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "后台进程必须随 Job 回收，而不是阻塞到其自然退出: {:?}",
+                started.elapsed()
+            );
+        }
     }
 
     #[test]

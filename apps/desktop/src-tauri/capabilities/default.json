@@ -4,7 +4,7 @@
   "description": "Least-privilege capabilities for the local Axiom main window",
   "local": true,
   "windows": ["main"],
-  "platforms": ["macOS"],
+  "platforms": ["macOS", "linux", "windows"],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",

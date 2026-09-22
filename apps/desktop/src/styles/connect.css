@@ -1,52 +1,94 @@
-/* 连接面板：侧边栏底部浮层（独立于 ShellLayout 的固定定位层） */
-.connect-panel {
+/* 连接弹窗（.pen/axiom.pen B9OLF 常态 / llrFR 操作失败态）：全屏遮罩上的
+ * 居中模态，与反馈弹窗同一模式（backdrop + 居中卡片）。字号一律用 rem 挂接
+ * 全局 UI 字号缩放（根字号 13px：8px=0.6154rem、11px=0.8462rem、12px=0.9231rem、
+ * 13px=1rem、14px=1.0769rem）。设计稿弹窗宽 620、高随内容（常态 368 / 错误 424）。 */
+
+.connect-backdrop {
   position: fixed;
-  left: var(--sidebar-width);
-  top: var(--window-titlebar-height);
-  bottom: 0;
-  width: 320px;
+  inset: 0;
+  background: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
   z-index: 40;
-  background: var(--bg-card);
-  border-right: 1px solid var(--border-subtle);
-  box-shadow: var(--shadow-popover);
+}
+
+.connect-dialog {
   display: flex;
   flex-direction: column;
-  font-size: 1rem;
+  width: 620px;
+  max-width: calc(100vw - 32px);
+  max-height: min(720px, calc(100vh - 48px));
+  /* 设计稿弹窗填充 $bg-main（比卡片更暗一档），平台卡/绑定行用 $bg-card 提亮 */
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-popover);
+  overflow: hidden;
   color: var(--text-primary);
 }
 
-.connect-panel__header {
+.connect-dialog__header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: var(--space-3) var(--space-4);
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5) var(--space-3);
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.connect-panel__header-title {
-  font-size: 1.0769rem;
-  font-weight: 600;
+.connect-dialog__badge {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  color: var(--accent-text);
 }
 
-.connect-panel__close {
-  color: var(--text-tertiary);
-  width: 24px;
-  height: 24px;
+.connect-dialog__heading {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.connect-dialog__title {
+  margin: 0;
+  font-size: 1.0769rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.connect-dialog__subtitle {
+  margin: 0;
+  font-size: 0.9231rem;
+  color: var(--text-secondary);
+}
+
+.connect-dialog__close {
+  width: 28px;
+  height: 28px;
+  flex: none;
   border-radius: var(--radius-sm);
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  color: var(--text-secondary);
 }
 
-.connect-panel__close:hover {
+.connect-dialog__close:hover {
   color: var(--text-primary);
   background: var(--bg-hover);
 }
 
-.connect-panel__body {
+.connect-dialog__body {
   flex: 1;
   overflow-y: auto;
-  padding: var(--space-3) var(--space-4) var(--space-5);
+  padding: var(--space-4) var(--space-5) var(--space-5);
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
@@ -65,8 +107,12 @@
 }
 
 .connect-panel__hint {
-  font-size: 0.9231rem;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
+}
+
+.connect-panel__spacer {
+  flex: 1;
 }
 
 .connect-panel__loading {
@@ -76,17 +122,22 @@
   padding: var(--space-3);
 }
 
-/* 出站回发失败提示条：聊天侧无法自述，必须在桌面侧给出排查入口 */
-.connect-panel__reply-error {
+/* 失败提示条（设计稿 llrFR 顶部 Error Banner）：danger-soft 底 + 警示图标 +
+ * 可关闭。回发失败与动作失败同构同色（都是必须被看见的错误），只以文案区分。 */
+.connect-panel__reply-error,
+.connect-panel__action-error {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  padding: 10px 12px;
   border-radius: var(--radius-sm);
   background: var(--danger-soft);
-  border: 1px solid var(--danger-soft);
   font-size: 0.9231rem;
   color: var(--diff-red);
+}
+
+.connect-panel__banner-icon {
+  flex: none;
 }
 
 .connect-panel__reply-error-text {
@@ -100,7 +151,7 @@
   width: 20px;
   height: 20px;
   flex: none;
-  border-radius: var(--radius-sm);
+  border-radius: 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -108,24 +159,42 @@
 
 .connect-panel__reply-error-close:hover {
   background: var(--danger-soft);
-  filter: brightness(0.95);
+  filter: brightness(1.2);
 }
 
-/* 面板动作失败提示条（连接/断开、切换远程目录、扫码登录、配对码…）：与回发失败条
-   同构，换警示色以区分「结果回发失败」——两者排查方向不同。 */
-.connect-panel__action-error {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+/* 远程会话工作目录：原生 <select> + 右侧内嵌 chevron（与设置页同款背景图方案） */
+.connect-panel__select {
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  background: var(--warn-soft);
-  border: 1px solid var(--warn-soft);
-  font-size: 0.9231rem;
-  color: var(--warn-text);
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-family: var(--font-ui);
+  padding: 8px 12px;
+  width: 100%;
 }
 
-/* 平台卡片 */
+.connect-panel__select:focus {
+  outline: 0;
+  border-color: var(--accent);
+}
+
+.connect-panel__select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 33px;
+  background-image: var(--chevron-down);
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 13px 13px;
+}
+
+/* 「未选择」占位态按设计稿取 $text-tertiary，选中真实目录后回到正文色 */
+.connect-panel__select--empty {
+  color: var(--text-tertiary);
+}
+
+/* 平台卡片：$bg-card 提亮 + 10px 圆角 + Head Row 单行（品牌块/名称/状态靠左，动作靠右） */
 .connect-panel__platforms {
   display: flex;
   flex-direction: column;
@@ -133,9 +202,10 @@
 }
 
 .connect-panel__platform {
+  background: var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  padding: var(--space-3);
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -145,24 +215,54 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  min-height: 26px;
 }
 
-.connect-panel__platform-icon {
+/* 品牌色块（设计稿 22×22/r6，绑定行 16×16/r4）+ 白字 glyph */
+.connect-panel__brand {
+  width: 22px;
+  height: 22px;
+  flex: none;
   display: inline-flex;
   align-items: center;
-  line-height: 1;
+  justify-content: center;
+  border-radius: 6px;
+  font-size: 0.8462rem;
+  font-weight: 700;
+  color: var(--text-on-brand);
+}
+
+.connect-panel__brand--sm {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  font-size: 0.6154rem;
+}
+
+.connect-panel__brand--feishu {
+  background: var(--brand-lark);
+}
+
+.connect-panel__brand--dingtalk {
+  background: var(--brand-dingtalk);
+}
+
+.connect-panel__brand--weixin {
+  background: var(--brand-wechat);
 }
 
 .connect-panel__platform-name {
-  font-weight: 500;
+  font-size: 1rem;
+  font-weight: 600;
 }
 
 .connect-panel__status {
   font-size: 0.8462rem;
-  padding: 1px 6px;
-  border-radius: 999px;
+  padding: 2px 8px;
+  border-radius: 6px;
   background: var(--bg-input);
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
+  flex: none;
 }
 
 .connect-panel__status--connected {
@@ -181,7 +281,6 @@
 }
 
 .connect-panel__credential-hint {
-  margin-left: auto;
   font-size: 0.8462rem;
   color: var(--text-tertiary);
   max-width: 110px;
@@ -200,19 +299,25 @@
   display: flex;
   gap: var(--space-2);
   align-items: center;
+  flex: none;
 }
 
+/* 按钮体系：默认描边钮（无填充，透出卡片底）+ accent 实心主钮 + danger 方块钮 */
 .connect-panel__button {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   font-size: 0.9231rem;
   padding: 4px 10px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-subtle);
-  background: var(--bg-input);
+  background: transparent;
   color: var(--text-primary);
   cursor: pointer;
+}
+
+.connect-panel__button > svg {
+  color: var(--text-secondary);
 }
 
 .connect-panel__button:hover:not(:disabled) {
@@ -225,55 +330,47 @@
 }
 
 .connect-panel__button--primary {
+  gap: 6px;
+  padding: 6px 12px;
+  font-weight: 500;
   background: var(--accent);
   border-color: transparent;
   color: var(--text-inverse);
 }
 
+.connect-panel__button--primary > svg {
+  color: var(--text-inverse);
+}
+
 .connect-panel__button--primary:hover:not(:disabled) {
-  background: var(--accent);
-  filter: brightness(1.08);
+  background: var(--accent-hover);
 }
 
 .connect-panel__button--danger {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  justify-content: center;
+  background: var(--danger-soft);
+  border-color: transparent;
   color: var(--diff-red);
 }
 
-.connect-panel__platform-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+.connect-panel__button--danger > svg {
+  color: var(--diff-red);
 }
 
-.connect-panel__field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 0.9231rem;
-  color: var(--text-secondary);
-}
-
-.connect-panel__field input,
-.connect-panel__select {
-  background: var(--bg-input);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  color: var(--text-primary);
-  font-size: 0.9231rem;
-  padding: 5px 8px;
-  width: 100%;
-}
-
-.connect-panel__platform-form-actions {
-  display: flex;
-  gap: var(--space-2);
+.connect-panel__button--danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  filter: brightness(1.2);
 }
 
 /* 微信扫码 */
-.connect-panel__login-empty {
+.connect-panel__login-row {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  align-items: center;
+  gap: 10px;
+  padding: 2px 0;
 }
 
 .connect-panel__login {
@@ -324,29 +421,7 @@
   }
 }
 
-/* 配对 */
-.connect-panel__pairing {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: var(--space-2);
-  border: 1px dashed var(--border-subtle);
-  border-radius: var(--radius-sm);
-}
-
-.connect-panel__pairing-label {
-  font-size: 0.9231rem;
-  color: var(--text-secondary);
-}
-
-.connect-panel__pairing-code {
-  font-family: var(--font-mono);
-  font-size: 1.2308rem;
-  font-weight: 600;
-  color: var(--accent-text);
-}
-
-/* 绑定列表 */
+/* 绑定列表（设计稿：单行 = 品牌块 + 名称 + meta 同行，右侧 x 取消配对） */
 .connect-panel__empty {
   display: flex;
   gap: var(--space-2);
@@ -362,33 +437,31 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .connect-panel__binding {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: 5px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  background: var(--bg-input);
-}
-
-.connect-panel__binding-icon {
-  display: inline-flex;
-  align-items: center;
+  background: var(--bg-card);
 }
 
 .connect-panel__binding-name {
-  display: flex;
-  flex-direction: column;
-  font-size: 0.9231rem;
+  font-size: 1rem;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .connect-panel__binding-meta {
-  font-size: 0.8462rem;
+  font-size: 0.9231rem;
   color: var(--text-tertiary);
+  flex: none;
 }
 
 .connect-panel__binding-remove {
@@ -396,7 +469,7 @@
   color: var(--text-tertiary);
   width: 20px;
   height: 20px;
-  border-radius: var(--radius-sm);
+  border-radius: 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;

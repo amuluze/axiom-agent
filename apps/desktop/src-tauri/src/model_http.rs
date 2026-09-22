@@ -1,4 +1,7 @@
 use crate::{
+    generated_provider_table::{
+        PROVIDER_REQUEST_HEADERS, PROVIDER_SESSION_HEADER_HOSTS, PROVIDER_SESSION_HEADERS,
+    },
     network_policy::redirect_policy,
     provider_profiles::{is_secret_id_bound_to_provider, resolve_profile, ResolvedProfile},
     secrets::{load_secret, SecretState},
@@ -42,6 +45,13 @@ pub(crate) struct ModelHttpRequest {
     body: String,
     secret_id: Option<String>,
     timeout_ms: Option<u64>,
+    /// 本次请求使用的模型：多协议 provider（模型级 wire）据此选协议与端点。只是查表键
+    /// ——最终 URL/协议/认证头仍由 Rust 权威解析（`resolve_profile`），未知模型回落
+    /// provider 默认协议。
+    model_id: Option<String>,
+    /// 会话身份：仅用于 provider 声明的会话头（`x-opencode-session` 等）按会话归因，
+    /// 不参与 URL/认证解析。
+    session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,6 +62,7 @@ pub(crate) struct ModelProbeRequest {
     body: String,
     secret_id: Option<String>,
     timeout_ms: Option<u64>,
+    model_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -127,24 +138,11 @@ impl SecretRedactor {
     }
 }
 
-fn validate_request_id(request_id: &str) -> Result<&str, String> {
-    let request_id = request_id.trim();
-    let valid = !request_id.is_empty()
-        && request_id.len() <= 128
-        && request_id.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
-        });
-    if !valid {
-        return Err("model request ID contains unsupported characters".into());
-    }
-    Ok(request_id)
-}
-
 fn register_request(
     state: &ModelRequestState,
     request_id: &str,
 ) -> Result<(String, watch::Receiver<bool>), String> {
-    let request_id = validate_request_id(request_id)?.to_string();
+    let request_id = crate::request_id::validate_request_id("model", request_id)?.to_string();
     let (sender, receiver) = watch::channel(false);
     let mut requests = state
         .0
@@ -176,6 +174,90 @@ fn build_client(timeout: Duration) -> Result<reqwest::Client, String> {
         .redirect(redirect_policy())
         .build()
         .map_err(|error| error.to_string())
+}
+
+/// provider 声明的静态请求头（providers.json `requestHeaders` 生成表）。`{version}`
+/// 占位替换为应用版本——生成物保持字面量，发版不会触发生成产物 digest 漂移。
+fn provider_request_headers(provider_id: &str) -> &'static [(&'static str, &'static str)] {
+    PROVIDER_REQUEST_HEADERS
+        .iter()
+        .find(|(id, _)| *id == provider_id)
+        .map(|(_, headers)| *headers)
+        .unwrap_or(&[])
+}
+
+fn provider_session_header(provider_id: &str) -> Option<&'static str> {
+    PROVIDER_SESSION_HEADERS
+        .iter()
+        .find(|(id, _)| *id == provider_id)
+        .map(|(_, header)| *header)
+}
+
+/// 会话头解析：provider 声明优先，其次按**解析后的 host** 命中服务级声明。
+///
+/// 为什么需要 host 级：上游的要求属于服务（「发往 opencode.ai 的所有推理请求」），
+/// 而不是某个 provider 条目——把 OpenCode Go 配成自定义 provider（自定义 endpoint 指向
+/// opencode.ai）的用户同样必须带这个头，否则 400 MissingSessionID。host 集合由生成器从
+/// 声明了会话头的 provider 的默认 endpoint 与 trustedHosts 派生。
+fn session_header_for(provider_id: &str, host: Option<&str>) -> Option<&'static str> {
+    if let Some(header) = provider_session_header(provider_id) {
+        return Some(header);
+    }
+    let host = host?.trim().to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+    PROVIDER_SESSION_HEADER_HOSTS
+        .iter()
+        .find(|(declared, _)| host == *declared || host.ends_with(&format!(".{declared}")))
+        .map(|(_, header)| *header)
+}
+
+fn apply_static_headers(
+    mut builder: reqwest::RequestBuilder,
+    provider_id: &str,
+) -> reqwest::RequestBuilder {
+    for (name, value) in provider_request_headers(provider_id) {
+        let value = value.replace("{version}", env!("CARGO_PKG_VERSION"));
+        builder = builder.header(*name, value);
+    }
+    builder
+}
+
+/// provider 声明的会话头（providers.json `sessionHeader` 生成表）。
+///
+/// **该头必须恒存在**：上游按它做会话归因/路由，缺失时直接 400（OpenCode Go：
+/// 「Request is missing x-opencode-session and cannot be routed efficiently」）——
+/// 探针（无会话身份）与任何未带 sessionId 的请求都不能省略它。因此缺失时回落一个
+/// 进程内稳定的合成值：路由只需要一个稳定的非空标识，而合成值不会把不同会话混为
+/// 同一个（真实会话仍用真实 sessionId）。
+fn apply_session_header(
+    builder: reqwest::RequestBuilder,
+    provider_id: &str,
+    host: Option<&str>,
+    session_id: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let Some(header) = session_header_for(provider_id, host) else {
+        return builder;
+    };
+    let session_id = session_id.map(str::trim).filter(|value| !value.is_empty());
+    match session_id {
+        Some(session_id) => builder.header(header, session_id),
+        None => builder.header(header, fallback_client_session_id()),
+    }
+}
+
+/// 无会话身份时使用的稳定标识（如探针、标题生成等宿主自发的请求）。
+/// 进程内稳定：同一进程的多次请求得到同一值，上游的路由/归因不会因每次请求变化而失效。
+fn fallback_client_session_id() -> &'static str {
+    static FALLBACK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FALLBACK.get_or_init(|| {
+        let started = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or_default();
+        format!("axiom-desktop-{}-{started}", std::process::id())
+    })
 }
 
 fn apply_authentication(
@@ -232,15 +314,16 @@ pub(crate) fn resolve_secret(
 
 /// 解析 Provider Profile 并校验端点（强边界）。
 ///
-/// 渲染进程只传 providerId 与可选的 endpoint 覆盖；最终 URL、apiFormat、允许的 origin
-/// 全部由 `provider_profiles` 按内置表解析。自定义端点必须命中该 provider 的官方 origin、
-/// 本地/私网，或该 provider 自己的可信 host 表（per-provider，provider→origin 强绑定），
-/// 受陷渲染进程无法把密钥发到任意公网 host 或其它 Provider 的官方域名。
+/// 渲染进程只传 providerId、可选的 endpoint 覆盖与 modelId；最终 URL、apiFormat、允许的
+/// origin 全部由 `provider_profiles` 按内置表解析。自定义端点必须命中该 provider 的官方
+/// origin、本地/私网，或该 provider 自己的可信 host 表（per-provider，provider→origin 强
+/// 绑定），受陷渲染进程无法把密钥发到任意公网 host 或其它 Provider 的官方域名。
 fn resolve_request_profile(
     provider_id: &str,
     endpoint_override: Option<&str>,
+    model_id: Option<&str>,
 ) -> Result<ResolvedProfile, String> {
-    resolve_profile(provider_id, endpoint_override)
+    resolve_profile(provider_id, endpoint_override, model_id)
 }
 
 // pub(crate)：usage_query 的错误透传与脱敏复用同一实现，避免两套错误格式漂移。
@@ -486,7 +569,11 @@ where
     if request.body.len() > MAX_REQUEST_BODY_BYTES {
         return Err("model request body is too large".into());
     }
-    let profile = resolve_request_profile(&request.provider_id, request.endpoint.as_deref())?;
+    let profile = resolve_request_profile(
+        &request.provider_id,
+        request.endpoint.as_deref(),
+        request.model_id.as_deref(),
+    )?;
     let url = profile.url;
     let api_format = profile.api_format;
     let secret = resolve_secret(
@@ -506,6 +593,14 @@ where
                 .header(CONTENT_TYPE, "application/json")
                 .header(ACCEPT, "text/event-stream")
                 .body(request.body.clone());
+            // 顺序：静态头 → 会话头 → 认证头。认证最后应用，静态数据无法覆盖它。
+            let builder = apply_static_headers(builder, &request.provider_id);
+            let builder = apply_session_header(
+                builder,
+                &request.provider_id,
+                url.host_str(),
+                request.session_id.as_deref(),
+            );
             let builder = apply_authentication(builder, api_format, secret.as_deref())?;
             let mut response = match send_with_cancel(builder, &mut cancel_receiver, timeout).await
             {
@@ -612,7 +707,7 @@ pub(crate) fn cancel_model_http(
     request_id: String,
     state: State<'_, ModelRequestState>,
 ) -> Result<bool, String> {
-    let request_id = validate_request_id(&request_id)?;
+    let request_id = crate::request_id::validate_request_id("model", &request_id)?;
     let sender = state
         .0
         .lock()
@@ -631,24 +726,43 @@ pub(crate) async fn probe_model_http(
     request: ModelProbeRequest,
     secret_state: State<'_, SecretState>,
 ) -> Result<ModelProbeResult, String> {
+    probe_model_http_with_state(request, &secret_state).await
+}
+
+/// 探针实现（与命令解耦以便单测直接驱动）：请求头装配与 `stream_model_http_to_events` 一致
+/// ——静态头 → 会话头 → 认证头；声明了会话头的 provider 在探针上也必须带上它。
+async fn probe_model_http_with_state(
+    request: ModelProbeRequest,
+    secret_state: &SecretState,
+) -> Result<ModelProbeResult, String> {
     if request.body.len() > MAX_REQUEST_BODY_BYTES {
         return Err("model probe request body is too large".into());
     }
-    let profile = resolve_request_profile(&request.provider_id, request.endpoint.as_deref())?;
+    let profile = resolve_request_profile(
+        &request.provider_id,
+        request.endpoint.as_deref(),
+        request.model_id.as_deref(),
+    )?;
     let url = profile.url;
     let api_format = profile.api_format;
     let secret = resolve_secret(
-        &secret_state,
+        secret_state,
         &request.provider_id,
         request.secret_id.as_deref(),
     )?;
     let inactivity_timeout = timeout_duration(request.timeout_ms);
     let client = build_client(inactivity_timeout)?;
+    let host = url.host_str().map(str::to_string);
     let builder = client
         .post(url)
         .header(ACCEPT, "application/json")
         .header(CONTENT_TYPE, "application/json")
         .body(request.body);
+    // 与 stream 同一套头（静态头 → 会话头 → 认证头）。探针没有会话身份，会话头取回落值
+    // ——但**不能省略**：声明了该头的 provider 会以「缺少会话头」直接 400，连通性测试会
+    // 表现成「接了但连不通」，与真实请求不一致。
+    let builder = apply_static_headers(builder, &request.provider_id);
+    let builder = apply_session_header(builder, &request.provider_id, host.as_deref(), None);
     let builder = apply_authentication(builder, api_format, secret.as_deref())?;
     let response = timeout(inactivity_timeout, builder.send())
         .await
@@ -702,6 +816,8 @@ mod tests {
             body,
             secret_id: None,
             timeout_ms: Some(5_000),
+            model_id: None,
+            session_id: None,
         }
     }
 
@@ -716,6 +832,8 @@ mod tests {
             body: "{}".into(),
             secret_id: None,
             timeout_ms: Some(5_000),
+            model_id: None,
+            session_id: None,
         };
         let result = stream_model_http_to_events(
             request,
@@ -742,6 +860,8 @@ mod tests {
             body: "{}".into(),
             secret_id: Some("provider.openai-compatible.api-key".into()),
             timeout_ms: Some(5_000),
+            model_id: None,
+            session_id: None,
         };
         let result = stream_model_http_to_events(
             request,
@@ -757,7 +877,7 @@ mod tests {
         );
     }
 
-    fn read_http_request(stream: &mut TcpStream) {
+    fn read_http_request(stream: &mut TcpStream) -> String {
         let mut request = Vec::new();
         let mut buffer = [0u8; 4096];
         loop {
@@ -785,7 +905,7 @@ mod tests {
                 })
                 .unwrap_or(0);
             if request.len() >= header_end + content_length {
-                return;
+                return String::from_utf8_lossy(&request).into_owned();
             }
         }
     }
@@ -839,9 +959,9 @@ mod tests {
 
     #[test]
     fn validates_request_ids() {
-        assert_eq!(validate_request_id("request-1"), Ok("request-1"));
-        assert!(validate_request_id("").is_err());
-        assert!(validate_request_id("request/1").is_err());
+        assert_eq!(crate::request_id::validate_request_id("model", "request-1"), Ok("request-1"));
+        assert!(crate::request_id::validate_request_id("model", "").is_err());
+        assert!(crate::request_id::validate_request_id("model", "request/1").is_err());
     }
 
     #[test]
@@ -879,6 +999,216 @@ mod tests {
         );
         assert!(request.headers().get("x-api-key").is_none());
         assert!(request.headers().get("anthropic-version").is_none());
+    }
+
+    #[test]
+    fn applies_messages_authentication_for_anthropic_wire_models() {
+        // OpenCode Go 的 messages 形状模型：认证走 x-api-key + anthropic-version，
+        // 不能是 Bearer（同一个 Key，不同协议头的区别由 resolve_profile 的 apiFormat 决定）。
+        let resolved = crate::provider_profiles::resolve_profile(
+            "opencode-go",
+            None,
+            Some("minimax-m3"),
+        )
+        .unwrap();
+        let request = apply_authentication(
+            reqwest::Client::new().post("http://localhost/v1/messages"),
+            resolved.api_format,
+            Some("go-secret"),
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        assert_eq!(request.headers().get("x-api-key").unwrap(), "go-secret");
+        assert_eq!(
+            request.headers().get("anthropic-version").unwrap(),
+            "2023-06-01"
+        );
+        assert!(request.headers().get(AUTHORIZATION).is_none());
+    }
+
+    #[test]
+    fn applies_provider_static_headers_with_version_placeholder() {
+        let request = apply_static_headers(
+            reqwest::Client::new().post("http://localhost/v1/chat/completions"),
+            "opencode-go",
+        )
+        .build()
+        .unwrap();
+        assert_eq!(
+            request.headers().get("user-agent").unwrap(),
+            format!("Axiom/{}", env!("CARGO_PKG_VERSION")).as_str()
+        );
+        // 未声明静态头的 provider 不注入任何头。
+        let plain = apply_static_headers(
+            reqwest::Client::new().post("http://localhost/v1/chat/completions"),
+            "generic-openai-compatible",
+        )
+        .build()
+        .unwrap();
+        assert!(plain.headers().get("user-agent").is_none());
+    }
+
+    /// 捕获服务端：回一条 200，并把收到的原始报文交回给测试断言「线上真实请求头」。
+    fn spawn_capturing_server(response: Vec<u8>) -> (String, thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let captured = read_http_request(&mut stream);
+            stream.write_all(&response).unwrap();
+            stream.flush().unwrap();
+            captured
+        });
+        (format!("http://{address}/v1/chat/completions"), handle)
+    }
+
+    fn ok_json_response() -> Vec<u8> {
+        let body = b"{}";
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes()
+        .into_iter()
+        .chain(body.iter().copied())
+        .collect()
+    }
+
+    #[tokio::test]
+    async fn stream_sends_declared_headers_with_fallback_session_id() {
+        // 回归（真实报文层）：OpenCode Go 要求 x-opencode-session 恒存在，缺失时直接 400
+        // 「Request is missing x-opencode-session and cannot be routed efficiently」。
+        // 这里故意**不传** session_id（如宿主自发请求），断言仍带上了回落值，且客户端自报身份。
+        let (endpoint, captured) = spawn_capturing_server(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 14\r\nConnection: close\r\n\r\ndata: [DONE]\n\n".to_vec(),
+        );
+        let request = ModelHttpRequest {
+            request_id: "opencode-go-stream-headers".into(),
+            provider_id: "opencode-go".into(),
+            endpoint: Some(endpoint),
+            body: "{}".into(),
+            secret_id: None,
+            timeout_ms: Some(5_000),
+            model_id: Some("glm-5.3".into()),
+            session_id: None,
+        };
+        let result = stream_model_http_to_events(
+            request,
+            &ModelRequestState::default(),
+            &SecretState::default(),
+            |_| Ok(()),
+        )
+        .await;
+        assert!(result.is_ok(), "unexpected error: {:?}", result.err());
+
+        let wire = captured.join().unwrap().to_lowercase();
+        assert!(
+            wire.contains("x-opencode-session: axiom-desktop-"),
+            "session header missing on the wire:\n{wire}"
+        );
+        assert!(
+            wire.contains(&format!("user-agent: axiom/{}", env!("CARGO_PKG_VERSION").to_lowercase())),
+            "user-agent missing on the wire:\n{wire}"
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_sends_the_same_declared_headers_as_stream() {
+        // 用户报的 400 就出在连通性测试（探针）上：探针与真实请求必须带同一套头。
+        let (endpoint, captured) = spawn_capturing_server(ok_json_response());
+        let result = probe_model_http_with_state(
+            ModelProbeRequest {
+                provider_id: "opencode-go".into(),
+                endpoint: Some(endpoint),
+                body: "{}".into(),
+                secret_id: None,
+                timeout_ms: Some(5_000),
+                model_id: Some("glm-5.3".into()),
+            },
+            &SecretState::default(),
+        )
+        .await
+        .unwrap();
+        assert!(result.ok, "unexpected probe result: {result:?}");
+
+        let wire = captured.join().unwrap().to_lowercase();
+        assert!(
+            wire.contains("x-opencode-session: axiom-desktop-"),
+            "session header missing on the probe wire:\n{wire}"
+        );
+        assert!(
+            wire.contains(&format!("user-agent: axiom/{}", env!("CARGO_PKG_VERSION").to_lowercase())),
+            "user-agent missing on the probe wire:\n{wire}"
+        );
+    }
+
+    #[test]
+    fn applies_session_header_always_when_the_provider_declares_one() {
+        let request = |session_id: Option<&str>| {
+            apply_session_header(
+                reqwest::Client::new().post("http://localhost/v1/chat/completions"),
+                "opencode-go",
+                Some("opencode.ai"),
+                session_id,
+            )
+            .build()
+            .unwrap()
+        };
+        // 真实会话身份原样透传（上游按它做会话归因）。
+        assert_eq!(
+            request(Some("session-abc")).headers().get("x-opencode-session").unwrap(),
+            "session-abc"
+        );
+        // 回归：缺失/空白的会话身份**不能省略该头**——上游按它路由，缺失即 400
+        // （「Request is missing x-opencode-session and cannot be routed efficiently」）。
+        // 回落值只需稳定非空，且同一进程内保持一致。
+        let fallback = request(None);
+        let value = fallback.headers().get("x-opencode-session").unwrap().to_str().unwrap();
+        assert!(value.starts_with("axiom-desktop-"), "unexpected fallback: {value}");
+        assert_eq!(value, request(Some("   ")).headers().get("x-opencode-session").unwrap());
+        assert_eq!(value, request(None).headers().get("x-opencode-session").unwrap());
+        // provider 未声明、且 host 不属于任何声明了会话头的服务：不注入。
+        let undeclared = apply_session_header(
+            reqwest::Client::new().post("http://localhost/v1/responses"),
+            "openai",
+            Some("api.openai.com"),
+            Some("session-abc"),
+        )
+        .build()
+        .unwrap();
+        assert!(undeclared.headers().get("x-opencode-session").is_none());
+    }
+
+    #[test]
+    fn applies_session_header_by_host_for_custom_providers_on_the_same_service() {
+        // 上游的要求属于服务：把 OpenCode Go 配成自定义 provider（endpoint 指向
+        // opencode.ai）时同样必须带这个头，否则 400 MissingSessionID。host 命中即可，
+        // 与 provider 条目无关；子域同样命中（zen.opencode.ai），其它 host 不命中。
+        let header_of = |provider_id: &str, host: &str| {
+            apply_session_header(
+                reqwest::Client::new().post("https://opencode.ai/zen/go/v1/chat/completions"),
+                provider_id,
+                Some(host),
+                Some("session-abc"),
+            )
+            .build()
+            .unwrap()
+            .headers()
+            .get("x-opencode-session")
+            .map(|value| value.to_str().unwrap().to_string())
+        };
+        assert_eq!(
+            header_of("custom-openai-compatible", "opencode.ai").as_deref(),
+            Some("session-abc")
+        );
+        assert_eq!(
+            header_of("custom-openai-compatible", "zen.opencode.ai").as_deref(),
+            Some("session-abc")
+        );
+        // 形近域名不命中（避免把会话头发给无关服务）。
+        assert_eq!(header_of("custom-openai-compatible", "notopencode.ai"), None);
+        assert_eq!(header_of("generic-openai-compatible", "api.openai.com"), None);
     }
 
     #[test]

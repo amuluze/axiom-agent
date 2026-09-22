@@ -3,7 +3,6 @@ import type {
   ContextPolicyDraftHook,
   ProviderDraftHook,
   QueueModesDraftHook,
-  ReasoningDraftHook,
   SessionsHook,
 } from './types'
 import {
@@ -11,32 +10,16 @@ import {
   type ContextPolicySettings,
 } from '@/agent/context/types'
 import type { QueueModeSettings } from '@/agent/runtime/queueSettings'
-import type { ReasoningSettings } from '@/agent/runtime/reasoningSettings'
 import { DEFAULT_AGENT_LIMITS_SETTINGS, type AgentLimitsSettings } from '@/agent/runtime/agentLimitsSettings'
-import {
-  defaultProviderProfile,
-  PROVIDER_PROFILE_SCHEMA_VERSION,
-  type ProviderProfile,
-  type ProviderProfileDraft,
-} from '@/agent/transport/provider'
+import type { ProviderProfileDraft } from '@/agent/transport/provider'
+import { TEST_ANTHROPIC_PROFILE } from '@/agent/transport/__fixtures__/testAnthropicProfile'
 
 const noopAsync = async (): Promise<void> => undefined
 const noopBoolAsync = async (): Promise<boolean> => true
 const noopBool = (): boolean => true
 const noopSetter = () => undefined
 
-// 测试用 generic-anthropic-compatible profile（内置 MiniMax 入口已移除）。
-// 直接构造已规范化形态（解析已下沉 Rust，测试不走异步解析）。
-export const TEST_ANTHROPIC_PROFILE: ProviderProfile = {
-  ...defaultProviderProfile('generic-anthropic-compatible'),
-  schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
-  profileId: 'test.anthropic',
-  endpoint: 'https://api.anthropic.com/v1/messages',
-  modelId: 'claude-test',
-  secretId: 'provider.generic-anthropic-compatible.api-key',
-}
-
-const baseProviderDraft: ProviderProfileDraft = {
+export const baseProviderDraft: ProviderProfileDraft = {
   ...TEST_ANTHROPIC_PROFILE,
   modelId: 'claude-test',
 }
@@ -45,15 +28,10 @@ const baseContextPolicy: ContextPolicySettings = {
   ...DEFAULT_CONTEXT_POLICY_SETTINGS,
 }
 
-const baseReasoning: ReasoningSettings = {
-  level: 'medium',
-  mode: 'effort',
-  budgetTokens: 4_096,
-}
-
 const baseQueueModes: QueueModeSettings = {
   steering: 'one-at-a-time',
   followUp: 'one-at-a-time',
+  autoDrain: true,
 }
 
 const baseAgentLimits: AgentLimitsSettings = {
@@ -93,15 +71,6 @@ export const buildProviderHook = (overrides: Partial<ProviderDraftHook> = {}): P
   saveProvider: overrides.saveProvider ?? (async (_apiKey: string) => ({ saved: true, ready: true })),
   testProvider: overrides.testProvider ?? noopBoolAsync,
   deleteProviderKey: overrides.deleteProviderKey ?? noopBoolAsync,
-})
-
-export const buildReasoningHook = (overrides: Partial<ReasoningDraftHook> = {}): ReasoningDraftHook => ({
-  draft: overrides.draft ?? baseReasoning,
-  apiFormat: overrides.apiFormat ?? 'anthropic-compatible',
-  maxOutputTokens: overrides.maxOutputTokens ?? 8_192,
-  supportsReasoning: overrides.supportsReasoning ?? true,
-  save: overrides.save ?? noopBoolAsync,
-  setDraft: overrides.setDraft ?? noopSetter,
 })
 
 export const buildContextPolicyHook = (overrides: Partial<ContextPolicyDraftHook> = {}): ContextPolicyDraftHook => ({

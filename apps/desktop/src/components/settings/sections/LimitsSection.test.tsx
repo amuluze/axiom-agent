@@ -1,6 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
+import { DEFAULT_AGENT_LIMITS_SETTINGS } from '@/agent/runtime/agentLimitsSettings'
 import { LimitsSection } from './LimitsSection'
 import { buildAgentLimitsHook, stubContext } from './testFixtures'
 
@@ -34,5 +35,19 @@ describe('LimitsSection', () => {
     expect(html).toContain('下次会话生效')
     expect(html).toContain('最大轮次')
     expect(html).toContain('最大工具调用数')
+    expect(html).toContain('Token 预算')
+  })
+
+  it('renders the token budget input with the configured bounds and step', () => {
+    const html = renderToStaticMarkup(createElement(LimitsSection, {
+      hook: buildAgentLimitsHook(),
+      context: stubContext,
+      isSaved: false,
+    }))
+    // Token 预算输入框：min/max 来自设置面边界，步进 1 万 tokens
+    expect(html).toContain('step="10000"')
+    expect(html).toContain('min="10000"')
+    expect(html).toContain('max="64000000"')
+    expect(html).toContain(DEFAULT_AGENT_LIMITS_SETTINGS.maxTotalTokens.toString())
   })
 })

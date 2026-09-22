@@ -245,9 +245,13 @@ const decodeDurableRuntimeUpdate = (value: unknown): DurableRuntimeUpdate => {
   }
 }
 
-const encodeJournalPayload = (entry: AgentSessionJournalEntry): string => entry.kind === 'runtime_update'
-  ? JSON.stringify({ update: entry.update })
-  : JSON.stringify({ message: entry.message })
+const encodeJournalPayload = (entry: AgentSessionJournalEntry): string => {
+  if (entry.kind === 'runtime_update') return JSON.stringify({ update: entry.update })
+  if (entry.kind === 'queue' && entry.order !== undefined) {
+    return JSON.stringify({ message: entry.message, order: entry.order })
+  }
+  return JSON.stringify({ message: entry.message })
+}
 
 const decodeJournalEntry = (row: JournalRow): AgentSessionJournalEntry => {
   if (!row.id || !row.session_id
@@ -295,11 +299,16 @@ const decodeJournalEntry = (row: JournalRow): AgentSessionJournalEntry => {
     && (row.status !== 'pending' || row.consumer_run_id !== null)) {
     throw new Error('SQLite queue journal 恢复草稿状态无效')
   }
+  const order = payload.order
+  if (order !== undefined && (typeof order !== 'number' || !Number.isFinite(order))) {
+    throw new Error('SQLite queue journal order 无效')
+  }
   return {
     ...base,
     kind: 'queue',
     queueKind: row.queue_kind,
     message,
+    ...(order === undefined ? {} : { order }),
     ...(row.recovered_at !== null ? { recoveredAt: Number(row.recovered_at) } : {}),
   }
 }

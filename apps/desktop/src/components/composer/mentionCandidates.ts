@@ -1,5 +1,10 @@
 import type { ProjectSkillDependency } from '@/agent/skills/types'
-import { BUILTIN_SKILL_BODIES } from '@/agent/skills/builtinSkillBodies'
+import {
+  BUILTIN_SKILL_BODIES,
+  resolveBuiltinSkillVariant,
+  type BuiltinSkillBody,
+} from '@/agent/skills/builtinSkillBodies'
+import { getBuiltinPromptOverrides, resolvePromptLanguage } from '@/agent/prompt/promptLocalizationHost'
 import type { StoredAgentSession } from '@/persistence/types'
 import type { MentionCandidate } from './mentionParser'
 
@@ -41,11 +46,21 @@ export const buildThreadCandidates = ({
  * 构建 `/` 技能候选：项目 Skill 全部展示（含 `disableModelInvocation`：该标记
  * 只阻止模型自动触发，不阻止用户经 `/name` 手动指定——这正是 popover 候选的价值）；
  * 内置 SDD Skill 追加（`/domain`/`/brainstorm` 等可手打触发，应有候选提示），项目同名遮蔽去重。
+ * 内置描述按当前生效语言取变体、设置页覆写优先（与 <available_skills> 注入口一致）。
  */
 export const buildSkillCandidates = (
   projectSkills: readonly ProjectSkillDependency[] = [],
 ): MentionCandidate[] => {
   const projectNames = new Set(projectSkills.map((skill) => skill.name))
+  const builtinHint = (skill: BuiltinSkillBody): string => {
+    const language = resolvePromptLanguage()
+    const variant = resolveBuiltinSkillVariant(
+      skill,
+      language,
+      getBuiltinPromptOverrides().skills[skill.name]?.[language],
+    )
+    return variant.description.slice(0, HINT_MAX_LENGTH)
+  }
   return [
     ...projectSkills.map((skill) => ({
       id: skill.name,
@@ -57,7 +72,7 @@ export const buildSkillCandidates = (
       .map((skill) => ({
         id: skill.name,
         label: skill.name,
-        hint: skill.description.slice(0, HINT_MAX_LENGTH),
+        hint: builtinHint(skill),
       })),
   ]
 }

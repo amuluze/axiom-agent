@@ -1002,9 +1002,13 @@ mod tests {
 
         let requests = server.join().unwrap();
         assert!(requests[0].contains("GET /user/balance HTTP/1.1"));
-        assert!(requests[0].contains("Authorization: Bearer bearer-secret"));
-        assert!(requests[1].contains("Authorization: raw-secret"));
-        assert!(requests[1].contains("Accept-Language: en-US,en"));
+        // HTTP 头名大小写不敏感（RFC 7230 §3.2）：hyper/reqwest 以小写名上线，
+        // 逐字匹配 "Authorization:" 会误报——头值仍须逐字比对。
+        let bearer_request = requests[0].to_lowercase();
+        let raw_request = requests[1].to_lowercase();
+        assert!(bearer_request.contains("authorization: bearer bearer-secret"), "{bearer_request}");
+        assert!(raw_request.contains("authorization: raw-secret"), "{raw_request}");
+        assert!(raw_request.contains("accept-language: en-us,en"));
     }
 
     #[tokio::test]

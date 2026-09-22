@@ -99,6 +99,7 @@ export const AboutSection = () => {
   const availableUpdate = useUiStore((state) => state.availableUpdate)
   const updateProgress = useUiStore((state) => state.updateProgress)
   const updateMessage = useUiStore((state) => state.updateMessage)
+  const operatingSystem = useUiStore((state) => state.operatingSystem)
   const [appVersion, setAppVersion] = useState('…')
   const [actionError, setActionError] = useState<string | null>(null)
 
@@ -155,9 +156,24 @@ export const AboutSection = () => {
       <div className="settings-grid">
         <div className="field-group">
           <span className="settings__field-label-with-icon"><Info size={13} />{t('settings.about.versionLabel')}</span>
-          <output aria-label={t('settings.about.versionLabel')}>{t('settings.about.versionOutput', { version: appVersion })}</output>
+          <output aria-label={t('settings.about.versionLabel')}>
+            {t(
+              operatingSystem === 'linux'
+                ? 'settings.about.versionOutputLinux'
+                : operatingSystem === 'windows'
+                  ? 'settings.about.versionOutputWindows'
+                  : 'settings.about.versionOutput',
+              { version: appVersion },
+            )}
+          </output>
           <small>
-            {t('settings.about.desc')}
+            {t(
+              operatingSystem === 'linux'
+                ? 'settings.about.descLinux'
+                : operatingSystem === 'windows'
+                  ? 'settings.about.descWindows'
+                  : 'settings.about.desc',
+            )}
             <button type="button" className="link-button" onClick={() => onOpen(WEBSITE_URL)}>
               axiom.amuluze.com <ExternalLink size={11} />
             </button>

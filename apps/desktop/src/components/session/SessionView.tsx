@@ -188,7 +188,6 @@ export const SessionView = () => {
   const sessionBusy = useAgentStore((state) => state.sessionBusy)
   const branchFromMessage = useAgentStore((state) => state.branchFromMessage)
   const retryAssistant = useAgentStore((state) => state.retryAssistant)
-  const setRuntimeRailOpen = useUiStore((state) => state.setRuntimeRailOpen)
   const setSummaryRequest = useUiStore((state) => state.setSummaryRequest)
   const setMessageEditRequest = useUiStore((state) => state.setMessageEditRequest)
   const messagesRef = useRef<HTMLDivElement | null>(null)
@@ -272,7 +271,6 @@ export const SessionView = () => {
         {error && (
           <div className="session__runtime-error" role="alert">
             <span>{error}</span>
-            <button onClick={() => setRuntimeRailOpen(true)} type="button">{t('app.sessionView.viewLogs')}</button>
           </div>
         )}
         <div className="session__composer-wrap">

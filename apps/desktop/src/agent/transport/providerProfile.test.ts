@@ -263,9 +263,10 @@ describe('provider catalog and secret helpers', () => {
   it('resolves builtin providers by id and rejects unknown ids', () => {
     expect(isProviderId('demo')).toBe(true)
     expect(isProviderId('orcarouter')).toBe(true)
+    expect(isProviderId('opencode-go')).toBe(true)
     expect(isProviderId('nope')).toBe(false)
     expect(getProviderDefinition('demo').label).toBe('离线 Demo')
-    expect(BUILTIN_PROVIDER_CATALOG.list().length).toBe(14)
+    expect(BUILTIN_PROVIDER_CATALOG.list().length).toBe(15)
     expect(() => BUILTIN_PROVIDER_CATALOG.get('nope' as never)).toThrow('Provider 未定义')
   })
 

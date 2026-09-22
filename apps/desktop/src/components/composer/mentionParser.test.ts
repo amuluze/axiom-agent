@@ -74,12 +74,22 @@ describe('mentionParser.filterCandidates', () => {
 describe('mentionParser.formatMentionToken', () => {
   it('preserves stable ids while keeping human-friendly labels', () => {
     expect(formatMentionToken('file', { id: '/srv/spec.md', label: 'spec.md' }))
-      .toBe('@[spec.md](%2Fsrv%2Fspec.md) ')
+      .toBe('@spec.md  ')
     expect(formatMentionToken('file', { id: '/srv/src', label: 'src', isDirectory: true }))
-      .toBe('@[src](%2Fsrv%2Fsrc) ')
+      .toBe('@src/  ')
+    expect(formatMentionToken('file', { id: '/repo/ci/cloud.yml', label: 'ci/cloud.yml' }))
+      .toBe('@ci/cloud.yml  ')
     expect(formatMentionToken('thread', { id: 'session-2', label: '计划讨论' }))
-      .toBe('#[计划讨论](session-2) ')
-    expect(formatMentionToken('skill', { id: 'review', label: '审查' })).toBe('/review ')
+      .toBe('#计划讨论  ')
+    expect(formatMentionToken('skill', { id: 'review', label: '审查' })).toBe('/review  ')
+  })
+
+  // 含空白或触发器字符的标签无法折叠（会被截断），退回结构化形态并保留可读路径。
+  it('falls back to the structured form for labels that cannot be folded', () => {
+    expect(formatMentionToken('file', { id: '/srv/my notes.md', label: 'my notes.md' }))
+      .toBe('@[my notes.md](/srv/my%20notes.md)  ')
+    expect(formatMentionToken('file', { id: '/srv/a#b.md', label: 'a#b.md' }))
+      .toBe('@[a#b.md](/srv/a#b.md)  ')
   })
 })
 
@@ -87,9 +97,9 @@ describe('mentionParser.parseMentions', () => {
   it('lists every well-formed mention in order', () => {
     const text = '@spec.md see /skill maybe #thread'
     expect(parseMentions(text)).toEqual([
-      { kind: 'file', label: 'spec.md', start: 1, end: 8 },
-      { kind: 'skill', label: 'skill', start: 14, end: 19 },
-      { kind: 'thread', label: 'thread', start: 27, end: 33 },
+      { kind: 'file', label: 'spec.md', start: 1, end: 8, tokenStart: 0, tokenEnd: 8 },
+      { kind: 'skill', label: 'skill', start: 14, end: 19, tokenStart: 13, tokenEnd: 19 },
+      { kind: 'thread', label: 'thread', start: 27, end: 33, tokenStart: 26, tokenEnd: 33 },
     ])
   })
 
@@ -97,7 +107,21 @@ describe('mentionParser.parseMentions', () => {
     const result = parseMentions('#thread')
     expect(result).toHaveLength(1)
     expect(result[0]?.end).toBe(7)
+    expect(result[0]?.tokenStart).toBe(0)
+    expect(result[0]?.tokenEnd).toBe(7)
     expect(result[0]?.end).toBeGreaterThan(result[0]?.start ?? 0)
+  })
+
+  it('parses a folded file token that contains a path separator', () => {
+    expect(parseMentions('@ci/cloud.yml')).toEqual([
+      { kind: 'file', label: 'ci/cloud.yml', start: 1, end: 13, tokenStart: 0, tokenEnd: 13 },
+    ])
+  })
+
+  it('parses a folded directory token with the trailing-slash marker', () => {
+    expect(parseMentions('@.specs/')).toEqual([
+      { kind: 'file', label: '.specs/', start: 1, end: 8, tokenStart: 0, tokenEnd: 8 },
+    ])
   })
 
   it('ignores trigger characters that are not at a word boundary', () => {
@@ -106,8 +130,8 @@ describe('mentionParser.parseMentions', () => {
 
   it('parses structured file and thread mentions without losing their stable ids', () => {
     expect(parseMentions('@[spec.md](%2Fsrv%2Fspec.md) #[计划讨论](session-2)')).toEqual([
-      { kind: 'file', label: 'spec.md', id: '/srv/spec.md', start: 2, end: 9 },
-      { kind: 'thread', label: '计划讨论', id: 'session-2', start: 31, end: 35 },
+      { kind: 'file', label: 'spec.md', id: '/srv/spec.md', start: 2, end: 9, tokenStart: 0, tokenEnd: 28 },
+      { kind: 'thread', label: '计划讨论', id: 'session-2', start: 31, end: 35, tokenStart: 29, tokenEnd: 47 },
     ])
   })
 })

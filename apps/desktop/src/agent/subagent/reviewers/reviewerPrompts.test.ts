@@ -75,6 +75,16 @@ describe('parseReviewerVerdict', () => {
     expect(parseReviewerVerdict('前置说明。\n结论：通过（附带非阻塞建议）')).toBe('pass')
   })
 
+  it('解析英文锚点 Verdict: pass/fail（大小写不敏感），中文锚点不受影响', () => {
+    expect(parseReviewerVerdict('Verdict: pass\n- grounds: tests cover the change')).toBe('pass')
+    expect(parseReviewerVerdict('- Verdict: fail\n- issues: …')).toBe('fail')
+    expect(parseReviewerVerdict('VERDICT: Fail')).toBe('fail')
+    // 末次锚定对英文同样成立
+    expect(parseReviewerVerdict('if X is not fixed then verdict: fail.\nIn conclusion Verdict: pass')).toBe('pass')
+    // "surpass" 等含 pass 的词不被误判（必须由 verdict: 前缀锚定）
+    expect(parseReviewerVerdict('the tests surpass expectations')).toBe('unknown')
+  })
+
   it('不通过不得被截断解析为通过；格式漂移返回 unknown', () => {
     expect(parseReviewerVerdict('结论：不通过')).toBe('fail')
     expect(parseReviewerVerdict('审查发现若干问题但未按格式收口')).toBe('unknown')
@@ -86,5 +96,44 @@ describe('parseReviewerVerdict', () => {
     // 审查行文常出现「若不修复 X 则结论：不通过」类假设，最终判定在末尾
     expect(parseReviewerVerdict('若不补充测试则结论：不通过。\n综上，结论：通过')).toBe('pass')
     expect(parseReviewerVerdict('初看结论：通过；但复核发现回归，最终结论：不通过')).toBe('fail')
+  })
+})
+
+describe('审查 SubAgent system prompt 双语与覆写', () => {
+  it('en 模板渲染英文角色/输出契约，占位符全部替换', () => {
+    const prompt = buildInspectSystemPrompt({ scope: ['.specs'], workspaceRoot: '/repo', budget }, { language: 'en' })
+    expect(prompt).toContain('# Role')
+    expect(prompt).toContain('Authorized workspace root: /repo')
+    expect(prompt).toContain('# Allowed tools')
+    expect(prompt).toContain('Verdict: pass / fail')
+    expect(prompt).toContain('at most 8 model requests')
+    expect(prompt).toContain('# Forbidden')
+    expect(prompt).not.toContain('{{')
+  })
+
+  it('en 输出契约约束问题清单体积（与 zh 同语义）', () => {
+    const prompt = buildReviewSystemPrompt({ budget }, { language: 'en' })
+    expect(prompt).toContain('within 4 KiB')
+    expect(prompt).toContain('path:line')
+    expect(prompt).toContain('Verdict: pass / fail')
+  })
+
+  it('overrideTemplate 完整替换静态正文，占位符仍被渲染，省略即省略段落', () => {
+    const prompt = buildInspectSystemPrompt(
+      { scope: ['.specs'] },
+      { language: 'zh-CN', overrideTemplate: '自定义角色正文。\n\n# 范围\n{{SCOPE}}\n\n# 预算\n{{BUDGET}}' },
+    )
+    expect(prompt).toContain('自定义角色正文。')
+    expect(prompt).toContain('本次允许的工作区范围（相对路径）')
+    expect(prompt).toContain('- .specs')
+    expect(prompt).not.toContain('{{')
+    // 未引用 {{TOOLS}}/{{FORBIDDEN}} → 对应段落消失
+    expect(prompt).not.toContain('# 允许的工具')
+    expect(prompt).not.toContain('# 禁止')
+  })
+
+  it('未知占位符保留原样（模板笔误可发现优于静默丢失）', () => {
+    const prompt = buildExamineSystemPrompt({}, { overrideTemplate: 'A {{SCOPE}} B {{TYPO}}' })
+    expect(prompt).toContain('{{TYPO}}')
   })
 })

@@ -20,6 +20,8 @@ import {
   type ProviderConfig,
 } from './provider'
 import { OpenAIResponsesTransport } from './OpenAIResponsesTransport'
+import { OpenAICompatibleTransport } from './OpenAICompatibleTransport'
+import { AnthropicCompatibleTransport } from './AnthropicCompatibleTransport'
 
 const OPENAI_RESPONSES_CONFIG: ProviderConfig = {
   schemaVersion: 4,
@@ -71,6 +73,7 @@ describe('Provider Registry 与 Profile', () => {
         'kimi',
         'kimi-coding',
         'orcarouter',
+      'opencode-go',
       ])
   })
 
@@ -312,7 +315,7 @@ describe('Provider Registry 与 Profile', () => {
     expect(Reflect.set(registered, 'transportVersion', 'changed')).toBe(false)
     expect(Reflect.set(registered.auth, 'defaultSecretId', 'provider.changed.api-key')).toBe(false)
     expect(Reflect.set(registered.defaultProfile, 'endpoint', 'https://changed.example')).toBe(false)
-    expect(BUILTIN_PROVIDER_RUNTIME.getProvider('openai').transportVersion).toBe('6')
+    expect(BUILTIN_PROVIDER_RUNTIME.getProvider('openai').transportVersion).toBe('10')
   })
 
   it('scopes capabilities to the registered API format', async () => {
@@ -358,7 +361,7 @@ describe('Provider Registry 与 Profile', () => {
     expect(model).toMatchObject({ provider: 'openai', model: 'gpt-5' })
     expect(BUILTIN_PROVIDER_RUNTIME.getProvider('openai')).toMatchObject({
       apiFormat: 'openai-responses',
-      transportVersion: '6',
+      transportVersion: '10',
     })
 
     const probe = createProviderProbeRequest(OPENAI_RESPONSES_CONFIG, true)
@@ -387,6 +390,77 @@ describe('Provider Registry 与 Profile', () => {
     const probe = createProviderProbeRequest(profile, true)
     expect(probe.providerId).toBe('generic-anthropic-compatible')
     expect(probe.endpoint).toBe('https://open.bigmodel.cn/api/anthropic')
+  })
+
+  it('routes multi-protocol providers to the transport that matches the selected model wire', async () => {
+    // OpenCode Go 是一个订阅三种 wire：chat completions / responses / messages。
+    // transport 类决定请求体构造与 SSE 解析，必须按模型（而非 provider）选择。
+    const go = await normalizeProviderConfig({
+      ...defaultProviderProfile('opencode-go'),
+      modelId: 'glm-5.3',
+    })
+    expect(go.apiFormat).toBe('openai-compatible')
+    expect(createProviderTransport(go, true).transport).toBeInstanceOf(OpenAICompatibleTransport)
+
+    const messages = await normalizeProviderConfig({ ...go, modelId: 'minimax-m3' })
+    expect(createProviderTransport(messages, true).transport)
+      .toBeInstanceOf(AnthropicCompatibleTransport)
+
+    const responses = await normalizeProviderConfig({ ...go, modelId: 'grok-4.6' })
+    expect(createProviderTransport(responses, true).transport)
+      .toBeInstanceOf(OpenAIResponsesTransport)
+
+    // 目录外的自定义 modelId 回落 provider 默认协议（chat）。
+    const unknown = await normalizeProviderConfig({ ...go, modelId: 'some-new-model' })
+    expect(createProviderTransport(unknown, true).transport)
+      .toBeInstanceOf(OpenAICompatibleTransport)
+  })
+
+  it('builds probes with the wire-specific body shape for multi-protocol providers', async () => {
+    const go = await normalizeProviderConfig({
+      ...defaultProviderProfile('opencode-go'),
+      modelId: 'minimax-m3',
+    })
+    const probe = createProviderProbeRequest(go, true)
+    // 探针端点仍传 profile 原值（与 stream 同口径，由 Rust 按模型解析真实 URL），
+    // 请求体则必须与该模型的协议一致（messages 形状）。
+    expect(probe.endpoint).toBe('https://opencode.ai/zen/go/v1/chat/completions')
+    expect(probe.modelId).toBe('minimax-m3')
+    expect(JSON.parse(probe.body)).toEqual({
+      model: 'minimax-m3',
+      messages: [{ role: 'user', content: 'Reply with OK.' }],
+      max_tokens: 1,
+      stream: false,
+    })
+
+    const responsesProbe = createProviderProbeRequest(
+      await normalizeProviderConfig({ ...go, modelId: 'grok-4.6' }),
+      true,
+    )
+    expect(JSON.parse(responsesProbe.body)).toMatchObject({
+      model: 'grok-4.6',
+      max_output_tokens: 16,
+      store: false,
+    })
+  })
+
+  it('exposes the official site and invite link for subscription providers', () => {
+    // 展示字段（UI-only）：设置页据此把官方入口与新用户优惠链接呈现给用户。
+    expect(BUILTIN_PROVIDER_RUNTIME.getProvider('opencode-go')).toMatchObject({
+      website: 'https://opencode.ai/go',
+      inviteUrl: 'https://opencode.ai/go?ref=QQ1BKKXRTV',
+    })
+    // 未声明的 provider 不带这两个字段（UI 不渲染提示块）。
+    expect(BUILTIN_PROVIDER_RUNTIME.getProvider('openai').website).toBeUndefined()
+    expect(BUILTIN_PROVIDER_RUNTIME.getProvider('openai').inviteUrl).toBeUndefined()
+    // 切换 provider 时草稿的「官网地址」展示字段预填 provider 官网（用户可改）。
+    expect(defaultProviderProfile('opencode-go').website).toBe('https://opencode.ai/go')
+    expect(defaultProviderProfile('openai').website).toBeUndefined()
+  })
+
+  it('requires an API key for the OpenCode Go subscription provider', () => {
+    expect(providerRequiresApiKey('opencode-go')).toBe(true)
+    expect(secretIdForProvider('opencode-go')).toBe('provider.opencode-go.api-key')
   })
 
   it('enforces required authentication only when creating executable Provider clients', async () => {

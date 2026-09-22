@@ -7,6 +7,8 @@ export interface ProviderErrorInput {
   status?: number
   /** 发起请求的 provider id，用于给出平台/区域相关的认证提示（如 Kimi 双平台）。 */
   providerId?: string
+  /** 调用点已确知类别时显式指定（如流截断守卫归入 network），跳过消息模式推断。 */
+  kind?: ProviderErrorKind
 }
 
 /** 认证失败时按 provider 给出的可操作提示；无匹配时回退到通用文案。 */
@@ -36,19 +38,8 @@ const KIND_USER_MESSAGE: Record<Exclude<ProviderErrorKind, 'unknown'>, (status?:
     : '模型服务暂时不可用，已自动重试仍失败，请稍后重试或切换其他模型',
 }
 
-export const classifyProviderError = ({
-  message,
-  code,
-  type,
-  status,
-  providerId,
-}: ProviderErrorInput): ProviderError => {
-  const inferredStatus = status ?? (() => {
-    const matched = message.match(/\bHTTP\s+(\d{3})\b/iu)
-    return matched?.[1] ? Number(matched[1]) : undefined
-  })()
-  const haystack = [message, code, type].filter(Boolean).join(' ')
-  let kind: ProviderErrorKind = 'unknown'
+/** 从消息/错误码模式推断错误类别；调用点显式传入 kind 时跳过推断。 */
+const inferProviderErrorKind = (haystack: string, inferredStatus: number | undefined): ProviderErrorKind => {
   if (matches(haystack, [
     /context window exceeds limit/iu,
     /context[_ ]length[_ ]exceeded/iu,
@@ -59,18 +50,34 @@ export const classifyProviderError = ({
     /too many tokens/iu,
     /token limit exceeded/iu,
   ])) {
-    kind = 'context_overflow'
-  } else if (inferredStatus === 429 || matches(haystack, [/rate[_ ]limit/iu, /too many requests/iu, /throttl/iu, /overload/iu])) {
-    kind = 'rate_limit'
-  } else if (inferredStatus === 401 || inferredStatus === 403 || matches(haystack, [/unauthori[sz]ed/iu, /invalid.*api.*key/iu, /authentication/iu])) {
-    kind = 'authentication'
-  } else if (typeof inferredStatus === 'number' && inferredStatus >= 500) {
-    kind = 'server'
-  } else if (typeof inferredStatus === 'number' && inferredStatus >= 400) {
-    kind = 'invalid_request'
-  } else if (matches(haystack, [/network/iu, /fetch failed/iu, /connection/iu, /timed? out/iu, /timeout/iu])) {
-    kind = 'network'
+    return 'context_overflow'
   }
+  if (inferredStatus === 429 || matches(haystack, [/rate[_ ]limit/iu, /too many requests/iu, /throttl/iu, /overload/iu])) {
+    return 'rate_limit'
+  }
+  if (inferredStatus === 401 || inferredStatus === 403 || matches(haystack, [/unauthori[sz]ed/iu, /invalid.*api.*key/iu, /authentication/iu])) {
+    return 'authentication'
+  }
+  if (typeof inferredStatus === 'number' && inferredStatus >= 500) return 'server'
+  if (typeof inferredStatus === 'number' && inferredStatus >= 400) return 'invalid_request'
+  if (matches(haystack, [/network/iu, /fetch failed/iu, /connection/iu, /timed? out/iu, /timeout/iu])) return 'network'
+  return 'unknown'
+}
+
+export const classifyProviderError = ({
+  message,
+  code,
+  type,
+  status,
+  providerId,
+  kind: explicitKind,
+}: ProviderErrorInput): ProviderError => {
+  const inferredStatus = status ?? (() => {
+    const matched = message.match(/\bHTTP\s+(\d{3})\b/iu)
+    return matched?.[1] ? Number(matched[1]) : undefined
+  })()
+  const haystack = [message, code, type].filter(Boolean).join(' ')
+  const kind = explicitKind ?? inferProviderErrorKind(haystack, inferredStatus)
   const userMessage = kind === 'unknown'
     ? undefined
     : kind === 'authentication' && providerId && AUTHENTICATION_PROVIDER_HINTS[providerId]

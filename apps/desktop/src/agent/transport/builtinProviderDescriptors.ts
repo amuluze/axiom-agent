@@ -25,14 +25,38 @@ export interface BuiltinProviderDescriptor extends ProviderDefinition {
 const probeRequest = (
   profile: ProviderProfile,
   secretId: string | undefined,
+  endpoint: string,
   body: Record<string, unknown>,
 ): ModelProbeRequest => ({
   providerId: profile.providerId,
-  endpoint: profile.endpoint,
+  endpoint,
   body: JSON.stringify(body),
   secretId,
   timeoutMs: Math.min(profile.timeoutMs, 30_000),
+  // 探针也按模型选 wire：多协议 provider 的探测请求体必须与该模型的协议一致。
+  modelId: profile.modelId,
 })
+
+/** 生成数据里 provider 可用的三种 wire（不含 demo）。 */
+type ProviderWireFormat = GeneratedProviderData['apiFormat']
+
+/**
+ * 模型级 wire 解析：多协议网关（如 OpenCode Go）在同一 provider 下按模型分发到不同
+ * 协议与端点。未声明 wire 的模型用 provider 默认——目录外的自定义 modelId 也走默认。
+ *
+ * 注意：这里只决定 **transport 类**（决定请求体构造与 SSE 解析）；最终请求 URL 与
+ * apiFormat 由 Rust `resolve_profile` 按同一份生成表权威解析，TS 传的 endpoint 仍是
+ * profile 原值（与既有一致）。
+ */
+const wireFor = (
+  data: GeneratedProviderData,
+  modelId: string,
+): { apiFormat: ProviderWireFormat; endpoint: string } => {
+  const model = data.models.find((candidate) => candidate.modelId === modelId)
+  return model?.wire
+    ? { apiFormat: model.wire.apiFormat, endpoint: model.wire.endpoint }
+    : { apiFormat: data.apiFormat, endpoint: data.defaultProfile.endpoint }
+}
 
 const freezeDescriptor = (descriptor: BuiltinProviderDescriptor): BuiltinProviderDescriptor => {
   const auth = Object.freeze({ ...descriptor.auth })
@@ -53,11 +77,14 @@ const freezeDescriptor = (descriptor: BuiltinProviderDescriptor): BuiltinProvide
   })
 }
 
-const transportFor = (data: GeneratedProviderData): TransportFactory => {
-  switch (data.apiFormat) {
+const transportFactoryFor = (
+  wire: ProviderWireFormat,
+  providerId: string,
+): TransportFactory => {
+  switch (wire) {
     case 'openai-responses':
       return (profile, secretId) => new OpenAIResponsesTransport({
-        providerId: data.id,
+        providerId,
         endpoint: profile.endpoint,
         secretId,
         timeoutMs: profile.timeoutMs,
@@ -66,7 +93,7 @@ const transportFor = (data: GeneratedProviderData): TransportFactory => {
       })
     case 'anthropic-compatible':
       return (profile, secretId) => new AnthropicCompatibleTransport({
-        providerId: data.id,
+        providerId,
         endpoint: profile.endpoint,
         secretId,
         timeoutMs: profile.timeoutMs,
@@ -75,7 +102,7 @@ const transportFor = (data: GeneratedProviderData): TransportFactory => {
       })
     case 'openai-compatible':
       return (profile, secretId) => new OpenAICompatibleTransport({
-        providerId: data.id,
+        providerId,
         endpoint: profile.endpoint,
         secretId,
         timeoutMs: profile.timeoutMs,
@@ -84,32 +111,49 @@ const transportFor = (data: GeneratedProviderData): TransportFactory => {
   }
 }
 
-const probeFor = (data: GeneratedProviderData): BuiltinProviderDescriptor['createProbe'] => {
-  switch (data.apiFormat) {
+const transportFor = (data: GeneratedProviderData): TransportFactory =>
+  (profile, secretId) => transportFactoryFor(
+    wireFor(data, profile.modelId).apiFormat,
+    data.id,
+  )(profile, secretId)
+
+const probeBodyFor = (
+  wire: ProviderWireFormat,
+  profile: ProviderProfile,
+): Record<string, unknown> => {
+  switch (wire) {
     case 'openai-responses':
-      return (profile, secretId) => probeRequest(profile, secretId, {
+      return {
         model: profile.modelId,
         input: 'Reply with OK.',
         max_output_tokens: 16,
         stream: false,
         store: false,
-      })
+      }
     case 'anthropic-compatible':
-      return (profile, secretId) => probeRequest(profile, secretId, {
+      return {
         model: profile.modelId,
         messages: [{ role: 'user', content: 'Reply with OK.' }],
         max_tokens: 1,
         stream: false,
-      })
+      }
     case 'openai-compatible':
-      return (profile, secretId) => probeRequest(profile, secretId, {
+      return {
         model: profile.modelId,
         messages: [{ role: 'user', content: 'Reply with OK.' }],
         max_tokens: 1,
         stream: false,
-      })
+      }
   }
 }
+
+const probeFor = (data: GeneratedProviderData): BuiltinProviderDescriptor['createProbe'] =>
+  (profile, secretId) => {
+    // endpoint 传 profile 原值（与 stream 路径同口径）：Rust 会按同一个模型规则解析出
+    // 该模型协议的真实 URL（含用户的 host 覆盖），探针与真实请求因此走同一端点。
+    const { apiFormat } = wireFor(data, profile.modelId)
+    return probeRequest(profile, secretId, profile.endpoint, probeBodyFor(apiFormat, profile))
+  }
 
 const descriptorFromData = (data: GeneratedProviderData): BuiltinProviderDescriptor =>
   freezeDescriptor({
@@ -131,6 +175,8 @@ const descriptorFromData = (data: GeneratedProviderData): BuiltinProviderDescrip
       input: [...model.input],
       supportsReasoning: model.supportsReasoning,
     })),
+    ...(data.website ? { website: data.website } : {}),
+    ...(data.inviteUrl ? { inviteUrl: data.inviteUrl } : {}),
     createTransport: transportFor(data),
     createProbe: probeFor(data),
   })

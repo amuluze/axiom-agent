@@ -1,0 +1,2 @@
+# 构建期由 build.rs 从 webview2-com-sys 产物收进的 WebView2Loader.dll
+/resources/

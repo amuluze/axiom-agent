@@ -46,11 +46,13 @@ describe('ProviderRegistry (builtin)', () => {
         'minimax-chat',
         'ollama',
         'openai',
+        'opencode-go',
         'orcarouter',
         'zhipu-glm',
       ])
     expect(BUILTIN_PROVIDER_REGISTRY.get('demo').label).toBe('离线 Demo')
     expect(BUILTIN_PROVIDER_REGISTRY.get('orcarouter').label).toBe('OrcaRouter')
+    expect(BUILTIN_PROVIDER_REGISTRY.get('opencode-go').label).toBe('OpenCode Go')
     expect(() => BUILTIN_PROVIDER_REGISTRY.get('unknown' as never)).toThrow('Provider 未注册')
   })
 

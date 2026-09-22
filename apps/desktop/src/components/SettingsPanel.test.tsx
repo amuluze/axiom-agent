@@ -30,14 +30,6 @@ describe('SettingsPanel — ProviderSection', () => {
   })
 })
 
-describe('SettingsPanel — ReasoningSection', () => {
-  it('renders the reasoning section with the intensity selector', () => {
-    const html = renderPanel()
-    expect(html).toContain('id="settings-reasoning"')
-    expect(html).toContain('推理强度')
-  })
-})
-
 describe('SettingsPanel — ContextPolicySection', () => {
   it('renders the context policy section with the token reserve control', () => {
     const html = renderPanel()
@@ -119,7 +111,7 @@ describe('SettingsPanel — full integration', () => {
   it('renders every desktop section through the shared form scaffold', () => {
     const html = renderPanel()
     const anchors = [
-      'settings-provider', 'settings-reasoning',
+      'settings-provider',
       'settings-context-policy', 'settings-queue-modes', 'settings-sessions',
       'settings-general', 'settings-browser', 'settings-subagents',
     ]

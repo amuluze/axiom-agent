@@ -88,7 +88,7 @@ export const NETWORK_KEYWORDS = [
   'git clone', 'git fetch', 'git pull', 'git push', 'git ls-remote',
   'git submodule update',
   'gem install', 'bundle install', 'dotnet restore',
-  'brew install', 'docker pull', 'telnet', 'socat',
+  'brew install', 'docker', 'telnet', 'socat',
   'http://', 'https://', 'ftp://',
 ]
 
@@ -160,7 +160,7 @@ const commandOutput = (
   // 写限工作区与凭据读取保护未生效——显式告知模型/用户，而非静默裸跑。
   if (result.sandboxed === false) {
     sections.push(
-      'Sandbox unavailable (degraded execution): macOS Seatbelt sandbox was not available, '
+      'Sandbox unavailable (degraded execution): the OS sandbox was not available, '
       + 'so this command ran as a regular user process WITHOUT sandboxing — '
       + 'workspace-write confinement and credential-read denials did NOT apply. '
       + 'Review the command and its output accordingly.',
@@ -204,7 +204,10 @@ export const createBashTool = (
       'git clone/fetch/pull/push/ls-remote/submodule-update 等 VCS 网络命令会在沙箱内被放行读取 ~/.ssh 与 ~/.config/git/credentials，以便 SSH/HTTPS 认证正常工作；其它凭据目录仍保持拒绝。',
       '输出超过 2 MiB 时尾截断；用更精确的命令缩小范围以获取缺失部分。',
     ],
-    runtimeVersion: '15',
+    // v16：沙箱后端平台化（macOS Seatbelt / Linux bubblewrap），审批卡片与降级
+    // 警示文案去掉 "macOS Seatbelt" 专名——恢复会话按版本迁移，旧会话工具契约
+    // 不因文案语义变化而静默沿用。
+    runtimeVersion: '16',
     recoveryPolicy: 'never',
     description:
       'Execute a bash command in the authorized workspace. The command runs via /bin/bash -c inside the workspace directory. Output is truncated at 2 MiB (tail retained). Each invocation requires an approval lease. Optionally provide a timeout in seconds.',
@@ -262,7 +265,7 @@ export const createBashTool = (
       return {
         category: 'workspace-command',
         title: 'Run bash command?',
-        description: 'This command runs via /bin/bash -c inside the authorized workspace, sandboxed by macOS Seatbelt (workspace-only writes, credentials denied). This approval lease is valid only for this single command.'
+        description: 'This command runs via /bin/bash -c inside the authorized workspace, sandboxed by the OS sandbox (workspace-only writes, credentials denied). This approval lease is valid only for this single command.'
           + (dangerous ? ' ⚠️ 危险命令，请仔细确认。' : '')
           + (sandboxed ? ' 🔒 沙箱内执行。' : ' 🌐 沙箱内执行＋启用网络。'),
         path: cwd || '.',

@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   activeSessionId: null as string | null,
   authorizedWorkspaces: [] as Array<{ path: string; name: string; gitBranch?: string | null }>,
   sendToSession: vi.fn(async () => true),
+  releaseQueuedForSession: vi.fn(async () => true),
+  sessionQueueCounts: {} as Record<string, number>,
 }))
 
 vi.mock('@/stores/agentStore', async (importOriginal) => {
@@ -24,6 +26,8 @@ vi.mock('@/stores/agentStore', async (importOriginal) => {
       activeSessionId: mocks.activeSessionId,
       authorizedWorkspaces: mocks.authorizedWorkspaces,
       sendToSession: mocks.sendToSession,
+      releaseQueuedForSession: mocks.releaseQueuedForSession,
+      sessionQueueCounts: mocks.sessionQueueCounts,
     } as StoreState),
   }
 })
@@ -79,6 +83,9 @@ describe('Sidebar 后台快捷发送 (RTL)', () => {
     mocks.authorizedWorkspaces = []
     mocks.sendToSession.mockClear()
     mocks.sendToSession.mockResolvedValue(true)
+    mocks.releaseQueuedForSession.mockClear()
+    mocks.releaseQueuedForSession.mockResolvedValue(true)
+    mocks.sessionQueueCounts = {}
   })
 
   it('不切换会话：行内输入发送消息到后台会话', async () => {
@@ -130,5 +137,27 @@ describe('Sidebar 后台快捷发送 (RTL)', () => {
     expect(mocks.sendToSession).toHaveBeenCalledWith('background-session', '重试这条')
     expect(screen.getByLabelText('发送消息到会话 后台任务')).toBeInTheDocument()
     expect(screen.getByLabelText('发送消息到会话 后台任务')).toHaveValue('重试这条')
+  })
+
+  it('有待发送队列的后台会话显示放行按钮，点击走 releaseQueuedForSession', async () => {
+    const user = userEvent.setup()
+    mocks.authorizedWorkspaces = [{ path: '/repo', name: 'repo' }]
+    mocks.sessions = [stubSession()]
+    mocks.sessionQueueCounts = { 'background-session': 2 }
+
+    render(createElement(Sidebar))
+    const releaseButton = screen.getByRole('button', { name: '放行会话 后台任务 的队首待发送消息' })
+    await user.click(releaseButton)
+    expect(mocks.releaseQueuedForSession).toHaveBeenCalledWith('background-session')
+  })
+
+  it('无待发送队列时不显示放行按钮', () => {
+    mocks.authorizedWorkspaces = [{ path: '/repo', name: 'repo' }]
+    mocks.sessions = [stubSession()]
+    mocks.sessionQueueCounts = {}
+
+    render(createElement(Sidebar))
+    expect(screen.queryByRole('button', { name: '放行会话 后台任务 的队首待发送消息' }))
+      .not.toBeInTheDocument()
   })
 })

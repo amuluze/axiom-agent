@@ -2,6 +2,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { acceptedQueueMessage, rejectedQueueMessage } from '@/agent/runtime/queueContracts'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   Composer,
@@ -39,8 +40,8 @@ const mocks = vi.hoisted(() => ({
   activeSessionId: 'session-1' as string | null,
   messageEditRequest: null as { sessionId: string; messageId: string; content: string; images?: Array<{ type: 'image'; source: { type: 'base64'; mediaType: string; data: string } }> } | null,
   setMessageEditRequest: vi.fn(),
-  queueSteering: vi.fn(async () => true),
-  queueFollowUp: vi.fn(async () => true),
+  queueSteering: vi.fn(async () => acceptedQueueMessage('queued-1')),
+  queueFollowUp: vi.fn(async () => acceptedQueueMessage('queued-2')),
   authorizeFile: vi.fn(async () => true),
   authorizeDirectory: vi.fn(async () => true),
   providerReady: true,
@@ -181,7 +182,7 @@ describe('Composer', () => {
   it('keeps the composer available for steering while a run is active', () => {
     mocks.running = true
     const html = renderToStaticMarkup(createElement(Composer))
-    expect(html).toContain('Enter 发送；⌥↵ 换行')
+    expect(html).toContain('继续输入以排队后续修改')
     expect(html).toContain('aria-label="停止运行"')
     expect(html).not.toMatch(/<textarea[^>]*disabled/)
   })
@@ -219,9 +220,19 @@ describe('Composer', () => {
 
   it('only clears queued input after the runtime accepts the action', async () => {
     const clear = vi.fn()
-    await expect(deliverQueuedContent(vi.fn(async () => false), 'keep me', clear)).resolves.toBe(false)
+    const rejected = await deliverQueuedContent(
+      vi.fn(async () => rejectedQueueMessage('runtime-not-accepting')),
+      'keep me',
+      clear,
+    )
+    expect(rejected).toEqual({ accepted: false, reason: 'runtime-not-accepting' })
     expect(clear).not.toHaveBeenCalled()
-    await expect(deliverQueuedContent(vi.fn(async () => true), 'send me', clear)).resolves.toBe(true)
+    const accepted = await deliverQueuedContent(
+      vi.fn(async () => acceptedQueueMessage('queued-1')),
+      'send me',
+      clear,
+    )
+    expect(accepted).toEqual({ accepted: true, id: 'queued-1' })
     expect(clear).toHaveBeenCalledOnce()
   })
 
@@ -260,8 +271,10 @@ describe('Composer', () => {
       needsCompaction: false,
     }
     const html = renderToStaticMarkup(createElement(Composer))
-    expect(html).toContain('aria-label="上下文预算"')
-    expect(html).toContain('45%')
+    expect(html).toContain('aria-label="上下文预算水位 45%"')
+    expect(html).toContain('composer__budget-ring')
+    // 百分比不再作为可见文本出现在底栏，只保留在 aria 名称里。
+    expect(html).not.toContain('>45%<')
   })
 
   it('omits the context budget trigger on the new-task variant', () => {
@@ -274,12 +287,12 @@ describe('Composer', () => {
       needsCompaction: false,
     }
     const html = renderToStaticMarkup(createElement(Composer, { variant: 'new-task' }))
-    expect(html).not.toContain('aria-label="上下文预算"')
+    expect(html).not.toContain('composer__budget-trigger')
   })
 
   it('omits the context budget trigger without a session context usage', () => {
     const html = renderToStaticMarkup(createElement(Composer))
-    expect(html).not.toContain('aria-label="上下文预算"')
+    expect(html).not.toContain('composer__budget-trigger')
   })
 
   describe('输入历史（↑/↓ 回溯）', () => {

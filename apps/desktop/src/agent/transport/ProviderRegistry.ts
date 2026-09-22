@@ -27,6 +27,10 @@ export interface ProviderMetadata {
   readonly auth: ProviderAuthDescriptor
   readonly supportedCapabilities: Readonly<ProviderCapabilities>
   readonly defaultProfile: ProviderProfileDraft
+  /** 官网地址（UI-only 展示字段）。 */
+  readonly website?: string
+  /** 邀请/优惠链接（UI-only 展示字段）。 */
+  readonly inviteUrl?: string
 }
 
 type ProviderRuntimeDescriptor = Omit<BuiltinProviderDescriptor, 'defaultProfile'> & {
@@ -82,6 +86,8 @@ export class ProviderRegistry {
         auth: registered.auth,
         supportedCapabilities: registered.supportedCapabilities,
         defaultProfile: registered.defaultProfile,
+        ...(registered.website ? { website: registered.website } : {}),
+        ...(registered.inviteUrl ? { inviteUrl: registered.inviteUrl } : {}),
       }))
     }
   }

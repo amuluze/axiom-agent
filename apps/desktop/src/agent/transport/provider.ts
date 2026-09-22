@@ -102,8 +102,13 @@ export interface StoredProviderProfile {
 export const providerLabel = (providerId: ProviderId): string =>
   BUILTIN_PROVIDER_RUNTIME.getProvider(providerId).label
 
-export const defaultProviderProfile = (providerId: ProviderId): ProviderProfileDraft =>
-  structuredClone(BUILTIN_PROVIDER_RUNTIME.getProvider(providerId).defaultProfile)
+export const defaultProviderProfile = (providerId: ProviderId): ProviderProfileDraft => {
+  const descriptor = BUILTIN_PROVIDER_RUNTIME.getProvider(providerId)
+  const profile = structuredClone(descriptor.defaultProfile)
+  // provider 声明了官网时预填 profile 的展示字段（用户可改）：该字段是纯展示的
+  // 「官网/文档地址」，让它带上 provider 自己的官网比留空更有意义。
+  return descriptor.website ? { ...profile, website: descriptor.website } : profile
+}
 
 export const secretIdForProvider = (providerId: Exclude<ProviderId, 'demo'>): string => {
   const { auth } = BUILTIN_PROVIDER_RUNTIME.getProvider(providerId)

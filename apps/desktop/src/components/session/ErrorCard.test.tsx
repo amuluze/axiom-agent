@@ -6,7 +6,6 @@ import type { AssistantMessage } from '@/agent/core/types'
 
 const mocks = vi.hoisted(() => ({
   retryFailedAssistant: vi.fn(),
-  setRuntimeRailOpen: vi.fn(),
 }))
 
 vi.mock('@/stores/agentStore', async (importOriginal) => {
@@ -21,21 +20,8 @@ vi.mock('@/stores/agentStore', async (importOriginal) => {
   }
 })
 
-vi.mock('@/stores/uiStore', async (importOriginal) => {
-  const original = await importOriginal<typeof import('@/stores/uiStore')>()
-  type UiState = ReturnType<typeof original.useUiStore.getState>
-  return {
-    ...original,
-    useUiStore: <T,>(selector: (state: UiState) => T): T => selector({
-      ...original.useUiStore.getState(),
-      setRuntimeRailOpen: mocks.setRuntimeRailOpen,
-    } as UiState),
-  }
-})
-
 afterEach(() => {
   mocks.retryFailedAssistant.mockClear()
-  mocks.setRuntimeRailOpen.mockClear()
 })
 
 describe('ErrorCard', () => {
@@ -84,14 +70,13 @@ describe('ErrorCard', () => {
     expect(html).toContain('session__error-card-detail')
   })
 
-  it('renders both 查看日志 and 重试 action buttons', () => {
+  it('renders only the 重试 action button（查看日志已随运行轨迹面板下线移除）', () => {
     const html = renderToStaticMarkup(createElement(ErrorCard, {
       messageId: 'm-1',
       error: 'fail',
     }))
-    expect(html).toContain('查看日志')
     expect(html).toContain('重试')
-    expect(html).toMatch(/<button[^>]*>查看日志<\/button>/u)
+    expect(html).not.toContain('查看日志')
   })
 
   it('uses the correct CSS classes for the error scaffold', () => {

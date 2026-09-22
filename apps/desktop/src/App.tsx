@@ -7,6 +7,7 @@ import {
 import { PanelLeft } from 'lucide-react'
 import { useAgentStore } from '@/stores/agentStore'
 import { useUiStore } from '@/stores/uiStore'
+import { primeOperatingSystem } from '@/platform/osRuntime'
 import { watchAuthorizedWorkspaces } from '@/components/terminal/terminalWorkspaceWatch'
 import { Sidebar } from '@/components/sidebar/Sidebar'
 import { useResponsiveSidebar } from '@/components/sidebar/useResponsiveSidebar'
@@ -116,6 +117,13 @@ export const App = () => {
   const setSummaryRequest = useUiStore((state) => state.setSummaryRequest)
   const feedbackRequest = useUiStore((state) => state.feedbackRequest)
   useViewRouter()
+  // 预热运行 OS（Rust get_runtime_info 上报真实系统）：写入 uiStore 驱动平台
+  // 限制提示重渲染，并挂 <html data-os>（CSS 平台分支，如 Linux 无交通灯安全区）。
+  useEffect(() => {
+    void primeOperatingSystem().then((operatingSystem) => {
+      useUiStore.getState().setOperatingSystem(operatingSystem)
+    })
+  }, [])
   // 定期刷新已授权工作区的 git 分支显示：分支在外部（终端/IDE）切换后，
   // 输入框与侧边栏的分支名跟随更新（Rust 实时读 .git/HEAD，开销极小）。
   useEffect(() => {

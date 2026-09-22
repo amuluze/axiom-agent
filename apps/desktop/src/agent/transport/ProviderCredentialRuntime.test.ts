@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEMO_PROVIDER_CONFIG } from './provider'
-import { TEST_ANTHROPIC_PROFILE } from '@/components/settings/sections/testFixtures'
+import { TEST_ANTHROPIC_PROFILE } from '@/agent/transport/__fixtures__/testAnthropicProfile'
 import { BUILTIN_PROVIDER_REGISTRY } from './ProviderRegistry'
 import {
   BUILTIN_PROVIDER_CREDENTIAL_MIGRATIONS,

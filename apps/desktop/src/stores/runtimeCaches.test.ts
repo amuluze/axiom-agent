@@ -45,6 +45,7 @@ describe('runtimeCaches', () => {
       endReason: null,
       error: null,
       compactionRunning: false,
+      queuedMessages: [],
     })
     mod.setRuntimeBasePrompt('a', 'base-prompt-a')
     const removed = mod.dropRuntimeCachesForSession('a')

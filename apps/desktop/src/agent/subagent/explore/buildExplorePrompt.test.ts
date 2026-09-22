@@ -96,3 +96,30 @@ describe('buildExploreSystemPrompt', () => {
     expect(prompt).toContain('允许访问整个已授权工作区')
   })
 })
+
+describe('buildExploreSystemPrompt 双语与覆写', () => {
+  it('en 模板渲染英文角色/输出契约，占位符全部替换', () => {
+    const prompt = buildExploreSystemPrompt(
+      { scope: ['src'], workspaceRoot: '/repo', budget: { maxTurns: 16, maxToolCalls: 48, maxMessageBytes: 512 * 1024, maxInlineToolResultBytes: 64 * 1024 } },
+      { language: 'en' },
+    )
+    expect(prompt).toContain('# Role')
+    expect(prompt).toContain('Authorized workspace root: /repo')
+    expect(prompt).toContain('# Allowed tools')
+    expect(prompt).toContain('at most 16 model requests')
+    expect(prompt).toContain('# Forbidden')
+    expect(prompt).not.toContain('{{')
+  })
+
+  it('overrideTemplate 完整替换静态正文，{{SCOPE}}/{{BUDGET}} 照常渲染', () => {
+    const prompt = buildExploreSystemPrompt(
+      { budget: { maxTurns: 4, maxToolCalls: 8, maxMessageBytes: 256 * 1024, maxInlineToolResultBytes: 64 * 1024 } },
+      { language: 'zh-CN', overrideTemplate: '自定义探索角色。\n\n# 范围\n{{SCOPE}}\n\n# 预算\n{{BUDGET}}' },
+    )
+    expect(prompt).toContain('自定义探索角色。')
+    expect(prompt).toContain('4 轮模型请求')
+    expect(prompt).toContain('整个已授权工作区')
+    expect(prompt).not.toContain('{{')
+    expect(prompt).not.toContain('# 允许的工具')
+  })
+})

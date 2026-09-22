@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   AlertTriangle,
   Monitor,
+  MonitorOff,
   MonitorSmartphone,
   RefreshCw,
   ShieldAlert,
@@ -45,6 +46,16 @@ export const ComputerPanel = () => {
   const { t } = useT()
   const setSettingsSection = useUiStore((state) => state.setSettingsSection)
   const setView = useUiStore((state) => state.setView)
+  // Linux 限制：电脑控制依赖 macOS Accessibility/CGEvent，Rust 侧全动作 fail-closed
+  //（docs/linux-support.md §1.2）——面板直接呈现不支持说明，不做无意义的权限探测。
+  const operatingSystem = useUiStore((state) => state.operatingSystem)
+  const isUnsupportedPlatform = operatingSystem !== 'macos'
+  const unsupportedTitleKey = operatingSystem === 'windows'
+    ? 'app.computerPanel.windowsUnsupportedTitle'
+    : 'app.computerPanel.linuxUnsupportedTitle'
+  const unsupportedHintKey = operatingSystem === 'windows'
+    ? 'app.computerPanel.windowsUnsupportedHint'
+    : 'app.computerPanel.linuxUnsupportedHint'
   const [status, setStatus] = useState<ComputerStatusState | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -72,8 +83,9 @@ export const ComputerPanel = () => {
   }, [t])
 
   useEffect(() => {
+    if (isUnsupportedPlatform) return
     void refresh()
-  }, [refresh])
+  }, [refresh, isUnsupportedPlatform])
 
   const grantAppNames = status
     ? [...new Set(status.grants.map((grant) => grant.appName))]
@@ -116,7 +128,15 @@ export const ComputerPanel = () => {
 
   return (
     <section className="rail__panel rail__computer-panel" aria-label={t('app.computerPanel.aria')}>
-      {!enabled ? (
+      {isUnsupportedPlatform ? (
+        <div className="rail__computer-empty">
+          <MonitorOff size={34} strokeWidth={1.5} />
+          <div className="rail__computer-empty-title">{t(unsupportedTitleKey)}</div>
+          <div className="rail__computer-empty-hint">{t(unsupportedHintKey)}</div>
+        </div>
+      ) : (
+        <>
+          {!enabled ? (
         <div className="rail__computer-empty">
           <Monitor size={34} strokeWidth={1.5} />
           <div className="rail__computer-empty-title">{t('app.computerPanel.empty.disabledTitle')}</div>
@@ -225,7 +245,9 @@ export const ComputerPanel = () => {
           )}
         </>
       )}
-      {enabled && (
+        </>
+      )}
+      {enabled && !isUnsupportedPlatform && (
         <div className="rail__browser-footer">
           <span className="rail__browser-status">
             <span

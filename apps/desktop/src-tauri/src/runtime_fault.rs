@@ -43,13 +43,11 @@ fn terminate_at_checkpoint(checkpoint: &str) -> Result<(), String> {
         .map_err(|error| format!("failed to write E2E fault marker: {error}"))?;
     file.sync_all()
         .map_err(|error| format!("failed to sync E2E fault marker: {error}"))?;
-    std::fs::File::open(
-        marker_path
-            .parent()
-            .ok_or_else(|| "AXIOM_E2E_FAULT_MARKER has no parent".to_string())?,
-    )
-    .and_then(|directory| directory.sync_all())
-    .map_err(|error| format!("failed to sync E2E fault marker directory: {error}"))?;
+    let marker_parent = marker_path
+        .parent()
+        .ok_or_else(|| "AXIOM_E2E_FAULT_MARKER has no parent".to_string())?;
+    crate::storage_paths::sync_directory(marker_parent)
+        .map_err(|error| format!("failed to sync E2E fault marker directory: {error}"))?;
     #[cfg(unix)]
     {
         let result = unsafe { libc::kill(std::process::id() as i32, libc::SIGKILL) };

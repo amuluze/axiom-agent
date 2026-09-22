@@ -1,5 +1,5 @@
 import { useEffect, useRef, type KeyboardEvent, type PointerEvent } from 'react'
-import { Power, RotateCcw, X } from 'lucide-react'
+import { MonitorOff, Power, RotateCcw, X } from 'lucide-react'
 import '@xterm/xterm/css/xterm.css'
 import { setTerminalFocus } from '@/platform/terminal'
 import { useAgentStore } from '@/stores/agentStore'
@@ -51,9 +51,19 @@ export const WorkspaceTerminalPanel = () => {
   const activeTerminalId = useTerminalStore((state) =>
     activeWorkspacePath ? state.entries[activeWorkspacePath]?.terminalId ?? null : null,
   )
+  // Linux 限制：终端 stdin 手势门依赖 macOS 原生 keyDown（NSEvent local
+  // monitor），Linux 无等价物（Wayland 禁止全局输入观测），Rust 侧 spawn 已
+  // fail-closed——面板只呈现说明，不 attach/不启动（详见 docs/linux-support.md）。
+  const operatingSystem = useUiStore((state) => state.operatingSystem)
+  // 非 macOS 平台（Linux/Windows）均无手势门等价实现：Rust 侧 spawn 已 fail-closed。
+  const isUnsupportedPlatform = operatingSystem !== 'macos'
+  const unsupportedHintKey = operatingSystem === 'windows'
+    ? 'app.terminalPanel.windowsUnsupported'
+    : 'app.terminalPanel.linuxUnsupported'
 
   // 呈现切换：挂入激活工作区的容器（不存在则启动），离开的工作区只解绑 DOM。
   useEffect(() => {
+    if (isUnsupportedPlatform) return
     const container = containerRef.current
     if (!container || !activeWorkspacePath) return
     attachTerminal(activeWorkspacePath, container)
@@ -70,13 +80,14 @@ export const WorkspaceTerminalPanel = () => {
       void setTerminalFocus(false)
       detachTerminal(activeWorkspacePath)
     }
-  }, [activeWorkspacePath, activeTerminalId])
+  }, [activeWorkspacePath, activeTerminalId, isUnsupportedPlatform])
 
   // 字号/字体偏好热更新所有条目，并让可见终端重新 fit（尺寸变化经 onResize 同步 PTY）。
   useEffect(() => {
+    if (isUnsupportedPlatform) return
     syncTerminalFont()
     if (activeWorkspacePath) fitTerminal(activeWorkspacePath)
-  }, [fontSizePx, monoFontFamily, activeWorkspacePath])
+  }, [fontSizePx, monoFontFamily, activeWorkspacePath, isUnsupportedPlatform])
 
   const onResizePointerDown = (event: PointerEvent<HTMLDivElement>): void => {
     if (event.button !== 0 || !event.currentTarget.setPointerCapture) return
@@ -167,9 +178,16 @@ export const WorkspaceTerminalPanel = () => {
           </button>
         </div>
       </div>
-      {activeWorkspacePath
-        ? <div className="terminal-panel__viewport" ref={containerRef} />
-        : <div className="terminal-panel__empty" role="status">{t('app.terminalPanel.emptyState')}</div>}
+      {isUnsupportedPlatform
+        ? (
+          <div className="terminal-panel__empty" role="status">
+            <MonitorOff size={18} />
+            <p>{t(unsupportedHintKey)}</p>
+          </div>
+        )
+        : activeWorkspacePath
+          ? <div className="terminal-panel__viewport" ref={containerRef} />
+          : <div className="terminal-panel__empty" role="status">{t('app.terminalPanel.emptyState')}</div>}
     </section>
   )
 }

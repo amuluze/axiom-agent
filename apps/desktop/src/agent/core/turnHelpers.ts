@@ -2,6 +2,7 @@ import type {
   AgentContext,
   AgentLimits,
   AgentMessage,
+  AgentRunTokenUsage,
   AgentTurnSavePoint,
   AssistantMessage,
   BudgetThresholds,
@@ -16,12 +17,13 @@ import { snapshotAgentMessages, snapshotAgentContext, snapshotAssistantMessage, 
  * 约定：这些函数只做「读入 → 输出新对象」，不修改任何入参（不可变边界）。
  */
 
-/** 预算提示注入：按轮次/工具调用剩余量生成软/硬提醒文案（纯函数）。 */
+/** 预算提示注入：按轮次/工具调用/token 累计量生成软/硬提醒文案（纯函数）。 */
 export const buildBudgetNotices = (
   turns: number,
   toolCalls: number,
   limits: AgentLimits,
   budgetThresholds: BudgetThresholds,
+  tokenUsage: AgentRunTokenUsage,
 ): string[] => {
   const notices: string[] = []
   const remainingTurns = limits.maxTurns - turns + 1
@@ -39,6 +41,21 @@ export const buildBudgetNotices = (
   if (remainingToolCalls <= budgetThresholds.toolCallNotice) {
     notices.push(
       `运行时工具预算提示：本次任务还可调用 ${remainingToolCalls} 次工具。请合并搜索与读取范围；信息足够时立即总结结论并完成任务。`,
+    )
+  }
+  if (
+    limits.maxTotalTokens !== undefined
+    && tokenUsage.billableTokens >= budgetThresholds.tokenHardNotice
+  ) {
+    notices.push(
+      `运行时 token 预算硬约束：本次运行累计计费 ${tokenUsage.billableTokens} tokens（预算 ${limits.maxTotalTokens}）。请停止大范围检索与重复读取，立即基于已有信息收口。`,
+    )
+  } else if (
+    limits.maxTotalTokens !== undefined
+    && tokenUsage.billableTokens >= budgetThresholds.tokenSoftNotice
+  ) {
+    notices.push(
+      `运行时 token 预算提示：本次运行已累计计费 ${tokenUsage.billableTokens}/${limits.maxTotalTokens} tokens。请合并读取范围、避免重复加载大文件，规划收口路径。`,
     )
   }
   return notices

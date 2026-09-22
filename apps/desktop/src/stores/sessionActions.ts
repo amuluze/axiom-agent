@@ -14,6 +14,13 @@ import {
   type ProviderProfile,
 } from '@/agent/transport/provider'
 import type { QueuedMessageSnapshot } from '@/agent/runtime/AgentSession'
+import {
+  acceptedQueueMessage,
+  rejectedQueueMessage,
+  type QueueAcceptance,
+  type QueueMoveTarget,
+  type QueueMutationResult,
+} from '@/agent/runtime/queueContracts'
 import type {
   SessionDefaults,
   SessionRepository,
@@ -121,6 +128,7 @@ export const queuedMessageState = (session: AgentHarness) => ({
   pendingNextTurnCount: session.pendingNextTurnCount,
   queuedMessages: session.queuedMessages,
   recoveredQueuedMessages: session.recoveredMessages,
+  armedQueueMessageId: session.armedQueueMessageId ?? null,
 })
 
 const queueMessage = async (
@@ -128,22 +136,22 @@ const queueMessage = async (
   get: AgentGet,
   session: AgentHarness,
   content: string,
-  operation: (session: AgentHarness, content: string) => Promise<boolean>,
-): Promise<boolean> => {
-  if (get().runtimeLifecycle !== 'ready'
-    || get().compactionRunning
-    || !get().running
-    || !session.canQueueMessages) return false
-  let queued: boolean
+  operation: (session: AgentHarness, content: string) => Promise<QueueAcceptance>,
+): Promise<QueueAcceptance> => {
+  if (get().runtimeLifecycle !== 'ready') return rejectedQueueMessage('runtime-not-accepting')
+  if (get().compactionRunning || !get().running || !session.canQueueMessages) {
+    return rejectedQueueMessage('runtime-not-accepting')
+  }
+  let accepted: QueueAcceptance
   try {
-    queued = await operation(session, content)
+    accepted = await operation(session, content)
   } catch (error) {
     set({ error: errorMessage(error) })
-    return false
+    return rejectedQueueMessage('runtime-not-accepting')
   }
-  if (!queued) return false
+  if (!accepted.accepted) return accepted
   set(queuedMessageState(session))
-  return true
+  return accepted
 }
 
 export const queueSteering = (
@@ -152,7 +160,7 @@ export const queueSteering = (
   session: AgentHarness,
   content: string,
   images?: ImageContentBlock[],
-): Promise<boolean> =>
+): Promise<QueueAcceptance> =>
   queueMessage(set, get, session, content, (s, c) => s.steer(c, images))
 
 export const queueFollowUp = (
@@ -161,7 +169,7 @@ export const queueFollowUp = (
   session: AgentHarness,
   content: string,
   images?: ImageContentBlock[],
-): Promise<boolean> =>
+): Promise<QueueAcceptance> =>
   queueMessage(set, get, session, content, (s, c) => s.followUp(c, images))
 
 export const queueNextTurn = async (
@@ -170,24 +178,124 @@ export const queueNextTurn = async (
   session: AgentHarness,
   content: string,
   images?: ImageContentBlock[],
-): Promise<boolean> => {
+): Promise<QueueAcceptance> => {
   // next-turn 队列独立于正在运行的任务：不要求 running，只要求未在压缩/结算。
-  if (get().runtimeLifecycle !== 'ready' || get().compactionRunning || get().sessionBusy) return false
-  let queued: boolean
+  if (get().runtimeLifecycle !== 'ready') return rejectedQueueMessage('runtime-not-accepting')
+  if (get().compactionRunning || get().sessionBusy) {
+    return rejectedQueueMessage('runtime-not-accepting')
+  }
+  let accepted: QueueAcceptance
   try {
-    queued = await session.nextTurn(content, images)
+    accepted = await session.nextTurn(content, images)
   } catch (error) {
     set({ error: errorMessage(error) })
-    return false
+    return rejectedQueueMessage('runtime-not-accepting')
   }
-  if (!queued) return false
+  if (!accepted.accepted) return accepted
   set(queuedMessageState(session))
-  return true
+  return accepted
+}
+
+export const editQueuedMessage = async (
+  set: AgentSet,
+  get: AgentGet,
+  deps: StoreRuntimeDeps,
+  messageId: string,
+  content: string,
+  images?: ImageContentBlock[],
+): Promise<QueueMutationResult> => {
+  const session = deps.getSession()
+  if (get().runtimeLifecycle !== 'ready') return { updated: false, reason: 'runtime-not-accepting' }
+  let result: QueueMutationResult
+  try {
+    result = await session.editQueuedMessage(messageId, content, images)
+  } catch (error) {
+    set({ error: errorMessage(error) })
+    return { updated: false, reason: 'runtime-not-accepting' }
+  }
+  if (result.updated) set(queuedMessageState(session))
+  return result
+}
+
+export const moveQueuedMessage = async (
+  set: AgentSet,
+  get: AgentGet,
+  deps: StoreRuntimeDeps,
+  messageId: string,
+  target: QueueMoveTarget,
+): Promise<QueueMutationResult> => {
+  const session = deps.getSession()
+  if (get().runtimeLifecycle !== 'ready') return { updated: false, reason: 'runtime-not-accepting' }
+  let result: QueueMutationResult
+  try {
+    result = await session.moveQueuedMessage(messageId, target)
+  } catch (error) {
+    set({ error: errorMessage(error) })
+    return { updated: false, reason: 'runtime-not-accepting' }
+  }
+  if (result.updated) set(queuedMessageState(session))
+  return result
+}
+
+export const promoteQueuedMessage = (
+  set: AgentSet,
+  get: AgentGet,
+  deps: StoreRuntimeDeps,
+  messageId: string,
+): Promise<QueueMutationResult> =>
+  moveQueuedMessage(set, get, deps, messageId, {
+    kind: 'steering',
+    placement: { position: 'top' },
+  })
+
+export const deleteQueuedMessage = async (
+  set: AgentSet,
+  get: AgentGet,
+  deps: StoreRuntimeDeps,
+  messageId: string,
+): Promise<QueueMutationResult> => {
+  const session = deps.getSession()
+  if (get().runtimeLifecycle !== 'ready') return { updated: false, reason: 'runtime-not-accepting' }
+  let result: QueueMutationResult
+  try {
+    result = await session.deleteQueuedMessage(messageId)
+  } catch (error) {
+    set({ error: errorMessage(error) })
+    return { updated: false, reason: 'runtime-not-accepting' }
+  }
+  if (result.updated) set(queuedMessageState(session))
+  return result
 }
 
 /* ------------------------------------------------------------------ *
  * 会话运行 action（send / clear / retry / compact / settings）
  * ------------------------------------------------------------------ */
+
+/**
+ * 空闲发送的前置条件（send 的早退守卫，抽出共享）：返回阻断原因文案。
+ * idle sendQueuedNow 必须在 restoreQueuedMessage **之前**校验——restore 会把
+ * 队列项移出队列并 discard journal，若 send 随后早退，内容既不在队列也不在
+ * 输入框，等于静默丢失。
+ */
+const idleRunStartBlocker = (state: {
+  providerReady: boolean
+  providerSetupRequired: boolean
+  sessions: Array<{ id: string; workspace?: { path: string } | null }>
+  activeSessionId: string | null
+  authorizedWorkspaces: Array<{ path: string }>
+}): string | undefined => {
+  if (!state.providerReady) return 'Axiom 桌面能力仍在初始化，请稍候'
+  if (state.providerSetupRequired) return '请先在设置中完成真实模型 Provider 配置'
+  const activeWorkspace = state.sessions.find((stored) => (
+    stored.id === state.activeSessionId
+  ))?.workspace
+  if (!activeWorkspace || !state.authorizedWorkspaces.some((workspace) => (
+    workspace.path === activeWorkspace.path
+  ))) {
+    return '开始任务前请先选择一个已授权的工作目录'
+  }
+  return undefined
+}
 
 export const send = async (
   set: AgentSet,
@@ -198,21 +306,9 @@ export const send = async (
 ): Promise<void> => {
   const initialState = get()
   if (initialState.running || initialState.sessionBusy || (!content.trim() && !images?.length)) return
-  if (!initialState.providerReady) {
-    set({ error: 'Axiom 桌面能力仍在初始化，请稍候' })
-    return
-  }
-  if (initialState.providerSetupRequired) {
-    set({ error: '请先在设置中完成真实模型 Provider 配置' })
-    return
-  }
-  const activeWorkspace = initialState.sessions.find((stored) => (
-    stored.id === initialState.activeSessionId
-  ))?.workspace
-  if (!activeWorkspace || !initialState.authorizedWorkspaces.some((workspace) => (
-    workspace.path === activeWorkspace.path
-  ))) {
-    set({ error: '开始任务前请先选择一个已授权的工作目录' })
+  const blockedBy = idleRunStartBlocker(initialState)
+  if (blockedBy) {
+    set({ error: blockedBy })
     return
   }
   const runSession = deps.getSession()
@@ -398,6 +494,7 @@ export const saveQueueModes = (
   const normalized = normalizeQueueModeSettings(settings)
   setActiveQueueModeSettings(normalized)
   deps.getSession().setQueueModes(normalized.steering, normalized.followUp)
+  deps.getSession().setAutoDrain(normalized.autoDrain)
   const queuePersistError = persistLocalSettings(QUEUE_MODE_STORAGE_KEY, normalized)
   if (queuePersistError) {
     set({ error: queuePersistError })
@@ -405,6 +502,82 @@ export const saveQueueModes = (
   }
   set({ queueModeSettings: normalized, providerMessage: storeT('status.queue.saved') })
   return true
+}
+
+/**
+ * 切换队列自动出队（对齐 ZCode setAutoDrain）：与 saveQueueModes 的差别是允许
+ * 运行中即时切换——autoDrain 控制的是「队列暂停/恢复」，暂停中的队列项不出队、
+ * 恢复后按队列顺序继续，不需要等待 run 边界。
+ */
+export const saveQueueAutoDrain = (
+  set: AgentSet,
+  get: AgentGet,
+  deps: StoreRuntimeDeps,
+  enabled: boolean,
+): boolean => {
+  if (get().runtimeLifecycle !== 'ready') return false
+  const normalized = normalizeQueueModeSettings({ ...get().queueModeSettings, autoDrain: enabled })
+  setActiveQueueModeSettings(normalized)
+  deps.getSession().setAutoDrain(normalized.autoDrain)
+  // setAutoDrain 会作废悬挂的武装目标，队列投影（含 armedQueueMessageId）须同步刷新。
+  set(queuedMessageState(deps.getSession()))
+  const persistError = persistLocalSettings(QUEUE_MODE_STORAGE_KEY, normalized)
+  if (persistError) {
+    set({ error: persistError })
+    return false
+  }
+  set({ queueModeSettings: normalized })
+  return true
+}
+
+/**
+ * 立即发送一条队列项（对齐 ZCode sendQueuedNow）：运行中注入当前 run（移到
+ * steering 队首并武装单次立即消费）；空闲时从队列/恢复草稿取出该条走完整
+ * send 链路（标题生成/错误恢复/队列结算全部复用），不在 runtime 侧另起分支。
+ */
+export const sendQueuedNow = async (
+  set: AgentSet,
+  get: AgentGet,
+  deps: StoreRuntimeDeps,
+  messageId?: string,
+): Promise<QueueAcceptance> => {
+  const session = deps.getSession()
+  if (get().runtimeLifecycle !== 'ready') return rejectedQueueMessage('runtime-not-accepting')
+  if (get().running) {
+    let acceptance: QueueAcceptance
+    try {
+      acceptance = await session.sendQueuedNow(messageId)
+    } catch (error) {
+      set({ error: errorMessage(error) })
+      return rejectedQueueMessage('runtime-not-accepting')
+    }
+    if (acceptance.accepted) set(queuedMessageState(session))
+    return acceptance
+  }
+  if (get().sessionBusy || get().compactionRunning) {
+    return rejectedQueueMessage('runtime-not-accepting')
+  }
+  // send 的其余前置（Provider 就绪/工作区授权）必须在 restore 之前判定：restore 会
+  // 把队列项移出队列并 discard journal，send 早退时内容已无处可寻（静默丢失）。
+  const blockedBy = idleRunStartBlocker(get())
+  if (blockedBy) {
+    set({ error: blockedBy })
+    return rejectedQueueMessage('runtime-not-accepting')
+  }
+  const targetId = messageId
+    ?? session.queuedMessages[0]?.id
+    ?? session.recoveredMessages[0]?.id
+  if (!targetId) return rejectedQueueMessage('unknown-message')
+  let snapshot: QueuedMessageSnapshot | undefined
+  try {
+    snapshot = await session.restoreQueuedMessage(targetId)
+  } catch (error) {
+    set({ error: errorMessage(error) })
+    return rejectedQueueMessage('unknown-message')
+  }
+  if (!snapshot) return rejectedQueueMessage('unknown-message')
+  await send(set, get, deps, snapshot.content, snapshot.images?.length ? snapshot.images : undefined)
+  return acceptedQueueMessage(targetId)
 }
 
 export const saveAgentLimits = (
@@ -734,19 +907,30 @@ export const compactContext = async (
 ): Promise<boolean> => {
   if (get().runtimeLifecycle !== 'ready' || get().running || get().sessionBusy) return false
   const session = deps.getSession()
+  // 摘要 LLM 请求可达数十秒，期间允许切走（createNewSession/selectSession 都是
+  // allowRunning 的 structural lease）。结束时 checkpoint/usage/错误全局态只允许
+  // 写回仍处于激活位的同一会话：激活路径本就按各会话投影恢复这些字段，跨会话
+  // 补写会把旧会话的压缩结果盖到新会话视图上，finally 复位 running 还会清掉
+  // 新会话正在进行的 run 状态。切走会话的投影由 compaction_* 事件自身维护。
+  const compactedSessionId = session.id
+  const stillActive = (): boolean => get().activeSessionId === compactedSessionId
   set({ compactionRunning: true, running: true, error: null })
   try {
     await session.compact(summaryInstructions)
-    set({
-      contextCheckpoint: session.checkpoint,
-      contextUsage: session.getContextUsage(),
-    })
+    if (stillActive()) {
+      set({
+        contextCheckpoint: session.checkpoint,
+        contextUsage: session.getContextUsage(),
+      })
+    }
     return true
   } catch (error) {
-    set({ error: isAgentHarnessAbortError(error) ? null : errorMessage(error) })
+    if (stillActive()) {
+      set({ error: isAgentHarnessAbortError(error) ? null : errorMessage(error) })
+    }
     return false
   } finally {
-    set({ compactionRunning: false, running: false })
+    if (stillActive()) set({ compactionRunning: false, running: false })
   }
 }
 

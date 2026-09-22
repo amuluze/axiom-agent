@@ -27,6 +27,7 @@ const DATA_LEGACY_ENTRIES: &[&str] = &[
     "computer",
 ];
 
+#[cfg_attr(not(unix), allow(unused_variables))]
 pub(crate) fn set_directory_permissions(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
@@ -37,6 +38,7 @@ pub(crate) fn set_directory_permissions(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg_attr(not(unix), allow(unused_variables))]
 pub(crate) fn set_file_permissions(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
@@ -45,6 +47,44 @@ pub(crate) fn set_file_permissions(path: &Path) -> Result<(), String> {
             .map_err(|error| format!("设置数据文件权限失败：{error}"))?;
     }
     Ok(())
+}
+
+/// 注册表类落盘文件的 owner-only 加固（0600）：unix 设权限位；Windows 首版
+/// no-op——`%USERPROFILE%` 下文件默认 ACL 已按用户隔离，显式 DACL 收紧待评估
+/// （docs/windows-support.md §0.2）。`label` 作为错误消息上下文前缀，保持各
+/// 调用点既有文案。
+#[cfg_attr(not(unix), allow(unused_variables))]
+pub(crate) fn secure_owner_only_file(file: &std::fs::File, label: &str) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // fchmod 语义：对已打开的 fd 设权限（set_permissions 接受路径，不接受 File）
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("{label}：{error}"))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = label;
+    }
+    Ok(())
+}
+
+/// 目录 fsync（「临时文件 + rename」原子写的目录项持久化）：unix 经
+/// `File::open(dir)` + sync_all 落盘目录项；Windows 目录句柄根本无法以普通
+/// 读取权打开（CreateFileW 无 FILE_FLAG_BACKUP_SEMANTICS → ACCESS_DENIED），
+/// FlushFileBuffers 亦不支持目录——持久性由文件自身 sync_all + persist
+/// （MoveFileEx 语义）覆盖，目录级整体降级为 no-op。错误仍由调用侧按各自
+/// 文案包装。
+pub(crate) fn sync_directory(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(path).and_then(|directory| directory.sync_all())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
 }
 
 /// 数据根：`$HOME/.axiom`，不存在时创建并置 0700。
@@ -173,6 +213,7 @@ pub(crate) fn migrate_legacy_app_data(app: &AppHandle) -> Result<Vec<String>, St
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
     fn touch(path: &Path) {
@@ -257,6 +298,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn database_migration_failure_is_fail_closed() {
         let dir = tempfile::tempdir().unwrap();
         let legacy = dir.path().join("legacy");
@@ -289,6 +331,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn rejects_symlinked_data_root() {
         let dir = tempfile::tempdir().unwrap();
         let real = dir.path().join("real");

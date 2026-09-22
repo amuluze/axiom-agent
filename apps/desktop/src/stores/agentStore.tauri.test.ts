@@ -11,7 +11,7 @@ import {
   saveSecret,
 } from '@/platform/secrets'
 import { defaultProviderProfile } from '@/agent/transport/provider'
-import { TEST_ANTHROPIC_PROFILE } from '@/components/settings/sections/testFixtures'
+import { TEST_ANTHROPIC_PROFILE } from '@/agent/transport/__fixtures__/testAnthropicProfile'
 
 // 覆盖 agentStore 模块加载时绑定的 Rust 宿主：测试环境无 Tauri command，解析用
 // reference 实现，密钥走下面 mock 的 platform/secrets。afterEach 的 vi.resetModules

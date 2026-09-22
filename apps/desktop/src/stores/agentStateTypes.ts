@@ -61,6 +61,10 @@ export interface AgentState extends
    *  true。不触碰前台投影——run 状态经该会话事件订阅更新侧栏，错误写入
    *  per-session 投影。 */
   sendToSession: (sessionId: string, content: string) => Promise<boolean>
+  /** 放行指定会话队列的队首一项：运行中武装注入当前 run（sendQueuedNow），
+   *  空闲时取出该项作为新 run 启动——autoDrain=false 的后台队列不必切前台。
+   *  gating 与 sendToSession 同口径，错误写入 per-session 投影。 */
+  releaseQueuedForSession: (sessionId: string) => Promise<boolean>
   approveToolCall: (toolCallId: string) => Promise<void>
   denyToolCall: (toolCallId: string) => Promise<void>
 }

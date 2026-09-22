@@ -1,6 +1,6 @@
 [package]
 name = "axiom"
-version = "0.5.0"
+version = "0.5.9"
 description = "Local-first desktop agent"
 authors = ["Axiom contributors"]
 edition = "2021"
@@ -10,6 +10,9 @@ e2e = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# Windows 测试二进制的 comctl32 v6 manifest 嵌入（build.rs 见同目录；
+# 仅 windows 目标消费，跨平台 host 亦可编译）。
+embed-resource = "3"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

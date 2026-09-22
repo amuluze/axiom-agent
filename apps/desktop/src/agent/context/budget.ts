@@ -1,4 +1,4 @@
-import type { ContextBudgetUsage, ContextCheckpoint, ContextPolicy } from './types'
+import type { CompactionReason, ContextBudgetUsage, ContextCheckpoint, ContextPolicy } from './types'
 import type {
   AgentMessage,
   AssistantMessage,
@@ -160,26 +160,38 @@ export const repairToolCallPairing = (messages: AgentMessage[]): AgentMessage[] 
       continue
     }
     repaired.push(message)
-    const answered = new Set<string>()
+    // 收集到下一个 assistant 之前的整组消息；占位必须插在最后一个已有 tool 结果
+    // 之后、任何 user/custom 消息之前——Provider 要求 tool 结果紧随 tool_calls 组。
+    const group: AgentMessage[] = []
     let scan = index + 1
     while (scan < messages.length && messages[scan].role !== 'assistant') {
-      const candidate = messages[scan]
-      if (candidate.role === 'tool') answered.add(candidate.toolCallId)
-      repaired.push(candidate)
+      group.push(messages[scan])
       scan += 1
     }
-    for (const toolCall of message.toolCalls) {
-      if (answered.has(toolCall.id)) continue
-      repaired.push({
+    const answered = new Set<string>()
+    let lastToolIndex = -1
+    for (let position = 0; position < group.length; position += 1) {
+      const candidate = group[position]
+      if (candidate.role === 'tool') {
+        answered.add(candidate.toolCallId)
+        lastToolIndex = position
+      }
+    }
+    const missing = message.toolCalls.filter((toolCall) => !answered.has(toolCall.id))
+    if (missing.length === 0) {
+      repaired.push(...group)
+    } else {
+      const insertAt = lastToolIndex + 1
+      repaired.push(...group.slice(0, insertAt), ...missing.map((toolCall) => ({
         id: `${MISSING_TOOL_RESULT_ID_PREFIX}${message.id}:${toolCall.id}`,
-        role: 'tool',
+        role: 'tool' as const,
         toolCallId: toolCall.id,
         toolName: toolCall.name,
         content: '此工具调用的持久化结果已丢失（大概率因结果体积超过单条消息上限而写入失败）。Axiom 注入本占位以保持上下文完整：请勿假设该工具的副作用未发生，需要结果时重新执行该工具或改用更窄的调用。',
         details: { reason: 'tool_result_persist_missing' },
         isError: true,
         createdAt: message.createdAt,
-      })
+      })), ...group.slice(insertAt))
     }
     index = scan
   }
@@ -199,4 +211,28 @@ export const isOverflowAssistant = (message: AgentMessage | undefined): message 
     /too many tokens/iu,
     /token limit exceeded/iu,
   ].some((pattern) => pattern.test(message.errorMessage ?? ''))
+}
+
+/**
+ * post-turn 空闲压缩的软阈值系数（对齐 codex 的 post-turn compaction slot）：
+ * 硬阈值（tokenThreshold / requestByteThreshold）留在请求前的同步压缩路径上，
+ * 回合结算后的空隙里按更低的水位提前压缩——下一个请求不再为上一轮的历史膨胀
+ * 同步买单。token 取硬线的 85%，字节取硬线的 90%（2 MiB 硬上限是物理约束，
+ * 提前量按比例换算）。
+ */
+export const POST_TURN_TOKEN_SOFT_RATIO = 0.85
+export const POST_TURN_BYTE_SOFT_RATIO = 0.9
+
+/** 判定当前用量是否已到 post-turn 空闲压缩的软水位，返回应采用的压缩原因。 */
+export const postTurnCompactionReason = (
+  usage: ContextBudgetUsage,
+  policy: ContextPolicy,
+): Extract<CompactionReason, 'token_threshold' | 'byte_threshold'> | undefined => {
+  if (usage.requestBytes > policy.requestByteThreshold * POST_TURN_BYTE_SOFT_RATIO) {
+    return 'byte_threshold'
+  }
+  if (usage.estimatedTokens > usage.tokenThreshold * POST_TURN_TOKEN_SOFT_RATIO) {
+    return 'token_threshold'
+  }
+  return undefined
 }

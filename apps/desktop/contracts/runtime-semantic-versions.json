@@ -17,7 +17,7 @@
         "src/agent/runtime/RuntimeHookRegistry.ts",
         "src/agent/runtime/AgentHarness.ts"
       ],
-      "semanticDigest": "6fbc00def862a3e2c5b485f887df8ea88d71c47e3f5bd97eef5a9e711aa0109e"
+      "semanticDigest": "5ef56820283d9509b5b344f73cebcd989e6e4f11e18e72279beab744eb3888ad"
     },
     {
       "id": "provider:demo",
@@ -27,150 +27,163 @@
         "src/agent/transport/DemoModelTransport.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "df90fef94dd7a41c32f3bfe775e325e9a1378f931af1bb0301a3eade677a5b0a"
+      "semanticDigest": "7d3018be73c2fad8213e27e32215d5f8bbbc6f7e568d60f2f4725f86d8dc43a9"
     },
     {
       "id": "provider:generic-openai-compatible",
-      "version": "6",
+      "version": "10",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "54855d22ad414c105a7c897ac6baa6ca9b809d744a02828c794dc6acf34cdbf1"
+      "semanticDigest": "8c7998b94cd0d702fd1e30bd77ee37de06d4fca2d41fe477d30291edbf7c24a8"
     },
     {
       "id": "provider:custom-openai-compatible",
-      "version": "6",
+      "version": "10",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "54855d22ad414c105a7c897ac6baa6ca9b809d744a02828c794dc6acf34cdbf1"
+      "semanticDigest": "8c7998b94cd0d702fd1e30bd77ee37de06d4fca2d41fe477d30291edbf7c24a8"
     },
     {
       "id": "provider:openai",
-      "version": "6",
+      "version": "10",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAIResponsesTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "43f6f81c1184e92a259d35bc5c4d9cde41b95efa9ee05db88b7510b28df6ffc6"
+      "semanticDigest": "37d37b506fd9a72a337a328665288d1463ebfd73e21890e027b88c6cd2465a9f"
     },
     {
       "id": "provider:generic-anthropic-compatible",
-      "version": "6",
+      "version": "10",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/AnthropicCompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "a84dffb5e0e3913069c13529778ce3ccb96a76ac6071989f034c1c5b156830bc"
+      "semanticDigest": "0c9a37320847ad4f22c1b5dfd9e9bffeb51afc3f38de9857794d4c1356f03b67"
     },
     {
       "id": "provider:custom-anthropic-compatible",
-      "version": "6",
+      "version": "10",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/AnthropicCompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "a84dffb5e0e3913069c13529778ce3ccb96a76ac6071989f034c1c5b156830bc"
+      "semanticDigest": "0c9a37320847ad4f22c1b5dfd9e9bffeb51afc3f38de9857794d4c1356f03b67"
     },
     {
       "id": "provider:zhipu-glm",
-      "version": "6",
+      "version": "10",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "54855d22ad414c105a7c897ac6baa6ca9b809d744a02828c794dc6acf34cdbf1"
+      "semanticDigest": "8c7998b94cd0d702fd1e30bd77ee37de06d4fca2d41fe477d30291edbf7c24a8"
     },
     {
       "id": "provider:deepseek",
-      "version": "6",
+      "version": "10",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "54855d22ad414c105a7c897ac6baa6ca9b809d744a02828c794dc6acf34cdbf1"
+      "semanticDigest": "8c7998b94cd0d702fd1e30bd77ee37de06d4fca2d41fe477d30291edbf7c24a8"
     },
     {
       "id": "provider:minimax-chat",
-      "version": "6",
+      "version": "10",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "54855d22ad414c105a7c897ac6baa6ca9b809d744a02828c794dc6acf34cdbf1"
+      "semanticDigest": "8c7998b94cd0d702fd1e30bd77ee37de06d4fca2d41fe477d30291edbf7c24a8"
     },
     {
       "id": "provider:ollama",
-      "version": "6",
+      "version": "10",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "54855d22ad414c105a7c897ac6baa6ca9b809d744a02828c794dc6acf34cdbf1"
+      "semanticDigest": "8c7998b94cd0d702fd1e30bd77ee37de06d4fca2d41fe477d30291edbf7c24a8"
     },
     {
       "id": "provider:gemini",
-      "version": "6",
+      "version": "10",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "54855d22ad414c105a7c897ac6baa6ca9b809d744a02828c794dc6acf34cdbf1"
+      "semanticDigest": "8c7998b94cd0d702fd1e30bd77ee37de06d4fca2d41fe477d30291edbf7c24a8"
     },
     {
       "id": "provider:kimi",
-      "version": "6",
+      "version": "10",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "54855d22ad414c105a7c897ac6baa6ca9b809d744a02828c794dc6acf34cdbf1"
+      "semanticDigest": "8c7998b94cd0d702fd1e30bd77ee37de06d4fca2d41fe477d30291edbf7c24a8"
     },
     {
       "id": "provider:kimi-coding",
-      "version": "6",
+      "version": "10",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/AnthropicCompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "a84dffb5e0e3913069c13529778ce3ccb96a76ac6071989f034c1c5b156830bc"
+      "semanticDigest": "0c9a37320847ad4f22c1b5dfd9e9bffeb51afc3f38de9857794d4c1356f03b67"
     },
     {
       "id": "provider:orcarouter",
-      "version": "6",
+      "version": "10",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "54855d22ad414c105a7c897ac6baa6ca9b809d744a02828c794dc6acf34cdbf1"
+      "semanticDigest": "8c7998b94cd0d702fd1e30bd77ee37de06d4fca2d41fe477d30291edbf7c24a8"
+    },
+    {
+      "id": "provider:opencode-go",
+      "version": "2",
+      "sourceFiles": [
+        "src/agent/transport/AnthropicCompatibleTransport.ts",
+        "src/agent/transport/OpenAICompatibleTransport.ts",
+        "src/agent/transport/OpenAIResponsesTransport.ts",
+        "src/agent/transport/builtinProviderDescriptors.ts",
+        "src/agent/transport/generatedProviderData.ts",
+        "src/agent/transport/sse.ts"
+      ],
+      "semanticDigest": "c3c34b05693c7e7de0edde22f015d1367f3a4b44466ef50ea5734332d6b24828"
     },
     {
       "id": "tool:apply_changes",
@@ -184,12 +197,12 @@
     },
     {
       "id": "tool:bash",
-      "version": "15",
+      "version": "16",
       "sourceFiles": [
         "src/agent/tools/bashTool.ts",
         "src/agent/tools/workspaceToolUtils.ts"
       ],
-      "semanticDigest": "c296b4ef65fb1139c19a9eca6301443c4b6a1695700fb9845ff68ac96b8beaa4"
+      "semanticDigest": "b85f9f2bd6671da5fb431dc840f4353dc1d747bde7f4f030b3d094d93e0c4fcc"
     },
     {
       "id": "tool:discover_agent_tools",
@@ -211,7 +224,7 @@
     },
     {
       "id": "tool:examine_subagent",
-      "version": "5",
+      "version": "6",
       "sourceFiles": [
         "src/agent/subagent/reviewers/createExamineSubAgentTool.ts",
         "src/agent/subagent/reviewers/createReviewerSubAgentTool.ts",
@@ -224,11 +237,11 @@
         "src/agent/runtime/AgentSession.ts",
         "src/stores/services/subAgentObservability.ts"
       ],
-      "semanticDigest": "d875ceb0f1e3c648535beee685d563a0b07f7b6bb5d983e7efecdbdd7d0be434"
+      "semanticDigest": "824f84bf5dd26028f9d8eeb353aa653e227b9f736f594fd809e317e13bdf3e0a"
     },
     {
       "id": "tool:explore_subagent",
-      "version": "10",
+      "version": "11",
       "sourceFiles": [
         "src/agent/subagent/explore/createExploreSubAgentTool.ts",
         "src/agent/subagent/explore/buildExplorePrompt.ts",
@@ -239,7 +252,7 @@
         "src/agent/runtime/AgentSession.ts",
         "src/stores/services/subAgentObservability.ts"
       ],
-      "semanticDigest": "c4bb403df3027a4d438c81b7c93290332991a025cb53944cb41552dcf2646d37"
+      "semanticDigest": "8616bbb520f3cbf0cb893597d0453c6957565c25c288f5b1c164314b1bcd29f8"
     },
     {
       "id": "tool:find",
@@ -261,7 +274,7 @@
     },
     {
       "id": "tool:inspect_subagent",
-      "version": "5",
+      "version": "6",
       "sourceFiles": [
         "src/agent/subagent/reviewers/createInspectSubAgentTool.ts",
         "src/agent/subagent/reviewers/createReviewerSubAgentTool.ts",
@@ -274,18 +287,18 @@
         "src/agent/runtime/AgentSession.ts",
         "src/stores/services/subAgentObservability.ts"
       ],
-      "semanticDigest": "a91339dc2a9a1834329d8be87fc7caf4d229ab7ebc0f335e9529c795930fea4e"
+      "semanticDigest": "f876d29838bd40c7e5fd5b0efceebe031076d1e9b1fe9b29a373a21a1a019dd3"
     },
     {
       "id": "tool:load_skill",
-      "version": "5",
+      "version": "6",
       "sourceFiles": [
         "src/agent/skills/ProjectSkillRegistry.ts",
         "src/agent/skills/createLoadSkillTool.ts",
         "src/agent/skills/parseSkillFile.ts",
         "src/agent/skills/builtinSkillBodies.ts"
       ],
-      "semanticDigest": "4e529c4a761a40c333e8f2526d7d849e6349f7971844c4f7a94a2ecda8868a84"
+      "semanticDigest": "4d1fe6bdab2dfde101cda7548f524ed72e7646472e73d515e714d2165a5b4e7d"
     },
     {
       "id": "tool:ls",
@@ -316,7 +329,7 @@
     },
     {
       "id": "tool:review_subagent",
-      "version": "7",
+      "version": "8",
       "sourceFiles": [
         "src/agent/subagent/reviewers/createReviewSubAgentTool.ts",
         "src/agent/subagent/reviewers/createReviewerSubAgentTool.ts",
@@ -329,7 +342,7 @@
         "src/agent/runtime/AgentSession.ts",
         "src/stores/services/subAgentObservability.ts"
       ],
-      "semanticDigest": "ee0ecee01abf99574fa3c4b517bcecec4d9932cffde7bf2fbc3460e3f652191a"
+      "semanticDigest": "af615b6a3bf21b6ca707abf972c7089cc10bea58a6e9429704d8d77f819912e1"
     },
     {
       "id": "tool:web_fetch",
@@ -361,12 +374,12 @@
     },
     {
       "id": "tool:browser",
-      "version": "4",
+      "version": "6",
       "sourceFiles": [
         "src/agent/tools/browserTool.ts",
         "src/agent/tools/workspaceToolUtils.ts"
       ],
-      "semanticDigest": "b350830e1ebde2077d7d197f4e362f3b8405cad4f436290174c79a4eaf80a8ca"
+      "semanticDigest": "296e3691f5f942d12fa68c0994c180d72361fe83621900603caaebedec4d8eba"
     },
     {
       "id": "tool:computer",
@@ -385,7 +398,7 @@
         "src/agent/tools/bashTool.ts",
         "src/agent/tools/workspaceToolUtils.ts"
       ],
-      "semanticDigest": "b2fc90f95cbfb2ad70a24c59e838273f7eb392bd237995f7800803e190baaf7a"
+      "semanticDigest": "ddf69fbb8e686f091bc71bd5cba1b4365ed9bd44a170f9c8d9e80a3ac52561d7"
     },
     {
       "id": "tool:ssh_hosts",

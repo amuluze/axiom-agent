@@ -45,10 +45,13 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   // 进入」的通过条件与「由主 Agent 决定调用」的步骤），自查通过即视为满足进入条件。
   // load_skill → v5：promptGuidelines 中技能手动触发符从 `$name` 改为 `/name`，与
   // Composer 输入约定保持一致；schema 不变。
-  { previousName: 'load_skill', previousVersion: '1', currentName: 'load_skill', currentVersion: '5' },
-  { previousName: 'load_skill', previousVersion: '2', currentName: 'load_skill', currentVersion: '5' },
-  { previousName: 'load_skill', previousVersion: '3', currentName: 'load_skill', currentVersion: '5' },
-  { previousName: 'load_skill', previousVersion: '4', currentName: 'load_skill', currentVersion: '5' },
+  // load_skill → v6：内置正文回退按 UI 语言解析 zh-CN/en 双语变体，并应用设置页
+  // 保存的 per-language 用户覆写（promptLocalizationHost 执行期注入）。schema 不变。
+  { previousName: 'load_skill', previousVersion: '1', currentName: 'load_skill', currentVersion: '6' },
+  { previousName: 'load_skill', previousVersion: '2', currentName: 'load_skill', currentVersion: '6' },
+  { previousName: 'load_skill', previousVersion: '3', currentName: 'load_skill', currentVersion: '6' },
+  { previousName: 'load_skill', previousVersion: '4', currentName: 'load_skill', currentVersion: '6' },
+  { previousName: 'load_skill', previousVersion: '5', currentName: 'load_skill', currentVersion: '6' },
 
   // explore_subagent → v10
   // v2：首次注册（discover-gated，不加入默认激活集）。
@@ -64,14 +67,17 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   // v9：子会话 system prompt 强制中文输出（总结不随模型配置回退为英文）。
   // v10：子 Agent 只读工具集新增 web_search/web_fetch（与主 Agent 共享 web 只读
   // 能力，供探索时核对外部文档）；描述与子会话「允许的工具」段同步更新。
-  { previousName: 'explore_subagent', previousVersion: '2', currentName: 'explore_subagent', currentVersion: '10' },
-  { previousName: 'explore_subagent', previousVersion: '3', currentName: 'explore_subagent', currentVersion: '10' },
-  { previousName: 'explore_subagent', previousVersion: '4', currentName: 'explore_subagent', currentVersion: '10' },
-  { previousName: 'explore_subagent', previousVersion: '5', currentName: 'explore_subagent', currentVersion: '10' },
-  { previousName: 'explore_subagent', previousVersion: '6', currentName: 'explore_subagent', currentVersion: '10' },
-  { previousName: 'explore_subagent', previousVersion: '7', currentName: 'explore_subagent', currentVersion: '10' },
-  { previousName: 'explore_subagent', previousVersion: '8', currentName: 'explore_subagent', currentVersion: '10' },
-  { previousName: 'explore_subagent', previousVersion: '9', currentName: 'explore_subagent', currentVersion: '10' },
+  // v11：子会话 system prompt 按 UI 语言解析 zh-CN/en 双语模板，并支持设置页按
+  // 语言保存的用户覆写（promptLocalizationHost 执行期注入）。schema 不变。
+  { previousName: 'explore_subagent', previousVersion: '2', currentName: 'explore_subagent', currentVersion: '11' },
+  { previousName: 'explore_subagent', previousVersion: '3', currentName: 'explore_subagent', currentVersion: '11' },
+  { previousName: 'explore_subagent', previousVersion: '4', currentName: 'explore_subagent', currentVersion: '11' },
+  { previousName: 'explore_subagent', previousVersion: '5', currentName: 'explore_subagent', currentVersion: '11' },
+  { previousName: 'explore_subagent', previousVersion: '6', currentName: 'explore_subagent', currentVersion: '11' },
+  { previousName: 'explore_subagent', previousVersion: '7', currentName: 'explore_subagent', currentVersion: '11' },
+  { previousName: 'explore_subagent', previousVersion: '8', currentName: 'explore_subagent', currentVersion: '11' },
+  { previousName: 'explore_subagent', previousVersion: '9', currentName: 'explore_subagent', currentVersion: '11' },
+  { previousName: 'explore_subagent', previousVersion: '10', currentName: 'explore_subagent', currentVersion: '11' },
 
   // review_subagent → v2：新增可选 diff 参数——子 Agent 无 bash/git，父 Agent 经
   // diff 参数携带 git diff 全文，消除「只看改动后状态、看不到改了什么」的 diff 盲区。
@@ -89,20 +95,26 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   // 会话有 workspace:execute 时父结果前置降级提醒（建议采集 diff 重新委派）。schema 不变。
   // → v7（inspect/examine v5）：子 Agent 只读工具集新增 web_search/web_fetch（与主
   // Agent 共享 web 只读能力）；inspect/examine 描述同步更新。schema 不变。
-  { previousName: 'review_subagent', previousVersion: '1', currentName: 'review_subagent', currentVersion: '7' },
-  { previousName: 'review_subagent', previousVersion: '2', currentName: 'review_subagent', currentVersion: '7' },
-  { previousName: 'review_subagent', previousVersion: '3', currentName: 'review_subagent', currentVersion: '7' },
-  { previousName: 'review_subagent', previousVersion: '4', currentName: 'review_subagent', currentVersion: '7' },
-  { previousName: 'review_subagent', previousVersion: '5', currentName: 'review_subagent', currentVersion: '7' },
-  { previousName: 'review_subagent', previousVersion: '6', currentName: 'review_subagent', currentVersion: '7' },
-  { previousName: 'inspect_subagent', previousVersion: '1', currentName: 'inspect_subagent', currentVersion: '5' },
-  { previousName: 'inspect_subagent', previousVersion: '2', currentName: 'inspect_subagent', currentVersion: '5' },
-  { previousName: 'inspect_subagent', previousVersion: '3', currentName: 'inspect_subagent', currentVersion: '5' },
-  { previousName: 'inspect_subagent', previousVersion: '4', currentName: 'inspect_subagent', currentVersion: '5' },
-  { previousName: 'examine_subagent', previousVersion: '1', currentName: 'examine_subagent', currentVersion: '5' },
-  { previousName: 'examine_subagent', previousVersion: '2', currentName: 'examine_subagent', currentVersion: '5' },
-  { previousName: 'examine_subagent', previousVersion: '3', currentName: 'examine_subagent', currentVersion: '5' },
-  { previousName: 'examine_subagent', previousVersion: '4', currentName: 'examine_subagent', currentVersion: '5' },
+  // review_subagent → v8（inspect/examine v6）：子会话 system prompt 按 UI 语言
+  // 解析 zh-CN/en 双语模板（en 模板 verdict 锚点 Verdict: pass/fail，解析器双语），
+  // 并支持设置页按语言保存的用户覆写。schema 不变。
+  { previousName: 'review_subagent', previousVersion: '1', currentName: 'review_subagent', currentVersion: '8' },
+  { previousName: 'review_subagent', previousVersion: '2', currentName: 'review_subagent', currentVersion: '8' },
+  { previousName: 'review_subagent', previousVersion: '3', currentName: 'review_subagent', currentVersion: '8' },
+  { previousName: 'review_subagent', previousVersion: '4', currentName: 'review_subagent', currentVersion: '8' },
+  { previousName: 'review_subagent', previousVersion: '5', currentName: 'review_subagent', currentVersion: '8' },
+  { previousName: 'review_subagent', previousVersion: '6', currentName: 'review_subagent', currentVersion: '8' },
+  { previousName: 'review_subagent', previousVersion: '7', currentName: 'review_subagent', currentVersion: '8' },
+  { previousName: 'inspect_subagent', previousVersion: '1', currentName: 'inspect_subagent', currentVersion: '6' },
+  { previousName: 'inspect_subagent', previousVersion: '2', currentName: 'inspect_subagent', currentVersion: '6' },
+  { previousName: 'inspect_subagent', previousVersion: '3', currentName: 'inspect_subagent', currentVersion: '6' },
+  { previousName: 'inspect_subagent', previousVersion: '4', currentName: 'inspect_subagent', currentVersion: '6' },
+  { previousName: 'inspect_subagent', previousVersion: '5', currentName: 'inspect_subagent', currentVersion: '6' },
+  { previousName: 'examine_subagent', previousVersion: '1', currentName: 'examine_subagent', currentVersion: '6' },
+  { previousName: 'examine_subagent', previousVersion: '2', currentName: 'examine_subagent', currentVersion: '6' },
+  { previousName: 'examine_subagent', previousVersion: '3', currentName: 'examine_subagent', currentVersion: '6' },
+  { previousName: 'examine_subagent', previousVersion: '4', currentName: 'examine_subagent', currentVersion: '6' },
+  { previousName: 'examine_subagent', previousVersion: '5', currentName: 'examine_subagent', currentVersion: '6' },
 
   // read → v6 (formerly read_workspace_file / read_authorized_text)
   // v5：工作区外绝对路径读取从「未授权直接拒绝」改为按需原生授权确认
@@ -183,6 +195,16 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   // path 限授权工作区内防宿主文件外传）。schema 向后兼容（新增动作与可选字段）。
   { previousName: 'browser', previousVersion: '3', currentName: 'browser', currentVersion: '4' },
 
+  // browser → v5：promptGuidelines 新增调度指引（视觉/交互验证优先内置
+  // browser，排除 curl/web_fetch/computer 替代通道）。纯提示词语义增强，
+  // schema 与动作集不变。
+  { previousName: 'browser', previousVersion: '4', currentName: 'browser', currentVersion: '5' },
+
+  // browser → v6：新增 dblclick / set_viewport（渲染视口覆盖，响应式验证）/
+  // downloads / read_download（下载目录清单与受控文本读回——~/.axiom 对 read
+  // 工具 deny，模型无法直读下载产物）。既有动作与语义不变，向后兼容。
+  { previousName: 'browser', previousVersion: '5', currentName: 'browser', currentVersion: '6' },
+
   // bash → v13 (formerly run_workspace_command / run_command)
   // v9：安全守卫扩展——sudo 命令上下文边界、重定向到引号/变量/noclobber/命令替换目标
   // v10：重定向守卫扩展——`>&` 文件复制形式与 `exec {fd}>` 绝对路径封堵。
@@ -198,21 +220,25 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   // v15：git clone/fetch/pull/push/ls-remote/submodule-update 等 VCS 网络命令在
   // NetworkRequired 沙箱内精确放行 ~/.ssh 与 ~/.config/git/credentials 读取，解决
   // git push 因无法读取 SSH 私钥而被 seatbelt deny 拦截的问题；schema 不变。
-  { previousName: 'run_workspace_command', previousVersion: '2', currentName: 'bash', currentVersion: '15' },
-  { previousName: 'run_command', previousVersion: '2', currentName: 'bash', currentVersion: '15' },
-  { previousName: 'bash', previousVersion: '2', currentName: 'bash', currentVersion: '15' },
-  { previousName: 'bash', previousVersion: '3', currentName: 'bash', currentVersion: '15' },
-  { previousName: 'bash', previousVersion: '4', currentName: 'bash', currentVersion: '15' },
-  { previousName: 'bash', previousVersion: '5', currentName: 'bash', currentVersion: '15' },
-  { previousName: 'bash', previousVersion: '6', currentName: 'bash', currentVersion: '15' },
-  { previousName: 'bash', previousVersion: '7', currentName: 'bash', currentVersion: '15' },
-  { previousName: 'bash', previousVersion: '8', currentName: 'bash', currentVersion: '15' },
-  { previousName: 'bash', previousVersion: '9', currentName: 'bash', currentVersion: '15' },
-  { previousName: 'bash', previousVersion: '10', currentName: 'bash', currentVersion: '15' },
-  { previousName: 'bash', previousVersion: '11', currentName: 'bash', currentVersion: '15' },
-  { previousName: 'bash', previousVersion: '12', currentName: 'bash', currentVersion: '15' },
-  { previousName: 'bash', previousVersion: '13', currentName: 'bash', currentVersion: '15' },
-  { previousName: 'bash', previousVersion: '14', currentName: 'bash', currentVersion: '15' },
+  // v16：沙箱后端平台化（macOS Seatbelt / Linux bubblewrap，docs/linux-support.md
+  // §2）——审批卡片描述与沙箱降级警示文案去掉 "macOS Seatbelt" 专名，输出语义
+  // 随平台变化；schema 不变。
+  { previousName: 'run_workspace_command', previousVersion: '2', currentName: 'bash', currentVersion: '16' },
+  { previousName: 'run_command', previousVersion: '2', currentName: 'bash', currentVersion: '16' },
+  { previousName: 'bash', previousVersion: '2', currentName: 'bash', currentVersion: '16' },
+  { previousName: 'bash', previousVersion: '3', currentName: 'bash', currentVersion: '16' },
+  { previousName: 'bash', previousVersion: '4', currentName: 'bash', currentVersion: '16' },
+  { previousName: 'bash', previousVersion: '5', currentName: 'bash', currentVersion: '16' },
+  { previousName: 'bash', previousVersion: '6', currentName: 'bash', currentVersion: '16' },
+  { previousName: 'bash', previousVersion: '7', currentName: 'bash', currentVersion: '16' },
+  { previousName: 'bash', previousVersion: '8', currentName: 'bash', currentVersion: '16' },
+  { previousName: 'bash', previousVersion: '9', currentName: 'bash', currentVersion: '16' },
+  { previousName: 'bash', previousVersion: '10', currentName: 'bash', currentVersion: '16' },
+  { previousName: 'bash', previousVersion: '11', currentName: 'bash', currentVersion: '16' },
+  { previousName: 'bash', previousVersion: '12', currentName: 'bash', currentVersion: '16' },
+  { previousName: 'bash', previousVersion: '13', currentName: 'bash', currentVersion: '16' },
+  { previousName: 'bash', previousVersion: '14', currentName: 'bash', currentVersion: '16' },
+  { previousName: 'bash', previousVersion: '15', currentName: 'bash', currentVersion: '16' },
 
   // ssh_hosts → v2：空主机消息指向新的「SSH」视图（侧栏导航），旧会话恢复需单跳迁移。
   { previousName: 'ssh_hosts', previousVersion: '1', currentName: 'ssh_hosts', currentVersion: '2' },

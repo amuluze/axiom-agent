@@ -6,14 +6,15 @@
 
 use crate::model_http::ModelApiFormat;
 use crate::provider_profiles::{
-    AuthKind, ProviderAuth, ProviderCapabilities, ProviderDefaultProfile, ProviderProfileEntry,
+    AuthKind, ProviderAuth, ProviderCapabilities, ProviderDefaultProfile, ProviderModelWire,
+    ProviderProfileEntry,
 };
 
 pub(crate) const TIMEOUT_MIN_MS: u64 = 1_000;
 pub(crate) const TIMEOUT_MAX_MS: u64 = 300_000;
 pub(crate) const TIMEOUT_DEFAULT_MS: u64 = 60_000;
 pub(crate) const MAX_OUTPUT_MIN: u64 = 1;
-pub(crate) const MAX_OUTPUT_MAX: u64 = 64_000;
+pub(crate) const MAX_OUTPUT_MAX: u64 = 512_000;
 pub(crate) const MAX_OUTPUT_DEFAULT: u64 = 4_096;
 pub(crate) const CONTEXT_MIN: u64 = 8_192;
 pub(crate) const CONTEXT_MAX: u64 = 2_000_000;
@@ -35,6 +36,7 @@ pub(crate) const CURRENT_PROVIDER_SECRET_PREFIXES: &[&str] = &[
     "provider.kimi.api-key",
     "provider.kimi-coding.api-key",
     "provider.orcarouter.api-key",
+    "provider.opencode-go.api-key",
 ];
 pub(crate) const LEGACY_PROVIDER_SECRET_PREFIXES: &[&str] = &[
     "provider.anthropic-compatible.api-key",
@@ -57,7 +59,24 @@ pub(crate) const PROVIDER_TRUSTED_HOSTS: &[(&str, &[&str])] = &[
     ("kimi", &["api.moonshot.cn"]),
     ("kimi-coding", &["api.kimi.com"]),
     ("orcarouter", &["api.orcarouter.ai"]),
+    ("opencode-go", &["opencode.ai"]),
 ];
+
+/// provider 静态请求头（providers.json requestHeaders 生成）。值是**发送值**，{version}
+/// 占位由 model_http 在请求期替换为应用版本（生成物保持字面量，发版不触发 digest 漂移）。
+pub(crate) const PROVIDER_REQUEST_HEADERS: &[(&str, &[(&str, &str)])] =
+    &[("opencode-go", &[("user-agent", "Axiom/{version}")])];
+
+/// provider 会话头名（providers.json sessionHeader 生成）：值取请求携带的 sessionId，
+/// 上游按它做路由/提示缓存亲和（缺失即 400 MissingSessionID，因此恒不省略）。
+pub(crate) const PROVIDER_SESSION_HEADERS: &[(&str, &str)] =
+    &[("opencode-go", "x-opencode-session")];
+
+/// 会话头的 host 级声明（由声明了 sessionHeader 的 provider 的默认 endpoint host 与
+/// trustedHosts 派生）：要求属于服务而非 provider 条目——把该服务配成自定义 provider
+/// 的请求同样必须带这个头。匹配为「精确 host 或子域」。
+pub(crate) const PROVIDER_SESSION_HEADER_HOSTS: &[(&str, &str)] =
+    &[("opencode.ai", "x-opencode-session")];
 
 pub(crate) const GENERATED_PROVIDER_ENTRIES: &[ProviderProfileEntry] = &[
     ProviderProfileEntry {
@@ -85,6 +104,7 @@ pub(crate) const GENERATED_PROVIDER_ENTRIES: &[ProviderProfileEntry] = &[
             },
         },
         allow_public_endpoints: false,
+        model_wires: &[],
         legacy_secret_id_prefixes: &[],
     },
     ProviderProfileEntry {
@@ -112,6 +132,7 @@ pub(crate) const GENERATED_PROVIDER_ENTRIES: &[ProviderProfileEntry] = &[
             },
         },
         allow_public_endpoints: true,
+        model_wires: &[],
         legacy_secret_id_prefixes: &[],
     },
     ProviderProfileEntry {
@@ -139,6 +160,7 @@ pub(crate) const GENERATED_PROVIDER_ENTRIES: &[ProviderProfileEntry] = &[
             },
         },
         allow_public_endpoints: false,
+        model_wires: &[],
         legacy_secret_id_prefixes: &[],
     },
     ProviderProfileEntry {
@@ -166,6 +188,7 @@ pub(crate) const GENERATED_PROVIDER_ENTRIES: &[ProviderProfileEntry] = &[
             },
         },
         allow_public_endpoints: false,
+        model_wires: &[],
         legacy_secret_id_prefixes: &[
             "provider.anthropic-compatible.api-key",
             "provider.minimax.api-key",
@@ -196,6 +219,7 @@ pub(crate) const GENERATED_PROVIDER_ENTRIES: &[ProviderProfileEntry] = &[
             },
         },
         allow_public_endpoints: true,
+        model_wires: &[],
         legacy_secret_id_prefixes: &[],
     },
     ProviderProfileEntry {
@@ -223,6 +247,7 @@ pub(crate) const GENERATED_PROVIDER_ENTRIES: &[ProviderProfileEntry] = &[
             },
         },
         allow_public_endpoints: false,
+        model_wires: &[],
         legacy_secret_id_prefixes: &[],
     },
     ProviderProfileEntry {
@@ -250,6 +275,7 @@ pub(crate) const GENERATED_PROVIDER_ENTRIES: &[ProviderProfileEntry] = &[
             },
         },
         allow_public_endpoints: false,
+        model_wires: &[],
         legacy_secret_id_prefixes: &[],
     },
     ProviderProfileEntry {
@@ -277,6 +303,7 @@ pub(crate) const GENERATED_PROVIDER_ENTRIES: &[ProviderProfileEntry] = &[
             },
         },
         allow_public_endpoints: false,
+        model_wires: &[],
         legacy_secret_id_prefixes: &[],
     },
     ProviderProfileEntry {
@@ -304,6 +331,7 @@ pub(crate) const GENERATED_PROVIDER_ENTRIES: &[ProviderProfileEntry] = &[
             },
         },
         allow_public_endpoints: false,
+        model_wires: &[],
         legacy_secret_id_prefixes: &[],
     },
     ProviderProfileEntry {
@@ -331,6 +359,7 @@ pub(crate) const GENERATED_PROVIDER_ENTRIES: &[ProviderProfileEntry] = &[
             },
         },
         allow_public_endpoints: false,
+        model_wires: &[],
         legacy_secret_id_prefixes: &[],
     },
     ProviderProfileEntry {
@@ -358,6 +387,7 @@ pub(crate) const GENERATED_PROVIDER_ENTRIES: &[ProviderProfileEntry] = &[
             },
         },
         allow_public_endpoints: false,
+        model_wires: &[],
         legacy_secret_id_prefixes: &[],
     },
     ProviderProfileEntry {
@@ -385,6 +415,7 @@ pub(crate) const GENERATED_PROVIDER_ENTRIES: &[ProviderProfileEntry] = &[
             },
         },
         allow_public_endpoints: false,
+        model_wires: &[],
         legacy_secret_id_prefixes: &[],
     },
     ProviderProfileEntry {
@@ -412,6 +443,96 @@ pub(crate) const GENERATED_PROVIDER_ENTRIES: &[ProviderProfileEntry] = &[
             },
         },
         allow_public_endpoints: false,
+        model_wires: &[],
+        legacy_secret_id_prefixes: &[],
+    },
+    ProviderProfileEntry {
+        provider_id: "opencode-go",
+        api_format: ModelApiFormat::OpenaiCompatible,
+        auth: ProviderAuth {
+            kind: AuthKind::ApiKey,
+            default_secret_id: Some("provider.opencode-go.api-key"),
+            required: true,
+        },
+        supported_capabilities: ProviderCapabilities {
+            tool_references: false,
+            tool_search: false,
+        },
+        default_profile: ProviderDefaultProfile {
+            profile_id: "builtin.opencode-go",
+            endpoint: "https://opencode.ai/zen/go/v1/chat/completions",
+            model_id: "glm-5.3",
+            timeout_ms: 60_000,
+            max_output_tokens: 8_192,
+            context_window: 200_000,
+            capabilities: ProviderCapabilities {
+                tool_references: false,
+                tool_search: false,
+            },
+        },
+        allow_public_endpoints: false,
+        model_wires: &[
+            ProviderModelWire {
+                model_id: "minimax-m3",
+                api_format: ModelApiFormat::AnthropicCompatible,
+                endpoint: "https://opencode.ai/zen/go/v1/messages",
+            },
+            ProviderModelWire {
+                model_id: "minimax-m2.7",
+                api_format: ModelApiFormat::AnthropicCompatible,
+                endpoint: "https://opencode.ai/zen/go/v1/messages",
+            },
+            ProviderModelWire {
+                model_id: "minimax-m2.5",
+                api_format: ModelApiFormat::AnthropicCompatible,
+                endpoint: "https://opencode.ai/zen/go/v1/messages",
+            },
+            ProviderModelWire {
+                model_id: "qwen3.8-max",
+                api_format: ModelApiFormat::AnthropicCompatible,
+                endpoint: "https://opencode.ai/zen/go/v1/messages",
+            },
+            ProviderModelWire {
+                model_id: "qwen3.8-flash",
+                api_format: ModelApiFormat::AnthropicCompatible,
+                endpoint: "https://opencode.ai/zen/go/v1/messages",
+            },
+            ProviderModelWire {
+                model_id: "qwen3.7-max",
+                api_format: ModelApiFormat::AnthropicCompatible,
+                endpoint: "https://opencode.ai/zen/go/v1/messages",
+            },
+            ProviderModelWire {
+                model_id: "qwen3.7-plus",
+                api_format: ModelApiFormat::AnthropicCompatible,
+                endpoint: "https://opencode.ai/zen/go/v1/messages",
+            },
+            ProviderModelWire {
+                model_id: "qwen3.6-plus",
+                api_format: ModelApiFormat::AnthropicCompatible,
+                endpoint: "https://opencode.ai/zen/go/v1/messages",
+            },
+            ProviderModelWire {
+                model_id: "grok-4.6",
+                api_format: ModelApiFormat::OpenaiResponses,
+                endpoint: "https://opencode.ai/zen/go/v1/responses",
+            },
+            ProviderModelWire {
+                model_id: "gpt-5.6-luna",
+                api_format: ModelApiFormat::OpenaiResponses,
+                endpoint: "https://opencode.ai/zen/go/v1/responses",
+            },
+            ProviderModelWire {
+                model_id: "muse-spark-1.3-contributor",
+                api_format: ModelApiFormat::OpenaiResponses,
+                endpoint: "https://opencode.ai/zen/go/v1/responses",
+            },
+            ProviderModelWire {
+                model_id: "muse-spark-1.2-contributor",
+                api_format: ModelApiFormat::OpenaiResponses,
+                endpoint: "https://opencode.ai/zen/go/v1/responses",
+            },
+        ],
         legacy_secret_id_prefixes: &[],
     },
 ];

@@ -3,6 +3,7 @@ import type { AgentEventSink, AgentMessage, ModelRequest, ModelTransport } from 
 import {
   buildContextProjection,
   evaluateContextBudget,
+  postTurnCompactionReason,
 } from './budget'
 import { compactModelRequest } from './compaction'
 import type { SummaryInstructionOptions } from './summaryInstructions'
@@ -151,6 +152,29 @@ export class ContextWindowManager {
     )
     if (!compacted) throw new Error('当前会话没有足够的旧上下文可供压缩')
     return compacted
+  }
+
+  /**
+   * post-turn 空闲压缩（对齐 codex 的 post-turn compaction slot）：在回合结算后的
+   * 空隙里按软水位（硬阈值的 85%/90%，见 budget.ts）提前压缩，让下一个请求不必
+   * 为上一轮的历史膨胀同步买单。best-effort——没有可压缩空间或压缩失败时静默
+   * 返回 false，硬阈值兜底仍在 prepareModelRequest；pending 的 overflow 恢复
+   * 优先于空闲压缩，不在此消费 forced 状态。
+   */
+  async compactIfIdleDue(
+    request: ModelRequest,
+    signal: AbortSignal,
+    transport: ModelTransport = this.options.transport,
+  ): Promise<boolean> {
+    if (this.forcedReason) return false
+    const reason = postTurnCompactionReason(this.evaluate(request, transport), this.policyFor(request))
+    if (!reason) return false
+    try {
+      const compacted = await this.runCompaction(request, reason, signal, [], transport)
+      return Boolean(compacted)
+    } catch {
+      return false
+    }
   }
 
   private async runCompaction(

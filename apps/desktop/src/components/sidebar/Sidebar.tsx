@@ -13,6 +13,7 @@ import {
   FolderPlus,
   MessageSquarePlus,
   PanelLeft,
+  SendHorizontal,
   Server,
   Settings,
   Sparkles,
@@ -119,6 +120,8 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
   const archiveSession = useAgentStore((state) => state.archiveSession)
   const stopSession = useAgentStore((state) => state.stopSession)
   const sendToSession = useAgentStore((state) => state.sendToSession)
+  const releaseQueuedForSession = useAgentStore((state) => state.releaseQueuedForSession)
+  const sessionQueueCounts = useAgentStore((state) => state.sessionQueueCounts)
   const toggleSidebar = useUiStore((state) => state.toggleSidebar)
   const setView = useUiStore((state) => state.setView)
   const setSettingsSection = useUiStore((state) => state.setSettingsSection)
@@ -136,16 +139,15 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
   const [quickSendDraft, setQuickSendDraft] = useState('')
   const [quickSendSending, setQuickSendSending] = useState(false)
 
-  // 后台快捷发送：非激活、idle、且绑定仍在授权集内的工作目录——与
-  // sendToSession 的 gating 同口径（激活会话用前台 composer，运行中会话
-  // 不可发，工作区被撤销的会话不可发）。
+  // 后台快捷发送：非激活、且绑定仍在授权集内的工作目录——与 sendToSession 的
+  // gating 同口径（激活会话用前台 composer；工作区被撤销的会话不可发）。
+  // 运行中的后台会话可发：消息作为 steering 排队，在下一个 turn 边界注入。
   const authorizedWorkspacePaths = useMemo(
     () => new Set(authorizedWorkspaces.map((workspace) => workspace.path)),
     [authorizedWorkspaces],
   )
   const canQuickSend = (stored: StoredAgentSession): boolean => (
     stored.id !== activeSessionId
-    && stored.status !== 'running'
     && Boolean(stored.workspace && authorizedWorkspacePaths.has(stored.workspace.path))
   )
 
@@ -424,6 +426,14 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
                           onClick={() => { void selectTask(stored.id) }}
                         >
                           {stored.status === 'running' && <span className="sidebar__task-running" title={t('app.sidebar.taskRunningTitle')} />}
+                          {(sessionQueueCounts[stored.id] ?? 0) > 0 && (
+                            <span
+                              className="sidebar__task-queued"
+                              title={t('app.sidebar.taskQueuedTitle', { count: sessionQueueCounts[stored.id] })}
+                            >
+                              {sessionQueueCounts[stored.id]}
+                            </span>
+                          )}
                           {awaitingApprovalSessionIds.includes(stored.id) && (
                             <span className="sidebar__task-awaiting-approval" title={t('app.sidebar.taskAwaitingTitle')}>
                               {t('app.sidebar.taskAwaitingApproval')}
@@ -434,11 +444,25 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
                           </span>
                         </button>
                         <div className="sidebar__task-actions">
+                          {canQuickSend(stored) && (sessionQueueCounts[stored.id] ?? 0) > 0 && (
+                            <button
+                              type="button"
+                              aria-label={t('app.sidebar.releaseQueuedAria', { title: displaySessionTitle(t, stored.title) })}
+                              title={t(stored.status === 'running'
+                                ? 'app.sidebar.releaseQueuedRunningTitle'
+                                : 'app.sidebar.releaseQueuedTitle')}
+                              onClick={() => { void releaseQueuedForSession(stored.id) }}
+                            >
+                              <SendHorizontal size={13} />
+                            </button>
+                          )}
                           {canQuickSend(stored) && (
                             <button
                               type="button"
                               aria-label={t('app.sidebar.quickSendAria', { title: displaySessionTitle(t, stored.title) })}
-                              title={t('app.sidebar.quickSendTitle')}
+                              title={t(stored.status === 'running'
+                                ? 'app.sidebar.quickSendRunningTitle'
+                                : 'app.sidebar.quickSendTitle')}
                               onClick={() => {
                                 setQuickSendDraft('')
                                 setQuickSendId(quickSendId === stored.id ? null : stored.id)
@@ -482,7 +506,9 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
                                   setQuickSendDraft('')
                                 }
                               }}
-                              placeholder={t('app.sidebar.quickSendPlaceholder')}
+                              placeholder={t(stored.status === 'running'
+                                ? 'app.sidebar.quickSendRunningPlaceholder'
+                                : 'app.sidebar.quickSendPlaceholder')}
                               value={quickSendDraft}
                             />
                             <button disabled={quickSendSending || !quickSendDraft.trim()} type="submit">

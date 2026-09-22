@@ -43,4 +43,9 @@ export const createOrchestrationFailureMessage = (
   createdAt: Date.now(),
   errorMessage: aborted ? 'Agent 运行已取消' : errorText(error),
   diagnostics: [diagnosticForError('agent-orchestration-error', error)],
+  // 与 streamAssistantMessage 的 provider 失败终态同语义：空 assistant 一旦进入
+  // 模型上下文，OpenAI 兼容端会以 400（content or tool_calls must be set）拒绝
+  // 整条请求。exclude 只影响投影过滤（buildContextProjection），UI 渲染与
+  // retry()/边界判定读的是 historyMessages/newMessages，不受影响。
+  excludeFromModelContext: true,
 })

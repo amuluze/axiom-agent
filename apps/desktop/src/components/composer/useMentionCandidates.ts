@@ -2,6 +2,8 @@ import { useMemo } from 'react'
 import { useAgentStore } from '@/stores/agentStore'
 import { useUiStore } from '@/stores/uiStore'
 import type { MentionCandidatesByKind } from './mentionCandidates'
+import { compactParentHint } from './mentionHints'
+import type { MentionCandidate } from './mentionParser'
 import {
   buildSkillCandidates,
   buildThreadCandidates,
@@ -21,11 +23,13 @@ export const useMentionCandidates = (): MentionCandidatesByKind => {
   const skillsEnabled = useUiStore((state) => state.projectSkillsEnabled)
   const skillsForCandidates = skillsEnabled ? projectSkills.skills : []
   return useMemo(() => {
-    const fileCandidates = authorizedFiles.map((file) => ({
+    const fileCandidates: MentionCandidate[] = authorizedFiles.map((file) => ({
       id: file.path,
       label: file.name,
-      hint: file.path,
+      // 完整绝对路径会挤掉候选行：只保留父目录末两段。
+      hint: compactParentHint(file.path),
       isDirectory: file.isDirectory,
+      group: 'referenced',
     }))
     return {
       file: fileCandidates,

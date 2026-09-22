@@ -402,11 +402,11 @@ fn persist_provider_secret_cleanup_intent_to(
     }
     if source_secret_ids.is_empty() {
         match fs::remove_file(&intent_path) {
-            Ok(()) => fs::File::open(&directory)
-                .and_then(|directory| directory.sync_all())
-                .map_err(|error| {
+            Ok(()) => {
+                crate::storage_paths::sync_directory(&directory).map_err(|error| {
                     format!("failed to sync Provider Secret cleanup directory: {error}")
-                }),
+                })
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(format!(
                 "failed to remove Provider Secret cleanup intent: {error}"
@@ -441,8 +441,7 @@ fn persist_provider_secret_cleanup_intent_to(
             error.error
         )
     })?;
-    fs::File::open(&directory)
-        .and_then(|directory| directory.sync_all())
+    crate::storage_paths::sync_directory(&directory)
         .map_err(|error| format!("failed to sync Provider Secret cleanup directory: {error}"))
 }
 

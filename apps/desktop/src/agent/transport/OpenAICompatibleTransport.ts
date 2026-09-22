@@ -202,6 +202,9 @@ export class OpenAICompatibleTransport implements ModelTransport {
       body: prepared.body,
       secretId: request.auth?.secretId ?? this.config.secretId,
       timeoutMs: prepared.timeoutMs,
+      // 取请求期的模型 id（而非构造期快照）：多协议 provider 据此选 wire，且切模型后不会失配。
+      modelId: request.model.model,
+      sessionId: request.sessionId,
     }
     const startedTools = new Set<number>()
     const thinkingContentIndexes = new Set<number>()
@@ -361,8 +364,11 @@ export class OpenAICompatibleTransport implements ModelTransport {
     }
     if (!doneMarkerSeen && !finishReasonSeen) {
       // 流在 [DONE] 或 finish_reason 之前关闭：截断的响应不能以干净 stop 落盘。
+      // 按 network 分类（可重试）：截断是传输层瞬时故障（网关掐断、端点不合规），
+      // 显式 kind 跳过模式推断；自动重试由 isSafeAutoRetryFailure 的安全门槛把关。
       const error = classifyProviderError({
         message: 'OpenAI-compatible Provider 流在结束标记（[DONE] 或 finish_reason）前中断，响应不完整',
+        kind: 'network',
       })
       yield { type: 'error', message: error.message, error }
       return

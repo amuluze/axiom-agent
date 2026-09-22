@@ -48,7 +48,22 @@ export const QueueModesSection = ({ hook, context, isSaved, onSave }: QueueModes
             <option value="all">{t('settings.queue.followUpAll')}</option>
           </select>
         </label>
+        <label>
+          {t('settings.queue.autoDrain')}
+          <select
+            disabled={busy}
+            onChange={(event) => setDraft({ ...draft, autoDrain: event.target.value === 'on' })}
+            value={draft.autoDrain ? 'on' : 'off'}
+          >
+            <option value="on">{t('settings.queue.autoDrainOn')}</option>
+            <option value="off">{t('settings.queue.autoDrainOff')}</option>
+          </select>
+        </label>
       </div>
+      <p className="security-note">
+        <LockKeyhole size={13} aria-hidden />
+        <span>{t('settings.queue.autoDrainHint')}</span>
+      </p>
       <div className="settings-actions">
         <button
           className="primary-button"

@@ -109,13 +109,19 @@ describe('settingsPersistence', () => {
   })
 
   it('reloads agent limits from localStorage and clamps corrupted payloads', async () => {
-    localStorageState.set('axiom.agent.limits.v1', JSON.stringify({ maxTurns: 64, maxToolCalls: 200 }))
+    localStorageState.set('axiom.agent.limits.v1', JSON.stringify({
+      maxTurns: 64,
+      maxToolCalls: 200,
+      maxTotalTokens: 3_000_000,
+    }))
     const mod = await loadFreshModule()
     expect(mod.activeAgentLimitsSettings.maxTurns).toBe(64)
     expect(mod.activeAgentLimitsSettings.maxToolCalls).toBe(200)
+    expect(mod.activeAgentLimitsSettings.maxTotalTokens).toBe(3_000_000)
 
     const second = await loadFreshModule()
-    second.setActiveAgentLimitsSettings({ maxTurns: 80, maxToolCalls: 160 })
+    second.setActiveAgentLimitsSettings({ maxTurns: 80, maxToolCalls: 160, maxTotalTokens: 500_000 })
     expect(second.activeAgentLimitsSettings.maxTurns).toBe(80)
+    expect(second.activeAgentLimitsSettings.maxTotalTokens).toBe(500_000)
   })
 })

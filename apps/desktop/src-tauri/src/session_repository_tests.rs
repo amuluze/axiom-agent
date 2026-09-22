@@ -2494,6 +2494,53 @@
     }
 
     #[tokio::test]
+    async fn consumes_a_queue_message_whose_content_json_carries_the_codec_envelope() {
+        // 回归：messageCodec 的 codecVersion 信封属于存储编解码细节，journal payload
+        // 的 message 不带信封；canonical 比对若不剥除信封，队列消息每次消费落库
+        // 都会被误判为「消费事实不匹配」（TS 侧 encodeAgentMessage 恒写信封）。
+        let (_directory, mut connection) = migrated_database().await;
+        seed_running_message_session(&mut connection).await;
+        let message_json =
+            r#"{"id":"queued-envelope","role":"user","content":"queued","createdAt":2}"#;
+        sqlx::query(
+            "INSERT INTO agent_session_journal
+             (id, session_id, sequence, kind, queue_kind, payload_json, status,
+              consumer_run_id, created_at)
+             VALUES ('queued-envelope-journal', 'message-session', 0, 'queue', 'steering', ?,
+                     'consuming', 'message-run', 2)",
+        )
+        .bind(format!(r#"{{"message":{message_json}}}"#))
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        let mut request = session_message_request(
+            "queued-envelope",
+            "user",
+            r#"{"codecVersion":1,"id":"queued-envelope","role":"user","content":"queued","createdAt":2}"#.into(),
+            2,
+        );
+        request.consumed_journal_entry_id = Some("queued-envelope-journal".into());
+
+        save_session_message(&mut connection, &request)
+            .await
+            .unwrap();
+
+        let message_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM agent_messages WHERE id = 'queued-envelope'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+        let journal_status: String = sqlx::query_scalar(
+            "SELECT status FROM agent_session_journal WHERE id = 'queued-envelope-journal'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(message_count, 1);
+        assert_eq!(journal_status, "applied");
+    }
+
+    #[tokio::test]
     async fn rolls_back_a_queue_message_when_its_journal_acknowledgement_fails() {
         let (_directory, mut connection) = migrated_database().await;
         seed_running_message_session(&mut connection).await;

@@ -218,3 +218,19 @@ export const toImageContentBlock = (
   type: 'image',
   source: { type: 'base64', mediaType: image.mediaType, data: image.base64 },
 })
+
+/**
+ * 图片块 → 输入框附件（队列项「恢复编辑」回填用）。字节原样回填、不重新压缩：
+ * 队列里的图片已按上传时的尺寸/质量处理过，二次压缩只会再降画质。url 来源的图片块
+ * 没有可回填的字节，返回 undefined（调用方按数量提示）。
+ */
+export const attachmentFromImageBlock = (
+  block: ImageContentBlock,
+): Pick<PastedImage, 'mediaType' | 'base64'> & { previewUrl: string } | undefined => {
+  if (block.source.type !== 'base64') return undefined
+  return {
+    mediaType: block.source.mediaType,
+    base64: block.source.data,
+    previewUrl: `data:${block.source.mediaType};base64,${block.source.data}`,
+  }
+}

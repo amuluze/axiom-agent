@@ -155,6 +155,9 @@ describe('OpenAIResponsesTransport', () => {
       providerId: 'openai',
       timeoutMs: 2_000,
       secretId: 'provider.openai-responses.api-key',
+      // 多协议 wire 分发与上游会话归因依赖这两个字段透传到 Rust。
+      modelId: 'gpt-test',
+      sessionId: 'session-1',
     })
     expect(JSON.parse(captured!.body)).toMatchObject({ metadata: { source: 'test-hook' } })
     expect(statuses).toEqual([200])
@@ -216,7 +219,13 @@ describe('OpenAIResponsesTransport', () => {
       yield new TextEncoder().encode('data: {"type":"response.created","response":{"id":"resp"}}\n\n')
     })()
     const events = await collect(new OpenAIResponsesTransport({ providerId: 'openai', endpoint: 'https://example.com' }, stream))
+    const errorEvent = events.find((event) => event.type === 'error')
     expect(events.at(-1)).toMatchObject({ type: 'error' })
+    // 截断按 network 分类：可重试，自动重试接管（isSafeAutoRetryFailure 安全门槛内）。
+    if (errorEvent?.type === 'error') {
+      expect(errorEvent.error?.kind).toBe('network')
+      expect(errorEvent.error?.retryable).toBe(true)
+    }
   })
 
   it('recovers complete text and tool arguments from output-item done events', async () => {

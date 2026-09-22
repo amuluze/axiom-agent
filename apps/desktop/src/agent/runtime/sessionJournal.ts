@@ -51,7 +51,7 @@ export class SessionJournal {
 
   createEntry(
     value:
-      | { kind: 'queue'; queueKind: QueuedMessageKind; message: AgentMessage }
+      | { kind: 'queue'; queueKind: QueuedMessageKind; message: AgentMessage; order?: number }
       | { kind: 'message_append'; message: AgentMessage }
       | { kind: 'runtime_update'; update: DurableRuntimeUpdate },
   ): AgentSessionJournalEntry | undefined {
@@ -69,6 +69,7 @@ export class SessionJournal {
         kind: 'queue',
         queueKind: value.queueKind,
         message: snapshotAgentMessage(value.message),
+        ...(value.order === undefined ? {} : { order: value.order }),
       }
     }
     if (value.kind === 'message_append') {

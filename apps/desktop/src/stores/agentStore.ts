@@ -20,6 +20,7 @@ import type {
   BeforeToolCall,
   BeforeToolCallResult,
 } from '@/agent/core/types'
+import type { QueuedMessageSnapshot } from '@/agent/runtime/AgentSession'
 import { useUiStore, getGitBranchPrefix, getProjectSkillsEnabled } from '@/stores/uiStore'
 import {
   AgentHarness,
@@ -45,6 +46,9 @@ import { bindActiveProjectSkillSnapshot, getActiveProjectSkillSnapshot } from '@
 import { loadProjectSkills } from '@/agent/skills/loadProjectSkills'
 import { diffProjectSkills } from '@/agent/skills/diffProjectSkills'
 import { formatAvailableSkills } from '@/agent/skills/formatAvailableSkills'
+import { installPromptLocalizationHost, resolvePromptLanguage } from '@/agent/prompt/promptLocalizationHost'
+import { getBuiltinPromptOverrides } from '@/config/builtinPromptOverrides'
+import { detectSystemLanguage, resolveLanguage } from '@/i18n/locale'
 import { EMPTY_PROJECT_SKILL_INVENTORY } from '@/agent/skills/types'
 import type { ProjectSkillInventorySnapshot, ProjectSkillSource, SkillDiagnostic } from '@/agent/skills/types'
 import {
@@ -148,7 +152,8 @@ import {
   recordRuntimeEvent,
   setRepository,
 } from './repositoryCore'
-import { applySessionActivationState, applySessionEvent, queuedMessageStateFor, type AgentCoreProjection } from './sessionActivationCore'
+import { markPersistenceUnrelated } from '@/agent/core/persistenceBarrier'
+import { applySessionActivationState, applySessionEvent, queuedMessageStateFor, withSessionQueueCount, type AgentCoreProjection } from './sessionActivationCore'
 import {
   queuedMessageState as queuedMessageStateForSession,
   type StoreRuntimeDeps,
@@ -206,6 +211,24 @@ const providerSecretMigrationBindings: ProviderSecretMigrationBindings = {
 // 已依赖 runtimeCaches）。删会话路径的显式 delete 保留（幂等，见红线 ①）。
 setRuntimeEvictionListener((sessionId) => {
   sessionWorkspacePaths.delete(sessionId)
+})
+
+// 提示词本地化宿主装配：agent 层不 import stores/i18n 运行时，此处注入
+// 「UI 语言解析 + 内置提示词覆写」两个只读供给——load_skill 内置回退、
+// <available_skills> 清单与 SubAgentRuntime 在执行期读取。必须在下方
+// createSubAgentRuntime 之前安装（首次委派即读取）。语言解析对 store 形态
+// 防御：组件测试常以 hook-only 形态 mock uiStore（无 getState），而本模块
+// 求值期 createRuntimeSession 组装默认会话提示词就会走到这里——mock/异常时
+// 回落系统语言解析（node SSR 无 navigator 时 resolveLanguage 自行回落 zh-CN）。
+installPromptLocalizationHost({
+  resolveLanguage: () => {
+    try {
+      return resolveLanguage(useUiStore.getState().language, detectSystemLanguage())
+    } catch {
+      return resolveLanguage('system', detectSystemLanguage())
+    }
+  },
+  getOverrides: () => getBuiltinPromptOverrides(),
 })
 
 // 主 Agent 系统提示词：基准分节（人设/协作/工作流）+ 能力门控安全段 +
@@ -275,7 +298,12 @@ const appendBudgetDiagnostics = (
   snapshot: ProjectSkillInventorySnapshot,
   diagnostics: SkillDiagnostic[],
 ): SkillDiagnostic[] => {
-  const { omittedSkillNames } = formatAvailableSkills(snapshot)
+  // 与 buildSessionBasePrompt 同一本地化入参：清单字节随 description 语言/覆写变化，
+  // 省略集合保持与实际注入一致。
+  const { omittedSkillNames } = formatAvailableSkills(snapshot, {
+    language: resolvePromptLanguage(),
+    skillOverrides: getBuiltinPromptOverrides().skills,
+  })
   if (omittedSkillNames.length === 0) return diagnostics
   const ts = Date.now()
   const source: ProjectSkillSource = { kind: 'project', root: '.axiom/skills' }
@@ -703,9 +731,11 @@ const createRuntimeSession = (
     limits: {
       maxTurns: agentLimitsSettings.maxTurns,
       maxToolCalls: agentLimitsSettings.maxToolCalls,
+      maxTotalTokens: agentLimitsSettings.maxTotalTokens,
     },
     steeringMode: activeQueueModeSettings.steering,
     followUpMode: activeQueueModeSettings.followUp,
+    autoDrain: activeQueueModeSettings.autoDrain,
     checkpoint,
     externalizeToolResult: isTauriRuntime()
       ? desktopAgentEnvironment.artifacts.writeToolResult
@@ -831,6 +861,7 @@ const bindSession = (
     endReason: null,
     error: null,
     compactionRunning: false,
+    queuedMessages: [],
   })
   session.subscribeRuntime(async (event) => {
     // 持久化屏障 fail-closed 语义不变：写库失败错误继续上抛、run 失败关闭。
@@ -841,7 +872,15 @@ const bindSession = (
     } catch (error) {
       persistenceError = error
     }
-    handleSessionEvent(event, boundSessionId, nextSession)
+    let projectionError: unknown
+    try {
+      handleSessionEvent(event, boundSessionId, nextSession)
+    } catch (error) {
+      // 投影错误发生在写库成功之后：显式标记为与落库无关，否则 agent 层会按「消息未落库」
+      // 回收——回滚已落库消息的内存边界（Save Point 与持久化边界失配），并把已 applied
+      // 的队列消息重新入队（重复投递）。
+      projectionError = markPersistenceUnrelated(error)
+    }
     // run 结束后延迟重扫 SDD 文档索引：会话内新写/删除的 .specs/.plans/.docs
     // 文档要在 <available_docs> 中可见，否则后续轮次（尤其压缩后）按陈旧索引
     // 误判「不存在对应 Spec」。放在 handleSessionEvent 之后、fail-soft 异步执行。
@@ -849,6 +888,7 @@ const bindSession = (
       projectDocsRefreshScheduler.trigger()
     }
     if (persistenceError !== undefined) throw persistenceError
+    if (projectionError !== undefined) throw projectionError
   })
   if (previousRetained && previousSession.id !== boundSessionId) return
   void previousSession.dispose().catch((error) => {
@@ -1078,6 +1118,7 @@ const activateCachedRuntimeSession = async (
     endReason: null,
     error: null,
     compactionRunning: false,
+    queuedMessages: [],
   }
   const workspace = options.snapshot.session.workspace
   // 缓存激活不经过 createRuntimeSession，此处重建工作区映射：revokeWorkspace
@@ -1141,6 +1182,18 @@ const activateCachedRuntimeSession = async (
   )
   const reasoningSettings = reasoningSettingsForSession(options.snapshot.session, config)
   session = options.runtime
+  // 缓存 harness 不经 createRuntimeSession 重建，队列模式停留在创建时的全局设置值；
+  // 切回时对齐当前设置，否则 Composer 的「自动逐条发送」开关与会话实际 drain 行为
+  // 漂移。autoDrain 只在值确实变化时重设——setAutoDrain 会作废武装标记，无事切换
+  // 不得丢失「已放行待注入」的即时反馈。
+  const cachedModes = options.runtime.queueModes
+  if (cachedModes.steering !== activeQueueModeSettings.steering
+    || cachedModes.followUp !== activeQueueModeSettings.followUp) {
+    options.runtime.setQueueModes(activeQueueModeSettings.steering, activeQueueModeSettings.followUp)
+  }
+  if (cachedModes.autoDrain !== activeQueueModeSettings.autoDrain) {
+    options.runtime.setAutoDrain(activeQueueModeSettings.autoDrain)
+  }
   setActiveContextPolicySettings(contextPolicySettings)
   setActiveReasoningSettings(reasoningSettings)
   // 运行中的 harness.messages（historyMessages）要到 runAgentLoop 返回才合并本轮
@@ -1525,7 +1578,7 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
     if (state.runtimeLifecycle !== 'ready' || !state.providerReady) return false
     if (state.providerSetupRequired) return false
     const runtime = getRuntimeSession(sessionId)
-    if (!runtime || runtime.isRunning) return false
+    if (!runtime) return false
     // 工作区绑定与 send() 同口径：会话必须绑定仍处授权集内的工作目录。
     const workspacePath = state.sessions
       .find((stored) => stored.id === sessionId)
@@ -1536,8 +1589,115 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
     ) {
       return false
     }
+    // 运行中的后台会话不再只能 stop：与前台同一语义排队 steering（在下一个 turn
+    // 边界注入），队列投影随事件刷新到 per-session projection，侧栏据此显示条数。
+    if (runtime.isRunning) {
+      try {
+        const acceptance = await runtime.steer(content)
+        if (acceptance.accepted) {
+          const queued = runtime.queuedMessages
+          const projection = getRuntimeProjection(sessionId)
+          if (projection) {
+            projection.queuedMessages = queued
+            setRuntimeProjection(sessionId, projection)
+          }
+          // 侧栏徽标立即反映本次后台投递（不等下一个事件）。
+          set((current) => ({
+            sessionQueueCounts: withSessionQueueCount(
+              current.sessionQueueCounts,
+              sessionId,
+              queued.length,
+            ),
+          }))
+        }
+        return acceptance.accepted
+      } catch (error) {
+        const projection = getRuntimeProjection(sessionId)
+        if (projection) {
+          projection.error = error instanceof Error ? error.message : String(error)
+          setRuntimeProjection(sessionId, projection)
+        }
+        return false
+      }
+    }
     try {
       await runtime.prompt(content)
+      return true
+    } catch (error) {
+      const projection = getRuntimeProjection(sessionId)
+      if (projection) {
+        projection.error = error instanceof Error ? error.message : String(error)
+        setRuntimeProjection(sessionId, projection)
+      }
+      return false
+    }
+  },
+
+  // 后台会话队列放行入口：运行中放行队首（sendQueuedNow 武装注入），空闲时取出
+  // 队首作为新 run 启动——与 sendToSession 的 gating / 投影错误处理同口径，
+  // 使 autoDrain=false 的后台队列不必切到前台也能逐条消费。
+  releaseQueuedForSession: async (sessionId) => {
+    const state = get()
+    if (!sessionId || state.runtimeLifecycle !== 'ready' || !state.providerReady) return false
+    if (state.providerSetupRequired) return false
+    const runtime = getRuntimeSession(sessionId)
+    if (!runtime) return false
+    const workspacePath = state.sessions
+      .find((stored) => stored.id === sessionId)
+      ?.workspace?.path
+    if (
+      !workspacePath
+      || !state.authorizedWorkspaces.some((workspace) => workspace.path === workspacePath)
+    ) {
+      return false
+    }
+    if (runtime.isRunning) {
+      try {
+        const acceptance = await runtime.sendQueuedNow()
+        if (acceptance.accepted) {
+          const queued = runtime.queuedMessages
+          const projection = getRuntimeProjection(sessionId)
+          if (projection) {
+            projection.queuedMessages = queued
+            setRuntimeProjection(sessionId, projection)
+          }
+          set((current) => ({
+            sessionQueueCounts: withSessionQueueCount(
+              current.sessionQueueCounts,
+              sessionId,
+              queued.length,
+            ),
+          }))
+        }
+        return acceptance.accepted
+      } catch (error) {
+        const projection = getRuntimeProjection(sessionId)
+        if (projection) {
+          projection.error = error instanceof Error ? error.message : String(error)
+          setRuntimeProjection(sessionId, projection)
+        }
+        return false
+      }
+    }
+    const targetId = runtime.queuedMessages[0]?.id ?? runtime.recoveredMessages[0]?.id
+    if (!targetId) return false
+    let snapshot: QueuedMessageSnapshot | undefined
+    try {
+      snapshot = await runtime.restoreQueuedMessage(targetId)
+    } catch (error) {
+      const projection = getRuntimeProjection(sessionId)
+      if (projection) {
+        projection.error = error instanceof Error ? error.message : String(error)
+        setRuntimeProjection(sessionId, projection)
+      }
+      return false
+    }
+    if (!snapshot) return false
+    try {
+      await runtime.prompt(
+        snapshot.content,
+        snapshot.images?.length ? snapshot.images : undefined,
+      )
       return true
     } catch (error) {
       const projection = getRuntimeProjection(sessionId)

@@ -435,6 +435,7 @@ export const BrowserPanel = () => {
         enabled: settings.enabled,
         executablePath: settings.executablePath,
         headless: settings.headless,
+        ignoreCertificateErrors: settings.ignoreCertificateErrors,
       })
       if (response.type === 'status') {
         setStoreStatus({

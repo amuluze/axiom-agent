@@ -47,11 +47,11 @@ describe('tool registry', () => {
       expect(reviewer.executionMode).toBe('sequential')
     }
     // 契约版本各自独立（与 runtime-semantic-versions.json / toolNameMigrations 对齐）：
-    // review v6 / inspect·examine v4——fail 判定前置软门禁回环提示、无 diff 降级处理。
+    // review v8 / inspect·examine v6——system prompt 双语模板 + 用户覆写支持。
     const byName = new Map(reviewers.map((tool) => [tool.name, tool.runtimeVersion]))
-    expect(byName.get('inspect_subagent')).toBe('5')
-    expect(byName.get('examine_subagent')).toBe('5')
-    expect(byName.get('review_subagent')).toBe('7')
+    expect(byName.get('inspect_subagent')).toBe('6')
+    expect(byName.get('examine_subagent')).toBe('6')
+    expect(byName.get('review_subagent')).toBe('8')
   })
 
   it('explore_subagent 不要求审批、sequential、recoveryPolicy never，且不在默认激活集', () => {
@@ -60,7 +60,7 @@ describe('tool registry', () => {
     expect(explore.recoveryPolicy).toBe('never')
     expect(explore.requiresApproval).toBe(false)
     expect(explore.executionMode).toBe('sequential')
-    expect(explore.runtimeVersion).toBe('10')
+    expect(explore.runtimeVersion).toBe('11')
     // 首版 discover-gated：不加入 productToolRuntime 的 ALWAYS_ACTIVE_READ_TOOLS
     expect(createProductToolRuntime(['workspace:read', 'subagent:explore'], undefined).activeToolNames)
       .not.toContain('explore_subagent')
@@ -70,7 +70,7 @@ describe('tool registry', () => {
     const tools = createToolRegistry({ capabilities: ['workspace:read'] })
     const loadSkill = tools.find((tool) => tool.name === 'load_skill')!
     expect(loadSkill.recoveryPolicy).toBe('idempotent')
-    expect(loadSkill.runtimeVersion).toBe('5')
+    expect(loadSkill.runtimeVersion).toBe('6')
     expect(loadSkill.executionMode).not.toBe('sequential')
   })
 
@@ -102,8 +102,8 @@ describe('tool registry', () => {
     expect(browser?.recoveryPolicy).toBe('never')
     expect(browser?.requiresApproval).toBe(false)
     expect(browser?.executionMode).toBe('sequential')
-    // v2：新增 console 动作 + 快照状态注记（迁移链见 toolNameMigrations.ts）。
-    expect(browser?.runtimeVersion).toBe('4')
+    // v6：新增 dblclick / set_viewport / downloads / read_download（迁移链见 toolNameMigrations.ts）。
+    expect(browser?.runtimeVersion).toBe('6')
     expect(createProductToolRuntime(['workspace:read', 'web:browser'], undefined).activeToolNames)
       .not.toContain('browser')
   })
@@ -147,7 +147,7 @@ describe('tool registry', () => {
     const tools = createToolRegistry({ capabilities: ['workspace:execute'] })
     expect(tools.map((tool) => tool.name)).toEqual(['bash'])
     expect(tools.every((tool) => tool.requiresApproval && tool.executionMode === 'sequential')).toBe(true)
-    expect(tools[0]?.runtimeVersion).toBe('15')
+    expect(tools[0]?.runtimeVersion).toBe('16')
   })
 
   it('returns no tools when the runtime has no granted capabilities', () => {

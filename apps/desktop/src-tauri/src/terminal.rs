@@ -1,3 +1,9 @@
+// Linux/Windows 上终端通道 fail-closed（spawn/write 见 terminal_unsupported_message）：
+// spawn_terminal_impl 及其依赖（PTY 会话管理、stdin 写线程）保持编译以维持
+// 跨平台类型检查，dead_code 豁免仅限非 macOS。
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+
+use crate::platform_process::{signal_process_group, TreeSignal};
 use crate::workspace_access::{authorized_root_for, WorkspaceAccessState};
 use base64::Engine as _;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
@@ -8,8 +14,11 @@ use std::{
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
+// Instant 仅为手势门的配额 TTL 服务（macOS 专属字段/函数），Linux 裁剪。
+#[cfg(target_os = "macos")]
+use std::time::Instant;
 use tauri::{Emitter, Manager, State};
 use tokio::sync::{mpsc, watch};
 
@@ -19,6 +28,27 @@ const TERMINATION_GRACE_MS: u64 = 500;
 /// 终端 stdin 单次写入上限：终端是用户亲手操作的交互通道，不消费审批 lease。
 /// 上限仅为纵深防御（配合手势门），放宽后支持粘贴大段文本（日志/代码），与普通终端一致。
 const MAX_TERMINAL_STDIN_BYTES: usize = 4 * 1024 * 1024;
+/// 非 macOS 的终端通道限制文案（按平台取因）：终端通道依赖 macOS 原生 keyDown
+/// 手势门（NSEvent local monitor——受陷渲染进程无法伪造原生事件），其它平台无
+/// 等价可信信号（Linux Wayland 明确禁止全局输入观测；Windows 的低级键盘钩子
+/// 在宿主进程的可行性另评，见 docs/windows-support.md §0.3），无法维持「终端
+/// 只由用户键入」的安全边界——spawn 与写入整条通道 fail-closed（UX 提示由前端
+/// 按 operatingSystem 呈现）。
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn terminal_unsupported_message() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        "内置终端仅支持 macOS：Linux 上无法实现「输入必须来自真实按键」的原生手势门，为防止向用户 shell 注入命令已禁用该通道（详见 docs/linux-support.md）"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "内置终端仅支持 macOS：Windows 上暂无「输入必须来自真实按键」的可信手势门等价实现（低级键盘钩子方案待评估），为防止向用户 shell 注入命令已禁用该通道（详见 docs/windows-support.md）"
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        "内置终端仅支持 macOS"
+    }
+}
 /// stdin 写入配额距最近一次授予（终端聚焦时的原生 keyDown）超过该窗口即整体失效。
 /// 终端面板与会话同窗渲染（主窗口为本 app 唯一窗口）；受陷渲染进程即使拿到 stdin
 /// 权限，也无法在没有真实用户按键时注入命令——每次写入都必须消费一个由真实 keyDown
@@ -375,12 +405,30 @@ fn ensure_cwd_readable(dir: &Path) -> Result<(), String> {
     }
 }
 
-pub(crate) fn signal_process_group(process_id: u32, signal: i32) -> bool {
-    unsafe { libc::kill(-(process_id as i32), signal) == 0 }
-}
-
 #[tauri::command]
 pub(crate) async fn spawn_terminal(
+    app: tauri::AppHandle,
+    request: SpawnTerminalRequest,
+    workspace_state: State<'_, WorkspaceAccessState>,
+    terminal_state: State<'_, TerminalState>,
+) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        spawn_terminal_impl(app, request, workspace_state, terminal_state).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // 非 macOS 限制（terminal_unsupported_message 处注释）：手势门不可实现，
+        // 整条终端通道 fail-closed，不提供「带病降级」的无门禁终端。
+        let _ = (&app, &request, workspace_state, terminal_state);
+        Err(terminal_unsupported_message().into())
+    }
+}
+
+/// spawn_terminal 的实现体：Linux 上经上方 cfg 门不可达，但保持编译以维持
+/// 跨平台类型检查（PTY/会话管理本身是可移植代码）。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+async fn spawn_terminal_impl(
     app: tauri::AppHandle,
     request: SpawnTerminalRequest,
     workspace_state: State<'_, WorkspaceAccessState>,
@@ -502,9 +550,9 @@ pub(crate) async fn spawn_terminal(
 
         if killed {
             if let Some(process_id) = process_id {
-                let _ = signal_process_group(process_id, libc::SIGTERM);
+                let _ = signal_process_group(process_id, TreeSignal::Graceful);
                 tokio::time::sleep(Duration::from_millis(TERMINATION_GRACE_MS)).await;
-                let _ = signal_process_group(process_id, libc::SIGKILL);
+                let _ = signal_process_group(process_id, TreeSignal::Force);
             }
         }
 
@@ -528,34 +576,43 @@ pub(crate) fn write_terminal_stdin(
     state: State<'_, TerminalState>,
     gesture_state: State<'_, Arc<TerminalGestureState>>,
 ) -> Result<(), String> {
-    let terminal_id = validate_terminal_id(&terminal_id)?;
-    if data.len() > MAX_TERMINAL_STDIN_BYTES {
-        return Err("terminal stdin write exceeds the safe limit".into());
-    }
-    // 输入来源手势门（单次消费）：每次写入必须消费一个「终端聚焦时的原生 keyDown」
-    // 授予的写入配额。每次写入消费一个配额——写入总量被真实按键数量所限，杜绝
-    // 2 秒窗口内的重复/批量注入；配额距最近授予过久则整体失效。受陷渲染进程可伪造
-    // focus 报告，但无法伪造原生 keyDown，因此写入仍须以真实用户按键为前提
-    // （AGENTS.md「终端只由用户键入」）。
     #[cfg(target_os = "macos")]
-    consume_stdin_gesture(&gesture_state, USER_GESTURE_WINDOW)?;
-    let sessions = state
-        .sessions
-        .lock()
-        .map_err(|_| "terminal state lock is poisoned".to_string())?;
-    let session = sessions
-        .get(terminal_id)
-        .ok_or_else(|| "terminal session is not active".to_string())?;
-    let writer = session
-        .writer
-        .lock()
-        .map_err(|_| "terminal writer lock is poisoned".to_string())?;
-    // 投递而非直写：无界通道上的 send 永不阻塞，write_all 的阻塞面隔离在
-    // 专用写线程（见 spawn_stdin_writer）。PTY 停滞时主线程命令依旧 µs 级
-    // 完成；真正的写失败随后由读侧 EOF → done 事件体现。
-    writer
-        .send(data.into_bytes())
-        .map_err(|error| format!("failed to queue terminal stdin: {error}"))
+    {
+        let terminal_id = validate_terminal_id(&terminal_id)?;
+        if data.len() > MAX_TERMINAL_STDIN_BYTES {
+            return Err("terminal stdin write exceeds the safe limit".into());
+        }
+        // 输入来源手势门（单次消费）：每次写入必须消费一个「终端聚焦时的原生 keyDown」
+        // 授予的写入配额。每次写入消费一个配额——写入总量被真实按键数量所限，杜绝
+        // 2 秒窗口内的重复/批量注入；配额距最近授予过久则整体失效。受陷渲染进程可伪造
+        // focus 报告，但无法伪造原生 keyDown，因此写入仍须以真实用户按键为前提
+        // （AGENTS.md「终端只由用户键入」）。
+        consume_stdin_gesture(&gesture_state, USER_GESTURE_WINDOW)?;
+        let sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| "terminal state lock is poisoned".to_string())?;
+        let session = sessions
+            .get(terminal_id)
+            .ok_or_else(|| "terminal session is not active".to_string())?;
+        let writer = session
+            .writer
+            .lock()
+            .map_err(|_| "terminal writer lock is poisoned".to_string())?;
+        // 投递而非直写：无界通道上的 send 永不阻塞，write_all 的阻塞面隔离在
+        // 专用写线程（见 spawn_stdin_writer）。PTY 停滞时主线程命令依旧 µs 级
+        // 完成；真正的写失败随后由读侧 EOF → done 事件体现。
+        writer
+            .send(data.into_bytes())
+            .map_err(|error| format!("failed to queue terminal stdin: {error}"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // 非 macOS 限制（terminal_unsupported_message 处注释）：无手势门即无写入，
+        // fail-closed 而非无校验直通——受陷渲染进程不得借本命令注入用户 shell。
+        let _ = (terminal_id, data, state, gesture_state);
+        Err(terminal_unsupported_message().to_string())
+    }
 }
 
 /// 报告终端面板的键盘焦点状态（前端 xterm onFocus/onBlur 驱动）。

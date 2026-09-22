@@ -305,14 +305,18 @@ const handleInboundMessage = async (message: InboundMessage): Promise<void> => {
 
   const beforeSend = useAgentStore.getState()
   if (beforeSend.activeSessionId === sessionId && beforeSend.running) {
-    const queued = await beforeSend.queueSteering(text)
-    await reply(message, queued
+    const acceptance = await beforeSend.queueSteering(text)
+    await reply(message, acceptance.accepted
       ? '已并入当前运行的任务'
       : '当前任务无法插入新消息，请发送 /stop 后重试')
     return
   }
   if (isSessionRunning(sessionId)) {
-    await reply(message, '远程会话正在后台运行，请发送 /stop 或稍后再试')
+    // 后台运行中的会话与前台同语义：排队 steering，在下一个 turn 边界注入。
+    const queued = await useAgentStore.getState().sendToSession(sessionId, text)
+    await reply(message, queued
+      ? '远程会话正在后台运行，消息已排队，将在其当前步骤结束后处理'
+      : '远程会话正在收尾，请稍后重试或发送 /stop')
     return
   }
 

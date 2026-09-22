@@ -5,7 +5,8 @@ import { createReviewerSubAgentTool } from './createReviewerSubAgentTool'
 export const createExamineSubAgentTool = (): AgentTool => createReviewerSubAgentTool({
   kind: 'examine',
   toolName: 'examine_subagent',
-  runtimeVersion: '5',
+  // v6：子会话 system prompt 双语模板 + 用户覆写支持（同 inspect v6）。
+  runtimeVersion: '6',
   label: '检查实施方案',
   promptSnippet: '委派一个只读审查子 Agent，对照 Task Spec 检查实施方案 Plan 的可行性、验收覆盖与风险，返回通过/不通过与问题清单。',
   promptGuidelines: [

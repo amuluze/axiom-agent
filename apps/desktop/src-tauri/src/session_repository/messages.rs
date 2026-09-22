@@ -344,12 +344,19 @@ async fn save_session_message_locked(
         let journal_message = payload
             .get("message")
             .ok_or_else(|| "Session message queue journal 缺少 message payload".to_string())?;
+        // codecVersion 是存储 codec 的信封字段（messageCodec.ts），不属于消息身份；
+        // journal payload 的 message 不带信封，canonical 比对前必须剥除，
+        // 否则每次队列消息消费落库都会被误判为「消费事实不匹配」。
+        let mut canonical_content = requested_content.clone();
+        if let Some(fields) = canonical_content.as_object_mut() {
+            fields.remove("codecVersion");
+        }
         if journal_session_id != request.session_id
             || kind != "queue"
             || consumer_run_id != request.run_id
             || journal_message.get("id").and_then(Value::as_str)
                 != Some(request.message_id.as_str())
-            || journal_message != requested_content
+            || journal_message != &canonical_content
         {
             return Err("Session message 与 queue journal 消费事实不匹配".to_string());
         }
