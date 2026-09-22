@@ -363,6 +363,9 @@ jobs:
           sha256sum -c SHA256SUMS.txt
           cd "$GITHUB_WORKSPACE"
       - name: 创建/更新 GitHub Release 并上传全部资产（修复重跑幂等）
+        env:
+          # 托管 runner 的 gh 未预认证：publish 用 github.token（contents:write 已授权）
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
