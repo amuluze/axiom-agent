@@ -204,10 +204,10 @@ export const createBashTool = (
       'git clone/fetch/pull/push/ls-remote/submodule-update 等 VCS 网络命令会在沙箱内被放行读取 ~/.ssh 与 ~/.config/git/credentials，以便 SSH/HTTPS 认证正常工作；其它凭据目录仍保持拒绝。',
       '输出超过 2 MiB 时尾截断；用更精确的命令缩小范围以获取缺失部分。',
     ],
-    // v16：沙箱后端平台化（macOS Seatbelt / Linux bubblewrap），审批卡片与降级
-    // 警示文案去掉 "macOS Seatbelt" 专名——恢复会话按版本迁移，旧会话工具契约
-    // 不因文案语义变化而静默沿用。
-    runtimeVersion: '16',
+    // v17：出网取消单独的二次原生确认——networkRequired 命令与沙箱级命令同为
+    // 单层卡片审批（Rust 权威分类仍绑定 lease，执行档不变）；审批卡片与 schema
+    // 描述文案同步。恢复会话按版本迁移，旧会话工具契约不因审批语义变化而静默沿用。
+    runtimeVersion: '17',
     recoveryPolicy: 'never',
     description:
       'Execute a bash command in the authorized workspace. The command runs via /bin/bash -c inside the workspace directory. Output is truncated at 2 MiB (tail retained). Each invocation requires an approval lease. Optionally provide a timeout in seconds.',
@@ -229,9 +229,9 @@ export const createBashTool = (
         network: {
           type: 'boolean',
           description: 'Whether this command requires outbound network access. '
-            + 'false (default): runs inside the OS sandbox with loopback-only networking, single approval. '
-            + 'true: runs inside the OS sandbox with network enabled (writes still confined to the workspace), '
-            + 'double approval required.',
+            + 'false (default): runs inside the OS sandbox with loopback-only networking. '
+            + 'true: runs inside the OS sandbox with network enabled (writes still confined to the workspace). '
+            + 'Both tiers use the same single approval.',
           default: false,
         },
       },
@@ -261,7 +261,7 @@ export const createBashTool = (
         : ''
       const sandboxNote = sandboxed
         ? '\n\n🔒 沙箱内执行：外网禁用（本机回环可用），仅工作区可写'
-        : '\n\n🌐 沙箱内执行＋启用网络：仅工作区可写，需双重确认'
+        : '\n\n🌐 沙箱内执行＋启用网络：仅工作区可写，凭据目录仍拒绝'
       return {
         category: 'workspace-command',
         title: 'Run bash command?',

@@ -405,6 +405,20 @@ describe('Composer upward menu viewport clamp', () => {
     expect(picker.style.getPropertyValue('--composer-menu-available')).toBe('')
     rectSpy.mockRestore()
   })
+
+  it('@ 提及弹窗按实测空间钳高（间距 8px），关闭后清理', async () => {
+    const rectSpy = mockTriggerRect(300)
+    const user = userEvent.setup()
+    render(<Composer variant="new-task" />)
+    const textarea = screen.getByRole('textbox')
+    await user.type(textarea, '@')
+    const wrap = textarea.closest('.composer__input-wrap') as HTMLElement
+    // 300 - 弹层间距 8（--space-2，与标准菜单的 6px 不同）- 顶部余量 8
+    expect(wrap.style.getPropertyValue('--composer-menu-available')).toBe('284px')
+    await user.keyboard('{Escape}')
+    expect(wrap.style.getPropertyValue('--composer-menu-available')).toBe('')
+    rectSpy.mockRestore()
+  })
 })
 
 describe('Composer 粘贴截图', () => {

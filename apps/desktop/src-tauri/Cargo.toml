@@ -1,6 +1,6 @@
 [package]
 name = "axiom"
-version = "0.5.9"
+version = "0.6.0"
 description = "Local-first desktop agent"
 authors = ["Axiom contributors"]
 edition = "2021"

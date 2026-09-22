@@ -154,24 +154,28 @@ describe('Runtime dependency manifest', () => {
     ['apply_changes', '3', 'never', '5'],
     ['apply_changes', '4', 'never', '5'],
     ['restore_trash', '2', 'never', '3'],
-    ['bash', '2', 'never', '16'],
-    ['bash', '3', 'never', '16'],
-    ['bash', '4', 'never', '16'],
-    ['bash', '5', 'never', '16'],
-    ['bash', '6', 'never', '16'],
-    ['bash', '7', 'never', '16'],
-    ['bash', '8', 'never', '16'],
-    ['bash', '9', 'never', '16'],
-    ['bash', '10', 'never', '16'],
-    ['bash', '11', 'never', '16'],
-    ['bash', '12', 'never', '16'],
+    ['bash', '2', 'never', '17'],
+    ['bash', '3', 'never', '17'],
+    ['bash', '4', 'never', '17'],
+    ['bash', '5', 'never', '17'],
+    ['bash', '6', 'never', '17'],
+    ['bash', '7', 'never', '17'],
+    ['bash', '8', 'never', '17'],
+    ['bash', '9', 'never', '17'],
+    ['bash', '10', 'never', '17'],
+    ['bash', '11', 'never', '17'],
+    ['bash', '12', 'never', '17'],
     // bash 曾随未合入主干的 sudo 词边界扩展 bump 到 v13（已回滚）；两版 v13 的
     // schema 一致（command/cwd/timeout/network），存储的旧 v13 无需迁移即可恢复。
-    ['bash', '13', 'never', '16'],
+    ['bash', '13', 'never', '17'],
     // v16：沙箱后端平台化（macOS Seatbelt / Linux bubblewrap），审批卡片与降级
     // 警示文案去掉平台专名；schema 不变。
-    ['bash', '14', 'never', '16'],
-    ['bash', '15', 'never', '16'],
+    ['bash', '14', 'never', '17'],
+    ['bash', '15', 'never', '17'],
+    // v17：出网取消单独的二次原生确认（单层卡片审批覆盖 bash 全部分级）；schema 不变。
+    ['bash', '16', 'never', '17'],
+    // ssh v2：共享源文件 bashTool.ts 语义审计重绑，工具自身行为不变。
+    ['ssh', '1', 'never', '2'],
   ])('migrates stored %s@%s/%s to the live %s contract', (name, previousVersion, recoveryPolicy, liveVersion) => {
     const stored = createRuntimeDependencyManifest(
       TEST_ANTHROPIC_PROFILE,

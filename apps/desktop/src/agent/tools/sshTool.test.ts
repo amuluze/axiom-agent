@@ -61,7 +61,7 @@ describe('sshTool contract flags', () => {
     expect(tool.requiresApproval).toBe(true)
     expect(tool.executionMode).toBe('sequential')
     expect(tool.recoveryPolicy).toBe('never')
-    expect(tool.runtimeVersion).toBe('1')
+    expect(tool.runtimeVersion).toBe('2')
   })
 
   it('approvalPresentation 展示主机+命令并标记危险关键字', () => {

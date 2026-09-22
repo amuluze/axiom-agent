@@ -223,25 +223,32 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   // v16：沙箱后端平台化（macOS Seatbelt / Linux bubblewrap，docs/linux-support.md
   // §2）——审批卡片描述与沙箱降级警示文案去掉 "macOS Seatbelt" 专名，输出语义
   // 随平台变化；schema 不变。
-  { previousName: 'run_workspace_command', previousVersion: '2', currentName: 'bash', currentVersion: '16' },
-  { previousName: 'run_command', previousVersion: '2', currentName: 'bash', currentVersion: '16' },
-  { previousName: 'bash', previousVersion: '2', currentName: 'bash', currentVersion: '16' },
-  { previousName: 'bash', previousVersion: '3', currentName: 'bash', currentVersion: '16' },
-  { previousName: 'bash', previousVersion: '4', currentName: 'bash', currentVersion: '16' },
-  { previousName: 'bash', previousVersion: '5', currentName: 'bash', currentVersion: '16' },
-  { previousName: 'bash', previousVersion: '6', currentName: 'bash', currentVersion: '16' },
-  { previousName: 'bash', previousVersion: '7', currentName: 'bash', currentVersion: '16' },
-  { previousName: 'bash', previousVersion: '8', currentName: 'bash', currentVersion: '16' },
-  { previousName: 'bash', previousVersion: '9', currentName: 'bash', currentVersion: '16' },
-  { previousName: 'bash', previousVersion: '10', currentName: 'bash', currentVersion: '16' },
-  { previousName: 'bash', previousVersion: '11', currentName: 'bash', currentVersion: '16' },
-  { previousName: 'bash', previousVersion: '12', currentName: 'bash', currentVersion: '16' },
-  { previousName: 'bash', previousVersion: '13', currentName: 'bash', currentVersion: '16' },
-  { previousName: 'bash', previousVersion: '14', currentName: 'bash', currentVersion: '16' },
-  { previousName: 'bash', previousVersion: '15', currentName: 'bash', currentVersion: '16' },
+  // v17：出网取消单独的二次原生确认——networkRequired 命令与沙箱级命令同为单层
+  // 卡片审批（Rust 权威分类仍绑定 lease，执行档不变）；schema 不变，审批文案变化。
+  { previousName: 'run_workspace_command', previousVersion: '2', currentName: 'bash', currentVersion: '17' },
+  { previousName: 'run_command', previousVersion: '2', currentName: 'bash', currentVersion: '17' },
+  { previousName: 'bash', previousVersion: '2', currentName: 'bash', currentVersion: '17' },
+  { previousName: 'bash', previousVersion: '3', currentName: 'bash', currentVersion: '17' },
+  { previousName: 'bash', previousVersion: '4', currentName: 'bash', currentVersion: '17' },
+  { previousName: 'bash', previousVersion: '5', currentName: 'bash', currentVersion: '17' },
+  { previousName: 'bash', previousVersion: '6', currentName: 'bash', currentVersion: '17' },
+  { previousName: 'bash', previousVersion: '7', currentName: 'bash', currentVersion: '17' },
+  { previousName: 'bash', previousVersion: '8', currentName: 'bash', currentVersion: '17' },
+  { previousName: 'bash', previousVersion: '9', currentName: 'bash', currentVersion: '17' },
+  { previousName: 'bash', previousVersion: '10', currentName: 'bash', currentVersion: '17' },
+  { previousName: 'bash', previousVersion: '11', currentName: 'bash', currentVersion: '17' },
+  { previousName: 'bash', previousVersion: '12', currentName: 'bash', currentVersion: '17' },
+  { previousName: 'bash', previousVersion: '13', currentName: 'bash', currentVersion: '17' },
+  { previousName: 'bash', previousVersion: '14', currentName: 'bash', currentVersion: '17' },
+  { previousName: 'bash', previousVersion: '15', currentName: 'bash', currentVersion: '17' },
+  { previousName: 'bash', previousVersion: '16', currentName: 'bash', currentVersion: '17' },
 
   // ssh_hosts → v2：空主机消息指向新的「SSH」视图（侧栏导航），旧会话恢复需单跳迁移。
   { previousName: 'ssh_hosts', previousVersion: '1', currentName: 'ssh_hosts', currentVersion: '2' },
+
+  // ssh → v2：共享源文件 bashTool.ts 的审批语义变化（bash v17 出网取消二次原生
+  // 确认）触发语义审计重绑；ssh 自身 schema/行为不变。
+  { previousName: 'ssh', previousVersion: '1', currentName: 'ssh', currentVersion: '2' },
 ]
 
 export const migrateToolName = (name: string): string => RUNTIME_TOOL_NAME_MIGRATIONS[name] ?? name

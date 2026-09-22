@@ -751,8 +751,8 @@ where
     // 两级分类都优先在沙箱内执行（对齐 codex：网络命令 = 沙箱 + 网络启用，而非
     // 脱离沙箱裸跑）——写边界与凭据 deny 对网络命令同样生效，修复审批后的
     // `npm install` 可写全盘/读凭据的缺口。SandboxSafe 沙箱不可用时 fail-closed；
-    // NetworkRequired 回退常规用户权限执行（该分级从不以沙箱为先决条件，审批闸
-    // 已比 SandboxSafe 重一层——原生对话框/automatic 模式）。
+    // NetworkRequired 回退常规用户权限执行（该分级从不以沙箱为先决条件，两种
+    // 分级的审批同为单层卡片，差异只在网络档位）。
     let network_policy = match command.tier {
         CommandTier::SandboxSafe => {
             if !sandbox::sandbox_available() {

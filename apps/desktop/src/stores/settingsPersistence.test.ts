@@ -95,7 +95,7 @@ describe('settingsPersistence', () => {
     localStorageState.set('axiom.reasoning.v1', '{not json')
     const mod = await loadFreshModule()
     expect(mod.activeReasoningSettings).toBeDefined()
-    expect(mod.activeReasoningSettings.level).toBe('off')
+    expect(mod.activeReasoningSettings.level).toBe('high')
   })
 
   it('preserves the queued mode policy across fresh module loads', async () => {

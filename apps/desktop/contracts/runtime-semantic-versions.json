@@ -197,12 +197,12 @@
     },
     {
       "id": "tool:bash",
-      "version": "16",
+      "version": "17",
       "sourceFiles": [
         "src/agent/tools/bashTool.ts",
         "src/agent/tools/workspaceToolUtils.ts"
       ],
-      "semanticDigest": "b85f9f2bd6671da5fb431dc840f4353dc1d747bde7f4f030b3d094d93e0c4fcc"
+      "semanticDigest": "a2ac7d29ff1c397304a13d3a5352046dda3d3fb78bb7a7feadf9643fcdb5fd31"
     },
     {
       "id": "tool:discover_agent_tools",
@@ -392,13 +392,13 @@
     },
     {
       "id": "tool:ssh",
-      "version": "1",
+      "version": "2",
       "sourceFiles": [
         "src/agent/tools/sshTool.ts",
         "src/agent/tools/bashTool.ts",
         "src/agent/tools/workspaceToolUtils.ts"
       ],
-      "semanticDigest": "ddf69fbb8e686f091bc71bd5cba1b4365ed9bd44a170f9c8d9e80a3ac52561d7"
+      "semanticDigest": "34c0145b233ccf1fb74a593b4902f227741ef582cb5a4e5ed910b8054be8419c"
     },
     {
       "id": "tool:ssh_hosts",

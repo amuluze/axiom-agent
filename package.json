@@ -1,7 +1,7 @@
 {
   "name": "axiom",
   "private": true,
-  "version": "0.5.9",
+  "version": "0.6.0",
   "description": "Local-first desktop agent with a first-party runtime.",
   "type": "module",
   "workspaces": [

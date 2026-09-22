@@ -12,7 +12,8 @@ export interface ReasoningSettings {
 }
 
 export const DEFAULT_REASONING_SETTINGS: ReasoningSettings = {
-  level: 'off',
+  // 默认高开：Composer 推理强度选择器与无持久化设置时的全局初值共用此兜底。
+  level: 'high',
   mode: 'effort',
   budgetTokens: 4_096,
 }

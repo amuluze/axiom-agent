@@ -2,6 +2,30 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.6.0] - 2026-09-22
+
+### Added
+
+- **Windows 版本**（x64 NSIS 安装包）：编译打通——进程平台原语、运行时根因修复、NSIS 打包配置与发布链平台参数化（Windows 主机门禁/审计/产物）；安装包补打 WebView2Loader.dll（缺它安装后无法启动）。未做 Authenticode 签名：首次运行 SmartScreen 提示「更多信息 → 仍要运行」。
+- **Linux 版本**（AppImage + deb，x64）：Phase 0 编译打通与平台安全限制、Phase 1 bubblewrap 沙箱后端（seatbelt 的 Linux 替代）与不支持能力页面提示、SSH 首连审批与浏览器引擎 allowlist 跨平台；发布链 Phase 2——rolling 宿主直发与 debian:12 容器（glibc 2.36 兼容）双通道，产物 glibc/libstdc++ 基线实测写入发布说明，AppImage 支持应用内自更新。
+- **三平台编译发布流水线**（公开分发仓 axiom-agent 的 GitHub Actions）：tag 触发三平台矩阵（macOS 双架构交叉构建 + Linux 容器基线 + Windows NSIS）→ 汇总生成 SBOM / changelog.json / 多平台 latest.json / SHA256SUMS → GitHub Release；`workflow_dispatch` 手动触发只验证构建不发布；`task release:sync-public -- --tag vX` 一键导出同步并打 tag。私库本地链（release:local / release:local:linux）保留为官网物料生产通道与备份发布路径。
+- **Agent 运行时**：中断标记入史、post-turn 空闲压缩、主 Agent token 软预算生效。
+- **Composer @ 提及分组候选与可移除引用 chip**。
+- 会话输入窗口默认推理强度从「关闭」改为「高」。
+
+### Changed
+
+- **bash 出网取消二次原生确认**：统一为单层卡片审批，网络声明语义不变。
+- **seatbelt 写边界硬化**（macOS）：封堵借 rename 逃逸读取 deny 路径的通道。
+
+### Fixed
+
+- **@ 提及弹窗视口钳高**：修复弹层顶部被窗口裁剪。
+- **编辑已发送消息**：重发后立即清空输入框。
+- **手动压缩加固**：切会话不再串写全局态、弹层不再清空已输入指令。
+- **install-local-app 平台守卫的运算符优先级 bug**。
+
+
 ## [0.5.9] - 2026-09-15
 
 ### Added

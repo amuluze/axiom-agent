@@ -34,7 +34,7 @@ pub(crate) enum WorkspaceApprovalConfirmationMode {
     #[default]
     Interactive,
     Automatic,
-    /// 单层 UI 审批：仅对沙箱内执行的命令生效。tier 由 Rust 权威分类并绑定 lease，
+    /// 单层 UI 审批：bash 专用（出网不单独设卡）。tier 由 Rust 权威分类并绑定 lease，
     /// 不信任前端自报（与 Automatic 同级特权模式，fail-closed）。
     SandboxSafe,
     /// SSH 远程执行的「会话内已授权主机」签发模式：仅对 run_ssh_command 生效，
@@ -488,11 +488,28 @@ pub(crate) async fn request_workspace_approval_lease(
     let workspace_path = Some(workspace.to_string_lossy().into_owned());
     let workspace_generation = workspace_state.generation_for(&workspace);
 
+    // bash 命令统一在签发时权威分类并绑定 lease（含模型声明的 network）：执行侧
+    // 不再重复关键字分类，三种确认模式的网络档口径一致。非 bash 工具为 None。
+    let bash_tier = if request.tool_name == "run_workspace_command" {
+        let command = required_string(&request.input, "command")?;
+        let declared_network = request
+            .input
+            .get("network")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        Some(sandbox::classify_command(command, declared_network))
+    } else {
+        None
+    };
+
     // Interactive（逐次审批）的确认收敛到 Rust 侧原生对话框：用户在系统级对话框
     // 点“允许”后才签发 lease token，受陷渲染进程无法伪造该用户手势。
     // automatic 模式已在 set_workspace_approval_mode 经原生对话框开启，此处直接签发。
-    // SandboxSafe（单层 UI）是特权模式：仅对沙箱内执行的命令签发，tier 由 Rust
-    // 权威分类并存入 lease（不信任前端自报）；沙箱不可用时 fail-closed 拒绝（§2.1）。
+    // SandboxSafe（单层 UI）是特权模式：出网不再单独设二次原生确认，单层卡片审批
+    // 覆盖 bash 全部分级；tier 由 Rust 权威分类并存入 lease（不信任前端自报）。
+    // 沙箱不可用时：SandboxSafe 档 fail-closed 拒绝（沙箱是该档唯一防护，与执行侧
+    // 回退语义一致）；NetworkRequired 档放行（执行侧本就回退常规用户权限执行，
+    // 见 workspace_command.rs 的 network_policy 选择）。
     let lease_tier = match request.confirmation_mode {
         WorkspaceApprovalConfirmationMode::Interactive => {
             // SSH 远程执行的首连确认走三选一对话框（仅此一次 / 本会话内允许该
@@ -511,7 +528,7 @@ pub(crate) async fn request_workspace_approval_lease(
             } else {
                 confirm_interactive(&_app, &request).await?;
             }
-            None
+            bash_tier
         }
         WorkspaceApprovalConfirmationMode::SshSessionGranted => {
             if request.tool_name != "run_ssh_command" {
@@ -525,26 +542,17 @@ pub(crate) async fn request_workspace_approval_lease(
             None
         }
         WorkspaceApprovalConfirmationMode::SandboxSafe => {
-            if !sandbox::sandbox_available() {
+            // 非 bash 工具不得走单层模式（该模式无原生确认，越权请求 fail-closed）。
+            let tier = bash_tier
+                .ok_or("sandboxSafe single-step approval only applies to run_workspace_command")?;
+            if !sandbox::sandbox_available() && tier == CommandTier::SandboxSafe {
                 return Err(sandbox::sandbox_unavailable_error(
                     "single-step approval requires the sandbox",
                 ));
             }
-            let command = required_string(&request.input, "command")?;
-            let declared_network = request
-                .input
-                .get("network")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let tier = sandbox::classify_command(command, declared_network);
-            if tier != CommandTier::SandboxSafe {
-                return Err(
-                    "command requires network; sandbox single-step approval is not allowed".into(),
-                );
-            }
             Some(tier)
         }
-        WorkspaceApprovalConfirmationMode::Automatic => None,
+        WorkspaceApprovalConfirmationMode::Automatic => bash_tier,
     };
 
     approval_state.issue(

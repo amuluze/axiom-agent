@@ -677,13 +677,16 @@ form.composer > .composer__queue {
 }
 
 /* 提及弹层（设计稿 NdCPW）：bg-card + subtle 描边 + 10px 圆角，内边距 4px、
-   区块间距 2px；上弹、左右贴输入框宽、最大高 320，覆盖在页面内容之上。 */
+   区块间距 2px；上弹、左右贴输入框宽、最大高 320，覆盖在页面内容之上。
+   钳高与其它上弹菜单同机制（useUpwardMenuClamp 实测写入变量，间距 8px）：
+   会话页下压终端面板时上空不足 320，不钳高会整体溢出窗口顶部；
+   候选区 flex 收缩内部滚动，底部授权动作行保持可见。 */
 .composer__mention-popover {
   position: absolute;
   bottom: calc(100% + var(--space-2));
   left: 0;
   right: 0;
-  max-height: 320px;
+  max-height: min(320px, var(--composer-menu-available, 320px));
   display: flex;
   flex-direction: column;
   gap: 2px;

@@ -19,8 +19,9 @@ pub(crate) enum CommandTier {
     /// 不降级无沙箱）。
     SandboxSafe,
     /// 需要出站网络——**仍在沙箱内**执行（网络启用的 profile：写仍限工作区、
-    /// 凭据仍 deny），保留双层审批（原生对话框）。沙箱不可用时回退常规用户权限
-    /// 执行（该分级从不依赖沙箱作为先决条件，审批闸已比 SandboxSafe 重一层）。
+    /// 凭据仍 deny），与 SandboxSafe 同为单层卡片审批（tier 由 Rust 权威分类并
+    /// 绑定审批租约）。沙箱不可用时回退常规用户权限执行（该分级从不依赖沙箱
+    /// 作为先决条件）。
     NetworkRequired,
 }
 
@@ -193,7 +194,7 @@ pub(crate) fn sandbox_program() -> &'static str {
 
 /// 沙箱不可用时的 fail-closed 错误文案（lease 签发前置检查与执行路径共用）。
 /// 文案必须给出可行动的替代路径——声明 `network: true` 走 NetworkRequired 分级
-/// （该分级从不以沙箱为先决条件，沙箱不可用时回退双层审批 + 常规用户权限执行），
+/// （该分级从不以沙箱为先决条件，沙箱不可用时回退常规用户权限执行），
 /// 否则模型会陷入「每条命令都被拒绝且无出路」的死锁。
 pub(crate) fn sandbox_unavailable_error(context: &str) -> String {
     #[cfg(target_os = "macos")]
@@ -206,18 +207,18 @@ pub(crate) fn sandbox_unavailable_error(context: &str) -> String {
             "OS sandbox (bubblewrap) is unavailable — install the `bubblewrap` package and \
              ensure unprivileged user namespaces are enabled (see docs/linux-support.md); \
              {context}. Workaround: re-run the command with `network: true` to use the \
-             double-approval execution path"
+             fallback execution path"
         )
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         // Windows（及其它平台）：尚无 OS 沙箱实现（Restricted token / AppContainer
         // 方案见 docs/windows-support.md）。文案与 Linux 同一结构：给出 network: true
-        // 双层审批出路，避免「每条命令都被拒绝且无出路」的死锁。
+        // 回退出路，避免「每条命令都被拒绝且无出路」的死锁。
         format!(
             "OS sandbox is not yet available on this platform (see docs/windows-support.md); \
              {context}. Workaround: re-run the command with `network: true` to use the \
-             double-approval execution path"
+             fallback execution path"
         )
     }
 }
@@ -983,7 +984,7 @@ pub(crate) fn generate_bwrap_args(spec: &BwrapSandboxSpec) -> Vec<std::ffi::OsSt
         NetworkPolicy::OutboundEnabled => {
             // 共享宿主网络命名空间（IP 网络全放行）；AF_UNIX 已由 /run 遮蔽兜底，
             // 容器引擎 daemon socket 定点重绑（仅实际存在的；等价宿主权限操作面，
-            // 与 seatbelt 一样只在双层审批档放行）。
+            // 与 seatbelt 一样只在出网档放行）。
             for socket in spec.container_sockets {
                 if socket.symlink_metadata().is_ok() {
                     pair!("--bind", socket, socket);
@@ -1118,7 +1119,7 @@ const SENSITIVE_READ_CREDENTIAL_FILES: &[&str] = &[
 /// ——引擎未启动时不扩面，路径无引号注入面。
 ///
 /// Docker daemon socket 等价宿主权限操作面（`docker run -v /:/host` 可读写整个宿主
-/// 文件系统），因此只在 `network: true` 档（用户双层审批）内定点放行，默认档保持
+/// 文件系统），因此只在 `network: true` 出网档内定点放行，默认档保持
 /// AF_UNIX 全拒。（仅沙箱路径消费；Windows 保留编译。）
 #[cfg_attr(target_os = "windows", allow(dead_code))]
 fn container_engine_sockets(home: &Path, declared: &[PathBuf]) -> Vec<PathBuf> {

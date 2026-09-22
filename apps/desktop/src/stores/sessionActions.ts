@@ -797,7 +797,8 @@ export const retryAssistant = async (
 /**
  * 编辑已发送的用户消息并重发：从该消息**之前**的边界创建分支，再把编辑后的内容
  * 作为新分支的首条用户消息发出。原会话历史（含被替换的消息）保留为独立会话，
- * 与「从此分支」「重试回答」同属不可变历史模型。
+ * 与「从此分支」「重试回答」同属不可变历史模型。返回 true 只代表重发已发起
+ * （分支已激活、run 已启动），不等整个 run 完成——与普通发送的输入框清空时机一致。
  */
 export const editUserMessage = async (
   set: AgentSet,
@@ -875,26 +876,42 @@ export const editUserMessage = async (
       return true
     })
     if (!activated) return false
+    // 编辑重发与普通发送同权：run 一经发起即视为「已发送」，Composer 随返回值立即
+    // 清空输入，不等待整个 run 完成。running 标志、队列回收与错误恢复移交后台收尾
+    // （语义对齐 send 的 catch/finally；写回仍限定分支会话仍处激活位）。
     // 原消息的图片块随编辑重发保留：分支从被编辑消息之前的边界重建，
     // 不带 images 会让贴图消息编辑后图片丢失。
-    await deps.getSession().prompt(edited, images)
+    const runSession = deps.getSession()
+    const branchSessionId = get().activeSessionId
+    void (async () => {
+      try {
+        await runSession.prompt(edited, images)
+      } catch (error) {
+        if (get().activeSessionId === branchSessionId) {
+          set({ running: false, error: errorMessage(error) })
+        }
+      } finally {
+        let recoveryError: string | undefined
+        try {
+          await runSession.takeQueuedMessages()
+        } catch (error) {
+          recoveryError = errorMessage(error)
+        }
+        set((state) => {
+          if (state.activeSessionId !== branchSessionId) return state
+          return {
+            running: false,
+            ...queuedMessageState(runSession),
+            ...(recoveryError && !state.error ? { error: recoveryError } : {}),
+          }
+        })
+      }
+    })()
     return true
   } catch (error) {
     set({ running: false, error: errorMessage(error) })
     return false
   } finally {
-    let recoveryError: string | undefined
-    const session = deps.getSession()
-    try {
-      await session.takeQueuedMessages()
-    } catch (error) {
-      recoveryError = errorMessage(error)
-    }
-    set((state) => ({
-      running: false,
-      ...queuedMessageState(session),
-      ...(recoveryError && !state.error ? { error: recoveryError } : {}),
-    }))
     deps.endStructural(structuralLease)
   }
 }

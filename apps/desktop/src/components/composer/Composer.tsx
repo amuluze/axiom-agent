@@ -24,6 +24,7 @@ import type {
 } from '@/agent/runtime/queueContracts'
 import { MentionPopover } from '@/components/composer/MentionPopover'
 import { useUpwardMenuClamp } from '@/components/composer/useUpwardMenuClamp'
+import { MENTION_POPOVER_GAP_PX } from '@/components/composer/upwardMenuSpace'
 import {
   detectActiveMention,
   formatMentionToken,
@@ -573,6 +574,10 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
   useEffect(() => {
     if (!activeMention) setMentionBrowseDir(null)
   }, [activeMention])
+  // @ 提及弹层同样上弹且设计上限 320px：会话页下方压着终端面板时上空不足 320，
+  // 不实测钳高会整体溢出窗口顶部被裁剪（弹层间距是 --space-2=8px，与标准菜单的 6px 不同）。
+  const mentionWrapRef = useRef<HTMLDivElement | null>(null)
+  useUpwardMenuClamp(mentionWrapRef, Boolean(activeMention), MENTION_POPOVER_GAP_PX)
   const mentionCandidatesByKind = useMemo(() => ({
     ...candidatesByKind,
     file: mergeFileCandidates(candidatesByKind.file, workspaceFileCandidates),
@@ -1065,7 +1070,7 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
             </ul>
           </div>
         )}
-      <div className="composer__input-wrap" style={{ position: 'relative' }}>
+      <div className="composer__input-wrap" ref={mentionWrapRef} style={{ position: 'relative' }}>
         {activeMention && (
           <MentionPopover
             active={activeMention}

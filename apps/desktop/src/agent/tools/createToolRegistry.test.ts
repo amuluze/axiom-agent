@@ -122,7 +122,7 @@ describe('tool registry', () => {
     expect(exec.requiresApproval).toBe(true)
     expect(exec.executionMode).toBe('sequential')
     expect(exec.recoveryPolicy).toBe('never')
-    expect(exec.runtimeVersion).toBe('1')
+    expect(exec.runtimeVersion).toBe('2')
     expect(hosts.runtimeVersion).toBe('2')
     // discover-gated：不随会话启动默认激活（与 browser/computer 同一语义）。
     expect(createProductToolRuntime(['workspace:read', 'ssh:remote'], undefined).activeToolNames)
@@ -147,7 +147,7 @@ describe('tool registry', () => {
     const tools = createToolRegistry({ capabilities: ['workspace:execute'] })
     expect(tools.map((tool) => tool.name)).toEqual(['bash'])
     expect(tools.every((tool) => tool.requiresApproval && tool.executionMode === 'sequential')).toBe(true)
-    expect(tools[0]?.runtimeVersion).toBe('16')
+    expect(tools[0]?.runtimeVersion).toBe('17')
   })
 
   it('returns no tools when the runtime has no granted capabilities', () => {

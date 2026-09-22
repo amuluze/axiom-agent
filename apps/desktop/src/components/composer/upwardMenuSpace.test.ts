@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { UPWARD_MENU_PREFERRED_MAX_PX, upwardMenuMaxHeight } from './upwardMenuSpace'
+import { MENTION_POPOVER_GAP_PX, UPWARD_MENU_PREFERRED_MAX_PX, upwardMenuMaxHeight } from './upwardMenuSpace'
 
 describe('upwardMenuMaxHeight', () => {
   it('从触发器顶缘扣除弹层间距与顶部安全余量', () => {
@@ -17,5 +17,9 @@ describe('upwardMenuMaxHeight', () => {
 
   it('亚像素坐标向下取整', () => {
     expect(upwardMenuMaxHeight(500.9)).toBe(486)
+  })
+
+  it('@ 提及弹层的间距是 8px（--space-2），按传入 gap 扣除', () => {
+    expect(upwardMenuMaxHeight(500, MENTION_POPOVER_GAP_PX)).toBe(484)
   })
 })

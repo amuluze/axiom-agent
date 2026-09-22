@@ -56,6 +56,7 @@ import {
   type ProviderSecretMigrationReceipt,
 } from '@/agent/transport/ProviderCredentialRuntime'
 import {
+  DEFAULT_REASONING_SETTINGS,
   normalizeReasoningSettings,
   toModelReasoning,
   type ReasoningSettings,
@@ -516,9 +517,9 @@ const approvalCoordinator = new ApprovalCoordinator((context) => {
   }
   return requestWorkspaceApprovalLease(
     context,
-    // sandboxSafe 分级（bash 无网络声明）走单层 UI 审批：Rust 签发时重新权威分类，
-    // 命令确属沙箱级才接受，否则拒绝（fail-closed，见 docs/os-sandbox-plan.md §6.1）。
-    context.tier === 'sandboxSafe' ? 'sandboxSafe' : 'interactive',
+    // bash 统一单层 UI 审批（Rust 权威分类绑定 lease）：出网不再单独设二次原生
+    // 确认，审批卡片与其它 bash 命令同构。其余工具维持交互式原生确认。
+    context.toolName === 'bash' ? 'sandboxSafe' : 'interactive',
     workspacePath,
   )
 })
@@ -610,7 +611,7 @@ const reasoningSettingsForSession = (
   stored: Pick<StoredAgentSession, 'reasoning'>,
   config: ProviderProfile,
 ): ReasoningSettings => normalizeReasoningSettings({
-  level: stored.reasoning?.level ?? 'off',
+  level: stored.reasoning?.level ?? DEFAULT_REASONING_SETTINGS.level,
   mode: stored.reasoning?.mode ?? activeReasoningSettings.mode,
   budgetTokens: stored.reasoning?.budgetTokens ?? activeReasoningSettings.budgetTokens,
 }, config.apiFormat, config.maxOutputTokens)

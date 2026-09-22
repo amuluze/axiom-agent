@@ -544,6 +544,13 @@ describe('editUserMessage', () => {
     expect(deps.endStructural).toHaveBeenCalledTimes(1)
   })
 
+  it('重发已发起即返回 true，不等待整个 run 完成（Composer 立即清空输入的依据）', async () => {
+    await seedEditState()
+    harness.prompt = vi.fn(() => new Promise(() => {}))
+    expect(await editUserMessage(set, get, deps, 'm3', 'edited')).toBe(true)
+    expect(harness.prompt).toHaveBeenCalledWith('edited', undefined)
+  })
+
   it('编辑重发时原消息的图片块随 prompt 透传', async () => {
     await seedEditState()
     const images = [{

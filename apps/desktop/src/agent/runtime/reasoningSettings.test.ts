@@ -7,6 +7,15 @@ import {
 } from './reasoningSettings'
 
 describe('reasoning settings', () => {
+  it('defaults the composer picker to high effort', () => {
+    expect(DEFAULT_REASONING_SETTINGS.level).toBe('high')
+    expect(resolveReasoningSettings(null, 'openai-compatible', 8_192)).toEqual({
+      level: 'high',
+      mode: 'effort',
+      budgetTokens: DEFAULT_REASONING_SETTINGS.budgetTokens,
+    })
+  })
+
   it('restores only supported values and clamps token budgets', () => {
     expect(normalizeReasoningSettings({
       level: 'high',

@@ -85,7 +85,9 @@ export const createSshTool = (environment: AgentEnvironment): AgentTool => ({
     '首个命令会请求用户批准（原生对话框可选「本会话内允许该主机」，选择后同主机后续命令免打扰）；用户拒绝时停止在该主机上的操作并向用户说明。',
     '命令超时默认 60 秒（可用 timeoutMs 调整，上限 10 分钟）、输出上限 2 MiB；大输出用 tail/grep 收窄。主机密钥首次信任（accept-new）、变更会拒绝。',
   ],
-  runtimeVersion: '1',
+  // v2：共享源文件 bashTool.ts 的审批语义变化（bash 出网取消二次原生确认）触发
+  // 语义审计重绑——ssh 工具自身 schema/行为不变，仅随审计契约 bump。
+  runtimeVersion: '2',
   recoveryPolicy: 'never',
   requiresApproval: true,
   executionMode: 'sequential',
