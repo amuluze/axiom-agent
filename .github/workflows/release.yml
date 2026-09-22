@@ -146,6 +146,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: 安装 Tauri 2 Linux 构建依赖（debian:12，与私仓 Dockerfile 逐字同源）
+        shell: bash
         run: |
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -153,6 +154,7 @@ jobs:
             librsvg2-dev libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
             libssl-dev
       - name: 安装 Rust 工具链（rust-toolchain.toml 固定 1.96.0，首次 cargo 调用自动安装）
+        shell: bash
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -164,12 +166,14 @@ jobs:
             apps/desktop/src-tauri/target
           key: cargo-linux-debian12-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
       - name: 安装依赖 + 生成条件构建配置 + 构建
+        shell: bash
         run: |
           set -euo pipefail
           npm ci
           node scripts/generate-release-config.mjs --platform linux
           npm run tauri -- build --config src-tauri/tauri.linux.ci.conf.json
       - name: 汇集 Linux 资产 + glibc 基线实测写安装说明
+        shell: bash
         run: |
           set -euo pipefail
           V="$(node -p "require('./package.json').version")"
