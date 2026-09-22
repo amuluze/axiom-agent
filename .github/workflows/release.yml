@@ -295,15 +295,18 @@ jobs:
             if (Test-Path $sidecar) { Copy-Item $sidecar (Join-Path $publish ($installer.Name + $suffix)) }
           }
           # 与 mac/linux 工件同构的双路径上传（LCA = artifacts/）：单路径上传会让
-          # 工件内部缺 release-publish/ 层级，publish 合并 cp 时漏掉 Windows 资产
-          Set-Content -Path (Join-Path $notes 'notes-windows-install.md') -Value @'
----
-## 安装说明（Windows）
-
-未做 Authenticode 签名：首次运行 SmartScreen 提示「Windows 已保护你的电脑」，
-点「更多信息 → 仍要运行」即可。安装前可用 SHA256SUMS.txt 校验完整性
-（`sha256sum -c SHA256SUMS.txt --ignore-missing` 或 `Get-FileHash`）。
-'@
+          # 工件内部缺 release-publish/ 层级，publish 合并 cp 时漏掉 Windows 资产。
+          # 说明文件用缩进字符串数组构造——here-string 内容顶格会让 YAML 把行首
+          # --- 解析成文档分隔符（实跑踩坑）。
+          $noteLines = @(
+            '---',
+            '## 安装说明（Windows）',
+            '',
+            '未做 Authenticode 签名：首次运行 SmartScreen 提示「Windows 已保护你的电脑」，',
+            '点「更多信息 → 仍要运行」即可。安装前可用 SHA256SUMS.txt 校验完整性',
+            '（sha256sum -c SHA256SUMS.txt --ignore-missing 或 Get-FileHash）。'
+          )
+          $noteLines | Set-Content -Path (Join-Path $notes 'notes-windows-install.md')
           Write-Host 'Windows assets collected:'
           Get-ChildItem $publish
       - uses: actions/upload-artifact@v4
