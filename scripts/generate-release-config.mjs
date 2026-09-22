@@ -67,7 +67,11 @@ function resolveUpdaterEnabled(config) {
     return process.env.UPDATER_ENABLED === 'true'
   }
   // 自动检测：公钥已提交 + 本地具备签名私钥（tauri build 打 updater 产物时需要）。
-  return committedPubkey(config) !== '' && process.env.TAURI_SIGNING_PRIVATE_KEY !== undefined
+  // 判定必须用「非空」而非「已定义」——CI 里 `${{ secrets.X }}` 对未配置的 secret
+  // 会注入空字符串（本地链则根本不设），按「已定义」判定会让 updater 带着空密钥
+  // 激活、构建在最后签名一步失败（2026-09-22 axiom-agent 工作流实跑踩坑）。
+  const updaterKey = process.env.TAURI_SIGNING_PRIVATE_KEY
+  return committedPubkey(config) !== '' && typeof updaterKey === 'string' && updaterKey.trim().length > 0
 }
 
 const base = JSON.parse(readFileSync(CONFIG_SRC, 'utf8'))
