@@ -136,6 +136,9 @@ jobs:
     container: node:22-bookworm
     timeout-minutes: 90
     env:
+      # GHA 容器 job 默认 HOME=/github/home，与 euid home（/root）不一致会被 rustup
+      # 拒绝（"you may be using sudo"）——钉回 /root，cargo 缓存路径随之对齐
+      HOME: /root
       # linuxdeploy（AppImage 打包链）在无 FUSE 容器内以解压模式运行
       APPIMAGE_EXTRACT_AND_RUN: '1'
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}

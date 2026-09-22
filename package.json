@@ -19,6 +19,7 @@
     "dev": "npm run dev --workspace @axiom/desktop",
     "tauri": "npm run tauri --workspace @axiom/desktop --",
     "build": "npm run build --workspace @axiom/desktop",
+    "build:windows": "npm run tauri -- build --bundles nsis",
     "typecheck": "npm run typecheck --workspace @axiom/desktop",
     "lint:ts": "biome check",
     "lint:ts:fix": "biome check --write",
