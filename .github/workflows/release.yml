@@ -335,7 +335,17 @@ jobs:
             cat "$EXTRA" >> notes.md
           done
           # updater 清单：任一平台有签名更新工件才生成（generate-latest-json 按文件名
-          # 后缀识别 darwin-aarch64 / darwin-x86_64 / linux-x86_64 键；裸 .exe 不入清单）
+          # 后缀识别 darwin-aarch64 / darwin-x86_64 / linux-x86_64 键；裸 .exe 不入清单）。
+          # 无 .sig 的 updater 工件先降级为普通下载资产（minisign 凭据未配置时的
+          # 自动降级形态）——清单引用未签名产物会让自更新校验必败，fail-closed
+          # 会把整次发布炸掉，这里选择剔除并告警。
+          for f in artifacts/release-publish/*.app.tar.gz artifacts/release-publish/*.AppImage; do
+            [ -e "$f" ] || continue
+            if [ ! -e "$f.sig" ]; then
+              echo "warning: $f 缺 .sig（minisign 未配置），剔除出 updater 候选、保留为普通下载资产"
+              rm -f "$f"
+            fi
+          done
           if ls artifacts/release-publish/*.app.tar.gz >/dev/null 2>&1 || ls artifacts/release-publish/*.AppImage >/dev/null 2>&1; then
             node scripts/generate-latest-json.mjs \
               --tag "$TAG" \
