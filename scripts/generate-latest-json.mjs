@@ -83,17 +83,30 @@ const {
   'notes-file': notesFile,
   'notes-url': notesUrl,
 } = args
+// --skip-unsigned：无 .sig 的 updater 工件跳过该平台并告警（GHA 公开仓凭据
+// 未配置时的自动降级形态）；缺省 fail-closed——本地发布链凭据齐全，缺签名
+// 即配置漂移，必须炸出来。
+const SKIP_UNSIGNED = process.argv.includes('--skip-unsigned')
 
 // 平台条目共用：同名 .sig 必须存在且非空（minisign 签名全文进入 manifest 的
 // signature 字段，JSON 转义后为单行字符串），url 指向官网下载镜像。
+// 返回 false 表示已按 skip-unsigned 跳过该平台（调用方继续处理其余平台）。
 const appendPlatformEntry = (platforms, entries, assetsDir, downloadBase, platformKey, artifactName) => {
   const signatureName = `${artifactName}.sig`
   if (!entries.includes(signatureName)) {
+    if (SKIP_UNSIGNED) {
+      console.warn(`warning: ${artifactName} 缺 ${signatureName}（minisign 未配置），跳过 ${platformKey} 平台键`)
+      return false
+    }
     console.error(`缺少签名文件 ${signatureName}（tauri build 需以签名密钥构建）`)
     process.exit(1)
   }
   const signature = readFileSync(path.join(assetsDir, signatureName), 'utf8').trim()
   if (signature.length === 0) {
+    if (SKIP_UNSIGNED) {
+      console.warn(`warning: ${signatureName} 为空，跳过 ${platformKey} 平台键`)
+      return false
+    }
     console.error(`签名文件为空：${signatureName}`)
     process.exit(1)
   }
@@ -127,8 +140,8 @@ const version = tag.slice(1)
 // 在资产目录中定位 updater 产物与同名 .sig：
 // - macOS：.app.tar.gz（双架构发布含 _aarch64/_x86_64 两份，按后缀映射平台键；
 //   单架构发布兼容历史命名）。
-// - Windows：Tauri v2 NSIS updater 工件 <安装器>_x64-setup.exe.zip（createUpdaterArtifacts
-//   开启时产出），平台键 windows-x86_64；裸 .exe 安装器不经 updater，不入清单。
+// - Windows：Tauri v2 NSIS 安装器 _x64-setup.exe（v2 默认直接签名安装器本体）；
+//   v1Compatible 形态为 _x64-setup.exe.zip 包裹。平台键 windows-x86_64。
 // - Linux：.AppImage（tauri bundler 的 deb 惯例架构名 amd64），平台键 linux-x86_64 /
 //   linux-aarch64；AppImage 更新包即安装包。至少要有一种平台的产物，单平台发布
 //   （如 Linux-only）不因缺另一平台而失败。
@@ -157,9 +170,10 @@ const UPDATER_ARTIFACTS = [
     describe: () => `.app.tar.gz（后缀：${[...DARWIN_PLATFORM_KEYS.keys()].map((suffix) => `_${suffix}`).join(' / ')}）`,
   },
   {
-    match: (name) => /_x64-setup\.exe\.zip$/u.test(name),
+    match: (name) => /_x64-setup\.exe(\.zip)?$/u.test(name),
     platformKey: () => 'windows-x86_64',
-    describe: () => '_x64-setup.exe.zip（NSIS updater 工件）',
+    // v2 直签：安装器本体 + .sig；v1Compatible：.exe.zip 包裹 + .zip.sig。
+    describe: () => '_x64-setup.exe（v2 直签）/ _x64-setup.exe.zip（v1Compatible）',
   },  {
     match: (name) => /\.AppImage$/u.test(name),
     platformKey: (name) => {
@@ -189,21 +203,12 @@ for (const artifactName of updaterArtifacts) {
     console.error(`期望后缀：${[...DARWIN_PLATFORM_KEYS.keys()].map((suffix) => `_${suffix}`).join(' / ')}`)
     process.exit(1)
   }
-  const signatureName = `${artifactName}.sig`
-  if (!entries.includes(signatureName)) {
-    console.error(`缺少签名文件 ${signatureName}（tauri build 需以签名密钥构建）`)
-    process.exit(1)
-  }
-  // minisign 签名全文进入 manifest 的 signature 字段（JSON 转义后为单行字符串）。
-  const signature = readFileSync(path.join(assetsDir, signatureName), 'utf8').trim()
-  if (signature.length === 0) {
-    console.error(`签名文件为空：${signatureName}`)
-    process.exit(1)
-  }
-  platforms[platformKey] = {
-    signature,
-    url: `${downloadBase}/${artifactName}`,
-  }
+  // 签名校验与 skip-unsigned 语义集中在 appendPlatformEntry。
+  appendPlatformEntry(platforms, entries, assetsDir, downloadBase, platformKey, artifactName)
+}
+if (Object.keys(platforms).length === 0) {
+  console.error('全部 updater 工件均无签名且启用 --skip-unsigned：无可生成清单')
+  process.exit(1)
 }
 
 const manifest = {

@@ -27,19 +27,27 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const args = process.argv.slice(2)
 const platformIndex = args.indexOf('--platform')
 const platform = platformIndex >= 0 ? args[platformIndex + 1] : 'macos'
-if (!['macos', 'linux'].includes(platform)) {
-  console.error(`--platform 仅支持 macos/linux，收到：${platform}`)
+if (!['macos', 'linux', 'windows'].includes(platform)) {
+  console.error(`--platform 仅支持 macos/linux/windows，收到：${platform}`)
   process.exit(2)
 }
 const CONFIG_SRC = path.join(
   root,
   'apps/desktop/src-tauri',
-  platform === 'linux' ? 'tauri.linux.release.conf.json' : 'tauri.release.conf.json',
+  platform === 'linux'
+    ? 'tauri.linux.release.conf.json'
+    : platform === 'windows'
+      ? 'tauri.windows.release.conf.json'
+      : 'tauri.release.conf.json',
 )
 const CONFIG_OUT = path.join(
   root,
   'apps/desktop/src-tauri',
-  platform === 'linux' ? 'tauri.linux.ci.conf.json' : 'tauri.ci.conf.json',
+  platform === 'linux'
+    ? 'tauri.linux.ci.conf.json'
+    : platform === 'windows'
+      ? 'tauri.windows.ci.conf.json'
+      : 'tauri.ci.conf.json',
 )
 
 const forceUpdater = args.includes('--force-updater')

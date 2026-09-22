@@ -253,6 +253,11 @@ jobs:
     name: build:windows（NSIS）
     runs-on: windows-latest
     timeout-minutes: 90
+    env:
+      # updater 签名（与 macOS/Linux 共用 minisign）：未配置时自动降级为无
+      # .sig 的普通安装包（generate-release-config 非空语义判定）
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -266,27 +271,47 @@ jobs:
             ~/.cargo/git
             apps/desktop/src-tauri/target
           key: cargo-windows-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
-      - name: 安装依赖 + 构建 NSIS
+      - name: 安装依赖 + 生成条件构建配置 + 构建 NSIS
         run: |
           npm ci
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build:windows
+          node scripts/generate-release-config.mjs --platform windows
+          npm run build:windows -- --config src-tauri/tauri.windows.ci.conf.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: 汇集 Windows 资产
+      - name: 汇集 Windows 资产（安装器 + updater 签名工件 + SmartScreen 说明）
         run: |
           $ErrorActionPreference = 'Stop'
           $publish = 'artifacts/release-publish'
-          New-Item -ItemType Directory -Force -Path $publish | Out-Null
+          $notes = 'artifacts/release-notes'
+          New-Item -ItemType Directory -Force -Path $publish, $notes | Out-Null
           $bundle = 'apps/desktop/src-tauri/target/release/bundle/nsis'
           $installer = Get-ChildItem -Path $bundle -Filter 'Axiom_*_x64-setup.exe' | Select-Object -First 1
           if ($null -eq $installer) { throw "NSIS installer not found in $bundle" }
           Copy-Item $installer.FullName (Join-Path $publish $installer.Name)
-          Write-Host 'Windows asset collected:'
+          # updater 签名工件随形态收集（v2 直签 .sig / v1Compatible .zip+.zip.sig），
+          # 缺失不阻塞——publish 对无 .sig 工件降级剔除，不入 updater 清单
+          foreach ($suffix in @('.sig', '.zip', '.zip.sig')) {
+            $sidecar = Join-Path $bundle ($installer.Name + $suffix)
+            if (Test-Path $sidecar) { Copy-Item $sidecar (Join-Path $publish ($installer.Name + $suffix)) }
+          }
+          # 与 mac/linux 工件同构的双路径上传（LCA = artifacts/）：单路径上传会让
+          # 工件内部缺 release-publish/ 层级，publish 合并 cp 时漏掉 Windows 资产
+          Set-Content -Path (Join-Path $notes 'notes-windows-install.md') -Value @'
+---
+## 安装说明（Windows）
+
+未做 Authenticode 签名：首次运行 SmartScreen 提示「Windows 已保护你的电脑」，
+点「更多信息 → 仍要运行」即可。安装前可用 SHA256SUMS.txt 校验完整性
+（`sha256sum -c SHA256SUMS.txt --ignore-missing` 或 `Get-FileHash`）。
+'@
+          Write-Host 'Windows assets collected:'
           Get-ChildItem $publish
       - uses: actions/upload-artifact@v4
         with:
           name: axiom-assets-windows
-          path: artifacts/release-publish/
+          path: |
+            artifacts/release-publish/
+            artifacts/release-notes/
           if-no-files-found: error
           retention-days: 14
 
@@ -335,24 +360,25 @@ jobs:
             cat "$EXTRA" >> notes.md
           done
           # updater 清单：任一平台有签名更新工件才生成（generate-latest-json 按文件名
-          # 后缀识别 darwin-aarch64 / darwin-x86_64 / linux-x86_64 键；裸 .exe 不入清单）。
-          # 无 .sig 的 updater 工件先降级为普通下载资产（minisign 凭据未配置时的
-          # 自动降级形态）——清单引用未签名产物会让自更新校验必败，fail-closed
-          # 会把整次发布炸掉，这里选择剔除并告警。
-          for f in artifacts/release-publish/*.app.tar.gz artifacts/release-publish/*.AppImage; do
+          # 后缀识别 darwin-aarch64 / darwin-x86_64 / linux-x86_64 / windows-x86_64 键）。
+          # 无 .sig 的 .app.tar.gz 先清理（updater 专用形态，无签名即无用）；
+          # AppImage / NSIS 安装器是「下载+更新」同体文件，经 --skip-unsigned 跳出
+          # 清单但保留为普通下载资产（minisign 凭据未配置时的自动降级形态）。
+          for f in artifacts/release-publish/*.app.tar.gz; do
             [ -e "$f" ] || continue
             if [ ! -e "$f.sig" ]; then
-              echo "warning: $f 缺 .sig（minisign 未配置），剔除出 updater 候选、保留为普通下载资产"
+              echo "warning: $f 缺 .sig（minisign 未配置），updater 专用形态直接剔除"
               rm -f "$f"
             fi
           done
-          if ls artifacts/release-publish/*.app.tar.gz >/dev/null 2>&1 || ls artifacts/release-publish/*.AppImage >/dev/null 2>&1; then
+          if ls artifacts/release-publish/*.app.tar.gz >/dev/null 2>&1 || ls artifacts/release-publish/*.AppImage >/dev/null 2>&1 || ls artifacts/release-publish/*_x64-setup.exe >/dev/null 2>&1; then
             node scripts/generate-latest-json.mjs \
               --tag "$TAG" \
               --assets-dir artifacts/release-publish \
               --out artifacts/release-publish/latest.json \
               --download-base "${WEBSITE_DOWNLOAD_BASE}" \
-              --notes-file notes.md
+              --notes-file notes.md \
+              --skip-unsigned
           else
             echo '未检出 updater 工件（无 minisign 凭据），跳过 latest.json 生成。'
           fi
