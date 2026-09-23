@@ -33,8 +33,12 @@ if [ -n "${GITHUB_ENV:-}" ]; then
     security delete-keychain "$KC" 2>/dev/null || true
     security create-keychain -p "$KC_PASS" "$KC"
     security unlock-keychain -p "$KC_PASS" "$KC"
-    security import "$P12" -k "$KC" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-    security set-key-partition-list -S apple-tool:,apple: -k "$KC_PASS" "$KC" > /dev/null
+    security import "$P12" -k "$KC" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+    # 分区表必须覆盖 codesign 调用方，否则无头环境下 codesign 访问私钥会等
+      # securityd UI 授权——挂死直到 job 超时（v0.6.0 axiom-agent 三轮实跑复现）
+      security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$KC_PASS" "$KC" 2>&1 | grep -v "missing" || true
+      # 防构建期间钥匙串自动锁定
+      security set-keychain-settings -t 3600 "$KC"
     # shellcheck disable=SC2046 —— 搜索列表本就是空格分隔的路径序列
     security list-keychains -s "$KC" $(security list-keychains | sed 's/"//g' | tr '\n' ' ')
     security default-keychain -s "$KC"
@@ -43,7 +47,8 @@ if [ -n "${GITHUB_ENV:-}" ]; then
       | grep 'Developer ID Application' | head -1 | sed -E 's/^.*"(.*)"$/\1/')"
     [ -n "$IDENTITY" ] || { echo '导入后未发现 Developer ID Application 身份（检查 .p12 与密码）'; exit 1; }
     echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
-    echo "已导入 .p12 到临时钥匙串：$KC（身份经 GITHUB_ENV 注入）"
+    echo "AXIOM_KEYCHAIN=$KC" >> "$GITHUB_ENV"
+    echo "已导入 .p12 到临时钥匙串：keychain-path 经 GITHUB_ENV 注入"
   fi
   if [ -n "${APPLE_API_KEY_P8:-}" ]; then
     # .p8 落盘到 RUNNER_TEMP（notarize 发生在后续步骤，文件须活过本 step）
