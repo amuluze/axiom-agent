@@ -109,7 +109,7 @@ jobs:
           # 本地正常、Actions 挂死，两轮实跑均复现）——移除公证凭据让 tauri
           # 只签名，公证在汇集步骤用 xcrun notarytool 显式提交（可观测可重试）
           unset APPLE_API_KEY APPLE_API_KEY_PATH APPLE_API_ISSUER
-          npm run tauri -- build --target "$TARGET" --config src-tauri/tauri.ci.conf.json
+          npm run tauri -- build --verbose --target "$TARGET" --config src-tauri/tauri.ci.conf.json
       - name: 公证 DMG 并 staple（notarytool 显式提交，带重试）
         run: |
           set -euo pipefail
