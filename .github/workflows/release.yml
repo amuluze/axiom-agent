@@ -102,14 +102,42 @@ jobs:
         run: |
           npm ci
           node scripts/generate-release-config.mjs
-      - name: 构建（tauri build；签名身份在位时补 staple 并验收）
+      - name: 构建（tauri 仅签名；公证由下一步 notarytool 显式执行）
         run: |
           set -euo pipefail
+          # tauri 原生公证在 GHA 托管 runner 上会无限挂起（tauri#14579 同型：
+          # 本地正常、Actions 挂死，两轮实跑均复现）——移除公证凭据让 tauri
+          # 只签名，公证在汇集步骤用 xcrun notarytool 显式提交（可观测可重试）
+          unset APPLE_API_KEY APPLE_API_KEY_PATH APPLE_API_ISSUER
           npm run tauri -- build --target "$TARGET" --config src-tauri/tauri.ci.conf.json
-          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
-            xcrun stapler staple "apps/desktop/src-tauri/target/$TARGET/release/bundle/macos/Axiom.app"
-            xcrun stapler validate "apps/desktop/src-tauri/target/$TARGET/release/bundle/macos/Axiom.app"
+      - name: 公证 DMG 并 staple（notarytool 显式提交，带重试）
+        run: |
+          set -euo pipefail
+          # adhoc（无签名身份）直接跳过公证
+          if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            echo '无签名身份，跳过公证'
+            exit 0
           fi
+          V="$(node -p "require('./package.json').version")"
+          ARCH="${TARGET%%-apple-darwin}"
+          DMG_ARCH="$ARCH"
+          [ "$ARCH" = "x86_64" ] && DMG_ARCH="x64"
+          DMG="apps/desktop/src-tauri/target/$TARGET/release/bundle/dmg/Axiom_${V}_${DMG_ARCH}.dmg"
+          for ATTEMPT in 1 2 3; do
+            if xcrun notarytool submit "$DMG" \
+                --key "${APPLE_API_KEY_PATH:?}" \
+                --key-id "${APPLE_API_KEY_ID:?}" \
+                --issuer "${APPLE_API_ISSUER:?}" \
+                --wait; then
+              echo "公证提交成功（第 $ATTEMPT 次尝试）"
+              break
+            fi
+            [ "$ATTEMPT" = "3" ] && { echo 'notarytool 三次提交均失败' >&2; exit 1; }
+            echo "notarytool 第 $ATTEMPT 次失败，60s 后重试"
+            sleep 60
+          done
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
       - name: 汇集 macOS 资产（命名与本地发布链一致：bundler x64 归一为 x86_64）
         run: |
           set -euo pipefail
