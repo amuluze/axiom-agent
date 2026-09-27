@@ -30,9 +30,9 @@ const SettingsView = lazy(async () => {
   return { default: module.SettingsView }
 })
 
-const SshView = lazy(async () => {
-  const module = await import('@/components/runtime/SshView')
-  return { default: module.SshView }
+const DesignView = lazy(async () => {
+  const module = await import('@/components/design/DesignView')
+  return { default: module.default }
 })
 
 const TerminalPanel = lazy(async () => {
@@ -55,6 +55,7 @@ const ShellLayout = ({ children }: { children: ReactNode }) => {
   const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed)
   const sidebarCompact = useUiStore((state) => state.sidebarCompact)
   const sidebarOverlayOpen = useUiStore((state) => state.sidebarOverlayOpen)
+  const sidebarWidth = useUiStore((state) => state.sidebarWidth)
   const toggleSidebar = useUiStore((state) => state.toggleSidebar)
   const terminalPanelOpen = useUiStore((state) => state.terminalPanelOpen)
   const connectPanelOpen = useUiStore((state) => state.connectPanelOpen)
@@ -63,7 +64,12 @@ const ShellLayout = ({ children }: { children: ReactNode }) => {
   useResponsiveSidebar()
   const sidebarHidden = sidebarCollapsed || sidebarCompact
   return (
-    <div className={`app-shell ${sidebarHidden ? 'app-shell--no-sidebar' : ''}`}>
+    <div
+      className={`app-shell ${sidebarHidden ? 'app-shell--no-sidebar' : ''}`}
+      // 侧边栏宽度经该变量驱动：grid 首列与固定定位的拖拽把手同源消费，
+      // 避免把手与轨道错位；折叠/紧凑态不渲染侧边栏，变量自然不被消费。
+      style={{ '--sidebar-current-width': `${sidebarWidth}px` } as React.CSSProperties}
+    >
       {sidebarHidden && (
         <button
           type="button"
@@ -112,7 +118,6 @@ export const App = () => {
   const branchFromMessage = useAgentStore((state) => state.branchFromMessage)
   const compactContext = useAgentStore((state) => state.compactContext)
   const view = useUiStore((state) => state.view)
-  const terminalPanelOpen = useUiStore((state) => state.terminalPanelOpen)
   const summaryRequest = useUiStore((state) => state.summaryRequest)
   const setSummaryRequest = useUiStore((state) => state.setSummaryRequest)
   const feedbackRequest = useUiStore((state) => state.feedbackRequest)
@@ -141,7 +146,7 @@ export const App = () => {
       window.removeEventListener('focus', refresh)
     }
   }, [])
-  const { settingsScreen, shell, session, ssh } = resolveViewRender(view)
+  const { settingsScreen, shell, session, design } = resolveViewRender(view)
 
   const submitSummaryInstructions = (options: SummaryInstructionOptions): void => {
     const request = summaryRequest
@@ -157,24 +162,13 @@ export const App = () => {
         <SettingsView blocking={!providerReady} />
       </Suspense>
     )
-    : ssh
-      ? (
-        // SSH 独立全窗口视图：与设置页同级（不挂 ShellLayout 侧栏）；终端
-        // 面板开关在视图窗口栏，面板本体由该开关门控（与 ShellLayout 同款）。
-        <div className="ssh-view-shell">
-          <Suspense fallback={null}>
-            <SshView />
-          </Suspense>
-          {terminalPanelOpen && (
-            <Suspense fallback={null}>
-              <TerminalPanel />
-            </Suspense>
-          )}
-        </div>
-      )
-      : (
+    : (
         <ShellLayout>
-          {shell && session ? (
+          {shell && design ? (
+            <Suspense fallback={null}>
+              <DesignView />
+            </Suspense>
+          ) : shell && session ? (
             <Suspense fallback={null}>
               <SessionView />
             </Suspense>

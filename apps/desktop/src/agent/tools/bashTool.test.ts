@@ -38,6 +38,7 @@ bindAgentEnvironment({
   browser: { command: vi.fn() },
   computer: { command: vi.fn() },
   ssh: { command: vi.fn() },
+  design: { readDocument: vi.fn() },
 
 })
 

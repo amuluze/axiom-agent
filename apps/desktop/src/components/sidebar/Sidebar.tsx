@@ -1,7 +1,13 @@
-import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { Suspense, lazy, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { useAgentStore } from '@/stores/agentStore'
 import { useConnectStore } from '@/stores/connectStore'
-import { useUiStore } from '@/stores/uiStore'
+import {
+  DEFAULT_SIDEBAR_WIDTH,
+  MIN_SIDEBAR_WIDTH,
+  sidebarMaxWidth,
+  useUiStore,
+} from '@/stores/uiStore'
+import { useDesignAgentPreview, useDesignConnectPreview, useDesignUiPreview } from '@/components/design/ax/previewContext'
 import { DingtalkIcon, FeishuIcon, getPlatformLabel, WeixinIcon } from '@/components/connect/ConnectIcons'
 import type { ConnectPlatform } from '@/platform/connect'
 import {
@@ -13,8 +19,8 @@ import {
   FolderPlus,
   MessageSquarePlus,
   PanelLeft,
+  PenTool,
   SendHorizontal,
-  Server,
   Settings,
   Sparkles,
   Square,
@@ -23,6 +29,12 @@ import {
 import type { StoredAgentSession } from '@/persistence/types'
 import { useT, type TFunction } from '@/i18n'
 import { displaySessionTitle } from '@/i18n/sessionTitle'
+
+// 设计助手侧栏懒加载：设计视图专用，Composer/消息流的 chunk 不进主包。
+const DesignAssistantPanel = lazy(async () => {
+  const module = await import('@/components/design/DesignAssistantPanel')
+  return { default: module.default }
+})
 
 /** 侧边栏头像里的小号平台图标（固定 9px，两枚并排 + 状态点刚好放下）。 */
 const CONNECT_ICONS_SMALL: Record<ConnectPlatform, ReactNode> = {
@@ -33,6 +45,11 @@ const CONNECT_ICONS_SMALL: Record<ConnectPlatform, ReactNode> = {
 
 /** 平台展示顺序固定（与面板卡片一致），不受 store 数组顺序影响。 */
 const CONNECT_PLATFORM_ORDER: ConnectPlatform[] = ['feishu', 'dingtalk', 'weixin']
+
+/** 键盘调整步长（px）：resizer 聚焦后 ArrowLeft/ArrowRight 增减宽度（对齐 RuntimeRail）。 */
+const KEYBOARD_RESIZE_STEP = 16
+/** 拖拽期间挂在 <html> 上的类名：全局 col-resize 光标 + 禁止文本选择。 */
+const RESIZING_CLASS = 'sidebar--resizing'
 
 interface SidebarWorkspaceGroup {
   key: string
@@ -107,36 +124,73 @@ export interface SidebarProps {
 
 export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
   const { t } = useT()
-  const sessions = useAgentStore((state) => state.sessions)
-  const activeSessionId = useAgentStore((state) => state.activeSessionId)
-  const awaitingApprovalSessionIds = useAgentStore((state) => state.awaitingApprovalSessionIds)
-  const authorizedWorkspace = useAgentStore((state) => state.authorizedWorkspace)
-  const authorizedWorkspaces = useAgentStore((state) => state.authorizedWorkspaces)
-  const selectSession = useAgentStore((state) => state.selectSession)
-  const createNewSession = useAgentStore((state) => state.createNewSession)
-  const addWorkspace = useAgentStore((state) => state.addWorkspace)
-  const activateWorkspace = useAgentStore((state) => state.activateWorkspace)
-  const revokeWorkspace = useAgentStore((state) => state.revokeWorkspace)
-  const archiveSession = useAgentStore((state) => state.archiveSession)
-  const stopSession = useAgentStore((state) => state.stopSession)
-  const sendToSession = useAgentStore((state) => state.sendToSession)
-  const releaseQueuedForSession = useAgentStore((state) => state.releaseQueuedForSession)
-  const sessionQueueCounts = useAgentStore((state) => state.sessionQueueCounts)
-  const toggleSidebar = useUiStore((state) => state.toggleSidebar)
-  const setView = useUiStore((state) => state.setView)
-  const setSettingsSection = useUiStore((state) => state.setSettingsSection)
-  const closeSidebarOverlay = useUiStore((state) => state.closeSidebarOverlay)
-  const view = useUiStore((state) => state.view)
-  const availableUpdate = useUiStore((state) => state.availableUpdate)
-  const setConnectPanelOpen = useUiStore((state) => state.setConnectPanelOpen)
-  const connectPanelOpen = useUiStore((state) => state.connectPanelOpen)
-  const connectPlatforms = useConnectStore((state) => state.config.platforms)
-  const connectBindingsCount = useConnectStore((state) => state.config.bindings.length)
+  // 预览接缝（design canvas 真组件渲染，docs/ax-format.md §4.2）：三 store 切片在
+  // 画布内提供数据与 no-op 动作；画布外为 null，取值与改写前逐字节一致。
+  // 惯用法：store hook 无条件调用，只在取值上分支——不能条件调用 hook。
+  const agentPreview = useDesignAgentPreview()
+  const uiPreview = useDesignUiPreview()
+  const connectPreview = useDesignConnectPreview()
+  const storeSessions = useAgentStore((state) => state.sessions)
+  const sessions = agentPreview?.sessions ?? storeSessions
+  const storeActiveSessionId = useAgentStore((state) => state.activeSessionId)
+  const activeSessionId = agentPreview?.activeSessionId ?? storeActiveSessionId
+  const storeAwaitingApprovalSessionIds = useAgentStore((state) => state.awaitingApprovalSessionIds)
+  const awaitingApprovalSessionIds = agentPreview?.awaitingApprovalSessionIds ?? storeAwaitingApprovalSessionIds
+  const storeAuthorizedWorkspace = useAgentStore((state) => state.authorizedWorkspace)
+  const authorizedWorkspace = agentPreview?.authorizedWorkspace ?? storeAuthorizedWorkspace
+  const storeAuthorizedWorkspaces = useAgentStore((state) => state.authorizedWorkspaces)
+  const authorizedWorkspaces = agentPreview?.authorizedWorkspaces ?? storeAuthorizedWorkspaces
+  const storeSelectSession = useAgentStore((state) => state.selectSession)
+  const selectSession = agentPreview?.selectSession ?? storeSelectSession
+  const storeCreateNewSession = useAgentStore((state) => state.createNewSession)
+  const createNewSession = agentPreview?.createNewSession ?? storeCreateNewSession
+  const storeAddWorkspace = useAgentStore((state) => state.addWorkspace)
+  const addWorkspace = agentPreview?.addWorkspace ?? storeAddWorkspace
+  const storeActivateWorkspace = useAgentStore((state) => state.activateWorkspace)
+  const activateWorkspace = agentPreview?.activateWorkspace ?? storeActivateWorkspace
+  const storeRevokeWorkspace = useAgentStore((state) => state.revokeWorkspace)
+  const revokeWorkspace = agentPreview?.revokeWorkspace ?? storeRevokeWorkspace
+  const storeArchiveSession = useAgentStore((state) => state.archiveSession)
+  const archiveSession = agentPreview?.archiveSession ?? storeArchiveSession
+  const storeStopSession = useAgentStore((state) => state.stopSession)
+  const stopSession = agentPreview?.stopSession ?? storeStopSession
+  const storeSendToSession = useAgentStore((state) => state.sendToSession)
+  const sendToSession = agentPreview?.sendToSession ?? storeSendToSession
+  const storeReleaseQueuedForSession = useAgentStore((state) => state.releaseQueuedForSession)
+  const releaseQueuedForSession = agentPreview?.releaseQueuedForSession ?? storeReleaseQueuedForSession
+  const storeSessionQueueCounts = useAgentStore((state) => state.sessionQueueCounts)
+  const sessionQueueCounts = agentPreview?.sessionQueueCounts ?? storeSessionQueueCounts
+  const storeToggleSidebar = useUiStore((state) => state.toggleSidebar)
+  const toggleSidebar = uiPreview?.toggleSidebar ?? storeToggleSidebar
+  const storeSidebarWidth = useUiStore((state) => state.sidebarWidth)
+  const sidebarWidth = uiPreview?.sidebarWidth ?? storeSidebarWidth
+  const storeSetSidebarWidth = useUiStore((state) => state.setSidebarWidth)
+  const setSidebarWidth = uiPreview?.setSidebarWidth ?? storeSetSidebarWidth
+  const storeSetView = useUiStore((state) => state.setView)
+  const setView = uiPreview?.setView ?? storeSetView
+  const storeSetSettingsSection = useUiStore((state) => state.setSettingsSection)
+  const setSettingsSection = uiPreview?.setSettingsSection ?? storeSetSettingsSection
+  const storeCloseSidebarOverlay = useUiStore((state) => state.closeSidebarOverlay)
+  const closeSidebarOverlay = uiPreview?.closeSidebarOverlay ?? storeCloseSidebarOverlay
+  const storeView = useUiStore((state) => state.view)
+  const view = uiPreview?.view ?? storeView
+  const storeAvailableUpdate = useUiStore((state) => state.availableUpdate)
+  const availableUpdate = uiPreview?.availableUpdate ?? storeAvailableUpdate
+  const storeSetConnectPanelOpen = useUiStore((state) => state.setConnectPanelOpen)
+  const setConnectPanelOpen = uiPreview?.setConnectPanelOpen ?? storeSetConnectPanelOpen
+  const storeConnectPanelOpen = useUiStore((state) => state.connectPanelOpen)
+  const connectPanelOpen = uiPreview?.connectPanelOpen ?? storeConnectPanelOpen
+  const storeConnectPlatforms = useConnectStore((state) => state.config.platforms)
+  const connectPlatforms = connectPreview?.config?.platforms ?? storeConnectPlatforms
+  const storeConnectBindingsCount = useConnectStore((state) => state.config.bindings.length)
+  const connectBindingsCount = connectPreview?.config?.bindings.length ?? storeConnectBindingsCount
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<Set<string>>(new Set())
   const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Set<string>>(new Set())
   // 后台快捷发送：当前展开输入的目标会话 id。一次只展开一行，切换目标即重置草稿。
   const [quickSendId, setQuickSendId] = useState<string | null>(null)
   const [quickSendDraft, setQuickSendDraft] = useState('')
+  // 把手拖拽起点：pointer down 时记录，move 期间计算增量（对齐 RuntimeRail）。
+  const dragStateRef = useRef<{ startX: number; startWidth: number } | null>(null)
   const [quickSendSending, setQuickSendSending] = useState(false)
 
   // 后台快捷发送：非激活、且绑定仍在授权集内的工作目录——与 sendToSession 的
@@ -220,10 +274,69 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
     setter(next)
   }
 
+  // 设计视图整页独占：侧栏切成设计助手（设计稿 XjPQ 的侧栏覆写形态）。
+  const designMode = view === 'design'
   const sidebarClass = variant === 'overlay' ? 'sidebar sidebar--overlay' : 'sidebar'
   const titlebarClass = variant === 'overlay'
     ? 'sidebar__titlebar sidebar__titlebar--overlay'
     : 'sidebar__titlebar'
+
+  // 右缘拖拽把手：pointer capture 保证指针移出把手仍持续收到 move/up；sidebar
+  // 靠左，向右拖增大宽度。clamp 集中在 uiStore 的 setSidebarWidth。
+  const onResizerPointerDown = (event: React.PointerEvent<HTMLDivElement>): void => {
+    if (event.button !== 0 || !event.currentTarget.setPointerCapture) return
+    event.preventDefault()
+    dragStateRef.current = { startX: event.clientX, startWidth: sidebarWidth }
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId)
+    } catch {
+      dragStateRef.current = null
+      return
+    }
+    document.documentElement.classList.add(RESIZING_CLASS)
+  }
+
+  const onResizerPointerMove = (event: React.PointerEvent<HTMLDivElement>): void => {
+    const drag = dragStateRef.current
+    if (!drag) return
+    const next = drag.startWidth + (event.clientX - drag.startX)
+    if (next !== useUiStore.getState().sidebarWidth) setSidebarWidth(next)
+  }
+
+  const onResizerPointerEnd = (event: React.PointerEvent<HTMLDivElement>): void => {
+    if (!dragStateRef.current) return
+    dragStateRef.current = null
+    document.documentElement.classList.remove(RESIZING_CLASS)
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+  }
+
+  const onResizerKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    event.preventDefault()
+    const delta = event.key === 'ArrowRight' ? KEYBOARD_RESIZE_STEP : -KEYBOARD_RESIZE_STEP
+    setSidebarWidth(useUiStore.getState().sidebarWidth + delta)
+  }
+
+  const resizer = variant === 'default' && (
+    <div
+      className="sidebar__resizer"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={t('app.sidebar.resizerAria')}
+      aria-valuemin={MIN_SIDEBAR_WIDTH}
+      aria-valuemax={sidebarMaxWidth()}
+      aria-valuenow={sidebarWidth}
+      tabIndex={0}
+      onPointerDown={onResizerPointerDown}
+      onPointerMove={onResizerPointerMove}
+      onPointerUp={onResizerPointerEnd}
+      onPointerCancel={onResizerPointerEnd}
+      onKeyDown={onResizerKeyDown}
+      onDoubleClick={() => setSidebarWidth(DEFAULT_SIDEBAR_WIDTH)}
+    />
+  )
 
   const inner = (
     <nav aria-label={t('app.sidebar.aria')} className={sidebarClass}>
@@ -254,6 +367,14 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
           </button>
         </div>
       </div>
+      {designMode ? (
+        // 设计页侧栏（.pen 设计稿 XjPQ 覆写）：Nav / 工作区 / 任务列表 / 底栏
+        // 全部让位给设计助手面板，仅保留 Title Bar（红绿灯区 + 收起按钮）。
+        <Suspense fallback={null}>
+          <DesignAssistantPanel />
+        </Suspense>
+      ) : (
+        <>
       <div className="sidebar__nav">
         <button
           type="button"
@@ -289,17 +410,14 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
         </button>
         <button
           type="button"
-          className="sidebar__nav-item"
-          title={t('app.sidebar.sshTitle')}
+          className={`sidebar__nav-item ${designMode ? 'sidebar__nav-item--active' : ''}`}
           onClick={() => {
-            // SSH 是独立全窗口视图（设计稿「Axiom — SSH」）：主机管理与远程
-            // 终端同屏分栏，返回按钮回到上一视图。
-            setView('ssh')
+            setView('design')
             closeSidebarOverlay()
           }}
         >
-          <Server size={15} className="sidebar__nav-item-icon" />
-          <span>{t('app.sidebar.ssh')}</span>
+          <PenTool size={15} className="sidebar__nav-item-icon" />
+          <span>{t('app.sidebar.design')}</span>
         </button>
       </div>
       <div className="sidebar__workspace-header">
@@ -400,6 +518,9 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
                       title={t('app.sidebar.removeWorkspaceTitle')}
                       onClick={() => {
                         if (!group.path) return
+                        // 预览态（画布评审）不弹原生 confirm：撤销动作本身已是 no-op，
+                        // 原生对话框是不经 store 的真副作用，必须一并挡住。
+                        if (agentPreview) return
                         const confirmed = window.confirm(
                           t('app.sidebar.removeWorkspaceConfirm', { name: group.name }),
                         )
@@ -573,6 +694,9 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
           <Settings size={15} />
         </button>
       </div>
+        </>
+      )}
+      {resizer}
     </nav>
   )
 

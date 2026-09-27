@@ -2,6 +2,7 @@ import { ShieldAlert } from 'lucide-react'
 import { useAgentStore } from '@/stores/agentStore'
 import { useT } from '@/i18n'
 import { displaySessionTitle } from '@/i18n/sessionTitle'
+import { useDesignPreview } from '@/components/design/ax/previewContext'
 
 /**
  * 后台会话审批收件箱：多会话（可跨工作目录）并行运行时，非激活会话的写操作
@@ -12,10 +13,17 @@ import { displaySessionTitle } from '@/i18n/sessionTitle'
  */
 export const BackgroundApprovals = () => {
   const { t } = useT()
-  const backgroundApprovals = useAgentStore((state) => state.backgroundApprovals)
-  const sessions = useAgentStore((state) => state.sessions)
-  const approveToolCall = useAgentStore((state) => state.approveToolCall)
-  const denyToolCall = useAgentStore((state) => state.denyToolCall)
+  // 预览 seam（与 ApprovalCard 同款）：store hooks 无条件调用，只在取值上分支——
+  // 设计画布内用 fixture 数据 + no-op 动作，画布外逐字节不变。
+  const storeBackgroundApprovals = useAgentStore((state) => state.backgroundApprovals)
+  const storeSessions = useAgentStore((state) => state.sessions)
+  const storeApproveToolCall = useAgentStore((state) => state.approveToolCall)
+  const storeDenyToolCall = useAgentStore((state) => state.denyToolCall)
+  const preview = useDesignPreview()
+  const backgroundApprovals = preview ? preview.backgroundApprovals ?? [] : storeBackgroundApprovals
+  const sessions = preview ? preview.sessions ?? [] : storeSessions
+  const approveToolCall = preview?.approveToolCall ?? storeApproveToolCall
+  const denyToolCall = preview?.denyToolCall ?? storeDenyToolCall
   if (backgroundApprovals.length === 0) return null
   return (
     <section aria-label={t('app.backgroundApprovals.aria')} className="approval-inbox">

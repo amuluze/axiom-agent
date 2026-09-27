@@ -2,6 +2,21 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.6.1] - 2026-09-23
+
+### Added
+
+- **设计画布（Design Canvas）**：无限画布重构 + 直接操控编辑；设计助手侧栏与画布页展示优化；页面拖动智能吸附（边缘/中线阈值对齐 + accent 参考线）；侧栏拖宽上限 440→560（#90-#98 系列）。
+- **扫描验证面板 + .ax 补全工具链提速**（#98）。
+
+### Fixed
+
+- **图标词表懒加载兜底**：词表外 lucide 图标不再渲染成虚线方块。
+- **挂载失败原因可读化**：根级错误边界 + onUncaughtError + fonts 超时提示。
+- **原生截图载荷 camelCase 契约修复**：`WebViewCapture` 漏 `rename_all` 导致截图成功却被误判「返回空数据」，补 rename 并加 Rust 契约单测。
+- **DMG 卷图标不再露在安装窗口**：卷图标文件补 hidden 标志（字节变化后按凭据重签 + 重公证）。
+
+
 ## [0.6.0] - 2026-09-22
 
 ### Added

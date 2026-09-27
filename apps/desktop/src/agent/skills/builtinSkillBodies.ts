@@ -19,8 +19,10 @@ import type { BuiltinSkillOverrideEntry } from '@/config/builtinPromptOverrides'
  * builtinSkillBodiesVersionContract.test.ts 与 contracts/builtin-skill-bodies-version.json
  * 做指纹单射绑定：改正文必须 bump 本版本（npm run sync:builtin-skill-version 写回）。
  * v8：正文重构为 zh-CN/en 双语言变体（zh-CN 逐字节不变），指纹覆盖全部语言变体。
+ * v17：design skill 补 design_query 的 mode=component（单组件详单：props 契约 +
+ * statics + fixture 数据形状）与组件节点注册表核对（读取时报错）的工作流说明。
  */
-export const BUILTIN_SKILL_BODIES_VERSION = 8
+export const BUILTIN_SKILL_BODIES_VERSION = 17
 
 export type BuiltinPromptLanguage = ResolvedLanguage
 
@@ -446,6 +448,95 @@ After the code changes have passed review (review_subagent passed).
 # Exit criteria
 
 The explanation system is aligned with the implementation, verification evidence is complete, changes are committed and pushed on the task branch per the Git branch rules, and leftover items are explicitly listed.`,
+    },
+  },
+  {
+    name: 'design',
+    'zh-CN': {
+      description: '按设计即代码原则修改工作区内的设计稿（.ax 自有格式为主，.pen 为导入源）：定位子树、用 token 引用迭代样式，写后自查 JSON，让设计画布实时渲染投影。',
+      body: `# 目的
+
+把用户对界面/交互设计的意图收敛为对工作区内 .pen 设计稿的定点修改。设计画布是 .pen 文件的实时渲染投影（设计即代码）：模型改的是文件本身，画布自动跟随刷新，不是模型在画布上作画。
+
+# 何时进入
+
+用户要求新增/修改设计稿页面或组件、按画布效果迭代样式或布局；或设计画布显示解析诊断（ref 缺失、未知节点）需要修复设计稿。
+
+# 前置输入
+
+- 目标 .pen 设计稿路径（通常在 .pen/ 目录，可经 DesignView 文件栏确认）。
+- 用户对设计的意图描述；有设计画布时可要求用户描述看到的实际渲染。
+- docs/design-canvas.md（渲染子集与语义说明）。
+
+# 两种格式
+
+- **.ax**（Axiom 自有格式，**新稿一律用它**）：节点是三级闭集——优先 component（真组件实例：name 必须命中组件清单、props 过契约校验），其次 part（语义部件：只写语义与变体，尺寸与内边距由实现侧决定；部件走词表——statusTag / divider / bubble / banner / actionButton / mentionBadge，字段越界与非法变体都会报错），最后才是 frame / text / icon / rect / ellipse / path / image 原语。硬规则：组件必须来自清单；文案用字符串或 {$mock}（展示）/ {$bind}（数据源），组件的 json 型 props（工具调用的 call/result、消息对象等）用**结构化** {$mock}——直接把对象/数组写进绑定，不要包成 JSON 字符串；页用 group / state 表达同一 UI 的多状态；除 overlay 外**禁止绝对定位**（位置用 flex 与锚点语义）；弹窗/抽屉背后的整页遮罩用 overlay 的 scrim: {fill}（如半透明色，遮罩铺满父级、由实现渲染成 backdrop，不要用半透明矩形手搭，同一页可叠多个带 scrim 的 overlay）；lineHeight 必须写 {unit:'multiplier'|'px', value}；尺寸只接受数值(px) / token / fill_container / fit_content；token 用 $名称 引用顶层已声明项；未知字段一律报错（校验 fail-closed，错稿不会进画布）。组件节点的 name 与 props 会额外与组件注册表核对（组件不在注册表、props 键/必填/值型与契约不符都会在读取时报错并列出可用项）——写稿当场暴露，不必等画布渲染红框。
+- **.pen**（pen.dev 格式，**存量与互操作**）：只读导入源，可直接浏览。要在这份稿上长期迭代时，先用 design_import 把它迁移成 .ax（一次性、需审批；目标已存在会被拒绝），此后以 .ax 为准。
+
+# 执行步骤
+
+1. 定位目标节点：不整读设计稿（单文件可达 8MiB）。优先用 design_query：
+   - 不传 page/nodeId → **摘要**（页清单：分组/状态/节点数/用到组件；组件清单：每个组件名对应真实源码路径与 props 契约；token 清单）；
+   - 传 page（页名或 1 起始序号）→ **该页已解析规格**（token 给出明暗两档字面值、树是作者视角的 .ax 节点、附该页组件清单）；
+   - mode=component 传组件名 → **单组件详单**（props 契约 + statics + fixture 数据形状）：写 component 节点前先查一次，json 型 props 的结构化 {$mock} 照 fixture 数据形状写，不要读源码反推；
+   - 传 nodeId → 精确定位子树。
+   也可用 grep/find 按 name、id 或子树关键词定位；确需通读时用分段 read，不要一次性吞入全文。
+2. 以子树为单位编辑：只改目标节点的 JSON 片段，不动无关子树。颜色/间距/圆角一律用 $名称 引用既有 variables（如 $color-accent、$space-gap），不内联硬编码色值；新 token 需先在设计稿顶层 variables 登记。布局语义：flex 主轴/交叉轴、fill_container 表示拉伸、padding 顺序为 [上,右,下,左]。
+3. 每轮迭代把全部修改合并为一次 apply_changes 批量补丁提交（冲突检测基于文件 sha256），不做碎片化多次写——每次写都会触发画布重渲染与全文件 diff。
+4. 写后自查：调用 design_query 重查改动子树确认 JSON 结构合法（括号/逗号配对、children 数组完整），ref 引用必须指向已登记的 reusable 组件；渲染子集之外的内容（未知节点类型）保持原样，不因画布显示占位而删改。多页改动或整稿完成后，用 design_query 的 mode=scan 做逐页渲染扫描（结构检查 + 离屏渲染 + 空白检测）：按返回的 fail/warn 页 issues 逐项修复，重扫直到全部页面 ok。
+5. 一轮迭代的验证以设计画布刷新后的渲染结果为准（画布 1500ms 轮询 sha256 自动重渲染）；画布报出解析诊断时按诊断信息修复。
+
+# 产出物
+
+- 更新后的 .pen 设计稿。
+- 必要时同步 .docs/ 实现现状说明（如新增了影响实现的组件）。
+
+# 退出条件
+
+画布渲染结果与用户意图一致、无新增解析诊断；全部修改已合入一次批量补丁并写后自查通过；整稿级改动已通过 mode=scan 扫描（无 fail 页）。`,
+    },
+    en: {
+      description: 'Modify workspace design documents (.ax is the native format; .pen is an import source) following design-as-code: locate subtrees, iterate styles via token references, self-check JSON after writes, and let the design canvas render the live projection.',
+      body: `# Purpose
+
+Converge the user's UI/interaction design intent into targeted modifications of .pen design documents inside the workspace. The design canvas is a live render projection of the .pen file (design as code): the model edits the file itself and the canvas refreshes automatically — the model does not draw on the canvas.
+
+# When to enter
+
+The user asks to add or modify design pages/components, iterate styles or layout based on canvas appearance; or the design canvas shows parse diagnostics (missing refs, unknown nodes) that need fixing in the document.
+
+# Required inputs
+
+- The target .pen document path (usually under .pen/, confirmable via the DesignView file bar).
+- The user's design intent; when the canvas is open, ask the user to describe what is actually rendered.
+- docs/design-canvas.md (rendered subset and semantics).
+
+# Two formats
+
+- **.ax** (Axiom's native format — use it for all new work): nodes are a closed three-tier set — prefer component (real component instance: name must be in the component inventory, props must satisfy its contract), then part (semantic part: semantics and variant only, metrics live in the implementation; parts come from a vocabulary — statusTag / divider / bubble / banner / actionButton / mentionBadge — and unknown kinds, invalid variants or out-of-contract fields are errors), and only then the frame / text / icon / rect / ellipse / path / image primitives. Hard rules: components must come from the inventory; text is a literal or {$mock} (display) / {$bind} (data source), and a component's json-typed props (tool-call call/result, message objects, …) take a **structured** {$mock} — write the object/array into the binding, never as a JSON string; pages express multi-state UI via group / state; absolute positioning is forbidden outside overlay (use flex plus anchor semantics); the full-page scrim behind a modal or drawer is expressed as overlay scrim: {fill} (e.g. a translucent color — the scrim fills the parent and the implementation renders it as a backdrop; never hand-build it from a translucent rectangle, and multiple scrim overlays may stack on one page); lineHeight must be {unit:'multiplier'|'px', value}; sizes accept a number (px), a token, fill_container, or fit_content; tokens are referenced as $name and must be declared at the top level; unknown fields are errors (validation is fail-closed — an invalid document never reaches the canvas). Component nodes are additionally cross-checked against the component registry (unknown component, props keys, required props, literal value types): mismatches fail at read time with the available options listed — exposure happens while authoring, not at canvas render.
+- **.pen** (pen.dev format, legacy and interop): read-only import source. To keep iterating on such a document, first migrate it with design_import (one-off, approval-gated; existing targets are refused), then work on the .ax. New design intent goes into .ax.
+
+# Execution steps
+
+1. Locate the target node: do not read the whole document (a single file can reach 8 MiB). Prefer design_query:
+   - without page/nodeId → **summary** (pages with group/state/node counts/components used, plus the component inventory: each component name mapped to its real source path and props contract, plus the token list);
+   - with page (name or 1-based index) → **the fully resolved page spec** (tokens as light/dark literals, the tree as authored .ax nodes, plus the components used by that page);
+   - mode=component with a component name → **the single-component contract detail** (props contract + statics + fixture data shapes): query it before writing a component node, and author json-typed structured {$mock} values following the fixture data shapes instead of reverse-engineering source code;
+   - with nodeId → the exact subtree.
+   You may also use grep/find on name, id or subtree keywords; when a full read is unavoidable, read in segments — never swallow the whole file at once.
+2. Edit per subtree: change only the target node's JSON fragment and leave unrelated subtrees untouched. Colors/spacing/radii must reference existing variables via $name (e.g. $color-accent, $space-gap) instead of inlined hardcoded values; register new tokens in the document's top-level variables first. Layout semantics: flex main/cross axes, fill_container means stretch, padding order is [top,right,bottom,left].
+3. Merge all changes of one iteration into a single apply_changes batch patch (conflict detection is based on the file sha256); avoid fragmented multi-writes — every write triggers a canvas re-render and a full-file diff.
+4. Self-check after writing: re-query the modified subtree via design_query to confirm the JSON is structurally valid (balanced braces/commas, complete children arrays); every ref must point to a registered reusable component; leave content outside the rendered subset (unknown node types) untouched — never delete nodes just because the canvas shows a placeholder. After multi-page edits or before finishing the whole document, run design_query with mode=scan for a per-page render scan (structure checks + offscreen rendering + blank detection): fix each fail/warn page per its issues and rescan until every page is ok.
+5. Validate each iteration against the canvas refresh result (the canvas re-renders automatically on sha256 change via 1500 ms polling); when the canvas reports parse diagnostics, fix the document according to them.
+
+# Outputs
+
+- The updated .pen design document.
+- .docs/ implementation notes when needed (e.g. a new component that affects implementation).
+
+# Exit criteria
+
+The canvas render matches the user's intent with no new parse diagnostics; all modifications were merged into a single batch patch and passed the post-write self-check; document-wide changes passed the mode=scan scan (no failed pages).`,
     },
   },
 ]

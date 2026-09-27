@@ -173,5 +173,12 @@ export const createScopedReadEnvironment = (
         throw outOfScope('ssh.command')
       },
     },
+    // 设计稿读取不透传：scoped 子 Agent 的职责是限定范围内的文本/结构检索，
+    // .pen 二进制设计稿查询是主 Agent 设计工作流的专用能力，保持收窄。
+    design: {
+      readDocument: async (): Promise<never> => {
+        throw outOfScope('design.readDocument')
+      },
+    },
   }
 }

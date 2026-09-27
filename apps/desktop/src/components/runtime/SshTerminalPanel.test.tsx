@@ -103,14 +103,15 @@ afterEach(() => {
 })
 
 describe('SshTerminalPanel 空态（无主机）', () => {
-  it('guides to adding a host on the left pane', () => {
+  it('guides to adding a host in the rail panel', () => {
     render(<SshTerminalPanel />)
     expect(screen.getByText('尚未连接任何主机')).toBeTruthy()
-    expect(screen.getByText('在左侧「主机管理」添加主机后，远程终端会在这里打开。')).toBeTruthy()
+    expect(screen.getByText('添加主机后，远程终端会在这里打开。')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '添加主机…' })).toBeTruthy()
   })
 
   it('creates the terminal once the host list arrives asynchronously', async () => {
-    // 首次打开 SshView 时主机列表尚未加载：空态分支不渲染容器，xterm 创建
+    // 首次打开 SSH 面板时主机列表尚未加载：空态分支不渲染容器，xterm 创建
     // 必须等完整分支出现后重建；不重建即「已连接但终端空白且无法输入」。
     useSshStore.setState({ hosts: [] })
     render(<SshTerminalPanel />)
@@ -125,7 +126,7 @@ describe('SshTerminalPanel 空态（无主机）', () => {
 })
 
 describe('SshTerminalPanel 终端态', () => {
-  it('renders host selector, term bar and status footer', () => {
+  it('renders host tabs, host picker and status footer', () => {
     useSshStore.setState({ hosts: [host] })
     const { container } = render(<SshTerminalPanel />)
     // 未选择主机：选择器显示占位，终端为空白。
@@ -140,8 +141,8 @@ describe('SshTerminalPanel 终端态', () => {
     render(<SshTerminalPanel />)
     await waitFor(() => expect(openSession).toHaveBeenCalledWith(host.id, 80, 24))
     await waitFor(() => expect(useSshStore.getState().sessions[host.id]).toBe('connecting'))
-    // 选择器显示当前主机（设计稿形态）；切换不再 reset、无 term bar 行。
-    expect(screen.getByText('生产机 · server.example.com:22')).toBeTruthy()
+    // tab 栏显示当前主机（设计稿形态）；切换不再 reset、无 term bar 行。
+    expect(screen.getByRole('tab', { selected: true, name: /生产机/ })).toBeTruthy()
   })
 
   it('热更新字号与等宽字体偏好到 xterm options', async () => {
@@ -254,11 +255,11 @@ describe('SshTerminalPanel 终端态', () => {
     expect(disconnect.disabled).toBe(true)
   })
 
-  it('clears the selection via the host bar close button', () => {
+  it('clears the selection when the active host tab is closed', () => {
     useSshStore.setState({ hosts: [host], activeHostId: host.id, sessions: { [host.id]: 'connected' } })
     render(<SshTerminalPanel />)
-    expect(screen.getByText('生产机 · server.example.com:22')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '取消选择主机' }))
+    expect(screen.getByRole('tab', { selected: true, name: /生产机/ })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '关闭 生产机 会话' }))
     expect(useSshStore.getState().activeHostId).toBeNull()
     expect(screen.getByText('未选择主机')).toBeTruthy()
   })

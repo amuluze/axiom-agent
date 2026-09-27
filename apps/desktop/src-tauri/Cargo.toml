@@ -1,6 +1,6 @@
 [package]
 name = "axiom"
-version = "0.6.0"
+version = "0.6.1"
 description = "Local-first desktop agent"
 authors = ["Axiom contributors"]
 edition = "2021"
@@ -23,6 +23,8 @@ tauri = { version = "2", features = ["dynamic-acl"] }
 tauri-specta = { version = "=2.0.0-rc.25", features = ["typescript"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
+# 窗口状态记忆（尺寸/位置/最大化）：退出时保存、下次启动窗口创建前恢复。
+tauri-plugin-window-state = "2"
 # 自更新：updater 拉取 latest.json 并校验 minisign 签名，process 提供 relaunch。
 # 插件常驻编译；仅当配置存在 plugins.updater（generate-release-config.mjs 按
 # 签名凭据注入）时 lib.rs 才注册 updater 插件，开发/无密钥构建保持未配置。
@@ -43,6 +45,8 @@ ignore = "0.4"
 regex = "1"
 tempfile = "3"
 base64 = "0.22"
+# .pen 设计稿文件监听（FSEvents/inotify 抽象）：替换前端 1.5s 轮询的全量读。
+notify = "8"
 sha2 = "0.10"
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite"] }
 unicode-normalization = "0.1"
@@ -56,6 +60,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # 电脑控制模块复用 objc2 家族：NSWorkspace/NSRunningApplication 枚举运行 app，
 # NSAlert（sheet 挂主窗口）做会话门三选一确认；其余 AX/CGEvent/CGWindowList
 # 均手写 extern "C" FFI（对齐 power.rs 风格），不引新 crate。
+objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = [
   "block2",
   "NSRunningApplication",

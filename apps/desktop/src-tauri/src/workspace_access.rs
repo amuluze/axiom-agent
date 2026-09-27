@@ -10,6 +10,7 @@ use crate::{
     workspace_command::WorkspaceCommandState,
     workspace_registry,
 };
+use crate::design_access::design_document_write_limit;
 use globset::{Glob, GlobMatcher};
 use ignore::{DirEntry, WalkBuilder};
 use regex::{Regex, RegexBuilder};
@@ -455,7 +456,7 @@ fn revoke_impl(state: &WorkspaceAccessState, target: &Path) -> Result<bool, Stri
     Ok(removed)
 }
 
-fn validate_relative_path(raw_path: Option<&str>) -> Result<PathBuf, String> {
+pub(crate) fn validate_relative_path(raw_path: Option<&str>) -> Result<PathBuf, String> {
     let raw_path = raw_path
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -525,15 +526,19 @@ fn resolve_new_workspace_file(root: &Path, raw_path: &str) -> Result<PathBuf, St
         return Err("workspace file parent is not a directory".into());
     }
     let target = canonical_parent.join(file_name);
-    if !is_supported_text_path(&target) {
+    // .pen 设计稿定点放行：不经文本扩展白名单（8MiB 上限由写入侧按 limit 生效）。
+    if design_document_write_limit(&target).is_none() && !is_supported_text_path(&target) {
         return Err("workspace file type is not supported for text writing".into());
     }
     Ok(target)
 }
 
-fn validate_write_content(content: &str) -> Result<(), String> {
-    if content.len() as u64 > MAX_TEXT_FILE_BYTES {
-        return Err("workspace text file would be larger than 1 MiB".into());
+fn validate_write_content(content: &str, max_bytes: u64) -> Result<(), String> {
+    if content.len() as u64 > max_bytes {
+        return Err(format!(
+            "workspace text file would be larger than {} MiB",
+            max_bytes / (1024 * 1024)
+        ));
     }
     Ok(())
 }
@@ -610,8 +615,11 @@ fn create_text_file_impl(
     raw_path: &str,
     content: &str,
 ) -> Result<WorkspaceWriteResult, String> {
-    validate_write_content(content)?;
     let target = resolve_new_workspace_file(root, raw_path)?;
+    validate_write_content(
+        content,
+        design_document_write_limit(&target).unwrap_or(MAX_TEXT_FILE_BYTES),
+    )?;
     match std::fs::symlink_metadata(&target) {
         Ok(_) => return Err("workspace create refuses to overwrite an existing path".into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -653,23 +661,49 @@ fn edit_text_file_impl(
     if total_edits == 0 {
         return Err("workspace edit requires at least one edit".into());
     }
+    let relative = validate_relative_path(Some(raw_path))?;
+    reject_reserved_write_components(&relative)?;
+    // .pen 设计稿定点放行：不经 canonical_text_file 的文本扩展白名单与 1MiB
+    // 上限，改按设计稿上限（containment / is_file / UTF-8 校验全部保留）。
+    let write_limit = design_document_write_limit(&root.join(&relative))
+        .unwrap_or(MAX_TEXT_FILE_BYTES);
     for (index, edit) in edits.iter().enumerate() {
         if edit.old_text.is_empty() {
             return Err(empty_old_text_error(raw_path, index, total_edits));
         }
-        if edit.old_text.len() as u64 > MAX_TEXT_FILE_BYTES
-            || edit.new_text.len() as u64 > MAX_TEXT_FILE_BYTES
-        {
-            return Err("workspace edit text is larger than 1 MiB".into());
+        if edit.old_text.len() as u64 > write_limit || edit.new_text.len() as u64 > write_limit {
+            return Err(format!(
+                "workspace edit text is larger than {} MiB",
+                write_limit / (1024 * 1024)
+            ));
         }
     }
-    let relative = validate_relative_path(Some(raw_path))?;
-    reject_reserved_write_components(&relative)?;
     let requested = root.join(relative);
-    let (canonical, _) = canonical_text_file(&requested.to_string_lossy())?;
-    if !canonical.starts_with(root) {
-        return Err("workspace file resolves outside the authorized root".into());
-    }
+    let canonical = if write_limit == MAX_TEXT_FILE_BYTES {
+        let (canonical, _) = canonical_text_file(&requested.to_string_lossy())?;
+        if !canonical.starts_with(root) {
+            return Err("workspace file resolves outside the authorized root".into());
+        }
+        canonical
+    } else {
+        let canonical = std::fs::canonicalize(&requested)
+            .map_err(|error| format!("failed to resolve workspace path: {error}"))?;
+        if !canonical.starts_with(root) {
+            return Err("workspace file resolves outside the authorized root".into());
+        }
+        let metadata = std::fs::metadata(&canonical)
+            .map_err(|error| format!("failed to inspect workspace text file: {error}"))?;
+        if !metadata.is_file() {
+            return Err("workspace edit requires a regular text file".into());
+        }
+        if metadata.len() > write_limit {
+            return Err(format!(
+                "workspace text file is larger than {} MiB",
+                write_limit / (1024 * 1024)
+            ));
+        }
+        canonical
+    };
     let bytes = std::fs::read(&canonical)
         .map_err(|error| format!("failed to read workspace text file: {error}"))?;
     let original = String::from_utf8(bytes)
@@ -740,7 +774,10 @@ fn edit_text_file_impl(
     if updated == normalized {
         return Err(no_change_error(raw_path, total_edits));
     }
-    validate_write_content(&updated)?;
+    validate_write_content(
+        &updated,
+        design_document_write_limit(&canonical).unwrap_or(MAX_TEXT_FILE_BYTES),
+    )?;
 
     let metadata = std::fs::metadata(&canonical)
         .map_err(|error| format!("failed to inspect workspace text file: {error}"))?;

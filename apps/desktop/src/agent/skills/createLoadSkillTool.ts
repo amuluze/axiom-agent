@@ -123,7 +123,7 @@ export const createLoadSkillTool = ({
     const registry = ProjectSkillRegistry.fromSnapshot(getProjectSkills())
     const dependency = registry.get(name)
     if (!dependency) {
-      // 双通道回退：项目未命中时查内置正文 Skill（SDD 工作流 6 项）。
+      // 双通道回退：项目未命中时查内置正文 Skill（SDD 工作流与设计 7 项）。
       // 内置正文直接返回，无磁盘读取 / contentSha256 比对（数据在进程内，不随磁盘变化）。
       // 语言与用户覆写经本地化宿主在执行期解析：按当前生效语言取变体，设置页保存的
       // per-language 覆写字段优先、未覆写字段回落内置默认。

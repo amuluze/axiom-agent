@@ -61,12 +61,15 @@ describe('workspace approval IPC', () => {
       'apply_changes',
       'restore_trash',
       'bash',
+      'design_import',
     ].map(nativeWorkspaceApprovalToolName)).toEqual([
       'create_workspace_file',
       'edit_workspace_file',
       'apply_workspace_changes',
       'restore_workspace_trash',
       'run_workspace_command',
+      // 设计稿迁移经 create_workspace_file 落盘：租约必须按该原生命令口径绑定。
+      'create_workspace_file',
     ])
   })
 
@@ -108,6 +111,24 @@ describe('workspace approval IPC', () => {
         input: { command: 'npm test -- --coverage', cwd: 'apps/desktop', timeout: 60 },
         confirmationMode: 'interactive',
       },
+    })
+  })
+
+  it('binds the lease to the tool-declared approvalLeaseInput (design_import 编译产物)', async () => {
+    mockedInvoke.mockResolvedValueOnce('lease-import')
+    const importContext: BeforeToolCallContext = {
+      ...createContext(),
+      toolName: 'design_import',
+      input: { source: '.pen/axiom.pen', target: '.pen/axiom.ax' },
+      approvalLeaseInput: { path: '.pen/axiom.ax', content: '{"version":"1.0"}' },
+    }
+
+    await expect(requestWorkspaceApprovalLease(importContext, 'interactive')).resolves.toBe('lease-import')
+    expect(mockedInvoke).toHaveBeenLastCalledWith('request_workspace_approval_lease', {
+      request: expect.objectContaining({
+        toolName: 'create_workspace_file',
+        input: { path: '.pen/axiom.ax', content: '{"version":"1.0"}' },
+      }),
     })
   })
 

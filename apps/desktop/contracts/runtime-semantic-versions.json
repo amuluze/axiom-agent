@@ -8,7 +8,7 @@
         "src/agent/runtime/RuntimeHookRegistry.ts",
         "src/agent/runtime/productRuntimeHooks.ts"
       ],
-      "semanticDigest": "4fc8ef2d647802e1f99621b276bfbb1c22e68e30e22b68305b761d1b58ae44f3"
+      "semanticDigest": "4cef6e3407dd236185641d39e53d6a87aa3d099fb0952d92b10a13ecb470f0fe"
     },
     {
       "id": "hook:axiom.runtime.harness-options-hooks",
@@ -17,7 +17,7 @@
         "src/agent/runtime/RuntimeHookRegistry.ts",
         "src/agent/runtime/AgentHarness.ts"
       ],
-      "semanticDigest": "5ef56820283d9509b5b344f73cebcd989e6e4f11e18e72279beab744eb3888ad"
+      "semanticDigest": "dc11b043c51bb72a2549f952b18370888b2c44c719347ccc59925ba2028fa6a6"
     },
     {
       "id": "provider:demo",
@@ -237,7 +237,7 @@
         "src/agent/runtime/AgentSession.ts",
         "src/stores/services/subAgentObservability.ts"
       ],
-      "semanticDigest": "824f84bf5dd26028f9d8eeb353aa653e227b9f736f594fd809e317e13bdf3e0a"
+      "semanticDigest": "568ac415c3cc1f585085bd61160e1682190657ce3d8dbf11ac134845de2f4f0c"
     },
     {
       "id": "tool:explore_subagent",
@@ -252,7 +252,25 @@
         "src/agent/runtime/AgentSession.ts",
         "src/stores/services/subAgentObservability.ts"
       ],
-      "semanticDigest": "8616bbb520f3cbf0cb893597d0453c6957565c25c288f5b1c164314b1bcd29f8"
+      "semanticDigest": "9a9c6b65833c34de67ff2ecab5d531e3c788cc710fbcf47ae8ebc53f23ee834b"
+    },
+    {
+      "id": "tool:design_query",
+      "version": "4",
+      "sourceFiles": [
+        "src/agent/tools/designQueryTool.ts",
+        "src/agent/tools/workspaceToolUtils.ts"
+      ],
+      "semanticDigest": "37113f8258c77ac9bbc633cb5fe105451129f9ffa1e37684b1fbc01cf7551126"
+    },
+    {
+      "id": "tool:design_import",
+      "version": "3",
+      "sourceFiles": [
+        "src/agent/tools/designImportTool.ts",
+        "src/agent/tools/workspaceToolUtils.ts"
+      ],
+      "semanticDigest": "6ba965e049531999d7127125f970a630b03933d7a268230e3498f7d83389cd96"
     },
     {
       "id": "tool:find",
@@ -287,7 +305,7 @@
         "src/agent/runtime/AgentSession.ts",
         "src/stores/services/subAgentObservability.ts"
       ],
-      "semanticDigest": "f876d29838bd40c7e5fd5b0efceebe031076d1e9b1fe9b29a373a21a1a019dd3"
+      "semanticDigest": "f852efc8744bb92419c7b770d94d5775db700562e3e89bde0acc67b84edc98e1"
     },
     {
       "id": "tool:load_skill",
@@ -298,7 +316,7 @@
         "src/agent/skills/parseSkillFile.ts",
         "src/agent/skills/builtinSkillBodies.ts"
       ],
-      "semanticDigest": "4d1fe6bdab2dfde101cda7548f524ed72e7646472e73d515e714d2165a5b4e7d"
+      "semanticDigest": "6392650e7f34a1db682eabe188d0f3c5c98a589eb936144d9b7f7eb9a651ec4d"
     },
     {
       "id": "tool:ls",
@@ -342,7 +360,7 @@
         "src/agent/runtime/AgentSession.ts",
         "src/stores/services/subAgentObservability.ts"
       ],
-      "semanticDigest": "af615b6a3bf21b6ca707abf972c7089cc10bea58a6e9429704d8d77f819912e1"
+      "semanticDigest": "f1ca695f6eafd7d71da04918b10f38df89d215614978e15ff93eb8dbc1ce7e2b"
     },
     {
       "id": "tool:web_fetch",

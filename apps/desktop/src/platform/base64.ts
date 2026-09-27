@@ -12,3 +12,19 @@ export const decodeBase64ToBytes = (input: string): Uint8Array => {
   }
   return bytes
 }
+
+/**
+ * UTF-8 字符串 → base64：设计稿写回通道用（`write_design_document` 以 base64
+ * 传输 1.4MB 级 JSON）。先 TextEncoder 编码再分块 btoa——`btoa` 只收
+ * latin1，直接塞 UTF-16 码元会丢字符；分块是避免 `String.fromCharCode`
+ * 展开大数组触发调用栈上限。
+ */
+export const encodeUtf8ToBase64 = (input: string): string => {
+  const bytes = new TextEncoder().encode(input)
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize))
+  }
+  return btoa(binary)
+}

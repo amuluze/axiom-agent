@@ -14,6 +14,7 @@ import { ArrowUp, Check, ChevronDown, FileText, Folder, FolderOpen, GripVertical
 import { useAgentStore } from '@/stores/agentStore'
 import { useUiStore } from '@/stores/uiStore'
 import type { AccessMode } from '@/stores/uiStore'
+import { useDesignAgentPreview, useDesignUiPreview } from '@/components/design/ax/previewContext'
 import type { AuthorizedWorkspace } from '@/platform/workspace'
 import type { QueuedMessageSnapshot } from '@/agent/runtime/AgentSession'
 import type {
@@ -205,10 +206,15 @@ const createAttachment = async (file: File): Promise<ComposerAttachment> => {
 
 export interface ComposerProps {
   variant?: 'new-task' | 'session'
+  /** 审批模式下拉默认显示；窄栏投影（设计助手侧栏）按设计稿 XjPQ 隐藏——Controls Row 只留模型/预算/发送。 */
+  showAccessPicker?: boolean
 }
 
-export const Composer = ({ variant = 'session' }: ComposerProps) => {
+export const Composer = ({ variant = 'session', showAccessPicker = true }: ComposerProps) => {
   const { t } = useT()
+  // 预览接缝取值必须在所有消费点（含挂载 effect）之前声明。
+  const agentPreview = useDesignAgentPreview()
+  const uiPreview = useDesignUiPreview()
   const [input, setInput] = useState('')
   const [caret, setCaret] = useState(0)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
@@ -251,9 +257,12 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
   const budgetPickerRef = useRef<HTMLDivElement | null>(null)
   // 挂载后聚焦输入框：设置面板/原生对话框交互后 textarea 会失去 DOM 焦点，
   // 自动聚焦保证用户（以及原生 E2E 的键盘输入）能直接输入。
+  // 预览态（画布评审）不抢焦点：画布一页可能渲染多个 Composer，挂载即 focus
+  // 会打断用户浏览；依赖 uiPreview——画布外恒为 null，行为不变。
   useEffect(() => {
+    if (uiPreview) return
     queueMicrotask(() => textareaRef.current?.focus())
-  }, [])
+  }, [uiPreview])
 
   // 点击菜单外部或按 Escape 收起菜单：菜单项自身的 onClick 负责选择后关闭，
   // 这里只处理「点击落在对应 picker 容器之外」与键盘 Esc 两条路径。
@@ -316,53 +325,108 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
   useUpwardMenuClamp(accessPickerRef, accessMenuOpen)
   useUpwardMenuClamp(modelPickerRef, modelMenuOpen)
   useUpwardMenuClamp(budgetPickerRef, budgetMenuOpen)
-  const send = useAgentStore((state) => state.send)
-  const stop = useAgentStore((state) => state.stop)
-  const queueSteering = useAgentStore((state) => state.queueSteering)
-  const queueFollowUp = useAgentStore((state) => state.queueFollowUp)
-  const clearQueuedMessages = useAgentStore((state) => state.clearQueuedMessages)
-  const restoreQueuedMessage = useAgentStore((state) => state.restoreQueuedMessage)
-  const editQueuedMessage = useAgentStore((state) => state.editQueuedMessage)
-  const moveQueuedMessage = useAgentStore((state) => state.moveQueuedMessage)
-  const deleteQueuedMessage = useAgentStore((state) => state.deleteQueuedMessage)
-  const sendQueuedNow = useAgentStore((state) => state.sendQueuedNow)
-  const saveQueueAutoDrain = useAgentStore((state) => state.saveQueueAutoDrain)
-  const queueAutoDrain = useAgentStore((state) => state.queueModeSettings.autoDrain)
-  const editUserMessage = useAgentStore((state) => state.editUserMessage)
-  const activeSessionId = useAgentStore((state) => state.activeSessionId)
-  const discardRecoveredMessage = useAgentStore((state) => state.discardRecoveredMessage)
-  const cancelBranchSummary = useAgentStore((state) => state.cancelBranchSummary)
-  const authorizeFile = useAgentStore((state) => state.authorizeFile)
-  const authorizeDirectory = useAgentStore((state) => state.authorizeDirectory)
-  const addWorkspace = useAgentStore((state) => state.addWorkspace)
-  const activateWorkspace = useAgentStore((state) => state.activateWorkspace)
-  const running = useAgentStore((state) => state.running)
-  const sessionBusy = useAgentStore((state) => state.sessionBusy)
-  const compactionRunning = useAgentStore((state) => state.compactionRunning)
-  const branchSummaryRunning = useAgentStore((state) => state.branchSummaryRunning)
-  const provider = useAgentStore((state) => state.provider)
-  const providerProfiles = useAgentStore((state) => state.providerProfiles)
-  const providerSaving = useAgentStore((state) => state.providerSaving)
-  const switchProviderProfile = useAgentStore((state) => state.switchProviderProfile)
-  const providerReady = useAgentStore((state) => state.providerReady)
-  const providerSetupRequired = useAgentStore((state) => state.providerSetupRequired)
-  const authorizedWorkspace = useAgentStore((state) => state.authorizedWorkspace)
-  const authorizedWorkspaces = useAgentStore((state) => state.authorizedWorkspaces)
-  const recentWorkspacePaths = useUiStore((state) => state.recentWorkspacePaths)
-  const pendingSteeringCount = useAgentStore((state) => state.pendingSteeringCount)
-  const pendingFollowUpCount = useAgentStore((state) => state.pendingFollowUpCount)
-  const pendingNextTurnCount = useAgentStore((state) => state.pendingNextTurnCount)
-  const queuedMessages = useAgentStore((state) => state.queuedMessages)
-  const recoveredQueuedMessages = useAgentStore((state) => state.recoveredQueuedMessages)
-  const armedQueueMessageId = useAgentStore((state) => state.armedQueueMessageId)
-  const accessMode = useUiStore((state) => state.accessMode)
-  const setAccessMode = useUiStore((state) => state.setAccessMode)
-  const messageEditRequest = useUiStore((state) => state.messageEditRequest)
-  const setMessageEditRequest = useUiStore((state) => state.setMessageEditRequest)
+  // 预览接缝（design canvas 真组件渲染，docs/ax-format.md §4.2 多 store 切片形态）：
+  // 画布内 agent/ui 切片提供数据与 no-op 动作；画布外为 null，取值与改写前逐字节一致。
+  // 惯用法：store hook 无条件调用，只在取值上分支——不能条件调用 hook。
+  // （agentPreview/uiPreview 已在组件顶部声明——挂载 effect 先于本块消费。）
+  const storeSend = useAgentStore((state) => state.send)
+  const send = agentPreview?.send ?? storeSend
+  const storeStop = useAgentStore((state) => state.stop)
+  const stop = agentPreview?.stop ?? storeStop
+  const storeQueueSteering = useAgentStore((state) => state.queueSteering)
+  const queueSteering = agentPreview?.queueSteering ?? storeQueueSteering
+  const storeQueueFollowUp = useAgentStore((state) => state.queueFollowUp)
+  const queueFollowUp = agentPreview?.queueFollowUp ?? storeQueueFollowUp
+  const storeClearQueuedMessages = useAgentStore((state) => state.clearQueuedMessages)
+  const clearQueuedMessages = agentPreview?.clearQueuedMessages ?? storeClearQueuedMessages
+  const storeRestoreQueuedMessage = useAgentStore((state) => state.restoreQueuedMessage)
+  const restoreQueuedMessage = agentPreview?.restoreQueuedMessage ?? storeRestoreQueuedMessage
+  const storeEditQueuedMessage = useAgentStore((state) => state.editQueuedMessage)
+  const editQueuedMessage = agentPreview?.editQueuedMessage ?? storeEditQueuedMessage
+  const storeMoveQueuedMessage = useAgentStore((state) => state.moveQueuedMessage)
+  const moveQueuedMessage = agentPreview?.moveQueuedMessage ?? storeMoveQueuedMessage
+  const storeDeleteQueuedMessage = useAgentStore((state) => state.deleteQueuedMessage)
+  const deleteQueuedMessage = agentPreview?.deleteQueuedMessage ?? storeDeleteQueuedMessage
+  const storeSendQueuedNow = useAgentStore((state) => state.sendQueuedNow)
+  const sendQueuedNow = agentPreview?.sendQueuedNow ?? storeSendQueuedNow
+  const storeSaveQueueAutoDrain = useAgentStore((state) => state.saveQueueAutoDrain)
+  const saveQueueAutoDrain = agentPreview?.saveQueueAutoDrain ?? storeSaveQueueAutoDrain
+  // 派生读取缝在父字段：预览提供完整 queueModeSettings，组件照常取 .autoDrain。
+  const storeQueueModeSettings = useAgentStore((state) => state.queueModeSettings)
+  const queueModeSettings = agentPreview?.queueModeSettings ?? storeQueueModeSettings
+  const queueAutoDrain = queueModeSettings.autoDrain
+  const storeEditUserMessage = useAgentStore((state) => state.editUserMessage)
+  const editUserMessage = agentPreview?.editUserMessage ?? storeEditUserMessage
+  const storeActiveSessionId = useAgentStore((state) => state.activeSessionId)
+  const activeSessionId = agentPreview?.activeSessionId ?? storeActiveSessionId
+  const storeDiscardRecoveredMessage = useAgentStore((state) => state.discardRecoveredMessage)
+  const discardRecoveredMessage = agentPreview?.discardRecoveredMessage ?? storeDiscardRecoveredMessage
+  const storeCancelBranchSummary = useAgentStore((state) => state.cancelBranchSummary)
+  const cancelBranchSummary = agentPreview?.cancelBranchSummary ?? storeCancelBranchSummary
+  const storeAuthorizeFile = useAgentStore((state) => state.authorizeFile)
+  const authorizeFile = agentPreview?.authorizeFile ?? storeAuthorizeFile
+  const storeAuthorizeDirectory = useAgentStore((state) => state.authorizeDirectory)
+  const authorizeDirectory = agentPreview?.authorizeDirectory ?? storeAuthorizeDirectory
+  const storeAddWorkspace = useAgentStore((state) => state.addWorkspace)
+  const addWorkspace = agentPreview?.addWorkspace ?? storeAddWorkspace
+  const storeActivateWorkspace = useAgentStore((state) => state.activateWorkspace)
+  const activateWorkspace = agentPreview?.activateWorkspace ?? storeActivateWorkspace
+  const storeRunning = useAgentStore((state) => state.running)
+  const running = agentPreview?.running ?? storeRunning
+  const storeSessionBusy = useAgentStore((state) => state.sessionBusy)
+  const sessionBusy = agentPreview?.sessionBusy ?? storeSessionBusy
+  const storeCompactionRunning = useAgentStore((state) => state.compactionRunning)
+  const compactionRunning = agentPreview?.compactionRunning ?? storeCompactionRunning
+  const storeBranchSummaryRunning = useAgentStore((state) => state.branchSummaryRunning)
+  const branchSummaryRunning = agentPreview?.branchSummaryRunning ?? storeBranchSummaryRunning
+  const storeProvider = useAgentStore((state) => state.provider)
+  const provider = agentPreview?.provider ?? storeProvider
+  const storeProviderProfiles = useAgentStore((state) => state.providerProfiles)
+  const providerProfiles = agentPreview?.providerProfiles ?? storeProviderProfiles
+  const storeProviderSaving = useAgentStore((state) => state.providerSaving)
+  const providerSaving = agentPreview?.providerSaving ?? storeProviderSaving
+  const storeSwitchProviderProfile = useAgentStore((state) => state.switchProviderProfile)
+  const switchProviderProfile = agentPreview?.switchProviderProfile ?? storeSwitchProviderProfile
+  const storeProviderReady = useAgentStore((state) => state.providerReady)
+  const providerReady = agentPreview?.providerReady ?? storeProviderReady
+  const storeProviderSetupRequired = useAgentStore((state) => state.providerSetupRequired)
+  const providerSetupRequired = agentPreview?.providerSetupRequired ?? storeProviderSetupRequired
+  const storeAuthorizedWorkspace = useAgentStore((state) => state.authorizedWorkspace)
+  const authorizedWorkspace = agentPreview?.authorizedWorkspace ?? storeAuthorizedWorkspace
+  const storeAuthorizedWorkspaces = useAgentStore((state) => state.authorizedWorkspaces)
+  const authorizedWorkspaces = agentPreview?.authorizedWorkspaces ?? storeAuthorizedWorkspaces
+  const storeRecentWorkspacePaths = useUiStore((state) => state.recentWorkspacePaths)
+  const recentWorkspacePaths = uiPreview?.recentWorkspacePaths ?? storeRecentWorkspacePaths
+  const storePendingSteeringCount = useAgentStore((state) => state.pendingSteeringCount)
+  const pendingSteeringCount = agentPreview?.pendingSteeringCount ?? storePendingSteeringCount
+  const storePendingFollowUpCount = useAgentStore((state) => state.pendingFollowUpCount)
+  const pendingFollowUpCount = agentPreview?.pendingFollowUpCount ?? storePendingFollowUpCount
+  const storePendingNextTurnCount = useAgentStore((state) => state.pendingNextTurnCount)
+  const pendingNextTurnCount = agentPreview?.pendingNextTurnCount ?? storePendingNextTurnCount
+  const storeQueuedMessages = useAgentStore((state) => state.queuedMessages)
+  const queuedMessages = agentPreview?.queuedMessages ?? storeQueuedMessages
+  const storeRecoveredQueuedMessages = useAgentStore((state) => state.recoveredQueuedMessages)
+  const recoveredQueuedMessages = agentPreview?.recoveredQueuedMessages ?? storeRecoveredQueuedMessages
+  const storeArmedQueueMessageId = useAgentStore((state) => state.armedQueueMessageId)
+  const armedQueueMessageId = agentPreview?.armedQueueMessageId ?? storeArmedQueueMessageId
+  const storeAccessMode = useUiStore((state) => state.accessMode)
+  const accessMode = uiPreview?.accessMode ?? storeAccessMode
+  const storeSetAccessMode = useUiStore((state) => state.setAccessMode)
+  const setAccessMode = uiPreview?.setAccessMode ?? storeSetAccessMode
+  const storeMessageEditRequest = useUiStore((state) => state.messageEditRequest)
+  const messageEditRequest = uiPreview?.messageEditRequest ?? storeMessageEditRequest
+  const storeSetMessageEditRequest = useUiStore((state) => state.setMessageEditRequest)
+  const setMessageEditRequest = uiPreview?.setMessageEditRequest ?? storeSetMessageEditRequest
+  const storeComposerInsertionRequest = useUiStore((state) => state.composerInsertionRequest)
+  const composerInsertionRequest = uiPreview?.composerInsertionRequest ?? storeComposerInsertionRequest
+  const storeClearComposerInsertion = useUiStore((state) => state.clearComposerInsertion)
+  const clearComposerInsertion = uiPreview?.clearComposerInsertion ?? storeClearComposerInsertion
   // 编辑请求按会话隔离：切到别的会话后残留的请求不得回填到当前输入框。
   const editRequest = messageEditRequest?.sessionId === activeSessionId ? messageEditRequest : null
-  const setSettingsSection = useUiStore((state) => state.setSettingsSection)
-  const setView = useUiStore((state) => state.setView)
+  const storeSetSettingsSection = useUiStore((state) => state.setSettingsSection)
+  const setSettingsSection = uiPreview?.setSettingsSection ?? storeSetSettingsSection
+  const storeSetView = useUiStore((state) => state.setView)
+  const setView = uiPreview?.setView ?? storeSetView
   const composerAvailable = isComposerAvailable({
     providerReady,
     providerSetupRequired,
@@ -393,6 +457,19 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
     setDismissedMentionKey(null)
     historyIndexRef.current = -1
   }, [])
+
+  // 画布引用等外部组件的文本注入：追加到当前输入尾部并聚焦。
+  // 依赖 nonce（而非 text 引用）——同文本的重复请求也要能再次触发。
+  useEffect(() => {
+    const request = composerInsertionRequest
+    if (!request) return
+    clearComposerInsertion()
+    setInput((current) => {
+      const next = current ? `${current.trimEnd()}\n${request.text}` : request.text
+      return next
+    })
+    textareaRef.current?.focus()
+  }, [composerInsertionRequest, clearComposerInsertion])
 
   const clearAttachments = useCallback(() => {
     setAttachments((current) => {
@@ -481,8 +558,9 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
       .map((attachment) => toImageContentBlock(attachment))
     if ((!content && images.length === 0) || !composerAvailable) return false
     // 被接受即入史（直接发送与排队/跟进同权），与清空输入绑成单点。
+    // 预览态不写 localStorage 历史（提交 no-op 之外唯一会落盘的副作用，一并挡住）。
     const accept = () => {
-      if (content) historyRef.current = recordComposerHistoryEntry(content)
+      if (content && !agentPreview) historyRef.current = recordComposerHistoryEntry(content)
       clearAcceptedInput()
       clearAttachments()
     }
@@ -523,6 +601,7 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
     if (variant === 'new-task') setView('session')
     return true
   }, [
+    agentPreview,
     attachments,
     clearAcceptedInput,
     clearAttachments,
@@ -1199,39 +1278,41 @@ export const Composer = ({ variant = 'session' }: ComposerProps) => {
           </div>
         )}
         <div className="composer__controls">
-          <div className="composer__access-picker" ref={accessPickerRef}>
-            <button
-              type="button"
-              className="composer__access-mode"
-              data-mode={accessMode}
-              aria-expanded={accessMenuOpen}
-              aria-label={t('app.composer.access.ariaCurrent', { mode: t(currentAccessMode.labelKey) })}
-              onClick={() => toggleMenu('access')}
-            >
-              {accessMode === 'no-approval' ? <ShieldOff size={14} /> : <ShieldCheck size={14} />}
-              <span>{t(currentAccessMode.labelKey)}</span>
-              <ChevronDown size={13} />
-            </button>
-            {accessMenuOpen && (
-              <div className="composer__access-menu" role="menu">
-                <div className="composer__menu-title">{t('app.composer.access.title')}</div>
-                {accessModeOptions.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={`composer__menu-item ${option.value === accessMode ? 'composer__menu-item--active' : ''}`}
-                    onClick={() => {
-                      setAccessMode(option.value)
-                      setAccessMenuOpen(false)
-                    }}
-                  >
-                    <span className="composer__menu-item-label">{t(option.labelKey)}</span>
-                    <span className="composer__menu-item-desc">{t(option.descriptionKey)}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          {showAccessPicker && (
+            <div className="composer__access-picker" ref={accessPickerRef}>
+              <button
+                type="button"
+                className="composer__access-mode"
+                data-mode={accessMode}
+                aria-expanded={accessMenuOpen}
+                aria-label={t('app.composer.access.ariaCurrent', { mode: t(currentAccessMode.labelKey) })}
+                onClick={() => toggleMenu('access')}
+              >
+                {accessMode === 'no-approval' ? <ShieldOff size={14} /> : <ShieldCheck size={14} />}
+                <span>{t(currentAccessMode.labelKey)}</span>
+                <ChevronDown size={13} />
+              </button>
+              {accessMenuOpen && (
+                <div className="composer__access-menu" role="menu">
+                  <div className="composer__menu-title">{t('app.composer.access.title')}</div>
+                  {accessModeOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={`composer__menu-item ${option.value === accessMode ? 'composer__menu-item--active' : ''}`}
+                      onClick={() => {
+                        setAccessMode(option.value)
+                        setAccessMenuOpen(false)
+                      }}
+                    >
+                      <span className="composer__menu-item-label">{t(option.labelKey)}</span>
+                      <span className="composer__menu-item-desc">{t(option.descriptionKey)}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <span className="composer__controls-spacer" />
           {variant === 'session' && (
             <ContextBudgetControl

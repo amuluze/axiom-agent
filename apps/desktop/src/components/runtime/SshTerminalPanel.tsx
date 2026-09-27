@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
-import { ChevronUp, File, Folder, FolderPlus, Loader2, MonitorOff, RefreshCw, Server, SquareTerminal, Upload, X } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent } from 'react'
+import { ChevronDown, ChevronUp, Check, File, Folder, FolderPlus, Loader2, MonitorOff, PlugZap, Plus, RefreshCw, Server, SquareTerminal, Upload, X } from 'lucide-react'
 import { ensureSshEvents, useSshStore, type SshSessionPhase } from '@/stores/sshStore'
 import type { RemoteDirEntry } from '@/platform/sshSession'
 import {
@@ -8,23 +8,26 @@ import {
   useUiStore,
 } from '@/stores/uiStore'
 import { useSshTerminals } from './useSshTerminals'
+import { SshHostsPanel } from './SshHostsPanel'
 import { useT } from '@/i18n'
 
 /**
- * SSH 终端面板（SshView 右栏，对齐设计稿「Axiom — SSH」终端列）：
- * 主机选择器 + xterm 终端 + 状态栏 + SFTP 文件浏览器。
+ * SSH 终端面板（RuntimeRail 的 SSH pane，对齐设计稿「Axiom — SSH 面板 · 489×676」）：
+ * 主机 tab 栏 + 主机下拉菜单 + xterm 终端 + 状态栏 + SFTP 文件浏览器。
  *
- * - 每主机一个会话（Rust 侧权威）：主机行/选择器选中未连接主机即自动连接；
+ * - 每主机一个会话（Rust 侧权威）：主机 tab/下拉菜单选中未连接主机即自动连接；
  *   密码 /host-key 等交互提示直接出现在终端里（用户亲手输入，stdin 经 Rust
  *   原生 keyDown 手势门校验，与本地终端同一防线）。
  * - 每主机独立 xterm 实例（见 useSshTerminals），切换主机只切显示/隐藏、保留
  *   各主机的缓冲历史与光标——不再用单实例 + reset 清屏。
  * - 输出经 Rust PTY 读线程转发（axiom:ssh-event），按 hostId 分发到对应实例；
- *   done 事件驱动状态回落并打印断开横幅（连接期退出非零码视为「连接失败」，
- *   主机选择器行提供 ↻ 重连）。
- * - 文件浏览器：主机选择器行文件夹图标从终端底部弹出 SFTP 面板（对齐设计稿
- *   `waUDZ`），含 创建文件夹 / 上传文件 / 上传文件夹 / 关闭 + 远程文件列表
- *   （名称 · 修改时间 · 权限），目录可进入、可返回上级。
+ *   done 事件驱动状态回落并打印断开横幅（连接期退出非零码视为「连接失败」,
+ *   tab 栏 ↻ 提供重连）。
+ * - 文件浏览器：tab 栏文件夹图标从终端底部弹出 SFTP 面板，含 创建文件夹 /
+ *   上传文件 / 上传文件夹 / 关闭 + 远程文件列表（名称 · 修改时间 · 权限），
+ *   目录可进入、可返回上级。
+ * - 主机增删改：下拉菜单「添加主机…」打开 SshHostsPanel 覆盖层（保留全部
+ *   管理能力），不在 rail 内展开常驻管理列。
  */
 
 const getStatusText = (phase: SshSessionPhase, t: (key: string) => string): string => {
@@ -88,8 +91,34 @@ export const SshTerminalPanel = () => {
   const paneRef = useRef<HTMLElement | null>(null)
   const sftpDragRef = useRef<{ startY: number; startHeight: number } | null>(null)
   const [attachError, setAttachError] = useState<string | null>(null)
-  /** SFTP 文件浏览器是否展开（主机选择器行文件夹图标门控）。 */
+  /** SFTP 文件浏览器是否展开（tab 栏文件夹图标门控）。 */
   const [filePanelOpen, setFilePanelOpen] = useState(false)
+  /** 主机下拉菜单展开态（设计稿「Host Menu」：主机列表 + 添加主机…）。 */
+  const [hostMenuOpen, setHostMenuOpen] = useState(false)
+  /** 主机管理覆盖层（SshHostsPanel，含增删改与表单）。 */
+  const [manageOpen, setManageOpen] = useState(false)
+  /** 下拉菜单宿主容器：点击外部/Escape 收起（与 Composer 菜单同一契约）。 */
+  const hostMenuRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!hostMenuOpen) return
+    const onMouseDown = (event: MouseEvent) => {
+      if (!(event.target instanceof Node)) return
+      if (!hostMenuRef.current?.contains(event.target)) {
+        setHostMenuOpen(false)
+      }
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setHostMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [hostMenuOpen])
   /** 内联新建文件夹输入态。 */
   const [mkdirInput, setMkdirInput] = useState(false)
   const [mkdirName, setMkdirName] = useState('')
@@ -320,20 +349,14 @@ export const SshTerminalPanel = () => {
     }
   }
 
-  const onSftpResizeKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+  const onSftpResizeKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
     if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
     event.preventDefault()
     const delta = event.key === 'ArrowUp' ? KEYBOARD_RESIZE_STEP : -KEYBOARD_RESIZE_STEP
     setSftpPanelHeight(useUiStore.getState().sftpPanelHeight + delta, sftpPaneMaxHeight())
   }
 
-  const selectorValue = activeHost
-    ? t('app.sshView.terminal.selector.value', {
-        name: activeHost.name,
-        hostname: activeHost.hostname,
-        port: activeHost.port,
-      })
-    : t('app.sshView.terminal.selector.unselected')
+  const pickerValue = activeHost?.name ?? t('app.sshView.terminal.selector.unselected')
 
   const footerStatus = upload
     ? upload.error
@@ -366,55 +389,150 @@ export const SshTerminalPanel = () => {
 
   if (hosts.length === 0) {
     return (
-      <section className="sshview__terminal-pane" aria-label={t('app.sshView.terminal.aria')}>
+      <section ref={paneRef} className="sshview__terminal-pane sshpanel" aria-label={t('app.sshView.terminal.aria')}>
         <div className="sshview__empty">
           <SquareTerminal size={34} strokeWidth={1.5} />
           <div className="sshview__empty-title">{t('app.sshView.terminal.empty.title')}</div>
           <div className="sshview__empty-hint">{t('app.sshView.terminal.empty.hint')}</div>
+          <button
+            type="button"
+            className="sshpanel__empty-add"
+            onClick={() => setManageOpen(true)}
+          >
+            <Plus size={13} aria-hidden />
+            <span>{t('app.sshView.terminal.empty.add')}</span>
+          </button>
         </div>
+        {manageOpen && (
+          <div className="sshpanel__manage">
+            <SshHostsPanel onBack={() => setManageOpen(false)} />
+          </div>
+        )}
       </section>
     )
   }
 
   return (
-    <section ref={paneRef} className="sshview__terminal-pane" aria-label={t('app.sshView.terminal.aria')}>
-      <div className="sshview__hostbar">
-        <Server size={15} aria-hidden />
-        <span className="sshview__hostbar-value" title={selectorValue}>
-          {selectorValue}
-        </span>
+    <section ref={paneRef} className="sshview__terminal-pane sshpanel" aria-label={t('app.sshView.terminal.aria')}>
+      {/* Tab 栏（设计稿「Tab Bar」）：主机 tab + 右侧主机选择器与工具钮。
+          点击 tab 激活主机（未连接时自动连接，见下方 effect）；tab × 关闭该主机会话。 */}
+      <div className="sshpanel__tabbar" role="tablist" aria-label={t('app.sshView.terminal.tab.aria')}>
+        {hosts.map((host) => {
+          const active = host.id === activeHostId
+          return (
+            <div
+              key={host.id}
+              role="tab"
+              tabIndex={0}
+              aria-selected={active}
+              className={`sshpanel__tab${active ? ' sshpanel__tab--active' : ''}`}
+              onClick={() => setActiveHostId(host.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  setActiveHostId(host.id)
+                }
+              }}
+            >
+              <span
+                className={`sshpanel__tab-favicon${active ? ' sshpanel__tab-favicon--active' : ''}`}
+                aria-hidden
+              >
+                {host.name.trim().charAt(0).toUpperCase() || 'S'}
+              </span>
+              <span className="sshpanel__tab-title" title={host.name}>{host.name}</span>
+              <button
+                type="button"
+                className="sshpanel__tab-close"
+                aria-label={t('app.sshView.terminal.tab.closeAria', { name: host.name })}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  if (active) setActiveHostId(null)
+                  void closeSession(host.id).catch(() => undefined)
+                }}
+              >
+                <X size={11} aria-hidden />
+              </button>
+            </div>
+          )
+        })}
         <span className="sshview__term-spacer" />
-        <button
-          type="button"
-          className="sshview__term-action"
-          aria-label={t('app.sshView.terminal.action.toggleFilesAria')}
-          title={filePanelOpen
-            ? t('app.sshView.terminal.action.toggleFilesTitle.close')
-            : t('app.sshView.terminal.action.toggleFilesTitle.open')}
-          disabled={!activeHostId}
-          onClick={() => setFilePanelOpen((open) => !open)}
-        >
-          <Folder size={13} aria-hidden />
-        </button>
-        <button
-          type="button"
-          className={`sshview__term-action${needsReconnect ? ' sshview__term-action--warn' : ''}`}
-          aria-label={t('app.sshView.terminal.action.reconnectAria')}
-          title={t('app.sshView.terminal.action.reconnectTitle')}
-          disabled={reconnectDisabled}
-          onClick={handleReconnect}
-        >
-          <RefreshCw size={13} aria-hidden />
-        </button>
-        <button
-          type="button"
-          className="sshview__term-action sshview__term-action--close"
-          aria-label={t('app.sshView.terminal.action.clearAria')}
-          title={t('app.sshView.terminal.action.clearTitle')}
-          onClick={() => setActiveHostId(null)}
-        >
-          <X size={15} aria-hidden />
-        </button>
+        <div className="sshpanel__host-controls" ref={hostMenuRef}>
+          <button
+            type="button"
+            className="sshpanel__host-picker"
+            aria-haspopup="menu"
+            aria-expanded={hostMenuOpen}
+            onClick={() => setHostMenuOpen((open) => !open)}
+          >
+            <Server size={12} aria-hidden />
+            <span className="sshpanel__host-picker-value" title={pickerValue}>
+              {pickerValue}
+            </span>
+            <ChevronDown size={12} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className="sshview__term-action"
+            aria-label={t('app.sshView.terminal.action.toggleFilesAria')}
+            title={filePanelOpen
+              ? t('app.sshView.terminal.action.toggleFilesTitle.close')
+              : t('app.sshView.terminal.action.toggleFilesTitle.open')}
+            disabled={!activeHostId}
+            onClick={() => setFilePanelOpen((open) => !open)}
+          >
+            <Folder size={13} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className={`sshview__term-action${needsReconnect ? ' sshview__term-action--warn' : ''}`}
+            aria-label={t('app.sshView.terminal.action.reconnectAria')}
+            title={t('app.sshView.terminal.action.reconnectTitle')}
+            disabled={reconnectDisabled}
+            onClick={handleReconnect}
+          >
+            <RefreshCw size={13} aria-hidden />
+          </button>
+          {hostMenuOpen && (
+            <div className="sshpanel__host-menu" role="menu" aria-label={t('app.sshView.terminal.hostMenu.aria')}>
+              <div className="sshpanel__host-menu-title">
+                {t('app.sshView.terminal.hostMenu.title', { count: hosts.length })}
+              </div>
+              {hosts.map((entry) => {
+                const active = entry.id === activeHostId
+                return (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    role="menuitem"
+                    className={`sshpanel__host-menu-row${active ? ' sshpanel__host-menu-row--active' : ''}`}
+                    onClick={() => {
+                      setActiveHostId(entry.id)
+                      setHostMenuOpen(false)
+                    }}
+                  >
+                    <Server size={12} aria-hidden />
+                    <span className="sshpanel__host-menu-label">{entry.name}</span>
+                    {active && <Check size={12} aria-hidden />}
+                  </button>
+                )
+              })}
+              <div className="sshpanel__host-menu-divider" aria-hidden />
+              <button
+                type="button"
+                role="menuitem"
+                className="sshpanel__host-menu-row sshpanel__host-menu-add"
+                onClick={() => {
+                  setHostMenuOpen(false)
+                  setManageOpen(true)
+                }}
+              >
+                <Plus size={12} aria-hidden />
+                <span>{t('app.sshView.terminal.hostMenu.add')}</span>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* 每主机一个独立终端实例（隐藏容器保活）：激活的可见，其余 display:none。
@@ -479,6 +597,7 @@ export const SshTerminalPanel = () => {
           </>
         )}
         <span className="sshview__term-spacer" />
+        <PlugZap size={12} aria-hidden />
         <button
           type="button"
           className="sshview__footer-disconnect"
@@ -667,6 +786,11 @@ export const SshTerminalPanel = () => {
               ))
             )}
           </div>
+        </div>
+      )}
+      {manageOpen && (
+        <div className="sshpanel__manage">
+          <SshHostsPanel onBack={() => setManageOpen(false)} />
         </div>
       )}
     </section>

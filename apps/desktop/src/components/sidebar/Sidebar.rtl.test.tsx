@@ -91,17 +91,6 @@ describe('Sidebar 技能菜单（RTL）', () => {
     expect(mocks.closeSidebarOverlay).toHaveBeenCalledTimes(1)
   })
 
-  it('SSH 导航项点击后打开 SSH 全窗口视图', () => {
-    render(<Sidebar />)
-    const button = screen.getByRole('button', { name: 'SSH' })
-    expect(button).not.toBeDisabled()
-
-    fireEvent.click(button)
-
-    expect(mocks.setView).toHaveBeenCalledWith('ssh')
-    expect(mocks.closeSidebarOverlay).toHaveBeenCalledTimes(1)
-  })
-
   it('工作目录默认展开，点击折叠后隐藏会话并以不同图标区分', () => {
     mocks.authorizedWorkspaces = [{ path: '/repo', name: 'repo' }]
     mocks.sessions = [stubSession({

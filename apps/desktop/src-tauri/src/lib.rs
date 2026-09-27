@@ -2,6 +2,8 @@ mod artifacts;
 mod browser_session;
 mod connect;
 mod computer_control;
+mod design_access;
+mod design_export;
 mod feedback;
 mod file_access;
 mod file_access_registry;
@@ -36,6 +38,7 @@ mod workspace_changes;
 mod workspace_command;
 mod workspace_registry;
 mod web_access;
+mod webview_capture;
 
 use serde::Serialize;
 use std::sync::Arc;
@@ -67,9 +70,15 @@ use file_access::{
     read_authorized_text, revoke_authorized_read_file, FileAccessState,
 };
 use feedback::submit_feedback;
+use design_access::{
+    read_design_document, read_design_document_asset, unwatch_design_document,
+    watch_design_document, write_design_document, DesignWatchState,
+};
+use design_export::export_design_png;
 use model_http::{cancel_model_http, probe_model_http, stream_model_http, ModelRequestState};
 use power::{set_prevent_idle_sleep, PowerManagementState};
 use web_access::{open_external_url, web_fetch, web_search};
+use webview_capture::capture_webview_viewport;
 use provider_profiles::{
     decode_provider_profile, is_known_legacy_provider_secret, is_legacy_provider_secret_compatible,
     is_provider_secret_compatible, normalize_provider_profile_draft,
@@ -250,6 +259,7 @@ pub fn run() -> Result<(), String> {
         .manage(WorkspaceApprovalState::default())
         .manage(WorkspaceRecoveryState::default())
         .manage(WorkspaceCommandState::default())
+        .manage(DesignWatchState::new())
         .manage(SessionRepositoryState::default())
         .manage(PowerManagementState::default())
         .manage(TerminalState::default())
@@ -263,6 +273,11 @@ pub fn run() -> Result<(), String> {
         // （stdin 输入来源校验，见 terminal.rs）。
         .manage(Arc::new(TerminalGestureState::default()))
         .plugin(tauri_plugin_dialog::init());
+    // 窗口状态记忆（尺寸/位置/最大化）：在窗口创建前注册，窗口创建时恢复上次
+    // 状态，无状态文件时回落到 tauri.conf.json 的默认尺寸。E2E 构建不启用：
+    // E2E 要求确定性窗口几何，且状态文件按 e2e identifier 另存会引入测试漂移。
+    #[cfg(not(feature = "e2e"))]
+    let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
     // 自更新插件按需注册：updater 的 Config 反序列化不接受 null，配置缺失
     // （开发模式 / 无签名凭据构建，见 generate-release-config.mjs）时注册会
     // 在 PluginInitialization 阶段失败并阻断启动，故仅在配置存在时挂载。
@@ -293,6 +308,7 @@ pub fn run() -> Result<(), String> {
             query_provider_usage,
             web_search,
             web_fetch,
+            capture_webview_viewport,
             open_external_url,
             submit_feedback,
             browser_command,
@@ -320,6 +336,12 @@ pub fn run() -> Result<(), String> {
             list_authorized_read_files,
             revoke_authorized_read_file,
             read_authorized_text,
+            read_design_document,
+            read_design_document_asset,
+            watch_design_document,
+            unwatch_design_document,
+            write_design_document,
+            export_design_png,
             authorize_workspace,
             pick_and_authorize_workspace,
             activate_authorized_workspace,
@@ -398,7 +420,7 @@ pub fn run() -> Result<(), String> {
             let window =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                     .title("Axiom")
-                    .inner_size(1180.0, 780.0)
+                    .inner_size(1400.0, 900.0)
                     .min_inner_size(760.0, 560.0)
                     .resizable(true)
                     .data_store_identifier(e2e_data_store_identifier);

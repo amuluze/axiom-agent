@@ -1,5 +1,6 @@
 use crate::{
     artifacts::{write_text_artifact_at, ArtifactMetadata},
+    design_access::design_document_write_limit,
     file_access::{is_supported_text_path, MAX_TEXT_FILE_BYTES},
     workspace_access::{
         authorized_root_for, set_workspace_recovery_blocked, workspace_summary,
@@ -452,7 +453,10 @@ fn source_identity(
         }
         return Ok(SourceIdentity::Directory(directory_sha256(path)?));
     }
-    if !metadata.is_file() || !is_supported_text_path(path) {
+    // 设计稿（.pen/.ax）不在文本扩展名白名单内：move/trash 与写路径同口径按
+    // design_document_write_limit 放行（8MiB），其余仍限 1MiB 文本。
+    let limit = design_document_write_limit(path);
+    if !metadata.is_file() || (limit.is_none() && !is_supported_text_path(path)) {
         return Err("workspace move/trash supports text files and directories only".into());
     }
     let expected = validate_expected_sha256(
@@ -460,8 +464,12 @@ fn source_identity(
     )?;
     let bytes = std::fs::read(path)
         .map_err(|error| format!("failed to read workspace change source: {error}"))?;
-    if bytes.len() as u64 > MAX_TEXT_FILE_BYTES {
-        return Err("workspace text file is larger than 1 MiB".into());
+    let max_bytes = limit.unwrap_or(MAX_TEXT_FILE_BYTES);
+    if bytes.len() as u64 > max_bytes {
+        return Err(format!(
+            "workspace file exceeds the {} MiB write limit",
+            max_bytes / (1024 * 1024)
+        ));
     }
     std::str::from_utf8(&bytes)
         .map_err(|_| "workspace change source is not valid UTF-8 text".to_string())?;
@@ -480,13 +488,14 @@ fn recovery_material_identity(
     if metadata.is_dir() {
         return Ok(SourceIdentity::Directory(directory_sha256(path)?));
     }
-    if !metadata.is_file() || !is_supported_text_path(Path::new(original_path)) {
+    let limit = design_document_write_limit(Path::new(original_path));
+    if !metadata.is_file() || (limit.is_none() && !is_supported_text_path(Path::new(original_path))) {
         return Err("workspace recovery material is not a supported text file or directory".into());
     }
     let bytes = std::fs::read(path)
         .map_err(|error| format!("failed to read workspace recovery material: {error}"))?;
-    if bytes.len() as u64 > MAX_TEXT_FILE_BYTES {
-        return Err("workspace recovery text file is larger than 1 MiB".into());
+    if bytes.len() as u64 > limit.unwrap_or(MAX_TEXT_FILE_BYTES) {
+        return Err("workspace recovery material exceeds the size limit".into());
     }
     std::str::from_utf8(&bytes)
         .map_err(|_| "workspace recovery material is not valid UTF-8 text".to_string())?;
@@ -549,11 +558,17 @@ fn prepare_changes(
         match operation {
             WorkspaceChangeOperation::CreateFile { path, content } => {
                 content_bytes = content_bytes.saturating_add(content.len());
-                if content.len() as u64 > MAX_TEXT_FILE_BYTES {
-                    return Err("workspace create content is larger than 1 MiB".into());
-                }
                 let (target, _, relative) = resolve_new_path(root, path)?;
-                if !is_supported_text_path(&target) {
+                // 设计稿（.pen/.ax）定点放行：上限按设计稿 8MiB，其余类型维持 1MiB。
+                let max_bytes =
+                    design_document_write_limit(&target).unwrap_or(MAX_TEXT_FILE_BYTES);
+                if content.len() as u64 > max_bytes {
+                    return Err(format!(
+                        "workspace create content is larger than {} MiB",
+                        max_bytes / (1024 * 1024)
+                    ));
+                }
+                if max_bytes == MAX_TEXT_FILE_BYTES && !is_supported_text_path(&target) {
                     return Err("workspace file type is not supported for text writing".into());
                 }
                 reserve_path(&mut reserved, &target)?;
@@ -575,7 +590,12 @@ fn prepare_changes(
                 content_bytes = content_bytes.saturating_add(old_text.len() + new_text.len());
                 let expected = validate_expected_sha256(expected_sha256)?;
                 let (target, _, relative, metadata) = resolve_existing_path(root, path)?;
-                if !metadata.is_file() || !is_supported_text_path(&target) {
+                // 设计稿（.pen/.ax）定点放行：上限按设计稿 8MiB，其余类型维持 1MiB。
+                let max_bytes =
+                    design_document_write_limit(&target).unwrap_or(MAX_TEXT_FILE_BYTES);
+                if !metadata.is_file()
+                    || (max_bytes == MAX_TEXT_FILE_BYTES && !is_supported_text_path(&target))
+                {
                     return Err("workspace patch requires a supported text file".into());
                 }
                 let bytes = std::fs::read(&target)
@@ -593,8 +613,11 @@ fn prepare_changes(
                     ));
                 }
                 let updated = content.replacen(old_text, new_text, 1).into_bytes();
-                if updated.len() as u64 > MAX_TEXT_FILE_BYTES {
-                    return Err("workspace patched file would be larger than 1 MiB".into());
+                if updated.len() as u64 > max_bytes {
+                    return Err(format!(
+                        "workspace patched file would be larger than {} MiB",
+                        max_bytes / (1024 * 1024)
+                    ));
                 }
                 reserve_path(&mut reserved, &target)?;
                 prepared.push(PreparedChange::PatchFile {

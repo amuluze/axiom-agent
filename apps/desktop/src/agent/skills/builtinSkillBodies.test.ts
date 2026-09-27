@@ -38,8 +38,8 @@ const assertSkeletonOrder = (
 }
 
 describe('builtinSkillBodies', () => {
-  it('包含 6 个内置 Skill，name 合法且无重复', () => {
-    expect(BUILTIN_SKILL_BODIES).toHaveLength(6)
+  it('包含 7 个内置 Skill，name 合法且无重复', () => {
+    expect(BUILTIN_SKILL_BODIES).toHaveLength(7)
     const names = BUILTIN_SKILL_BODIES.map((skill) => skill.name)
     expect(new Set(names).size).toBe(names.length)
     for (const name of names) {

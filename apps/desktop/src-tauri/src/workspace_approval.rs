@@ -14,7 +14,12 @@ use crate::{
 
 const APPROVAL_LEASE_TTL: Duration = Duration::from_secs(60);
 const MAX_APPROVAL_LEASES: usize = 64;
+// **规范化后**的审批输入上限：内容规模已被规范化消掉（见 `canonicalize_value`），
+// 该护栏拦的是「结构异常巨大」的输入（如海量短字段），超限一律拒绝签发。
 const MAX_APPROVAL_INPUT_BYTES: usize = 2 * 1024 * 1024 + 64 * 1024;
+// 规范化时以内容摘要参与绑定的字符串阈值（UTF-8 字节）：口径见
+// `.specs/domain/workspace-authorization.md` 不变量 7——阈值与摘要形态都是口径的一部分。
+const APPROVAL_STRING_INLINE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -107,6 +112,13 @@ fn validate_scope_id(value: &str, label: &str) -> Result<(), String> {
 }
 
 fn canonical_input(tool_name: &str, input: &Value) -> Result<Value, String> {
+    Ok(canonicalize_value(&semantic_input(tool_name, input)?))
+}
+
+/// 工具语义输入（未规范化）：**逐字保留**原有三条分支与其中途返回——
+/// bash 只绑 command + cwd、ssh 只绑 host + command、其余工具绑完整 input。
+/// 中途返回不得改写成统一构造：否则 timeout / network / sessionId 会被一并绑进 digest。
+fn semantic_input(tool_name: &str, input: &Value) -> Result<Value, String> {
     if tool_name == "run_workspace_command" {
         // bash 工具采用自由命令模型：lease 必须精确绑定实际执行的命令字符串。
         // 只归一化 command + cwd，忽略超时字段——签发侧（前端参数 `timeout`，秒）
@@ -128,6 +140,33 @@ fn canonical_input(tool_name: &str, input: &Value) -> Result<Value, String> {
         }));
     }
     Ok(input.clone())
+}
+
+/// 规范化的单射编码（口径见 `.specs/domain/workspace-authorization.md` 不变量 7）：
+/// 长字符串以内容摘要参与绑定，使绑定输入的大小与内容规模无关；同时给字符串与对象
+/// **不同标签**——若共用标签，真实对象 `{"@s": "x"}` 会与字符串 `"x"` 的编码同形，
+/// 单射性失效（digest 碰撞）。
+fn canonicalize_value(value: &Value) -> Value {
+    match value {
+        Value::String(text) if text.len() > APPROVAL_STRING_INLINE_BYTES => json!({
+            "@sha256": format!("{:x}", Sha256::digest(text.as_bytes())),
+            "@bytes": text.len(),
+        }),
+        Value::String(text) => json!({ "@s": text }),
+        Value::Array(items) => Value::Array(items.iter().map(canonicalize_value).collect()),
+        Value::Object(map) => {
+            // 键序不依赖 serde_json 的 Map 实现（preserve_order 可能被传递依赖开启）：
+            // 显式按 UTF-8 字节序排序，保证「同一输入必得同一编码」。
+            let mut entries: Vec<(&String, &Value)> = map.iter().collect();
+            entries.sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+            let ordered: serde_json::Map<String, Value> = entries
+                .into_iter()
+                .map(|(key, item)| (key.clone(), canonicalize_value(item)))
+                .collect();
+            json!({ "@o": ordered })
+        }
+        scalar => scalar.clone(),
+    }
 }
 
 fn canonical_input_digest(tool_name: &str, input: &Value) -> Result<String, String> {
@@ -954,5 +993,162 @@ mod tests {
                 None,
             )
             .unwrap();
+    }
+
+    // ---- 规范化口径（.specs/domain/workspace-authorization.md 不变量 7）----
+
+    fn digest_of(input: &Value) -> String {
+        canonical_input_digest("create_workspace_file", input).unwrap()
+    }
+
+    fn digest_for(tool_name: &str, input: &Value) -> String {
+        canonical_input_digest(tool_name, input).unwrap()
+    }
+
+    fn encoded_len_of_content(content: String) -> usize {
+        serde_json::to_vec(
+            &canonical_input("create_workspace_file", &json!({ "path": "p.ax", "content": content }))
+                .unwrap(),
+        )
+        .unwrap()
+        .len()
+    }
+
+    #[test]
+    fn canonical_input_accepts_multi_megabyte_content() {
+        // 8 MiB 与 1 MiB 都在阈值之上：编码规模必须完全相等（仅摘要值不同）。
+        assert_eq!(
+            encoded_len_of_content("x".repeat(8 * 1024 * 1024)),
+            encoded_len_of_content("y".repeat(1024 * 1024))
+        );
+        assert!(canonical_input_digest(
+            "create_workspace_file",
+            &json!({ "path": "p.ax", "content": "x".repeat(8 * 1024 * 1024) }),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn canonical_input_binds_content_bytes() {
+        let base = json!({ "path": "p.ax", "content": "a".repeat(2 * 1024 * 1024) });
+        let same = json!({ "path": "p.ax", "content": "a".repeat(2 * 1024 * 1024) });
+        let changed = json!({
+            "path": "p.ax",
+            "content": format!("{}b", "a".repeat(2 * 1024 * 1024)),
+        });
+        let other_path = json!({ "path": "q.ax", "content": "a".repeat(2 * 1024 * 1024) });
+        assert_eq!(digest_of(&base), digest_of(&same));
+        assert_ne!(digest_of(&base), digest_of(&changed));
+        assert_ne!(digest_of(&base), digest_of(&other_path));
+    }
+
+    #[test]
+    fn canonicalization_distinguishes_short_string_from_object() {
+        assert_ne!(
+            digest_of(&json!({ "content": "x" })),
+            digest_of(&json!({ "content": { "@s": "x" } }))
+        );
+    }
+
+    #[test]
+    fn canonicalization_is_injective_for_object_shapes() {
+        let long = "s".repeat(APPROVAL_STRING_INLINE_BYTES + 1);
+        let content_digest = format!("{:x}", Sha256::digest(long.as_bytes()));
+        let cases = [
+            json!({ "content": long.clone() }),
+            json!({ "content": { "@sha256": content_digest, "@bytes": APPROVAL_STRING_INLINE_BYTES + 1 } }),
+            json!({ "content": { "@s": long.clone() } }),
+            json!({ "content": { "@o": {} } }),
+        ];
+        for (index, left) in cases.iter().enumerate() {
+            for (other_index, right) in cases.iter().enumerate() {
+                if index != other_index {
+                    assert_ne!(
+                        digest_of(left),
+                        digest_of(right),
+                        "cases {index} and {other_index} collided"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_input_normalizes_nested_operations() {
+        let base = json!({
+            "operations": [{ "path": "a.txt", "content": "z".repeat(2 * 1024 * 1024) }],
+        });
+        let other = json!({
+            "operations": [{ "path": "b.txt", "content": "z".repeat(2 * 1024 * 1024) }],
+        });
+        assert!(canonical_input_digest("apply_workspace_changes", &base).is_ok());
+        assert_ne!(
+            digest_for("apply_workspace_changes", &base),
+            digest_for("apply_workspace_changes", &other)
+        );
+    }
+
+    #[test]
+    fn canonical_input_rejects_oversized_structure() {
+        // 内容规模已被规范化消掉，但「结构异常巨大」的输入仍必须 fail-closed。
+        let mut map = serde_json::Map::new();
+        for index in 0..200_000 {
+            map.insert(format!("key{index}"), json!("v".repeat(20)));
+        }
+        let error =
+            canonical_input_digest("create_workspace_file", &Value::Object(map)).unwrap_err();
+        assert_eq!(error, "workspace approval input exceeds the safe limit");
+    }
+
+    #[test]
+    fn canonicalization_string_threshold_boundary() {
+        let inline = "t".repeat(APPROVAL_STRING_INLINE_BYTES);
+        let hashed = "t".repeat(APPROVAL_STRING_INLINE_BYTES + 1);
+        assert_eq!(
+            canonical_input("create_workspace_file", &json!({ "content": inline.clone() })).unwrap(),
+            json!({ "@o": { "content": { "@s": inline } } })
+        );
+        assert_eq!(
+            canonical_input("create_workspace_file", &json!({ "content": hashed.clone() })).unwrap(),
+            json!({ "@o": { "content": {
+                "@sha256": format!("{:x}", Sha256::digest(hashed.as_bytes())),
+                "@bytes": APPROVAL_STRING_INLINE_BYTES + 1,
+            } } })
+        );
+    }
+
+    #[test]
+    fn canonicalization_is_deterministic_and_key_order_agnostic() {
+        let mut first = serde_json::Map::new();
+        first.insert("b".into(), json!("1"));
+        first.insert("a".into(), json!("2"));
+        let mut second = serde_json::Map::new();
+        second.insert("a".into(), json!("2"));
+        second.insert("b".into(), json!("1"));
+        assert_eq!(
+            canonical_input("create_workspace_file", &Value::Object(first)).unwrap(),
+            canonical_input("create_workspace_file", &Value::Object(second)).unwrap()
+        );
+        // 数组顺序参与绑定（与对象键序不同）。
+        assert_ne!(
+            digest_of(&json!({ "operations": [1, 2] })),
+            digest_of(&json!({ "operations": [2, 1] }))
+        );
+    }
+
+    #[test]
+    fn canonicalization_keeps_scalars_and_empty_containers() {
+        assert_eq!(
+            canonical_input(
+                "create_workspace_file",
+                &json!({ "size": 3, "flag": true, "note": null }),
+            )
+            .unwrap(),
+            json!({ "@o": { "size": 3, "flag": true, "note": null } })
+        );
+        assert_eq!(
+            canonical_input("create_workspace_file", &json!({ "items": [], "meta": {} })).unwrap(),
+            json!({ "@o": { "items": [], "meta": { "@o": {} } } })
+        );
     }
 }

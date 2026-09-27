@@ -46,6 +46,9 @@ const failClosedEnvironment: AgentEnvironment = {
     search: () => Promise.reject(unavailable('web.search')),
     fetch: () => Promise.reject(unavailable('web.fetch')),
   },
+  design: {
+    readDocument: () => Promise.reject(unavailable('design.readDocument')),
+  },
   browser: {
     command: () => Promise.reject(unavailable('browser.command')),
   },

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // 生成 Tauri updater 标准静态清单 latest.json（v2 格式），发布链在 Release
-// 资产就绪后调用。官网 axiom.amuluze.com 是唯一更新端点：清单同步到官网 /updates/latest.json，
+// 资产就绪后调用。官网 axiom.amuluze.com 是唯一更新端点，
+// 无公开 GitHub 兜底端点：清单同步到官网 /updates/latest.json，
 // 同时作为 Release 资产留档；下载 URL 指向官网 /downloads/ 镜像，签名取自
 // tauri build 产出的 .sig 文件全文。
 //

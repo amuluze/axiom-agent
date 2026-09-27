@@ -420,6 +420,11 @@ export interface BeforeToolCallContext {
   context: AgentContext
   /** Isolated approval projection. */
   presentation: ToolApprovalPresentation
+  /**
+   * 审批租约的绑定输入（工具 `approvalLeaseInput` 的求值结果；缺省表示绑定 `input`）。
+   * 与 `input` 区分开：模型输入进审批卡与审计，租约绑定的是真实要落盘的字节。
+   */
+  approvalLeaseInput?: JsonValue
   signal: AbortSignal
 }
 
@@ -480,6 +485,16 @@ export interface AgentTool {
   /** bash 分级提示（镜像 Rust CommandTier），供审批 UI 分流；非安全边界。 */
   resolveTier?: (input: JsonValue) => CommandTier
   approvalPresentation?: (input: JsonValue) => ToolApprovalPresentation
+  /**
+   * 审批租约的绑定输入（缺省即绑定模型提供的 input）。
+   *
+   * 仅当工具落盘的字节并非模型输入时才需要声明：Rust 侧按原生命令的
+   * canonical_input 计价租约 digest（workspace_approval.rs），与写通道消费侧
+   * 不一致即 fail-closed 拒绝。返回值必须与真实写通道收到的输入逐字段一致
+   * （如 design_import 的 create_workspace_file 需要 { path, content }），
+   * 否则租约永远无法被消费。
+   */
+  approvalLeaseInput?: (input: JsonValue) => JsonValue | Promise<JsonValue>
   auditArguments?: (input: JsonValue) => JsonValue
   validate(input: JsonValue): ToolValidationResult<JsonValue>
   execute(input: JsonValue, context: AgentToolExecutionContext): Promise<AgentToolResult>

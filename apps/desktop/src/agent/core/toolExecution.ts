@@ -116,6 +116,24 @@ export const waitForApproval = async (
     }
   }
 
+  // 运行已取消时不必再编译源稿（编译不响应 abort；避免白白读一份 1.4MB 的稿）。
+  if (signal.aborted) return { approved: false, reason: 'Agent 运行已取消' }
+
+  // 审批租约的绑定输入（Rust 侧按 canonical_input 计价 digest）：工具落盘字节≠模型
+  // 输入的场景（如 design_import 的编译产物）在此求值。求值失败一律拒绝——带着绑定不
+  // 上的租约去执行，只会在写通道被 fail-closed 拒绝，不如在审批前给出确切原因。
+  let approvalLeaseInput: JsonValue | undefined
+  try {
+    approvalLeaseInput = prepared.tool.requiresApproval === true && prepared.tool.approvalLeaseInput
+      ? cloneJsonValue(await prepared.tool.approvalLeaseInput(cloneJsonValue(prepared.input)))
+      : undefined
+  } catch (error) {
+    return {
+      approved: false,
+      reason: `无法生成审批绑定输入：${error instanceof Error ? error.message : String(error)}`,
+    }
+  }
+
   let removeAbortListener = (): void => undefined
   const aborted = new Promise<never>((_resolve, reject) => {
     const onAbort = (): void => reject(new DOMException('Aborted', 'AbortError'))
@@ -139,6 +157,7 @@ export const waitForApproval = async (
         input: cloneJsonValue(prepared.input),
         context: snapshotAgentContext(context),
         presentation: snapshotApprovalPresentation(presentation),
+        ...(approvalLeaseInput === undefined ? {} : { approvalLeaseInput }),
         signal,
       })),
       aborted,

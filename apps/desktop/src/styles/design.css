@@ -1,0 +1,1273 @@
+/* 设计画布样式（docs/design-canvas.md D3/D4/D5，§11 无限画布）。 */
+
+.design-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  background: var(--bg-main);
+  color: var(--text-primary);
+}
+
+/* 独立展示页：整页画布 + 顶部工具栏（侧栏由 ShellLayout 提供，不再分屏内嵌会话）。 */
+.design-view__canvas-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.design-view__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.design-view__files {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.design-view__file {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm, 6px);
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.design-view__file:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.design-view__file.is-active {
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+  background: var(--bg-hover);
+}
+
+.design-view__sync {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.design-view__sync button,
+.design-view__rescan {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm, 6px);
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.design-view__sync button:hover,
+.design-view__rescan:hover {
+  color: var(--text-primary);
+}
+
+.design-view__sync-error {
+  color: var(--diff-red);
+}
+
+/* 编辑期坏稿暂缓的中性提示：弱化文本色，刻意不用报错样式——编辑中间态的
+   校验失败是过程信息，落成红色横幅就成了「编辑被报错打断」的观感。 */
+.design-view__sync-holding {
+  color: var(--text-secondary);
+}
+
+.design-view__sync-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.design-view__parse-error {
+  margin: 24px auto;
+  max-width: 560px;
+  padding: 16px;
+  border: 1px solid var(--diff-red);
+  border-radius: var(--radius-md, 10px);
+  color: var(--diff-red);
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.design-view__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+
+.design-view--empty {
+  align-items: center;
+  justify-content: center;
+}
+
+.design-view__empty-card {
+  max-width: 480px;
+  padding: 24px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg, 12px);
+  background: var(--bg-card);
+  text-align: center;
+}
+
+.design-view__empty-card h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.design-view__empty-card p {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.design-view__empty-add {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+
+.design-view__empty-name {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-align: left;
+}
+
+.design-view__empty-name input {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-radius: var(--radius-sm, 6px);
+  padding: 5px 8px;
+  font-size: 12px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.design-view__empty-name input:focus {
+  outline: 1px solid var(--accent);
+}
+
+.design-view__empty-snippet {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  background: var(--bg-hover);
+  border-radius: var(--radius-sm, 6px);
+  font-size: 12px;
+  text-align: left;
+  overflow-x: auto;
+}
+
+.design-canvas {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+/* 无限画布的页：内容在变换面内按设计稿 x/y 铺开（页底由内联样式给）。 */
+.design-canvas__page-wrapper {
+  /* 定位由内联 style 提供（x/y/尺寸来自设计稿）。 */
+}
+
+/* 页卡片层：屏幕空间绘制。1px 边框/标签/圆角不随缩放变形——在 10% 倍率下
+   变换面里的 1px 边框只有 0.1px（等于没有），页与页之间糊成一片。 */
+.design-canvas__page-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.design-canvas__page-chrome {
+  position: absolute;
+  border: 1px solid var(--border-subtle);
+  border-radius: 2px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
+  pointer-events: none;
+}
+
+.design-canvas__page-chrome.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 10px 28px rgba(0, 0, 0, 0.22);
+}
+
+/* 低倍率下卡片接管指针：此时点中页内小节点没有意义，整页才是点击目标。 */
+.design-canvas__page-chrome.is-pickable {
+  pointer-events: auto;
+  cursor: grab;
+}
+
+.design-canvas__page-chrome.is-pickable:hover {
+  border-color: var(--accent-border-soft);
+}
+
+/* 页标签：恒屏幕尺寸（在屏幕空间的页卡片层里，不参与画布缩放）。 */
+.design-canvas__page-label {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-align: left;
+  cursor: pointer;
+  pointer-events: auto;
+  user-select: none;
+}
+
+.design-canvas__page-label:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.design-canvas__page-label.is-selected {
+  color: var(--accent-text);
+}
+
+.design-canvas__page-label-index {
+  flex: none;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.design-canvas__page-label-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.design-canvas__page-label-size {
+  flex: none;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 选中高亮：outline 不参与布局，任意节点类型通用。 */
+.design-canvas__surface [data-pen-id].is-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 无限画布底：点阵网格。棋盘格是「透明」语义（图片编辑器），设计画布上它反而
+   与页内容抢注意力；点阵随平移/缩放走（background-position/size 由内联样式驱动），
+   缩放时网格跟着内容动，"无限" 的空间感才成立。 */
+.design-canvas__viewport {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  cursor: grab;
+  position: relative;
+  background-color: var(--bg-main);
+  background-image: radial-gradient(circle, var(--border-subtle) 1px, transparent 1px);
+  background-repeat: repeat;
+}
+
+.design-canvas__viewport:active {
+  cursor: grabbing;
+}
+
+.design-canvas__surface {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.design-canvas__empty {
+  padding: 40px;
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+
+.design-canvas__statusbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 12px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.design-canvas__doc-info {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 30ch;
+}
+
+.design-canvas__history {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.design-canvas__history button {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.design-canvas__history button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.design-canvas__history button:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.design-canvas__notice {
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.design-canvas__notice.is-error {
+  color: var(--diff-red);
+}
+
+.design-canvas__notice.is-info {
+  color: var(--text-secondary);
+}
+
+/* 属性检查器：画布右上浮动卡片（选中节点的只读信息与可编辑字段）。 */
+.design-canvas__inspector {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 240px;
+  max-height: calc(100% - 60px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md, 10px);
+  background: var(--bg-card);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  z-index: 10;
+  font-size: 12px;
+}
+
+.design-canvas__inspector-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.design-canvas__inspector-type {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.design-canvas__inspector-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.design-canvas__inspector-readonly {
+  margin: 0;
+  color: var(--warn);
+  font-size: 11px;
+}
+
+.design-canvas__inspector-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.design-canvas__field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.design-canvas__field > span:first-child {
+  flex: 0 0 52px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.design-canvas__field input,
+.design-canvas__field textarea {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 12px;
+  box-sizing: border-box;
+}
+
+.design-canvas__field input:focus,
+.design-canvas__field textarea:focus {
+  outline: 1px solid var(--accent);
+}
+
+.design-canvas__field--area {
+  align-items: flex-start;
+}
+
+.design-canvas__field--area textarea {
+  resize: vertical;
+}
+
+.design-canvas__field-static {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.design-canvas__inspector-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.design-canvas__inspector-actions button {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.design-canvas__inspector-actions button:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.design-canvas__inspector-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.design-canvas__inspector-delete {
+  color: var(--diff-red);
+}
+
+/* 页级删除的确认态：填红反色——这一下就要真删（`.ax` 无撤销栈），视觉上
+   必须与「普通删除」一眼可分。 */
+.design-canvas__inspector-delete.is-armed:not(:disabled) {
+  background: var(--diff-red);
+  color: var(--bg-main);
+}
+
+.design-canvas__statusbar button {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.design-canvas__statusbar button:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.design-canvas__statusbar button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.design-canvas__zoom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.design-canvas__zoom button {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  padding: 1px 7px;
+  font-size: 11px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.design-canvas__zoom button:hover {
+  color: var(--text-primary);
+}
+
+.design-canvas__zoom span {
+  min-width: 42px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.design-canvas__theme {
+  text-transform: capitalize;
+}
+
+.design-canvas__diagnostics-toggle {
+  margin-left: auto;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.design-canvas__diagnostics-toggle.has-error {
+  color: var(--diff-red);
+  border-color: var(--diff-red);
+}
+
+.design-canvas__diagnostics {
+  position: absolute;
+  right: 12px;
+  bottom: 36px;
+  max-width: 420px;
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 8px 12px;
+  list-style: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md, 10px);
+  background: var(--bg-card);
+  font-size: 11px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  z-index: 10;
+}
+
+.design-canvas__diagnostic.is-error {
+  color: var(--diff-red);
+}
+
+.design-canvas__diagnostic.is-warning {
+  color: var(--warn);
+}
+
+/* 节点级占位（未知类型 / 缺失组件引用 / 未知图标）。 */
+.pen-node__placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--border-subtle);
+  border-radius: 4px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  padding: 4px;
+  min-width: 24px;
+  min-height: 24px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.pen-node__icon-missing {
+  width: 16px;
+  height: 16px;
+  border: 1px dashed currentColor;
+  opacity: 0.5;
+  border-radius: 3px;
+}
+
+/* 对比模式开关（工具栏，与文件 tab 同排）。 */
+.design-view__compare-toggle {
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm, 6px);
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.design-view__compare-toggle:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.design-view__compare-toggle.is-active {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+  border-color: var(--border-subtle);
+}
+
+.design-view__compare-toggle:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 变体对比（DesignCompareView）：共享缩放/页序，列各持自己的 token 与诊断。 */
+.design-compare {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.design-compare__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.design-compare__count,
+.design-compare__focus {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.design-compare__pages {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.design-compare__page {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm, 6px);
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.design-compare__page.is-active {
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+  background: var(--bg-hover);
+}
+
+.design-compare__zoom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* 列宽均分；超出上限的稿在 DesignView 侧已截断（MAX_COMPARE_COLUMNS）。 */
+.design-compare__columns {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 1px;
+  background: var(--border-subtle);
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.design-compare__column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-main);
+}
+
+.design-compare__column.is-selected {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.design-compare__column-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.design-compare__column-title {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 0;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  text-align: left;
+}
+
+.design-compare__column:not(.is-selected) .design-compare__column-title {
+  color: var(--text-tertiary);
+}
+
+.design-compare__badge {
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 11px;
+  color: var(--warn);
+  border: 1px solid currentColor;
+}
+
+.design-compare__load-error {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--diff-red);
+}
+
+.design-compare__viewport {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background:
+    linear-gradient(45deg, var(--bg-hover) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--bg-hover) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--bg-hover) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--bg-hover) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+.design-compare__surface {
+  transform-origin: 0 0;
+  position: relative;
+}
+
+/* 设计助手侧栏（设计视图下的侧栏主体，docs/design-canvas.md §11 第六轮；
+   对齐 .pen 设计稿 XjPQ 侧栏覆写：返回行 + 设计助手引导 + Composer）。 */
+.design-assistant {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 8px 6px;
+}
+
+.design-assistant__bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
+}
+
+.design-assistant__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.design-assistant__back:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.design-assistant__spacer {
+  flex: 1;
+}
+
+.design-assistant__icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.design-assistant__icon-button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.design-assistant__icon-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.design-assistant__intro {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 4px;
+  text-align: center;
+}
+
+.design-assistant__logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--bg-main);
+}
+
+.design-assistant__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.design-assistant__subtitle {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.design-assistant__checklist {
+  width: 100%;
+  margin: 6px 0 0;
+  padding: 0 6px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.design-assistant__checklist li {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 12px;
+  text-align: left;
+  color: var(--text-primary);
+}
+
+.design-assistant__checklist svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent);
+}
+
+/* 消息流复用 SessionView 的实现（窄栏）：容器给出可滚动区，内层 session__* 自持样式。 */
+.design-assistant__stream {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.design-assistant__stream .session__messages {
+  padding: var(--space-2) var(--space-4);
+}
+
+.design-assistant__composer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 窄栏里的 Composer 收口：圆角收小、选择器允许换行，避免横向溢出。 */
+.design-assistant .composer {
+  border-radius: var(--radius-md);
+  padding: 8px;
+}
+
+.design-assistant .composer__selectors {
+  flex-wrap: wrap;
+}
+
+.design-assistant__start {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.design-assistant__start:hover:not(:disabled) {
+  border-color: var(--accent-border-soft);
+}
+
+.design-assistant__start:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── `.ax` 真组件渲染（docs/ax-format.md §4.1）────────────────────────────
+   宿主容器用 `display: contents`：它只是注册表解析与预览 Provider 的挂载点，
+   不能在设计稿的 flex 树里额外占一个盒子（否则真组件的布局会与设计稿不一致）。 */
+.ax-component {
+  display: contents;
+}
+
+/* 插槽内容：真组件的插槽契约尚未映射，内容照常渲染但显式标注（可见、可选中、不静默）。 */
+.ax-component-slot {
+  display: contents;
+  outline: 1px dashed var(--warn);
+  outline-offset: 2px;
+}
+
+/* 注册表缺失 / props 非法 / 渲染失败：显式错误框，不做静默降级。 */
+.ax-component-error {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px dashed var(--diff-red);
+  border-radius: 6px;
+  color: var(--diff-red);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.ax-component-error__headline {
+  font-weight: 600;
+}
+
+.ax-component-error__detail {
+  color: var(--text-secondary);
+}
+
+/* ── 扫描验证面板（逐页渲染检查报告）──────────────────────────────────── */
+
+.design-canvas__scan-toggle {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.design-canvas__scan-toggle.is-active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.design-scan {
+  position: absolute;
+  right: 12px;
+  bottom: 36px;
+  width: 460px;
+  max-height: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md, 10px);
+  background: var(--bg-card);
+  font-size: 11px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  z-index: 10;
+}
+
+.design-scan__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.design-scan__title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.design-scan__progress {
+  color: var(--text-secondary);
+}
+
+.design-scan__summary {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.design-scan__count.is-fail {
+  color: var(--diff-red);
+}
+
+.design-scan__count.is-warn {
+  color: var(--warn);
+}
+
+.design-scan__count.is-ok {
+  color: var(--text-secondary);
+}
+
+.design-scan__head-spacer {
+  flex: 1;
+}
+
+.design-scan__head button {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.design-scan__status {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.design-scan__status.is-warn {
+  color: var(--warn);
+}
+
+.design-scan__bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+
+.design-scan__bar-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 120ms ease-out;
+}
+
+.design-scan__doc-issues {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.design-scan__issue.is-error {
+  color: var(--diff-red);
+}
+
+.design-scan__issue.is-warning {
+  color: var(--warn);
+}
+
+.design-scan__pages {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.design-scan__page {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.design-scan__page:hover {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+}
+
+.design-scan__page-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+
+.design-scan__page.is-fail .design-scan__page-dot {
+  background: var(--diff-red);
+}
+
+.design-scan__page.is-warn .design-scan__page-dot {
+  background: var(--warn);
+}
+
+.design-scan__page.is-ok .design-scan__page-dot {
+  background: var(--accent);
+}
+
+.design-scan__page-index {
+  flex: none;
+  min-width: 20px;
+  color: var(--text-secondary);
+}
+
+.design-scan__page-name {
+  flex: none;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.design-scan__page-issues {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.design-scan__page.is-fail .design-scan__page-issues {
+  color: var(--diff-red);
+}
+
+.design-scan__page.is-warn .design-scan__page-issues {
+  color: var(--warn);
+}
+
+/* ── 扫描动态效果（画布逐页点亮）──────────────────────────────────────── */
+/* 扫描在途页：accent 描边 + 自上而下循环的扫掠光束（pen.dev 同款动态扫描）。 */
+
+.design-canvas__scan-beam {
+  position: absolute;
+  border: 1.5px solid var(--accent);
+  border-radius: 2px;
+  box-shadow: 0 0 10px var(--accent-soft);
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.design-canvas__scan-beam::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent) 45%, var(--accent) 55%, transparent);
+  animation: design-scan-sweep 1.1s linear infinite;
+}
+
+@keyframes design-scan-sweep {
+  from {
+    top: -2px;
+  }
+  to {
+    top: 100%;
+  }
+}
+
+/* 已完成页的状态描边：fail 红 / warn 黄常驻（ok 不描边——全绿时满屏描边等于没有信息）。 */
+
+.design-canvas__scan-marker {
+  position: absolute;
+  border: 1.5px solid;
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.design-canvas__scan-marker.is-fail {
+  border-color: var(--diff-red);
+}
+
+.design-canvas__scan-marker.is-warn {
+  border-color: var(--warn);
+}
+
+/* 页面拖动吸附参考线（Figma 式智能对齐）：画布坐标绘制，线宽 1/scale 屏幕等宽
+   由内联给出；压在页面 wrapper 之上、屏幕空间页卡片层之下。 */
+.design-canvas__snap-guide {
+  position: absolute;
+  background: var(--accent);
+  opacity: 0.9;
+  pointer-events: none;
+  z-index: 5;
+}

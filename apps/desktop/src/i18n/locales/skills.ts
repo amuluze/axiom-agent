@@ -14,7 +14,7 @@ export const skillsZh = {
   'settings.skills.projectTitle': '项目级技能',
   'settings.skills.projectState': '按会话生效',
   'settings.skills.projectEnableLabel': '启用项目级技能',
-  'settings.skills.projectEnableHint': '控制新建/激活的会话是否默认启用技能加载与 $ 技能补全（从当前工作区 .axiom/skills 扫描）；关闭后模型仍可按需发现并加载，扫描与会话冻结不受影响。内置 SDD 技能（domain 等 6 项）不受此开关影响。',
+  'settings.skills.projectEnableHint': '控制新建/激活的会话是否默认启用技能加载与 $ 技能补全（从当前工作区 .axiom/skills 扫描）；关闭后模型仍可按需发现并加载，扫描与会话冻结不受影响。内置技能（domain 等 7 项）不受此开关影响。',
   'settings.skills.workspaceTitle': '当前工作区',
   'settings.skills.rescanAria': '重新扫描技能',
   'settings.skills.scanning': '扫描中…',

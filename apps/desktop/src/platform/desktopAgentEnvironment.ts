@@ -21,6 +21,7 @@ import { webFetch, webSearch } from '@/platform/webAccess'
 import { browserCommand, notifyBrowserAgentActivity } from '@/platform/browserSession'
 import { computerCommand } from '@/platform/computerSession'
 import { sshAgentCommand } from '@/platform/sshAgent'
+import { readDesignDocument } from '@/platform/designDocument'
 
 const errorCode = (error: unknown): AgentEnvironmentErrorCode => {
   if (error instanceof DOMException && error.name === 'AbortError') return 'aborted'
@@ -79,6 +80,9 @@ export const createDesktopAgentEnvironment = (workspacePath?: string): AgentEnvi
   web: {
     search: (request) => guarded(() => webSearch(request.query, request.limit)),
     fetch: (request) => guarded(() => webFetch(request.url, request.maxBytes)),
+  },
+  design: {
+    readDocument: (path) => guarded(() => readDesignDocument(path)),
   },
   browser: {
     command: async (request) => {

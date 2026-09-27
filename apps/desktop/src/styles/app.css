@@ -1,6 +1,6 @@
 .app-shell {
   display: grid;
-  grid-template-columns: var(--sidebar-width) 1fr;
+  grid-template-columns: var(--sidebar-current-width, var(--sidebar-width)) 1fr;
   grid-template-rows: 100%;
   height: 100vh;
   background: var(--bg-main);
@@ -70,6 +70,13 @@
 
 .app-main--sidebar-hidden .new-task__drag-region {
   left: calc(var(--macos-traffic-light-safe-area) + 28px + var(--space-3));
+}
+
+/* 约定：**自带顶栏的视图**都要在这里为「重新展开侧栏」浮层按钮留位——它是
+   position: fixed + z-index 30 的独立浮层，不参与视图布局，视图不主动让位就会
+   被它压住（设计页文件栏曾整块压住第一个 tab：既遮挡、又点不到）。 */
+.app-main--sidebar-hidden .design-view__toolbar {
+  padding-left: calc(var(--macos-traffic-light-safe-area) + 28px + var(--space-3));
 }
 
 @media (max-width: 760px) {

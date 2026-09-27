@@ -2,17 +2,24 @@ import { useEffect, useState } from 'react'
 import { ShieldAlert } from 'lucide-react'
 import { useAgentStore } from '@/stores/agentStore'
 import { useT } from '@/i18n'
+import { useDesignPreview } from '@/components/design/ax/previewContext'
 
 export const ApprovalCard = () => {
   const { t } = useT()
-  const pendingApproval = useAgentStore((state) => state.pendingApproval)
+  // 预览 seam（docs/ax-format.md §4.2）：store hooks 必须**无条件**调用（hooks 规则），
+  // 只在**取值**上分支——设计画布内取 fixture 数据与 no-op 动作，画布外逐字节不变。
+  const storePendingApproval = useAgentStore((state) => state.pendingApproval)
+  const storeApproveToolCall = useAgentStore((state) => state.approveToolCall)
+  const storeDenyToolCall = useAgentStore((state) => state.denyToolCall)
+  const preview = useDesignPreview()
+  const pendingApproval = preview ? preview.pendingApproval ?? null : storePendingApproval
   // 高危命令（danger 标记）要求用户显式勾选确认后才放行；切换到下一个审批时重置。
   const [dangerAcknowledged, setDangerAcknowledged] = useState(false)
   useEffect(() => {
     setDangerAcknowledged(false)
   }, [pendingApproval?.toolCallId])
-  const approveToolCall = useAgentStore((state) => state.approveToolCall)
-  const denyToolCall = useAgentStore((state) => state.denyToolCall)
+  const approveToolCall = preview?.approveToolCall ?? storeApproveToolCall
+  const denyToolCall = preview?.denyToolCall ?? storeDenyToolCall
   if (!pendingApproval) return null
   const presentation = pendingApproval.presentation
   const isCommand = presentation.category === 'workspace-command'

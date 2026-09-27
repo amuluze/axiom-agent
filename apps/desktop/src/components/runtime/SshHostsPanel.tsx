@@ -5,16 +5,16 @@ import type { SshHostEntry } from '@/platform/sshSession'
 import { useT } from '@/i18n'
 
 /**
- * SSH 主机管理面板（SshView 左栏，对齐设计稿「Axiom — SSH」主机管理列）：
- * 返回行（onBack 由宿主 SshView 传入）+ 主机列表 + 内联新增/编辑表单。
+ * SSH 主机管理面板（rail 内覆盖层宿主，对齐设计稿「Axiom — SSH」主机管理列）：
+ * 返回行（onBack 由宿主 SshTerminalPanel 覆盖层传入）+ 主机列表 + 内联新增/编辑表单。
  * 主机数据权威在 Rust 注册表（~/.axiom/ssh/hosts.json），本组件只经
  * sshStore 驱动 ssh_command。状态列投影 Rust 会话托管状态（sessions）：
- * 已连接 / 连接中 / 连接失败 / 未连接；点击主机行选中该主机，右侧终端
- * 面板自动连接。删除直接生效（主机条目重建成本低，不做二次确认）。
+ * 已连接 / 连接中 / 连接失败 / 未连接；点击主机行选中该主机，SSH 面板自动
+ * 连接。删除直接生效（主机条目重建成本低，不做二次确认）。
  */
 
 export interface SshHostsPanelProps {
-  /** 返回上一视图（SshView 的退出动作）；缺省不渲染返回行。 */
+  /** 返回上一视图（SshTerminalPanel 覆盖层的关闭动作）；缺省不渲染返回行。 */
   onBack?: () => void
 }
 

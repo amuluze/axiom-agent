@@ -243,8 +243,8 @@ describe('uiStore runtime rail width', () => {
 
     // 超上限被钳制并持久化。
     useUiStore.getState().setRuntimeRailWidth(9999)
-    expect(useUiStore.getState().runtimeRailWidth).toBe(520)
-    expect(dom.values.get('axiom.runtime.railWidth.v1')).toBe('520')
+    expect(useUiStore.getState().runtimeRailWidth).toBe(720)
+    expect(dom.values.get('axiom.runtime.railWidth.v1')).toBe('720')
 
     useUiStore.getState().setRuntimeRailWidth(1)
     expect(useUiStore.getState().runtimeRailWidth).toBe(280)
@@ -265,10 +265,47 @@ describe('uiStore runtime rail width', () => {
   it('clamps the rail width to the viewport so the session body keeps room', async () => {
     installDomStorage({ 'axiom.runtime.railWidth.v1': '9999' }, { innerWidth: 900 })
     const { useUiStore } = await import('./uiStore')
-    // 窄视口：上限 = 900 - 420（会话主体保留）= 480，而非绝对上限 520。
+    // 窄视口：上限 = 900 - 420（会话主体保留）= 480，而非绝对上限 720。
     expect(useUiStore.getState().runtimeRailWidth).toBe(480)
     useUiStore.getState().setRuntimeRailWidth(9999)
     expect(useUiStore.getState().runtimeRailWidth).toBe(480)
+  })
+})
+
+describe('uiStore sidebar width', () => {
+  it('restores the persisted sidebar width and clamps it into the allowed range', async () => {
+    const dom = installDomStorage({ 'axiom.ui.sidebarWidth.v1': '360' })
+    const { useUiStore } = await import('./uiStore')
+    expect(useUiStore.getState().sidebarWidth).toBe(360)
+
+    // 超上限被钳制并持久化。
+    useUiStore.getState().setSidebarWidth(9999)
+    expect(useUiStore.getState().sidebarWidth).toBe(560)
+    expect(dom.values.get('axiom.ui.sidebarWidth.v1')).toBe('560')
+
+    useUiStore.getState().setSidebarWidth(1)
+    expect(useUiStore.getState().sidebarWidth).toBe(200)
+    expect(dom.values.get('axiom.ui.sidebarWidth.v1')).toBe('200')
+  })
+
+  it('falls back to the default width for non-numeric stored values and ignores invalid input', async () => {
+    const dom = installDomStorage({ 'axiom.ui.sidebarWidth.v1': 'not-a-number' })
+    const { useUiStore } = await import('./uiStore')
+    expect(useUiStore.getState().sidebarWidth).toBe(264)
+
+    // 无效输入被整体忽略：state 不变，localStorage 不被污染（仍是加载前的原值）。
+    useUiStore.getState().setSidebarWidth(Number.NaN)
+    expect(useUiStore.getState().sidebarWidth).toBe(264)
+    expect(dom.values.get('axiom.ui.sidebarWidth.v1')).toBe('not-a-number')
+  })
+
+  it('clamps the sidebar width to the viewport so the session body keeps room', async () => {
+    installDomStorage({ 'axiom.ui.sidebarWidth.v1': '9999' }, { innerWidth: 700 })
+    const { useUiStore } = await import('./uiStore')
+    // 窄视口：上限 = 700 - 480（会话主体保留）= 220，而非绝对上限 560。
+    expect(useUiStore.getState().sidebarWidth).toBe(220)
+    useUiStore.getState().setSidebarWidth(9999)
+    expect(useUiStore.getState().sidebarWidth).toBe(220)
   })
 })
 

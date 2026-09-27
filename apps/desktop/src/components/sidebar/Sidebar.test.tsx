@@ -117,13 +117,14 @@ afterEach(() => {
 })
 
 describe('Sidebar', () => {
-  it('renders the sidebar nav with 新任务、技能 and SSH items', () => {
+  it('renders the sidebar nav with 新任务、技能 and 设计 items', () => {
     const html = renderToStaticMarkup(createElement(Sidebar))
     expect(html).toContain('sidebar')
     expect(html).toContain('新任务')
     expect(html).toContain('技能')
-    // SSH 是独立全窗口视图（设计稿「Axiom — SSH」）的侧栏入口。
-    expect(html).toContain('SSH')
+    // SSH 已迁回 RuntimeRail 面板（无独立全窗口视图），侧栏入口换为设计画布。
+    expect(html).toContain('设计')
+    expect(html).not.toContain('SSH')
   })
 
   it('marks 新任务 as active when the current view is new-task', () => {

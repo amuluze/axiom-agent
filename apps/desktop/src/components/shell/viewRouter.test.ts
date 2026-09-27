@@ -35,9 +35,9 @@ describe('viewRouter.resolveAutoView', () => {
     expect(resolveAutoView(false, false, 'settings')).toBe('settings')
   })
 
-  it('preserves an explicitly opened ssh view when background messages change', () => {
-    expect(resolveAutoView(false, true, 'ssh')).toBe('ssh')
-    expect(resolveAutoView(false, false, 'ssh')).toBe('ssh')
+  it('preserves an explicitly opened design view when background messages change', () => {
+    expect(resolveAutoView(false, true, 'design')).toBe('design')
+    expect(resolveAutoView(false, false, 'design')).toBe('design')
   })
 
   it('still forces provider setup even when another view is active', () => {
@@ -87,7 +87,7 @@ describe('viewRouter.resolveViewRender', () => {
       settingsScreen: true,
       shell: false,
       session: false,
-      ssh: false,
+      design: false,
     })
   })
 
@@ -96,7 +96,7 @@ describe('viewRouter.resolveViewRender', () => {
       settingsScreen: false,
       shell: true,
       session: false,
-      ssh: false,
+      design: false,
     })
   })
 
@@ -105,16 +105,16 @@ describe('viewRouter.resolveViewRender', () => {
       settingsScreen: false,
       shell: true,
       session: true,
-      ssh: false,
+      design: false,
     })
   })
 
-  it('signals the ssh full-window view for the ssh view', () => {
-    expect(resolveViewRender('ssh')).toEqual({
+  it('signals shell + design for the design view', () => {
+    expect(resolveViewRender('design')).toEqual({
       settingsScreen: false,
-      shell: false,
+      shell: true,
       session: false,
-      ssh: true,
+      design: true,
     })
   })
 })

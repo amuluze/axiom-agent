@@ -43,3 +43,6 @@ secret
 
 # ZCode 本地会话配置（忽略规则），不入库
 .zcodeignore
+
+# 本地 npm 缓存/临时产物（--cache .tmp/npm-cache 等），不入库
+/.tmp/

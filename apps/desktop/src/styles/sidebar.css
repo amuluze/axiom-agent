@@ -7,6 +7,43 @@
   border-right: 1px solid var(--border-subtle);
 }
 
+/* 右缘调宽把手：fixed 定位不随侧栏内容滚动，宽度消费 --sidebar-current-width
+   （App ShellLayout 在 shell 根上设置），与 grid 首列同源；顶部避开标题栏拖拽
+   区。命中区 10px，视觉线仅 hover/聚焦时出现。 */
+.sidebar__resizer {
+  position: fixed;
+  top: var(--window-titlebar-height);
+  bottom: 0;
+  left: calc(var(--sidebar-current-width, var(--sidebar-width)) - 5px);
+  width: 10px;
+  z-index: 6;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.sidebar__resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 1px;
+  background: transparent;
+}
+
+.sidebar__resizer:hover::after,
+.sidebar__resizer:focus-visible::after {
+  background: var(--accent-soft);
+}
+
+/* 拖拽期间（把手 pointer capture）全局锁定光标并禁止选择，避免指针甩出把手后光标闪变。 */
+.sidebar--resizing,
+.sidebar--resizing * {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
 .sidebar__overlay {
   position: fixed;
   inset: 0;

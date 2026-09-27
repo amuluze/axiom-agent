@@ -1076,3 +1076,18 @@
     padding: var(--space-3) var(--space-4);
   }
 }
+
+/* 工具结果里的图片块（design_query 的 render 回读、read 的图片结果等）：
+   与消息图片同款预览，宽度受卡片约束。 */
+.tool-card__images {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.tool-card__images img {
+  max-width: 100%;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+}

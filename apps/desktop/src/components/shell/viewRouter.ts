@@ -7,9 +7,10 @@ export const resolveAutoView = (
   currentView: AppView = 'new-task',
 ): AppView => {
   if (providerSetupRequired) return 'settings'
-  // 用户启动的独立窗口（设置/SSH）不进自动视图切换：SSH 面板挂载期间
-  // 会话消息变更不应把视图从 SSH 拽回会话页。
-  if (currentView === 'settings' || currentView === 'ssh') return currentView
+  // 用户启动的独立窗口（设置）不进自动视图切换：设置页挂载期间
+  // 会话消息变更不应把视图拽回会话页。
+  // 设计视图与设置同为用户启动的独立窗口：会话消息变更不拽回会话页。
+  if (currentView === 'settings' || currentView === 'design') return currentView
   if (hasMessages) return 'session'
   return 'new-task'
 }
@@ -53,13 +54,13 @@ export interface ViewRenderResult {
   shell: boolean
   /** True when the active content is SessionView, false for NewTaskView (only meaningful inside the shell). */
   session: boolean
-  /** True when App should render the SSH full-window view（SSH 已迁出右侧 rail）。 */
-  ssh: boolean
+  /** True when the active content is DesignView (design canvas inside the shell). */
+  design: boolean
 }
 
 export const resolveViewRender = (view: AppView): ViewRenderResult => ({
   settingsScreen: view === 'settings',
-  shell: view !== 'settings' && view !== 'ssh',
+  shell: view !== 'settings',
   session: view === 'session',
-  ssh: view === 'ssh',
+  design: view === 'design',
 })

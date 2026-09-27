@@ -167,7 +167,8 @@ const supportedPreviewMedia = new Set(['image/png', 'image/jpeg', 'image/webp', 
 const truncateToolArguments = (value: string, t: TFunction): string =>
   value.length > 2_000 ? t('app.message.truncatedArgs', { value: value.slice(0, 2_000) }) : value
 
-const ImagePreview = ({ block }: { block: ImageContentBlock }) => {
+/** 消息与工具结果共用的图片预览（工具结果带图时也走同一实现）。 */
+export const ImagePreview = ({ block }: { block: ImageContentBlock }) => {
   const { t } = useT()
   const openImageLightbox = useUiStore((state) => state.openImageLightbox)
   if (block.source.type === 'url') {

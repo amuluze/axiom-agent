@@ -5,6 +5,7 @@ import {
   ClipboardList,
   MessageCircleQuestion,
   PanelRight,
+  Server,
   SquareTerminal,
 } from 'lucide-react'
 import { openExternalUrl } from '@/platform/webAccess'
@@ -24,8 +25,12 @@ export const WindowActions = () => {
   const terminalPanelOpen = useUiStore((state) => state.terminalPanelOpen)
   const toggleTerminalPanel = useUiStore((state) => state.toggleTerminalPanel)
   const runtimeRailOpen = useUiStore((state) => state.runtimeRailOpen)
+  const runtimeRailPane = useUiStore((state) => state.runtimeRailPane)
   const toggleRuntimeRail = useUiStore((state) => state.toggleRuntimeRail)
+  const openRuntimeRailPane = useUiStore((state) => state.openRuntimeRailPane)
   const buttonClass = 'session__window-action'
+  /** SSH 面板是否随 rail 打开且正显示 SSH pane：反映在 toggle 的 active 态。 */
+  const sshPaneOpen = runtimeRailOpen && runtimeRailPane === 'ssh'
   const [helpMenuOpen, setHelpMenuOpen] = useState(false)
   // 帮助菜单宿主容器 ref：用于「点击菜单外部收起」的边界判断。
   const helpPickerRef = useRef<HTMLDivElement | null>(null)
@@ -50,6 +55,15 @@ export const WindowActions = () => {
       document.removeEventListener('keydown', onKeyDown)
     }
   }, [helpMenuOpen])
+
+  /** SSH toggle：开 → 直达 ssh pane；已开 ssh pane → 收起 rail（与 rail toggle 同语义）。 */
+  const toggleSshPane = (): void => {
+    if (runtimeRailOpen && useUiStore.getState().runtimeRailPane === 'ssh') {
+      toggleRuntimeRail()
+      return
+    }
+    openRuntimeRailPane('ssh')
+  }
 
   const openDocs = () => {
     setHelpMenuOpen(false)
@@ -115,6 +129,15 @@ export const WindowActions = () => {
         onClick={toggleTerminalPanel}
       >
         <SquareTerminal size={16} />
+      </button>
+      <button
+        type="button"
+        className={`${buttonClass} ${sshPaneOpen ? `${buttonClass}--active` : ''}`}
+        aria-label={t('app.windowActions.toggleSsh')}
+        aria-pressed={sshPaneOpen}
+        onClick={toggleSshPane}
+      >
+        <Server size={16} />
       </button>
       <button
         type="button"

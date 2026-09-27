@@ -290,6 +290,40 @@
     }
 
     #[test]
+    fn trashes_and_restores_pen_documents_beyond_text_whitelist() {
+        let workspace = TempDir::new().unwrap();
+        let recovery = TempDir::new().unwrap();
+        let root = root(&workspace);
+        // .pen 不在 TEXT_EXTENSIONS 白名单，但按 design_document_write_limit
+        // 与写路径同口径放行 move/trash。
+        let body = format!("{{\"pages\":[{{\"name\":\"page\"}}]}}\n{}\n", "x".repeat(1024));
+        std::fs::create_dir_all(root.join(".pen")).unwrap();
+        std::fs::write(root.join(".pen/axiom.pen"), &body).unwrap();
+        // 任意大小都不受白名单限制；这里 1KiB 足以验证判定逻辑本身。
+        let result = apply_impl(
+            &root,
+            recovery.path(),
+            recovery.path(),
+            WorkspaceChangeRequest {
+                request_id: "trash-pen".into(),
+                operations: vec![WorkspaceChangeOperation::Trash {
+                    path: ".pen/axiom.pen".into(),
+                    expected_sha256: Some(hash(&root.join(".pen/axiom.pen"))),
+                }],
+            },
+        )
+        .unwrap();
+        assert!(!root.join(".pen/axiom.pen").exists());
+        std::fs::write(root.join(".pen/axiom.pen"), "conflict\n").unwrap();
+        std::fs::remove_file(root.join(".pen/axiom.pen")).unwrap();
+        restore_impl(&root, recovery.path(), result.recovery_id.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join(".pen/axiom.pen")).unwrap(),
+            body
+        );
+    }
+
+    #[test]
     fn startup_rolls_back_an_interrupted_multi_path_trash_restore() {
         let workspace = TempDir::new().unwrap();
         let recovery = TempDir::new().unwrap();

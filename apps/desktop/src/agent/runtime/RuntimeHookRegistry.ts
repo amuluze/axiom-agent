@@ -247,6 +247,10 @@ export const snapshotRuntimeHookEvent = (event: RuntimeHookEvent): RuntimeHookEv
         input: structuredClone(event.input),
         context: snapshotAgentContext(event.context),
         presentation: snapshotApprovalPresentation(event.presentation),
+        // 租约绑定输入同样隔离：Hook 在签发租约之前运行，共用引用可被改写。
+        ...(event.approvalLeaseInput === undefined
+          ? {}
+          : { approvalLeaseInput: structuredClone(event.approvalLeaseInput) }),
       }
     case 'tool_result':
       return {

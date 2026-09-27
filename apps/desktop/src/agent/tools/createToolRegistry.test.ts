@@ -11,7 +11,7 @@ describe('tool registry', () => {
   })
 
   it('registers the scoped workspace discovery toolset together', () => {
-    expect(namesFor(['workspace:read'])).toEqual(['read', 'ls', 'grep', 'find', 'load_skill'])
+    expect(namesFor(['workspace:read'])).toEqual(['read', 'ls', 'grep', 'find', 'design_query', 'load_skill'])
   })
 
   it('Explore 仅在 workspace:read + subagent:explore 下注册', () => {
@@ -29,6 +29,7 @@ describe('tool registry', () => {
       'ls',
       'grep',
       'find',
+      'design_query',
       'load_skill',
       'inspect_subagent',
       'examine_subagent',
@@ -138,9 +139,10 @@ describe('tool registry', () => {
       'edit',
       'apply_changes',
       'restore_trash',
+      'design_import',
     ])
     expect(tools.every((tool) => tool.requiresApproval && tool.executionMode === 'sequential')).toBe(true)
-    expect(tools.map((tool) => tool.runtimeVersion)).toEqual(['6', '7', '5', '3'])
+    expect(tools.map((tool) => tool.runtimeVersion)).toEqual(['6', '7', '5', '3', '3'])
   })
 
   it('registers command execution separately and always requires serial one-time approval', () => {

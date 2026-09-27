@@ -159,6 +159,12 @@ describe('Composer', () => {
     expect(html).toContain('data-mode="no-approval"')
   })
 
+  it('hides the access-mode picker when showAccessPicker is false (design sidebar)', () => {
+    const html = renderToStaticMarkup(createElement(Composer, { showAccessPicker: false }))
+    expect(html).not.toContain('composer__access-picker')
+    expect(html).toContain('composer__model-picker')
+  })
+
   it('renders the active model as a dynamic model switcher', () => {
     const html = renderToStaticMarkup(createElement(Composer))
     expect(html).toContain('aria-label="切换模型"')

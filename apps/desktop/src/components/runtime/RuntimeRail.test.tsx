@@ -20,6 +20,10 @@ vi.mock('./ComputerPanel', () => ({
   ComputerPanel: () => <div data-testid="computer-panel-mock" />,
 }))
 
+vi.mock('./SshTerminalPanel', () => ({
+  SshTerminalPanel: () => <div data-testid="ssh-panel-mock" />,
+}))
+
 vi.mock('@/stores/uiStore', async (importOriginal) => {
   const original = await importOriginal<typeof import('@/stores/uiStore')>()
   type UiState = ReturnType<typeof original.useUiStore.getState>
@@ -54,8 +58,7 @@ describe('RuntimeRail picker 卡片页', () => {
     expect(screen.getByText('选择要在侧边面板中打开的标签。')).toBeTruthy()
     expect(screen.getByRole('tab', { name: '浏览器' })).toBeTruthy()
     expect(screen.getByRole('tab', { name: '电脑控制' })).toBeTruthy()
-    // SSH 已迁出运行时面板（独立全窗口 SshView，入口在侧栏导航）。
-    expect(screen.queryByRole('tab', { name: /SSH/ })).toBeNull()
+    expect(screen.getByRole('tab', { name: 'SSH' })).toBeTruthy()
     expect(screen.queryByTestId('browser-panel-mock')).toBeNull()
     expect(screen.queryByLabelText('返回标签页选择')).toBeNull()
   })
@@ -70,6 +73,12 @@ describe('RuntimeRail picker 卡片页', () => {
     render(<RuntimeRail />)
     fireEvent.click(screen.getByRole('tab', { name: '电脑控制' }))
     expect(mocks.setRuntimeRailPane).toHaveBeenCalledWith('computer')
+  })
+
+  it('opens the ssh panel when its card is clicked', () => {
+    render(<RuntimeRail />)
+    fireEvent.click(screen.getByRole('tab', { name: 'SSH' }))
+    expect(mocks.setRuntimeRailPane).toHaveBeenCalledWith('ssh')
   })
 
   it('does not render the legacy context budget or collapse control', () => {
@@ -93,6 +102,13 @@ describe('RuntimeRail panel 态', () => {
     render(<RuntimeRail />)
     expect(screen.getByText('电脑控制')).toBeTruthy()
     expect(screen.getByTestId('computer-panel-mock')).toBeTruthy()
+  })
+
+  it('mounts the ssh panel for the ssh pane', () => {
+    mocks.runtimeRailPane = 'ssh'
+    render(<RuntimeRail />)
+    expect(screen.getByText('SSH')).toBeTruthy()
+    expect(screen.getByTestId('ssh-panel-mock')).toBeTruthy()
   })
 
   it('goes back to the picker page when the back button is clicked', () => {
@@ -135,7 +151,7 @@ describe('RuntimeRail SSR', () => {
     expect(html).toContain('打开标签页')
     expect(html).toContain('浏览器')
     expect(html).toContain('电脑控制')
-    expect(html).not.toContain('SSH')
+    expect(html).toContain('SSH')
     expect(html).toContain('role="tablist"')
     mocks.runtimeRailPane = 'browser'
     const panelHtml = renderToStaticMarkup(<RuntimeRail />)

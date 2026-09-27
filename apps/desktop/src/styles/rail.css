@@ -15,6 +15,15 @@
   flex-shrink: 0;
 }
 
+/* pane 面板 flush 形态：rail 四周留白压到最小，把宽度与纵向空间尽量让给内容区，
+   三个 pane（浏览器/电脑控制/SSH）顶部因此逐像素对齐。rail 顶部无拖拽区
+  （drag region 在各视图内部），无需为标题栏预留 40px。仅 pane 激活时挂载
+  （RuntimeRail），标签选择页保持默认留白。 */
+.rail--pane-open {
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-1) var(--space-1);
+}
+
 /* 左缘调宽把手：rail 自身是滚动容器，把手用 fixed 定位避免随内容滚走；
    顶部避开标题栏拖拽区。命中区 10px，视觉线仅 hover/聚焦时出现。 */
 .rail__resizer {

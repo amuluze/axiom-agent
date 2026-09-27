@@ -108,6 +108,44 @@ describe('waitForApproval', () => {
     await waitForApproval(prepared, makeAssistant(), makeContext([], []), 'r', new AbortController().signal, spy)
     expect(spy.mock.calls[0]?.[0].presentation.title).toContain('允许工具')
   })
+
+  it('carries the tool-declared approval lease input into the approval context', async () => {
+    const beforeToolCall: BeforeToolCall = async () => ({ decision: 'approved', approvalLease: 'lease-1' })
+    const spy = vi.fn(beforeToolCall)
+    const withLeaseInput = {
+      ...prepared,
+      tool: makeTool({
+        requiresApproval: true,
+        // 工具落盘字节≠模型输入（如 design_import 的编译产物）：租约必须绑定真实字节。
+        approvalLeaseInput: async (input: JsonValue) => ({ path: 'b.ax', content: 'compiled', from: input }),
+      }),
+    }
+
+    await waitForApproval(withLeaseInput, makeAssistant(), makeContext([], []), 'r', new AbortController().signal, spy)
+    expect(spy.mock.calls[0]?.[0].approvalLeaseInput).toEqual({
+      path: 'b.ax',
+      content: 'compiled',
+      from: { value: 'x' },
+    })
+  })
+
+  it('denies the call when the approval lease input cannot be computed', async () => {
+    const beforeToolCall: BeforeToolCall = async () => ({ decision: 'approved' })
+    const spy = vi.fn(beforeToolCall)
+    const failing = {
+      ...prepared,
+      tool: makeTool({
+        requiresApproval: true,
+        approvalLeaseInput: async () => { throw new Error('cannot compile .pen/axiom.pen') },
+      }),
+    }
+
+    const result = await waitForApproval(failing, makeAssistant(), makeContext([], []), 'r', new AbortController().signal, spy)
+    expect(result.approved).toBe(false)
+    expect(result.reason).toContain('cannot compile')
+    // 未拿到可绑定的租约就不该进审批流程（否则执行侧必然被写通道拒绝）。
+    expect(spy).not.toHaveBeenCalled()
+  })
 })
 
 describe('applyAfterToolCall', () => {

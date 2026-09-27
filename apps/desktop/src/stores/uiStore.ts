@@ -5,11 +5,10 @@ import { setWorkspaceApprovalMode } from '@/platform/workspaceApproval'
 import { syncNativeWindowTheme } from '@/platform/windowTheme'
 import { detectSystemLanguage, resolveLanguage } from '@/i18n/locale'
 
-export type AppView = 'new-task' | 'session' | 'ssh' | 'settings'
+export type AppView = 'new-task' | 'session' | 'design' | 'settings'
 export type SettingsSection = 'general' | 'browser' | 'computer' | 'models' | 'sessions' | 'usage' | 'archived' | 'skills' | 'subagents' | 'about'
-/** 右侧运行时面板的视图枚举：浏览器 / 电脑控制。SSH 自设计稿起迁出 rail，
- * 改由侧栏导航进入独立全窗口视图（SshView）。会话内有效，不持久化。 */
-export type RuntimeRailTab = 'browser' | 'computer'
+/** 右侧运行时面板的视图枚举：浏览器 / 电脑控制 / SSH（均按设计稿的 rail pane）。会话内有效，不持久化。 */
+export type RuntimeRailTab = 'browser' | 'computer' | 'ssh'
 /** rail 面板模式：picker = 卡片选择页；其余为具体功能面板。 */
 export type RuntimeRailPane = 'picker' | RuntimeRailTab
 export type AccessMode = 'standard' | 'no-approval'
@@ -28,6 +27,11 @@ export interface MessageEditRequest {
   messageId: string
   content: string
   images?: ImageContentBlock[]
+}
+/** 外部组件向 Composer 输入框注入文本的请求（nonce 保证重复请求可再次触发）。 */
+export interface ComposerInsertionRequest {
+  text: string
+  nonce: number
 }
 /** 会话输出窗口截图的灯箱：点击缩略图查看原图，Esc/点击遮罩关闭。 */
 export interface ImageLightboxState {
@@ -63,6 +67,7 @@ const RECENT_WORKSPACE_STORAGE_KEY = 'axiom.workspace.recent.v1'
 const TERMINAL_PANEL_HEIGHT_STORAGE_KEY = 'axiom.terminal.panelHeight.v1'
 const SFTP_PANEL_HEIGHT_STORAGE_KEY = 'axiom.sftp.panelHeight.v1'
 const RUNTIME_RAIL_WIDTH_STORAGE_KEY = 'axiom.runtime.railWidth.v1'
+const SIDEBAR_WIDTH_STORAGE_KEY = 'axiom.ui.sidebarWidth.v1'
 const MAX_RECENT_WORKSPACES = 20
 
 export const DEFAULT_TERMINAL_PANEL_HEIGHT = 240
@@ -78,10 +83,20 @@ export const DEFAULT_RUNTIME_RAIL_WIDTH = 288
 // 下限按浏览器工具栏的刚性宽度定：5 个 24px 按钮 + 间距 + 地址栏可读最小值
 // （约 90px），220 会让 + 按钮与页脚「关闭浏览器」溢出裁切。
 export const MIN_RUNTIME_RAIL_WIDTH = 280
-// 上限保证会话主体（消息列 + composer）在常见窗口宽度下仍有可用空间。
-export const MAX_RUNTIME_RAIL_WIDTH = 520
+// 上限保证会话主体（消息列 + composer）在常见窗口宽度下仍有可用空间；720 让
+// SSH 终端在默认等宽字号下可完整显示 80 列（窄窗口另有 viewport 保留宽度兜底）。
+export const MAX_RUNTIME_RAIL_WIDTH = 720
 // rail 之外至少为会话主体保留的宽度：过窄窗口下 rail 让位，不把消息列挤没。
 const RUNTIME_RAIL_BODY_RESERVED_WIDTH = 420
+export const DEFAULT_SIDEBAR_WIDTH = 264
+// 与 tokens.css 的 --sidebar-width 默认值一致；上下限保证导航文案可读、
+// 会话主体仍占大头。上限在窄视口下还会被 sidebarMaxWidth 进一步收紧。
+export const MIN_SIDEBAR_WIDTH = 200
+// 560 让侧栏放得下长任务名与设计页的助手面板（会话主体最少保留宽度见
+// SIDEBAR_BODY_RESERVED_WIDTH，侧栏可见的视口下恒满足该保留量）。
+export const MAX_SIDEBAR_WIDTH = 560
+// 侧边栏之外至少为会话主体保留的宽度：窄窗口下侧边栏让位，不把消息列挤没。
+const SIDEBAR_BODY_RESERVED_WIDTH = 480
 // innerHeight 不可用（SSR / 测试 stub window）时的兜底视口高度。
 const FALLBACK_VIEWPORT_HEIGHT = 1024
 // innerWidth 不可用时的兜底视口宽度。
@@ -252,6 +267,25 @@ export const runtimeRailMaxWidth = (): number => {
   )
 }
 
+/** 当前视口下侧边栏宽度上限：与 runtimeRailMaxWidth 同思路，窄窗口自动让位。 */
+export const sidebarMaxWidth = (): number => {
+  if (typeof window === 'undefined') return MAX_SIDEBAR_WIDTH
+  const viewport = typeof window.innerWidth === 'number' && window.innerWidth > 0
+    ? window.innerWidth
+    : FALLBACK_VIEWPORT_WIDTH
+  return Math.max(
+    MIN_SIDEBAR_WIDTH,
+    Math.min(MAX_SIDEBAR_WIDTH, viewport - SIDEBAR_BODY_RESERVED_WIDTH),
+  )
+}
+
+/** 侧边栏宽度统一在此 clamp：下限保证导航可读，上限取「绝对上限」与「视口减会话主体保留宽度」的较小者。 */
+export const clampSidebarWidth = (width: number, maxWidth: number): number =>
+  Math.min(
+    Math.max(width, MIN_SIDEBAR_WIDTH),
+    Math.max(MIN_SIDEBAR_WIDTH, maxWidth),
+  )
+
 const terminalPanelMaxHeight = (): number => {
   if (typeof window === 'undefined') return FALLBACK_VIEWPORT_HEIGHT - TERMINAL_PANEL_BODY_RESERVED_HEIGHT
   const viewport = typeof window.innerHeight === 'number' && window.innerHeight > 0
@@ -289,6 +323,16 @@ const loadSftpPanelHeight = (): number => {
   return clampSftpPanelHeight(stored, sftpPanelMaxHeight())
 }
 
+const loadSidebarWidth = (): number => {
+  if (typeof window === 'undefined') return DEFAULT_SIDEBAR_WIDTH
+  const raw = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY)
+  // 注意 Number(null) === 0：缺失键必须显式回默认，不能走数值解析。
+  if (raw === null) return DEFAULT_SIDEBAR_WIDTH
+  const stored = Number(raw)
+  if (!Number.isFinite(stored)) return DEFAULT_SIDEBAR_WIDTH
+  return clampSidebarWidth(stored, sidebarMaxWidth())
+}
+
 const loadRuntimeRailWidth = (): number => {
   if (typeof window === 'undefined') return DEFAULT_RUNTIME_RAIL_WIDTH
   const stored = Number(window.localStorage.getItem(RUNTIME_RAIL_WIDTH_STORAGE_KEY))
@@ -315,6 +359,7 @@ interface UiState {
   sidebarUserOverride: boolean
   sidebarCompact: boolean
   sidebarOverlayOpen: boolean
+  sidebarWidth: number
   runtimeRailOpen: boolean
   runtimeRailPane: RuntimeRailPane
   runtimeRailWidth: number
@@ -332,6 +377,7 @@ interface UiState {
   preventIdleSleep: boolean
   summaryRequest: SummaryRequest | null
   messageEditRequest: MessageEditRequest | null
+  composerInsertionRequest: ComposerInsertionRequest | null
   imageLightbox: ImageLightboxState | null
   feedbackRequest: FeedbackRequest | null
   recentWorkspacePaths: string[]
@@ -350,9 +396,12 @@ interface UiState {
   setSidebarCollapsed: (collapsed: boolean) => void
   setSidebarCompact: (compact: boolean) => void
   closeSidebarOverlay: () => void
+  setSidebarWidth: (width: number) => void
   toggleRuntimeRail: () => void
   setRuntimeRailOpen: (open: boolean) => void
   setRuntimeRailPane: (pane: RuntimeRailPane) => void
+  /** 指定 pane 打开 rail：右上角 SSH toggle 等入口直达具体面板，不落 picker 页。 */
+  openRuntimeRailPane: (pane: RuntimeRailTab) => void
   setRuntimeRailWidth: (width: number) => void
   toggleTerminalPanel: () => void
   setTerminalPanelOpen: (open: boolean) => void
@@ -370,6 +419,8 @@ interface UiState {
   setPreventIdleSleep: (enabled: boolean) => void
   setSummaryRequest: (request: SummaryRequest | null) => void
   setMessageEditRequest: (request: MessageEditRequest | null) => void
+  requestComposerInsertion: (text: string) => void
+  clearComposerInsertion: () => void
   openImageLightbox: (src: string, alt: string) => void
   closeImageLightbox: () => void
   openFeedback: (kind: FeedbackKind) => void
@@ -398,6 +449,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   sidebarUserOverride: false,
   sidebarCompact: false,
   sidebarOverlayOpen: false,
+  sidebarWidth: loadSidebarWidth(),
   runtimeRailOpen: false,
   runtimeRailPane: 'picker',
   runtimeRailWidth: loadRuntimeRailWidth(),
@@ -415,6 +467,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   preventIdleSleep: loadPreventIdleSleep(),
   summaryRequest: null,
   messageEditRequest: null,
+  composerInsertionRequest: null,
   imageLightbox: null,
   feedbackRequest: null,
   recentWorkspacePaths: loadRecentWorkspacePaths(),
@@ -447,6 +500,15 @@ export const useUiStore = create<UiState>((set, get) => ({
     sidebarOverlayOpen: false,
   }),
   closeSidebarOverlay: () => set({ sidebarOverlayOpen: false }),
+  // 宽度是显式布局偏好：clamp 后持久化，拖拽/键盘共用此入口。
+  setSidebarWidth: (sidebarWidth) => {
+    if (!Number.isFinite(sidebarWidth)) return
+    const next = clampSidebarWidth(sidebarWidth, sidebarMaxWidth())
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(next))
+    }
+    set({ sidebarWidth: next })
+  },
   toggleRuntimeRail: () => set((state) => (state.runtimeRailOpen
     ? { runtimeRailOpen: false }
     // 展开即回卡片选择页（对齐「展开时展示标签页卡片」形态）。
@@ -455,6 +517,7 @@ export const useUiStore = create<UiState>((set, get) => ({
     ? { runtimeRailOpen: true, runtimeRailPane: 'picker' }
     : { runtimeRailOpen: false }),
   setRuntimeRailPane: (runtimeRailPane) => set({ runtimeRailPane }),
+  openRuntimeRailPane: (runtimeRailPane) => set({ runtimeRailOpen: true, runtimeRailPane }),
   // 宽度是显式布局偏好：clamp 后持久化，拖拽/键盘共用此入口。
   setRuntimeRailWidth: (runtimeRailWidth) => {
     if (!Number.isFinite(runtimeRailWidth)) return
@@ -538,6 +601,11 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
   setSummaryRequest: (summaryRequest) => set({ summaryRequest }),
   setMessageEditRequest: (messageEditRequest) => set({ messageEditRequest }),
+  requestComposerInsertion: (text) =>
+    set((state) => ({
+      composerInsertionRequest: { text, nonce: (state.composerInsertionRequest?.nonce ?? 0) + 1 },
+    })),
+  clearComposerInsertion: () => set({ composerInsertionRequest: null }),
   openImageLightbox: (src, alt) => set({ imageLightbox: { src, alt } }),
   closeImageLightbox: () => set({ imageLightbox: null }),
   openFeedback: (kind) => set({ feedbackRequest: { kind } }),

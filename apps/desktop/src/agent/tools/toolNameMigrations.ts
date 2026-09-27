@@ -18,6 +18,8 @@ export const RUNTIME_TOOL_NAME_MIGRATIONS: Record<string, string> = {
   restore_workspace_trash: 'restore_trash',
   list_authorized_read_files: 'list_authorized_read_files',
   discover_agent_tools: 'discover_agent_tools',
+  design_query: 'design_query',
+  design_import: 'design_import',
 }
 
 // Each entry maps a persisted (name, version) pair to its current contract.
@@ -32,6 +34,21 @@ export const RUNTIME_TOOL_NAME_MIGRATIONS: Record<string, string> = {
 // widening the contract. Bumping the version without adding an entry here is
 // the exact drift this table exists to prevent.
 export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
+  // design_query → v4（契约扩展：mode=component 单组件详单 + scan 可选 tokensCss
+  // 一致性报告 + 组件节点注册表核对——输入新增 component/tokensCss 可选字段）。
+  // 历史条目随 bump 统一改指 live 版本（恢复查表要求 currentVersion === live）。
+  { previousName: 'design_query', previousVersion: '1', currentName: 'design_query', currentVersion: '4' },
+  { previousName: 'design_query', previousVersion: '2', currentName: 'design_query', currentVersion: '4' },
+  { previousName: 'design_query', previousVersion: '3', currentName: 'design_query', currentVersion: '4' },
+  // design_import → v2：租约改按 create_workspace_file 口径绑定编译产物（approvalLeaseInput）
+  // ——v1 的租约绑定模型输入 {source,target}，与写通道消费侧失配，该工具从未能落盘；
+  // schema 不变，属行为修复。
+  // v1 条目原指 v2（恢复查表要求 currentVersion === live，指 v2 的会话无法恢复），
+  // 随 design_query v4 同批修正为统一指 live。
+  { previousName: 'design_import', previousVersion: '1', currentName: 'design_import', currentVersion: '3' },
+  // design_import → v3（产物契约扩展：ref 实例升成 `component` 节点，返回体新增
+  // upgradedComponents/deferredComponents 计数）——输入 schema 不变，属输出增强。
+  { previousName: 'design_import', previousVersion: '2', currentName: 'design_import', currentVersion: '3' },
   // discover_agent_tools → v4
   { previousName: 'discover_agent_tools', previousVersion: '1', currentName: 'discover_agent_tools', currentVersion: '4' },
   { previousName: 'discover_agent_tools', previousVersion: '2', currentName: 'discover_agent_tools', currentVersion: '4' },

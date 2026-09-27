@@ -675,6 +675,9 @@ pub(crate) fn generate_sandbox_profile(
     // timeout（terminate_remaining_process_group）作为主兜底（docs/os-sandbox-plan.md §3.1）。
 
     append_write_boundary_hardening(&mut profile, workspace_root, home);
+    // 兼容放行必须压在硬化规则之后：last-match-wins 语义下，末尾的
+    // `(deny mach-lookup (xpc-service-name-prefix ""))` 会覆盖先前的同名 allow。
+    append_chromium_compat_allowances(&mut profile, chromium_compat_allowed());
 
     std::fs::create_dir_all(sandbox_dir).map_err(|error| {
         format!(
@@ -769,6 +772,70 @@ fn append_write_boundary_hardening(profile: &mut String, workspace_root: &Path, 
         }
     }
     profile.push_str("(deny system-fcntl (fcntl-command 80 110))\n");
+}
+
+/// 浏览器兼容放行的环境开关：仅 `1` / `true` 视为开启（其余一律关闭，含未设置）。
+#[cfg_attr(all(not(target_os = "macos"), not(test)), allow(dead_code))]
+fn chromium_compat_allowed() -> bool {
+    matches!(
+        std::env::var("AXIOM_SANDBOX_ALLOW_CHROMIUM").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
+/// Chromium 兼容放行（显式 opt-in，默认关闭）。
+///
+/// Chromium 启动时必然打开 IOKit `RootDomainUserClient`（电源/系统信息）并查询
+/// DNS 配置服务；两者在默认 profile 下均被拒（`iokit-open-user-client` 无 allow、
+/// mach-lookup 仅白名单 cfprefsd/opendirectoryd），浏览器进程因此会在初始化阶段
+/// 被 SIGSEGV 终止——「在 Axiom 沙箱内运行浏览器端到端套件」不可行的根因。
+///
+/// 声明 `AXIOM_SANDBOX_ALLOW_CHROMIUM=1`（Axiom 进程环境）时追加两条**精确**放行：
+/// 只覆盖该 iokit-user-client-class 与该 global-name，不放行任何 I/O 写权限，也不
+/// 放行 xpc-service 维度；未声明时 profile 与既有语义逐字一致（fail-closed）。
+/// 用途与代价见 `.specs/domain/agent-execution-boundary.md` 的浏览器套件一节。
+#[cfg_attr(all(not(target_os = "macos"), not(test)), allow(dead_code))]
+fn append_chromium_compat_allowances(profile: &mut String, enabled: bool) {
+    if !enabled {
+        return;
+    }
+    profile.push_str(
+        ";; Chromium 兼容放行（AXIOM_SANDBOX_ALLOW_CHROMIUM=1）：仅启动必需的\n\
+         ;; IOKit 电源域客户端与 DNS 配置查询，不含 I/O 写权限。\n",
+    );
+    profile.push_str(
+        "(allow iokit-open-user-client (iokit-user-client-class \"RootDomainUserClient\"))\n",
+    );
+    profile.push_str(
+        "(allow mach-lookup (global-name \"com.apple.SystemConfiguration.DNSConfiguration\"))\n",
+    );
+}
+
+#[cfg(test)]
+mod chromium_compat_tests {
+    use super::append_chromium_compat_allowances;
+
+    #[test]
+    fn disabled_by_default_emits_nothing() {
+        let mut profile = String::from("(deny default)\n");
+        append_chromium_compat_allowances(&mut profile, false);
+        assert_eq!(profile, "(deny default)\n", "未开启时不得改动 profile");
+    }
+
+    #[test]
+    fn enabled_emits_scoped_allowances() {
+        let mut profile = String::from("(deny default)\n");
+        append_chromium_compat_allowances(&mut profile, true);
+        assert!(profile.contains(
+            "(allow iokit-open-user-client (iokit-user-client-class \"RootDomainUserClient\"))"
+        ));
+        assert!(profile.contains(
+            "(allow mach-lookup (global-name \"com.apple.SystemConfiguration.DNSConfiguration\"))"
+        ));
+        // 放行面必须精确：不得出现通配或写权限类别。
+        assert!(!profile.contains("file-write"));
+        assert!(!profile.contains("iokit-open-user-client (iokit-user-client-class \"\")"));
+    }
 }
 
 /// 受保护读取 deny 路径在 profile 中的形态。凭据载体以 `(param "HOME")` 拼接

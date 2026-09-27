@@ -1,6 +1,7 @@
 import type { AgentCapability } from '@/config/runtimePolicy'
 import type { AgentTool } from '@/agent/core/types'
 import { createToolRegistry } from '@/agent/tools/createToolRegistry'
+import type { DesignComponentSummary } from '@/agent/design/componentInventoryHost'
 import { createDiscoverAgentToolsTool } from '@/agent/tools/discoverAgentToolsTool'
 import type { AgentEnvironment } from '@/agent/environment/AgentEnvironment'
 import { desktopAgentEnvironment } from '@/agent/environment/agentEnvironmentHost'
@@ -89,8 +90,15 @@ const ALWAYS_ACTIVE_READ_TOOLS = ['read', 'ls', 'grep', 'find'] as const
 export const createProductToolRuntime = (
   capabilities: AgentCapability[],
   environment: AgentEnvironment = desktopAgentEnvironment,
+  options: { designComponentInventory?: () => DesignComponentSummary[] } = {},
 ): ProductToolRuntime => {
-  const productTools = createToolRegistry({ capabilities, environment })
+  const productTools = createToolRegistry({
+    capabilities,
+    environment,
+    ...(options.designComponentInventory
+      ? { designComponentInventory: options.designComponentInventory }
+      : {}),
+  })
   const registeredNames = new Set(productTools.map((tool) => tool.name))
   // Compute the initial active set first so discover can filter against it
   // and avoid leaking L0 tools as fake `addedToolNames`.

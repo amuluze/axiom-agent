@@ -1,5 +1,6 @@
 import type { ToolResultArtifactRequest, ArtifactReference } from '@/agent/core/types'
 import type { AuthorizedReadFile, AuthorizedTextContent } from '@/platform/authorizedFiles'
+import type { DesignDocumentContent } from '@/platform/designDocument'
 import type { RuntimeInfo } from '@/platform/runtimeInfo'
 import type {
   BrowserCommandRequest,
@@ -42,6 +43,7 @@ import type {
 export type {
   AuthorizedReadFile,
   AuthorizedTextContent,
+  DesignDocumentContent,
   BrowserCommandRequest,
   BrowserCommandResponse,
   BrowserTabInfo,
@@ -127,6 +129,13 @@ export interface AgentEnvironment {
   web: {
     search(request: { query: string; limit?: number }): Promise<WebSearchResponse>
     fetch(request: { url: string; maxBytes?: number }): Promise<WebFetchResponse>
+  }
+  /**
+   * `.pen` 设计稿读取（design_query 工具的宿主能力）。走 Rust read_design_document
+   * 通道（8MiB / base64+sha256），绕开 workspace.readText 的 128KiB 输出截断。
+   */
+  design: {
+    readDocument(path: string): Promise<DesignDocumentContent>
   }
   /**
    * 浏览器自动化（browser 工具的宿主能力）。可执行文件 allowlist、隔离

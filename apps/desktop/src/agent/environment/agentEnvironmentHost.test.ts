@@ -43,6 +43,9 @@ describe('agentEnvironmentHost seam', () => {
       ssh: {
         command: vi.fn(),
       },
+      design: {
+        readDocument: vi.fn(),
+      },
     }
     bindAgentEnvironment(impl)
 
@@ -74,6 +77,9 @@ describe('agentEnvironmentHost seam', () => {
       },
       ssh: {
         command: vi.fn(),
+      },
+      design: {
+        readDocument: vi.fn(),
       },
     })
 

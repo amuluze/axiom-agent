@@ -8,7 +8,7 @@ import type { BuiltinPromptOverridesState } from '@/config/builtinPromptOverride
  *
  * 双通道语义：
  * - 项目 Skill（.axiom/skills/）优先，同名覆盖内置；
- * - 内置 Skill（builtinSkillBodies，SDD 工作流 6 项）默认可见，去重后追加；
+ * - 内置 Skill（builtinSkillBodies，SDD 工作流与设计 7 项）默认可见，去重后追加；
  * - 两者都受 32 KiB metadata 硬预算约束，按「项目 → 内置」顺序装入。
  *
  * 本地化（可选参数，缺省 zh-CN + 无覆写 = 历史行为）：内置 Skill 的 description

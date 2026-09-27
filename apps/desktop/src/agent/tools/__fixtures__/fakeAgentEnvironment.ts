@@ -25,6 +25,7 @@ import type {
   SshAgentCommandResponse,
 } from '@/platform/sshAgent'
 import type { WebFetchResponse, WebSearchResponse } from '@/platform/webAccess'
+import type { DesignDocumentContent } from '@/platform/designDocument'
 
 /**
  * In-process AgentEnvironment for tests that exercise the execute() path
@@ -224,6 +225,18 @@ export const createFakeAgentEnvironment = (
           request: SshAgentCommandRequest,
           options?: { approvalLease?: string; workspacePath?: string },
         ) => sshAgentCommand(request, options),
+      ),
+    },
+    design: {
+      // 默认空设计稿：工具路径不用的测试不受影响，需要时在测试内覆写。
+      readDocument: vi.fn(
+        async (): Promise<DesignDocumentContent> => ({
+          contentBase64: '',
+          sha256: '0000000000000000000000000000000000000000000000000000000000000000',
+          sizeBytes: 0,
+          modifiedMs: null,
+          unchanged: false,
+        }),
       ),
     },
   }

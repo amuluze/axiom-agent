@@ -36,7 +36,7 @@ import { formatAvailableDocs } from './formatAvailableDocs'
  * 注释/格式/内部重构不进入指纹，故不会误触发。动态注入（授权上下文/AGENTS.md/
  * skills/docs/modelName/工具段）随会话变化，刻意排除在指纹之外。
  */
-export const SYSTEM_PROMPT_VERSION = 40
+export const SYSTEM_PROMPT_VERSION = 41
 
 /**
  * 与能力无关的基准提示词：人设、协作风格、工作流与输出规范。

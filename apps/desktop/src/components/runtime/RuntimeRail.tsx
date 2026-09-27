@@ -1,5 +1,5 @@
 import { useMemo, useRef } from 'react'
-import { Globe, Grid2x2, Monitor, type LucideIcon } from 'lucide-react'
+import { Globe, Grid2x2, Monitor, Server, type LucideIcon } from 'lucide-react'
 import {
   DEFAULT_RUNTIME_RAIL_WIDTH,
   MIN_RUNTIME_RAIL_WIDTH,
@@ -11,13 +11,14 @@ import {
 import { useT, type TFunction } from '@/i18n'
 import { BrowserPanel } from './BrowserPanel'
 import { ComputerPanel } from './ComputerPanel'
+import { SshTerminalPanel } from './SshTerminalPanel'
 
 /** 按当前语言解析标签页元数据（picker 与 pane 标题共用同一事实来源）。
- * 顺序对齐设计稿；SSH 自设计稿起迁出运行时面板（独立全窗口 SshView，
- * 入口在侧栏导航）。 */
+ * 顺序对齐设计稿：浏览器 / 电脑控制 / SSH。 */
 const buildRailPanes = (t: TFunction): Array<{ id: RuntimeRailTab; label: string; description: string; Icon: LucideIcon }> => [
   { id: 'browser', label: t('app.runtimeRail.tab.browser.label'), description: t('app.runtimeRail.tab.browser.desc'), Icon: Globe },
   { id: 'computer', label: t('app.runtimeRail.tab.computer.label'), description: t('app.runtimeRail.tab.computer.desc'), Icon: Monitor },
+  { id: 'ssh', label: t('app.runtimeRail.tab.ssh.label'), description: t('app.runtimeRail.tab.ssh.desc'), Icon: Server },
 ]
 
 /** 键盘调整步长（px）：resizer 聚焦后 ArrowLeft/ArrowRight 增减宽度。 */
@@ -32,7 +33,7 @@ const RESIZING_CLASS = 'runtime-rail--resizing'
  *
  * - 浏览器：内嵌浏览器（见 BrowserPanel）
  * - 电脑控制：权限/会话授权/allowlist（见 ComputerPanel）
- * - SSH 已迁出：独立全窗口 SshView，入口在侧栏导航「SSH」。
+ * - SSH：主机 tab + 下拉选择 + 远程终端（见 SshTerminalPanel）。
  *
  * 由 App ShellLayout 在 runtimeRailOpen 时挂载，宽度是
  * 显式布局偏好，clamp + 持久化集中在 uiStore.setRuntimeRailWidth。
@@ -88,7 +89,7 @@ export const RuntimeRail = () => {
 
   return (
     <aside
-      className="rail"
+      className={`rail${activePane ? ' rail--pane-open' : ''}`}
       aria-label={t('app.runtimeRail.aria')}
       // 宽度经 --rail-current-width 变量驱动（SessionView 在容器上也设了同一
       // 变量供 grid 轨道使用）；此处兜底独立挂载场景。
@@ -128,6 +129,8 @@ export const RuntimeRail = () => {
           </div>
           {activePane.id === 'browser' ? (
             <BrowserPanel />
+          ) : activePane.id === 'ssh' ? (
+            <SshTerminalPanel />
           ) : (
             <ComputerPanel />
           )}

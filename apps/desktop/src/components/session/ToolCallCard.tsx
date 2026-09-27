@@ -3,6 +3,8 @@ import { Check, ChevronDown, Compass, FileText, SquarePen, Sparkles, Folder, Plu
 import type { AssistantMessage, ToolResultMessage } from '@/agent/core/types'
 import { useAgentStore } from '@/stores/agentStore'
 import { useT } from '@/i18n'
+import { ImagePreview } from '@/components/MessageContent'
+import type { ImageContentBlock } from '@/agent/core/types'
 
 const formatSize = (bytes: number): string => bytes < 1024
   ? `${bytes} B`
@@ -239,6 +241,10 @@ export const ToolCallCard = ({ toolCallId, toolName, call, result }: ToolCallCar
     ? readDiffPreview(result?.details)
     : undefined
 
+  // 工具结果的图片块（如 design_query 的 render 模式回读整页 PNG）：与消息图片同款预览。
+  const resultImages = (result?.contentBlocks ?? [])
+    .filter((block): block is ImageContentBlock => block.type === 'image')
+
   const cardClassName = `tool-card${running ? ' tool-card--running' : ''}`
   const ariaLabel = `Tool call ${toolName}`
 
@@ -314,6 +320,13 @@ export const ToolCallCard = ({ toolCallId, toolName, call, result }: ToolCallCar
   return (
     <div className={cardClassName} role="group" aria-label={ariaLabel}>
       {headerChildren}
+      {resultImages.length > 0 && (
+        <div className="tool-card__images">
+          {resultImages.map((block, index) => (
+            <ImagePreview block={block} key={`${index}-${block.source.type}`} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }

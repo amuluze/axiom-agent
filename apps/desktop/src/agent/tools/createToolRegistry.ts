@@ -17,6 +17,9 @@ import { createBrowserTool } from './browserTool'
 import { createComputerTool } from './computerTool'
 import { createSshHostsTool } from './sshHostsTool'
 import { createSshTool } from './sshTool'
+import { createDesignQueryTool } from './designQueryTool'
+import { createDesignImportTool } from './designImportTool'
+import type { DesignComponentSummary } from '@/agent/design/componentInventoryHost'
 import { createLoadSkillTool } from '@/agent/skills/createLoadSkillTool'
 import { createExploreSubAgentTool } from '@/agent/subagent/explore/createExploreSubAgentTool'
 import { createInspectSubAgentTool } from '@/agent/subagent/reviewers/createInspectSubAgentTool'
@@ -26,11 +29,14 @@ import { createReviewSubAgentTool } from '@/agent/subagent/reviewers/createRevie
 export interface ToolRegistryOptions {
   capabilities: AgentCapability[]
   environment?: AgentEnvironment
+  /** `.ax` 组件清单来源（宿主装配注入；缺省由 design_query 用宿主接缝取）。 */
+  designComponentInventory?: () => DesignComponentSummary[]
 }
 
 export const createToolRegistry = ({
   capabilities,
   environment = desktopAgentEnvironment,
+  designComponentInventory,
 }: ToolRegistryOptions): AgentTool[] => {
   const enabled = new Set(capabilities)
   const tools: AgentTool[] = []
@@ -40,6 +46,12 @@ export const createToolRegistry = ({
     tools.push(createReadTool(environment))
     if (enabled.has('workspace:read')) {
       tools.push(createLsTool(environment), createGrepTool(environment), createFindTool(environment))
+      // design_query：只读 .pen 子树查询（Rust read_design_document 通道），
+      // discover-gated 不进默认激活集——设计编辑会话由模型按需经
+      // discover_agent_tools 激活，避免非设计会话的工具表膨胀。
+      tools.push(createDesignQueryTool(environment, {
+        ...(designComponentInventory ? { componentInventory: designComponentInventory } : {}),
+      }))
       // 项目技能加载工具：workspace:read 时始终注册到完整工具表（manifest 不随
       // 项目是否存在 Skill 漂移）。默认激活由 agentStore.ts::defaultActiveToolNamesForSession
       // 条件决定（项目 Skills 开关开启 + snapshot 非空时默认 active）；恢复会话走
@@ -75,6 +87,8 @@ export const createToolRegistry = ({
       createEditTool(environment),
       createApplyChangesTool(environment),
       createRestoreTrashTool(environment),
+      // design_import：.pen → .ax 一次性迁移（写工具，discover-gated + 审批）。
+      createDesignImportTool(environment),
     )
   }
 
