@@ -18,6 +18,10 @@
   <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
 </p>
 
+<p align="center">
+  <img src="https://axiom.amuluze.com/axiom-desktop.png" width="900" alt="Axiom desktop screenshot" />
+</p>
+
 ---
 
 ## Overview
