@@ -6,6 +6,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/amuluze/axiom-agent/stargazers"><img src="https://img.shields.io/github/stars/amuluze/axiom-agent?style=flat-square&color=7c3aed" alt="GitHub stars" /></a>
   <img src="https://img.shields.io/badge/version-0.6.1-7c3aed?style=flat-square" alt="Version 0.6.1" />
   <img src="https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white" alt="Tauri 2" />
   <img src="https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=111827" alt="React 19" />
@@ -17,38 +18,52 @@
   <a href="README.md">English</a> · <strong>简体中文</strong>
 </p>
 
+<p align="center">
+  <img src="https://axiom.amuluze.com/axiom-desktop.png" width="900" alt="Axiom 桌面端截图" />
+</p>
+
 ---
 
 ## 项目简介
 
-**Axiom**（Tauri 2 · React 19 · TypeScript · SQLite）是一款本地优先的全栈工程 Agent：模型循环、工具协议、会话状态机与持久化边界全部第一方实现，会话与密钥全部留在本机；设计（`.ax` 设计稿与画布）、开发（规范驱动工作流）与部署（通过 SSH 连接远程服务器，快速部署相关服务）共用同一套工作区授权、逐次审批与可恢复事务边界，中间产物不必跨工具搬运。
+**Axiom** 是一款本地优先的全栈工程 Agent，基于 Tauri 2、React 19、TypeScript 与 SQLite 构建。模型循环、工具协议、会话状态机与持久化边界全部自研——不依赖任何现成的 Agent Runtime，不上云同步：会话、审计链与 API Key 都留在本机（SQLite + 内容寻址存储，位于 `~/.axiom/`）。
 
-## 核心亮点
+设计（`.ax` 设计稿与画布）、开发（规范驱动工作流与 SubAgent 门禁）、部署（通过 SSH 快速部署服务到远程主机）共用同一套受控边界——工作区授权、逐次审批、可恢复事务——产物无需在工具间搬运。
 
-| 领域 | 能力 |
+> Axiom 当前处于 `0.6.1` 早期迭代阶段。
+
+## 功能亮点
+
+| 维度 | 你得到 |
 |---|---|
-| 自研运行时 | 流式模型循环、上下文压缩、重启恢复 |
-| 内置工具 | read / write / 批量 Patch / bash / ssh |
-| 安全边界 | 工作区授权、逐次审批 diff、seatbelt 沙箱、密钥不出 Rust |
-| 会话 | 分支树、Checkpoint、SQLite 审计链 |
-| 设计即代码 | `.ax` 画布实时投影、TSX 骨架生成 |
-| 远程部署 | 在 `~/.ssh/config` 别名或主机注册表的目标主机上执行 SSH 命令，逐命令审批、凭据脱敏 |
+| 自研运行时 | 流式模型循环、富消息协议、上下文压缩、重启恢复 |
+| 内置工具 | read / write / batch patch / bash / ssh；deferred tools；结果 >256 KiB 自动外置到内容寻址存储 |
+| 安全边界 | 显式工作区授权、逐次 diff 审批、seatbelt 沙箱默认开启、凭据脱敏、密钥不出 Rust 层 |
+| 会话 | 分支树、重试即新分支、Checkpoint、SQLite 审计链 |
+| 设计即代码 | 自研 `.ax` 格式 + 实时画布投影；`.ax` → TSX 骨架，像素级视觉对拍 |
+| 远程部署 | 在 `~/.ssh/config` 别名或 Axiom 主机注册表内的主机上一次性执行命令，逐次审批 + 输出凭据脱敏 |
 
-## 快速开始
+## 快速上手
 
-下载（签名 + 公证 + 应用内自更新）：**[axiom.amuluze.com](https://axiom.amuluze.com)**；或从源码构建（macOS 12+ / Node 22+ / Rust 1.96）：
+下载安装（Developer ID 签名、已公证、支持自更新）：**[axiom.amuluze.com](https://axiom.amuluze.com)**
+
+从源码构建（macOS 12+ / Node.js 22+ / Rust 1.96 via [rustup](https://rustup.rs)）：
 
 ```bash
 git clone https://github.com/amuluze/axiom-agent.git
 cd axiom-agent && npm install
-npm run tauri -- dev   # 桌面开发模式
-npm run dev            # 浏览器 Demo 模式，无需 API Key
+npm run tauri -- dev   # 桌面开发模式（启用原生命令）
+npm run dev            # 浏览器演示模式，无需 API Key
 ```
+
+`npm run check` 是提交前完整门禁（typecheck + tests + build + Rust）。
 
 ## 参与贡献
 
-**仅接受 Issue，不接受 PR。** 研发在上游私有仓库进行，本仓库随发布从上游同步导出，PR 无法回合上游、将被直接关闭；欢迎通过 Issue 反馈 Bug 与功能建议。安全漏洞请经 [SECURITY.md](SECURITY.md) 私下报告。
+**仅接受 Issue——不接受 Pull Request。** 实际开发在私有上游仓库进行；本仓库是公开分发与反馈渠道，每次发版从上游重新导出，所以 PR 无法合回，会被直接关闭不予审查。Bug 报告、功能请求与讨论欢迎以 Issue 形式提出。
 
-## 许可
+如发现安全漏洞，请通过 [SECURITY.md](SECURITY.md) 私下报告——不要发公开 Issue。
 
-[MIT](LICENSE) © 2026 amuluze
+## 许可证
+
+[MIT](LICENSE) © 2026 amuluze。官网是安装包与更新的唯一公开渠道；本仓库是源码与产物归档。
