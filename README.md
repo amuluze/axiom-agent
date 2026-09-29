@@ -23,7 +23,7 @@
 
 **Axiom** is a local-first, full-stack engineering agent built on Tauri 2, React 19, TypeScript, and SQLite. The model loop, tool protocol, session state machine, and persistence boundary are all first-party — no off-the-shelf agent runtime, no cloud sync: sessions, audit chains, and API keys stay on your machine (SQLite + content-addressed storage under `~/.axiom/`).
 
-Design (`.ax` design files and the canvas), development (spec-driven workflows and SubAgent gates), and deployment (build, signing & notarization, SBOM, release) share one controlled boundary — workspace authorization, per-action approval, recoverable transactions — so artifacts never have to hop between tools.
+Design (`.ax` design files and the canvas), development (spec-driven workflows and SubAgent gates), and deployment (connecting to remote servers over SSH to quickly deploy services) share one controlled boundary — workspace authorization, per-action approval, recoverable transactions — so artifacts never have to hop between tools.
 
 > Axiom is in early iteration at `0.6.1`.
 
@@ -32,11 +32,11 @@ Design (`.ax` design files and the canvas), development (spec-driven workflows a
 | Area | What you get |
 |---|---|
 | First-party runtime | Streaming model loop, rich message protocol, context compaction, restart recovery |
-| Built-in tools | read / write / batch patch / bash; deferred tools; results >256 KiB offloaded to content-addressed storage |
+| Built-in tools | read / write / batch patch / bash / ssh; deferred tools; results >256 KiB offloaded to content-addressed storage |
 | Security boundary | Explicit workspace authorization, per-action diff approval, seatbelt sandbox by default, credential redaction, secrets never leave Rust |
 | Sessions | Branch tree, retry-as-new-branch, checkpoints, SQLite audit chain |
 | Design as code | First-party `.ax` format with a live canvas projection; `.ax` → TSX skeletons, pixel-level visual diffing |
-| Delivery | macOS DMG (signed + notarized) / Linux AppImage & deb / Windows NSIS, with SBOM + SHA256SUMS on every release |
+| Remote deployment | One-shot SSH commands on hosts from `~/.ssh/config` or the Axiom host registry — per-command approval, credential-redacted output |
 
 ## Getting Started
 
