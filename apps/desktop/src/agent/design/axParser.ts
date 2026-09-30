@@ -23,6 +23,7 @@ import {
   AX_OVERLAY_ANCHORS,
   AX_PAGE_KEYS,
   AX_SCRIM_KEYS,
+  AX_SHADOW_KEYS,
   AX_SIZE_KEYWORDS,
   AX_SUPPORTED_MAJOR,
   AX_TEXT_ALIGNS,
@@ -44,13 +45,14 @@ import type {
   AxOverlayAnchor,
   AxPage,
   AxParseResult,
+  AxShadow,
   AxToken,
   AxTokenType,
 } from './axSchema'
 import { axPartKinds, axPartSpecOf } from './axParts'
 import { tokenToCss } from './penParser'
 import type { DesignComponentSummary } from './componentInventoryHost'
-import type { PenDocument, PenNode, PenNodeUnion, PenPaint, PenPaintGradient } from './penParser'
+import type { PenDocument, PenNode, PenNodeUnion, PenPaint, PenPaintGradient, PenShadow } from './penParser'
 
 type Lang = 'zh' | 'en'
 
@@ -98,10 +100,12 @@ const majorOf = (version: string): number | null => {
  * 旧版本迁移（单跳：`from` → 下一版）。1.0 → 1.1 是**拓宽**（`$mock` 除字符串外还接受
  * 结构化 JSON 值，供组件的 json 型 props 使用）：1.0 的稿逐字节合法，迁移只改版本号。
  * 1.1 → 1.2 同理：overlay 增加可选 `scrim`（遮罩语义），旧稿不含该键，迁移只改版本号。
+ * 1.2 → 1.3 同理：六个原语种类增加可选 `shadow`（外阴影），旧稿不含该键，迁移只改版本号。
  */
 export const AX_MIGRATIONS: Record<string, (raw: Record<string, unknown>) => Record<string, unknown>> = {
   '1.0': (raw) => ({ ...raw, ax: '1.1' }),
   '1.1': (raw) => ({ ...raw, ax: '1.2' }),
+  '1.2': (raw) => ({ ...raw, ax: '1.3' }),
 }
 
 /** 按需迁移到当前版本；返回 null 表示无法迁移（调用方 fail-closed）。 */
@@ -200,6 +204,42 @@ const validateTokens = (context: Context, raw: unknown): Record<string, AxToken>
     }
   }
   return tokens
+}
+
+/**
+ * 外阴影校验（1.3）：键白名单 + color 必填非空（token 或字面色）+ 偏移/模糊
+ * 必为有限数值；blur 额外要求 ≥ 0（负模糊在 CSS 里无意义，会被浏览器钳到 0——
+ * 与其静默钳制不如写稿当场报错）。种类门禁由各 kind 的允许键集承担（同 fill）。
+ */
+const checkShadow = (context: Context, path: string, value: unknown): void => {
+  if (!isRecord(value)) {
+    fail(context, path, label(
+      context,
+      'shadow 必须是对象（{ color, offsetX, offsetY, blur }）',
+      'shadow must be an object ({ color, offsetX, offsetY, blur })',
+    ))
+    return
+  }
+  checkKeys(context, path, value, AX_SHADOW_KEYS)
+  if (typeof value.color !== 'string' || value.color === '') {
+    fail(context, `${path}.color`, label(
+      context,
+      'shadow 缺少 `color`（token 引用或字面色）',
+      'shadow is missing `color` (a token reference or a color literal)',
+    ))
+  }
+  for (const key of ['offsetX', 'offsetY', 'blur'] as const) {
+    const offset = value[key]
+    if (typeof offset !== 'number' || !Number.isFinite(offset)) {
+      fail(context, `${path}.${key}`, label(
+        context,
+        `shadow.${key} 必须是数值（px）`,
+        `shadow.${key} must be a number (px)`,
+      ))
+    } else if (key === 'blur' && offset < 0) {
+      fail(context, `${path}.blur`, label(context, 'shadow.blur 不能为负', 'shadow.blur must not be negative'))
+    }
+  }
 }
 
 /** 渐变对象校验：kind 闭集、rotation 数值、stops 至少两个且颜色/位置合法。 */
@@ -831,6 +871,8 @@ const validateNode = (context: Context, path: string, raw: unknown): AxNode | nu
     if (value !== undefined) checkGradient(context, `${path}.${key}`, value)
   }
 
+  if (node.shadow !== undefined) checkShadow(context, `${path}.shadow`, node.shadow)
+
   return node
 }
 
@@ -1056,7 +1098,7 @@ const KEY_ORDER: readonly string[] = [
   'count', 'selected', 'state', 'text', 'layout', 'gap', 'padding', 'width', 'height',
   'justifyContent', 'alignItems', 'clip', 'theme', 'fontSize', 'fontWeight', 'fontFamily',
   'lineHeight', 'letterSpacing', 'textAlign', 'wrap', 'fill', 'stroke', 'strokeWidth',
-  'cornerRadius', 'innerRadius', 'geometry', 'viewBox', 'asset', 'mode', 'anchor', 'offset',
+  'cornerRadius', 'innerRadius', 'shadow', 'geometry', 'viewBox', 'asset', 'mode', 'anchor', 'offset',
   'scrim', 'children', 'tree',
 ]
 
@@ -1096,6 +1138,11 @@ export const serializeAxDocument = (document: AxDocument): string => {
       ...orderedRecord({
         id: page.id,
         name: page.name,
+        // 页级布局字段与节点同源：漏写会让写盘的 .ax 丢 layout/gap/padding，
+        // 读回来变成默认横向布局、渲染塌陷（`design_import` 产物即受此影响）。
+        layout: page.layout,
+        gap: page.gap,
+        padding: page.padding,
         group: page.group,
         state: page.state,
         width: page.width,
@@ -1152,6 +1199,10 @@ const gradientPaintOf = (gradient: AxGradient): PenPaintGradient => {
       : `linear-gradient(${180 + gradient.rotation}deg, ${stopList})`
   return { kind: 'gradient', css, gradientType: gradient.kind, rotation: gradient.rotation, stops }
 }
+
+/** `.ax` 的 shadow（1.3）→ 视图模型 PenShadow（几何是纯数值 px，color 原样交渲染层解析 token）。 */
+const shadowOf = (shadow: AxShadow | undefined): PenShadow | undefined =>
+  shadow === undefined ? undefined : { color: shadow.color, x: shadow.offsetX, y: shadow.offsetY, blur: shadow.blur }
 
 /** `.ax` 的 fill/stroke → 渲染器 paint（字符串 = 字面色/token，对象 = 渐变或图片）。 */
 const paintOf = (value: string | AxGradient | AxImageFill | undefined): PenPaint | undefined => {
@@ -1258,6 +1309,7 @@ export const projectAxToPenDocument = (
           textAlign: node.textAlign,
           textGrowth: growthOf(node.wrap),
           fill: paintOf(node.fill),
+          shadow: shadowOf(node.shadow),
         } as PenNode
       case 'icon':
         return {
@@ -1270,6 +1322,7 @@ export const projectAxToPenDocument = (
           width: node.size,
           height: node.size,
           fill: paintOf(node.fill),
+          shadow: shadowOf(node.shadow),
         } as PenNode
       case 'rect':
       case 'ellipse':
@@ -1281,6 +1334,7 @@ export const projectAxToPenDocument = (
           strokeWidth: node.strokeWidth,
           cornerRadius: node.cornerRadius,
           innerRadius: node.kind === 'ellipse' ? node.innerRadius : undefined,
+          shadow: shadowOf(node.shadow),
         } as PenNode
       case 'path':
         return {
@@ -1290,6 +1344,7 @@ export const projectAxToPenDocument = (
           viewBox: node.viewBox,
           fill: paintOf(node.fill),
           stroke: paintOf(node.stroke),
+          shadow: shadowOf(node.shadow),
         } as PenNode
       case 'image':
         return {
@@ -1307,6 +1362,7 @@ export const projectAxToPenDocument = (
           stroke: paintOf(node.stroke),
           strokeWidth: node.strokeWidth,
           cornerRadius: node.cornerRadius,
+          shadow: shadowOf(node.shadow),
           layout: node.layout,
           gap: node.gap,
           padding: node.padding,

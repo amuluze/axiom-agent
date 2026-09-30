@@ -2,8 +2,10 @@ import { useState } from 'react'
 import { Sparkles, Zap, KeyRound, LockKeyhole, Plus, Trash2, Eye, EyeOff, ExternalLink } from 'lucide-react'
 import {
   BUILTIN_PROVIDER_RUNTIME,
+  describeImageInputCapability,
   listModelsForProfile,
   providerRequiresApiKey,
+  type ImageInputDeclaration,
   type ProviderProfileDraft,
   type ProviderKind,
 } from '@/agent/transport/provider'
@@ -47,6 +49,9 @@ export const ProviderSection = ({ hook, context, providerLabel_, providerHasKey,
     deleteProviderKey,
   } = hook
   const { busy, providerMessage, settingsError } = context
+  // 可解释性（Domain 结果约束）：当前判定结果与依据。展示行在 demo 守卫之外，
+  // demo 恒显示仅文本（其归一化固定契约不携带声明）。
+  const imageInputView = describeImageInputCapability(draft)
   // 订阅型 provider 的官方入口与邀请/优惠链接（数据来自 providers.json，未声明则不渲染）。
   const providerLinks = (() => {
     if (draft.providerId === 'demo') return undefined
@@ -304,8 +309,33 @@ export const ProviderSection = ({ hook, context, providerLabel_, providerHasKey,
               value={draft.contextWindow}
             />
           </label>
+          <label>
+            {t('settings.provider.imageInput')}
+            <select
+              disabled={busy}
+              onChange={(event) => setDraft({
+                ...draft,
+                imageInput: event.target.value as ImageInputDeclaration,
+              })}
+              value={draft.imageInput ?? 'catalog'}
+            >
+              <option value="catalog">{t('settings.provider.imageInput.catalog')}</option>
+              <option value="text">{t('settings.provider.imageInput.text')}</option>
+              <option value="image">{t('settings.provider.imageInput.image')}</option>
+            </select>
+          </label>
         </div>
       )}
+      <p className="settings__hint" data-testid="provider-image-input-view">
+        {t('settings.provider.imageInputCurrent', {
+          capability: t(imageInputView.capability === 'image'
+            ? 'settings.provider.imageInput.image'
+            : 'settings.provider.imageInput.text'),
+          basis: t(`settings.provider.imageInputBasis.${imageInputView.basis}`),
+        })}
+        {imageInputView.basis === 'catalog-missing' && draft.providerId !== 'demo'
+          && ` ${t('settings.provider.imageInputCatalogMissingNote')}`}
+      </p>
       <div className="settings-actions">
         <button
           className="settings__button settings__button--primary"

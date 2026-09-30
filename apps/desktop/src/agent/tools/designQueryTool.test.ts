@@ -1,10 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import type { AgentEnvironment } from '@/agent/environment/AgentEnvironment'
 import type { DesignDocumentContent } from '@/platform/designDocument'
 import type { JsonValue } from '@/agent/core/types'
 import { vi } from 'vitest'
 import { createDesignQueryTool } from './designQueryTool'
-import { setDesignPageRenderProvider, setDesignScanPageRenderProvider } from '@/agent/design/designRenderHost'
+import { setDesignPageRenderProvider, setPngDecodeProvider, setDesignScanPageRenderProvider } from '@/agent/design/designRenderHost'
 import { setDesignComponentDetailProvider } from '@/agent/design/componentInventoryHost'
 import { AX_FORMAT_VERSION } from '@/agent/design/axSchema'
 
@@ -99,8 +99,8 @@ const axTool = createDesignQueryTool(
   { componentInventory: inventoryStub },
 )
 
-const run = (input: JsonValue, tool = axTool) =>
-  tool.execute(input, { signal: new AbortController().signal } as never)
+const run = (input: JsonValue, tool = axTool, context: Record<string, unknown> = {}) =>
+  tool.execute(input, { signal: new AbortController().signal, ...context } as never)
 
 describe('design_query tool：.ax 三层读取', () => {
   it('摘要：页清单（含分组/状态/节点数/用到组件）+ 组件清单 + token 清单', async () => {
@@ -222,6 +222,65 @@ describe('design_query tool：render 模式（渲染回读）', () => {
     expect(result.contentBlocks).toBeUndefined()
   })
 
+  it('渲染失败（ok:false）→ available:false 携带具体原因（不再一律归 no renderer）', async () => {
+    setDesignPageRenderProvider(async () => ({
+      ok: false as const,
+      reason: '页面挂载失败：渲染树为空（React 未捕获错误：boom）',
+    }))
+    try {
+      const result = await run({ file: '.pen/axiom.ax', mode: 'render', page: '会话' })
+      const parsed = JSON.parse(result.content) as { render: { available: boolean; reason?: string } }
+      expect(parsed.render.available).toBe(false)
+      expect(parsed.render.reason).toContain('渲染树为空')
+      expect(parsed.render.reason).not.toContain('no renderer')
+      expect(result.contentBlocks).toBeUndefined()
+      expect((result.details as { rendered: boolean }).rendered).toBe(false)
+    } finally {
+      setDesignPageRenderProvider(null)
+    }
+  })
+
+  it('渲染器抛错 → 归一为 ok:false + 原因（异常不冒泡给模型循环）', async () => {
+    setDesignPageRenderProvider(async () => {
+      throw new Error('WebView 截图超时（15s）')
+    })
+    try {
+      const result = await run({ file: '.pen/axiom.ax', mode: 'render', page: '会话' })
+      const parsed = JSON.parse(result.content) as { render: { available: boolean; reason?: string } }
+      expect(parsed.render.available).toBe(false)
+      expect(parsed.render.reason).toContain('WebView 截图超时')
+    } finally {
+      setDesignPageRenderProvider(null)
+    }
+  })
+
+  it('当前模型不支持图片 → 不光栅化、不产 image 块，并说明是模型能力所限', async () => {
+    const renderStub = vi.fn(async () => ({
+      base64: 'iVBORw0KGgo=',
+      mediaType: 'image/png' as const,
+      width: 590,
+      height: 390,
+      scale: 0.5,
+      pageName: '会话',
+    }))
+    setDesignPageRenderProvider(renderStub)
+    try {
+      const result = await run(
+        { file: '.pen/axiom.ax', mode: 'render', page: '会话' },
+        axTool,
+        { modelAcceptsImage: false },
+      )
+      const parsed = JSON.parse(result.content) as { render: { available: boolean; reason?: string } }
+      expect(parsed.render.available).toBe(false)
+      expect(parsed.render.reason).toContain('[图片已省略：当前模型不支持图片输入]')
+      expect(result.contentBlocks).toBeUndefined()
+      expect((result.details as { modelAcceptsImage?: boolean }).modelAcceptsImage).toBe(false)
+      expect(renderStub).not.toHaveBeenCalled()
+    } finally {
+      setDesignPageRenderProvider(null)
+    }
+  })
+
   it('render 模式必须指定 page', () => {
     const check = axTool.validate?.({ file: '.pen/axiom.ax', mode: 'render' } as never)
     expect(check?.ok).toBe(false)
@@ -274,6 +333,62 @@ describe('design_query tool：scan 模式（逐页渲染扫描验证）', () => 
     }
   })
 
+  it('当前模型不支持图片 → 保留逐页判定与空白检测，但丢缩略图 + 给出 imageNote', async () => {
+    setDesignScanPageRenderProvider(async (request: { pageIdOrIndex: string | number }) => ({
+      ok: true as const,
+      base64: 'dGh1bWI=',
+      mediaType: 'image/png' as const,
+      width: 400,
+      height: 300,
+      scale: 1,
+      pageName: String(request.pageIdOrIndex),
+      samples: 16000,
+      distinctColors: 256,
+      topColorFraction: 0.4,
+    }))
+    try {
+      const result = await run({ file: '.pen/axiom.ax', mode: 'scan' }, axTool, { modelAcceptsImage: false })
+      const parsed = JSON.parse(result.content) as {
+        rendered: boolean
+        imageNote?: string
+        summary: { total: number; ok: number; warn: number; fail: number }
+        pages: Array<{ id: string; status: string; render: string }>
+      }
+      // 渲染与空白检测仍然执行（scan 的核心价值与模型能力无关）。
+      expect(parsed.rendered).toBe(true)
+      expect(parsed.summary).toEqual({ total: 2, ok: 1, warn: 1, fail: 0 })
+      expect(parsed.pages[1]).toMatchObject({ id: 'p-empty', status: 'warn', render: 'ok' })
+      expect(parsed.imageNote).toContain('[图片已省略：当前模型不支持图片输入]')
+      expect(result.contentBlocks).toBeUndefined()
+      expect(result.details).toMatchObject({ thumbnails: 0 })
+    } finally {
+      setDesignScanPageRenderProvider(null)
+    }
+  })
+
+  it('视觉模型 → 保留缩略图、不带 imageNote（正向对照：降级是有条件的）', async () => {
+    setDesignScanPageRenderProvider(async (request: { pageIdOrIndex: string | number }) => ({
+      ok: true as const,
+      base64: 'dGh1bWI=',
+      mediaType: 'image/png' as const,
+      width: 400,
+      height: 300,
+      scale: 1,
+      pageName: String(request.pageIdOrIndex),
+      samples: 16000,
+      distinctColors: 256,
+      topColorFraction: 0.4,
+    }))
+    try {
+      const result = await run({ file: '.pen/axiom.ax', mode: 'scan' }, axTool, { modelAcceptsImage: true })
+      expect((result.details as { thumbnails: number }).thumbnails).toBeGreaterThan(0)
+      const parsed = JSON.parse(result.content) as { imageNote?: string }
+      expect(parsed.imageNote).toBeUndefined()
+    } finally {
+      setDesignScanPageRenderProvider(null)
+    }
+  })
+
   it('渲染失败页（ok:false）→ fail + 可读原因，不产缩略图', async () => {
     setDesignScanPageRenderProvider(async () => ({ ok: false as const, reason: '光栅化失败：无法创建画布上下文' }))
     try {
@@ -301,6 +416,23 @@ describe('design_query tool：scan 模式（逐页渲染扫描验证）', () => 
     expect(parsed.rendered).toBe(false)
     expect(parsed.pages.every((page) => page.render === 'skipped')).toBe(true)
     expect(result.contentBlocks).toBeUndefined()
+  })
+
+  it('渲染器抛错 → fail + 可读原因（不是笼统的不可用）', async () => {
+    setDesignScanPageRenderProvider(async () => {
+      throw new Error('canvas boom')
+    })
+    try {
+      const result = await run({ file: '.pen/axiom.ax', mode: 'scan' })
+      const parsed = JSON.parse(result.content) as {
+        summary: { fail: number }
+        pages: Array<{ status: string; issues: Array<{ message: string }> }>
+      }
+      expect(parsed.summary.fail).toBe(2)
+      expect(JSON.stringify(parsed.pages.map((page) => page.issues))).toContain('canvas boom')
+    } finally {
+      setDesignScanPageRenderProvider(null)
+    }
   })
 
   it('单页扫描（page 参数按页名/序号定位）', async () => {
@@ -469,16 +601,17 @@ describe('design_query tool', () => {
   it('computes a deterministic idempotency key', () => {
     // v3 起键里带 mode 段：同一 file+page 的 scan/render/page 结果形状不同，
     // 不能互为幂等回放。v4 追加 component 段（mode=component 的载荷随组件名变化）。
+    // v6 追加 implementation 段（reconcile 的对账结果随实现文件集变化）。
     expect(tool.idempotencyKey?.({ file: '.pen/axiom.pen', page: 1 }))
-      .toBe('design_query:.pen/axiom.pen::1::')
+      .toBe('design_query:.pen/axiom.pen::1:::')
     expect(tool.idempotencyKey?.({ file: '.pen/axiom.pen', nodeId: 'f-1' }))
-      .toBe('design_query:.pen/axiom.pen:::f-1:')
+      .toBe('design_query:.pen/axiom.pen:::f-1::')
     expect(tool.idempotencyKey?.({ file: '.pen/axiom.pen', mode: 'scan', page: 1 }))
-      .toBe('design_query:.pen/axiom.pen:scan:1::')
+      .toBe('design_query:.pen/axiom.pen:scan:1:::')
     expect(tool.idempotencyKey?.({ file: '.pen/axiom.pen', mode: 'render', page: 1 }))
-      .toBe('design_query:.pen/axiom.pen:render:1::')
+      .toBe('design_query:.pen/axiom.pen:render:1:::')
     expect(tool.idempotencyKey?.({ mode: 'component', component: 'ApprovalCard' }))
-      .toBe('design_query::component:::ApprovalCard')
+      .toBe('design_query::component:::ApprovalCard:')
   })
 
   it('propagates environment read failures', async () => {
@@ -641,3 +774,276 @@ describe('design_query tool：scan 的 token ↔ tokens.css 一致性（v4，建
     expect(axTool.validate?.({ file: '.pen/axiom.ax', mode: 'scan', tokensCss: '../escape.css' } as never)?.ok).toBe(false)
   })
 })
+
+describe('design_query tool：mode=reconcile（设计 ↔ 实现结构对账，v6）', () => {
+  // 实现文件集：SessionView 用 ApprovalCard（稿内组件）+ ResultChip（稿外组件）。
+  const IMPL_SOURCE = [
+    "import { ApprovalCard, ResultChip } from '@/components/session'",
+    'export const SessionView = () => (',
+    '  <main>',
+    '    <ApprovalCard command="npm test" />',
+    '    <ResultChip message="done" />',
+    '  </main>',
+    ')',
+  ].join('\n')
+
+  const reconcileEnvironment = (): AgentEnvironment => ({
+    design: { readDocument: (path: string) => path === '.pen/axiom.ax'
+      ? Promise.resolve(axDocumentContent)
+      : Promise.reject(new Error('not found')) },
+    workspace: {
+      // 目录递归：src/components 一个目录 → SessionView.tsx + README.md（非 ts 跳过）。
+      list: (path?: string) => path === 'src/components'
+        ? Promise.resolve({
+          entries: [
+            { path: 'src/components/SessionView.tsx', name: 'SessionView.tsx', kind: 'file' as const, sizeBytes: 1 },
+            { path: 'src/components/README.md', name: 'README.md', kind: 'file' as const, sizeBytes: 1 },
+          ],
+          truncated: false,
+        })
+        : Promise.reject(new Error('not found')),
+      readText: (path: string) => path === 'src/components/SessionView.tsx'
+        ? Promise.resolve({ content: IMPL_SOURCE, truncated: false })
+        : Promise.reject(new Error('not found')),
+    },
+  }) as unknown as AgentEnvironment
+
+  const reconcileTool = () =>
+    createDesignQueryTool(reconcileEnvironment(), {
+      componentInventory: () => [
+        ...inventoryStub(),
+        { name: 'ResultChip', kind: 'presentational' as const, sourcePath: 'components/session/ResultChip.tsx', props: [], fixtures: [], fixtureProps: {} },
+        { name: 'Sidebar', kind: 'store-bound' as const, sourcePath: 'components/Sidebar.tsx', props: [], fixtures: [], fixtureProps: {} },
+      ],
+    })
+
+  it('双向 diff：稿有实无（漏实现）与实有稿无（设计外）各自列出', async () => {
+    const result = await run(
+      { file: '.pen/axiom.ax', mode: 'reconcile', implementation: 'src/components' },
+      reconcileTool(),
+    )
+    const parsed = JSON.parse(result.content) as {
+      implementation: { filesScanned: number; fileCapReached: boolean }
+      design: { componentsUsed: string[] }
+      missingInImplementation: { component: string; pages: string[] }[]
+      extraInImplementation: { component: string; jsxUses: number; files: string[] }[]
+      matched: { component: string; jsxUses: number }[]
+    }
+    expect(parsed.implementation.filesScanned).toBe(1)
+    expect(parsed.design.componentsUsed).toEqual(['ApprovalCard'])
+    // ApprovalCard 双方都有 → matched；ResultChip 实有稿无 → extra。
+    expect(parsed.matched).toEqual([{ component: 'ApprovalCard', pages: 1, files: 1, jsxUses: 1, imports: 1 }])
+    expect(parsed.extraInImplementation).toEqual([
+      { component: 'ResultChip', jsxUses: 1, files: ['src/components/SessionView.tsx'] },
+    ])
+    expect(parsed.missingInImplementation).toEqual([])
+  })
+
+  it('稿内组件在实现里零 JSX 使用时报 missing（含用到它的页名）', async () => {
+    // 空实现目录：稿里的 ApprovalCard 全部落 missing。
+    const emptyEnv = {
+      design: { readDocument: () => Promise.resolve(axDocumentContent) },
+      workspace: {
+        list: () => Promise.resolve({ entries: [], truncated: false }),
+        readText: () => Promise.reject(new Error('not found')),
+      },
+    } as unknown as AgentEnvironment
+    const tool = createDesignQueryTool(emptyEnv, { componentInventory: inventoryStub })
+    const result = await run({ file: '.pen/axiom.ax', mode: 'reconcile', implementation: 'src/empty' }, tool)
+    const parsed = JSON.parse(result.content) as {
+      missingInImplementation: { component: string; pages: string[] }[]
+    }
+    expect(parsed.missingInImplementation).toEqual([{ component: 'ApprovalCard', pages: ['会话'] }])
+  })
+
+  it('implementation 数组与目录/文件混合都合法；string[] 之外的形态被拒', () => {
+    expect(axTool.validate?.({ file: '.pen/axiom.ax', mode: 'reconcile', implementation: ['src/a.tsx', 'src/b'] } as never)?.ok).toBe(true)
+    expect(axTool.validate?.({ file: '.pen/axiom.ax', mode: 'reconcile', implementation: [] } as never)?.ok).toBe(false)
+    expect(axTool.validate?.({ file: '.pen/axiom.ax', mode: 'reconcile', implementation: '../escape' } as never)?.ok).toBe(false)
+    // implementation 只在 reconcile 下合法；reconcile 要求 .ax 稿。
+    expect(axTool.validate?.({ file: '.pen/axiom.ax', mode: 'summary', implementation: 'src' } as never)?.ok).toBe(false)
+    expect(axTool.validate?.({ file: '.pen/axiom.pen', mode: 'reconcile', implementation: 'src' } as never)?.ok).toBe(false)
+    // reconcile 不接受 page/nodeId/tokensCss/component 混入。
+    expect(axTool.validate?.({ file: '.pen/axiom.ax', mode: 'reconcile', implementation: 'src', page: 1 } as never)?.ok).toBe(false)
+  })
+
+  it('幂等键包含归一后的 implementation（不同实现集不互为回放）', () => {
+    const keyOf = (input: Record<string, unknown>) => axTool.idempotencyKey?.(input as never) ?? ''
+    expect(keyOf({ file: '.pen/axiom.ax', mode: 'reconcile', implementation: ['b', 'a'] }))
+      .toBe(keyOf({ file: '.pen/axiom.ax', mode: 'reconcile', implementation: ['a', 'b'] }))
+    expect(keyOf({ file: '.pen/axiom.ax', mode: 'reconcile', implementation: 'a' }))
+      .not.toBe(keyOf({ file: '.pen/axiom.ax', mode: 'reconcile', implementation: 'b' }))
+  })
+
+  it('读失败的实现文件显式进 readFailures，不阻断其余文件的对账', async () => {
+    const env = {
+      design: { readDocument: () => Promise.resolve(axDocumentContent) },
+      workspace: {
+        list: () => Promise.resolve({
+          entries: [
+            { path: 'src/ok.tsx', name: 'ok.tsx', kind: 'file' as const, sizeBytes: 1 },
+            { path: 'src/bad.tsx', name: 'bad.tsx', kind: 'file' as const, sizeBytes: 1 },
+          ],
+          truncated: false,
+        }),
+        readText: (path: string) => path === 'src/ok.tsx'
+          ? Promise.resolve({ content: '<ApprovalCard />', truncated: false })
+          : Promise.reject(new Error('权限不足')),
+      },
+    } as unknown as AgentEnvironment
+    const tool = createDesignQueryTool(env, { componentInventory: inventoryStub })
+    const result = await run({ file: '.pen/axiom.ax', mode: 'reconcile', implementation: 'src' }, tool)
+    const parsed = JSON.parse(result.content) as {
+      implementation: { readFailures: string[] }
+      matched: { component: string }[]
+    }
+    expect(parsed.implementation.readFailures).toHaveLength(1)
+    expect(parsed.implementation.readFailures[0]).toContain('src/bad.tsx')
+    expect(parsed.matched.map((item) => item.component)).toEqual(['ApprovalCard'])
+  })
+})
+
+describe('design_query tool：compare 模式（设计 ↔ 实现像素对拍）', () => {
+  const white2x2 = { width: 2, height: 2, data: buildCompareSolid(2, 2, [255, 255, 255]) }
+  const oneRed2x2 = { width: 2, height: 2, data: buildCompareSolid(2, 2, [255, 255, 255]) }
+  oneRed2x2.data[0] = 0
+  oneRed2x2.data[1] = 0
+  oneRed2x2.data[2] = 255
+
+  const browserEnv = (
+    browserCommand: AgentEnvironment['browser']['command'],
+  ): AgentEnvironment =>
+    ({
+      design: { readDocument: () => Promise.resolve(axDocumentContent) },
+      browser: { command: browserCommand },
+    }) as unknown as AgentEnvironment
+
+  const goodBrowser: AgentEnvironment['browser']['command'] = async (request) => {
+    if (request.action === 'newTab') {
+      return { type: 'tabOpened', tab: { tabId: 't-1', url: request.url ?? '', title: '会话实现', active: true, hasDialog: false } }
+    }
+    if (request.action === 'screenshot') {
+      return { type: 'screenshot', imageBase64: 'IMPL', mimeType: 'image/png', width: 2, height: 2, resized: false }
+    }
+    if (request.action === 'setViewport') {
+      return { type: 'viewportApplied', width: request.width, height: request.height }
+    }
+    return { type: 'done' }
+  }
+
+  afterEach(() => {
+    setDesignPageRenderProvider(null)
+    setPngDecodeProvider(null)
+  })
+
+  it('成功路径：浏览器按设计页尺寸截屏，输出差异占比与包围盒（advisory）', async () => {
+    setDesignPageRenderProvider(async () => ({
+      base64: 'DESIGN',
+      mediaType: 'image/png' as const,
+      width: 2,
+      height: 2,
+      scale: 1,
+      pageName: '会话',
+    }))
+    setPngDecodeProvider(async (base64) => (base64 === 'DESIGN' ? white2x2 : oneRed2x2))
+    const calls: string[] = []
+    const browser = goodBrowser
+    const env = browserEnv(async (request) => {
+      calls.push(request.action)
+      return browser(request)
+    })
+    const tool = createDesignQueryTool(env)
+    const result = await run(
+      { file: '.pen/axiom.ax', mode: 'compare', page: '会话', url: 'http://localhost:5173/session' },
+      tool,
+    )
+    const parsed = JSON.parse(result.content) as {
+      verdict: string
+      diff: { mismatchedPixels: number; ratio: number }
+      bounds: { x: number; width: number }
+      implementation: { viewport: number[]; waitMs: number }
+    }
+    // 浏览器编排：开页 → 设视口（设计页 1180x780）→ 等待 → 截图 → 关页。
+    expect(calls).toEqual(['newTab', 'setViewport', 'wait', 'screenshot', 'closeTab'])
+    expect(parsed.implementation.viewport).toEqual([1180, 780])
+    expect(parsed.verdict).toBe('warn')
+    expect(parsed.diff.mismatchedPixels).toBe(1)
+    expect(parsed.diff.ratio).toBe(25)
+    expect(parsed.bounds).toEqual({ x: 0, y: 0, width: 1, height: 1 })
+    expect((result.details as { mode: string }).mode).toBe('compare')
+  })
+
+  it('浏览器不可用（未启用/子 Agent 封死）→ available:false 带设置与前置指引', async () => {
+    setDesignPageRenderProvider(async () => ({
+      base64: 'DESIGN',
+      mediaType: 'image/png' as const,
+      width: 2,
+      height: 2,
+      scale: 1,
+      pageName: '会话',
+    }))
+    const env = browserEnv(async () => {
+      throw new Error('浏览器能力未启用：请在 设置 → 浏览器 打开开关并保存')
+    })
+    const tool = createDesignQueryTool(env)
+    const result = await run(
+      { file: '.pen/axiom.ax', mode: 'compare', page: '会话', url: 'http://localhost:5173/session' },
+      tool,
+    )
+    const parsed = JSON.parse(result.content) as { available: boolean; stage: string; reason: string }
+    expect(parsed.available).toBe(false)
+    expect(parsed.stage).toBe('browser')
+    expect(parsed.reason).toContain('设置 → 浏览器')
+    expect(parsed.reason).toContain('dev server')
+  })
+
+  it('无 PNG 解码能力（Node/接缝未注入）→ available:false 而非假装成功', async () => {
+    setDesignPageRenderProvider(async () => ({
+      base64: 'DESIGN',
+      mediaType: 'image/png' as const,
+      width: 2,
+      height: 2,
+      scale: 1,
+      pageName: '会话',
+    }))
+    setPngDecodeProvider(null)
+    const tool = createDesignQueryTool(browserEnv(goodBrowser))
+    const result = await run(
+      { file: '.pen/axiom.ax', mode: 'compare', page: '会话', url: 'http://localhost:5173/session' },
+      tool,
+    )
+    const parsed = JSON.parse(result.content) as { available: boolean; stage: string }
+    expect(parsed.available).toBe(false)
+    expect(parsed.stage).toBe('decode')
+  })
+
+  it('校验：compare 必填 url+page+.ax，url/waitMs 不得与其它模式混用', () => {
+    expect(axTool.validate?.({ file: '.pen/axiom.ax', mode: 'compare', page: 1 } as never)?.ok).toBe(false)
+    expect(axTool.validate?.({ file: '.pen/axiom.ax', mode: 'compare', url: 'http://localhost:5173' } as never)?.ok).toBe(false)
+    expect(axTool.validate?.({ file: '.pen/axiom.pen', mode: 'compare', page: 1, url: 'http://localhost:5173' } as never)?.ok).toBe(false)
+    expect(axTool.validate?.({ file: '.pen/axiom.ax', mode: 'scan', url: 'http://localhost:5173' } as never)?.ok).toBe(false)
+    expect(axTool.validate?.({ file: '.pen/axiom.ax', mode: 'compare', page: 1, url: 'ftp://x' } as never)?.ok).toBe(false)
+    expect(axTool.validate?.({ file: '.pen/axiom.ax', mode: 'compare', page: 1, url: 'http://localhost:5173', waitMs: 0 } as never)?.ok).toBe(false)
+    expect(axTool.validate?.({ file: '.pen/axiom.ax', mode: 'compare', page: 1, url: 'http://localhost:5173', waitMs: 800 } as never)?.ok).toBe(true)
+  })
+
+  it('幂等键：compare 的 url/waitMs 进键，既有键形状不变', () => {
+    expect(axTool.idempotencyKey?.({ file: '.pen/axiom.ax', mode: 'compare', page: 1, url: 'http://l:1/a' } as never))
+      .toBe('design_query:.pen/axiom.ax:compare:1::::http://l:1/a')
+    expect(axTool.idempotencyKey?.({ file: '.pen/axiom.ax', mode: 'compare', page: 1, url: 'http://l:1/a', waitMs: 1500 } as never))
+      .toBe('design_query:.pen/axiom.ax:compare:1::::http://l:1/a:1500')
+    expect(axTool.idempotencyKey?.({ file: '.pen/axiom.pen', page: 1 } as never))
+      .toBe('design_query:.pen/axiom.pen::1:::')
+  })
+})
+
+function buildCompareSolid(width: number, height: number, color: [number, number, number]): Uint8ClampedArray {
+  const data = new Uint8ClampedArray(width * height * 4)
+  for (let i = 0; i < width * height; i++) {
+    data[i * 4] = color[0]
+    data[i * 4 + 1] = color[1]
+    data[i * 4 + 2] = color[2]
+    data[i * 4 + 3] = 255
+  }
+  return data
+}

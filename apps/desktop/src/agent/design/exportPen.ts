@@ -14,7 +14,7 @@
  *    （pen.dev 不认识我们的组件），导出为带名占位框并记 warning——不静默。
  */
 import { absoluteOriginOf } from '@/agent/design/axParser'
-import type { AxDocument, AxGradient, AxImageFill, AxNode, AxPage, AxToken } from '@/agent/design/axSchema'
+import type { AxDocument, AxGradient, AxImageFill, AxNode, AxPage, AxShadow, AxToken } from '@/agent/design/axSchema'
 
 /** `.pen` 页面在画布上的排列间距（导出物的顶层 frame 需要坐标才可见）。 */
 const PAGE_GAP_PX = 80
@@ -51,6 +51,13 @@ const imageFillToPen = (fill: AxImageFill): PenRaw => ({
   enabled: true,
   url: fill.asset,
   ...(fill.mode ? { mode: fill.mode } : {}),
+})
+
+/** `.ax` 的 shadow → `.pen` 的 effect 形态（penParser 的 normalizeShadow 读 color/offset/blur）。 */
+const shadowToPen = (shadow: AxShadow): Record<string, unknown> => ({
+  color: shadow.color,
+  offset: { x: shadow.offsetX, y: shadow.offsetY },
+  blur: shadow.blur,
 })
 
 /** `.ax` 的 fill/stroke → `.pen` 的 paint。 */
@@ -168,6 +175,7 @@ export const exportAxToPenDocument = (
           ...(ax.stroke !== undefined ? { stroke: paintToPen(ax.stroke) } : {}),
           ...(ax.strokeWidth !== undefined ? { strokeWidth: ax.strokeWidth } : {}),
           ...(ax.cornerRadius !== undefined ? { cornerRadius: ax.cornerRadius } : {}),
+          ...(ax.shadow !== undefined ? { effect: shadowToPen(ax.shadow) } : {}),
           children: (ax.children ?? []).map((child) => node(child, childSize)).filter((item) => item !== null),
         }
       }
@@ -184,6 +192,7 @@ export const exportAxToPenDocument = (
           ...(ax.letterSpacing !== undefined ? { letterSpacing: ax.letterSpacing } : {}),
           ...(ax.textAlign ? { textAlign: ax.textAlign } : {}),
           ...(ax.fill !== undefined ? { fill: paintToPen(ax.fill) } : {}),
+          ...(ax.shadow !== undefined ? { effect: shadowToPen(ax.shadow) } : {}),
         }
         if (ax.lineHeight) {
           if (ax.lineHeight.unit === 'multiplier') {
@@ -205,6 +214,7 @@ export const exportAxToPenDocument = (
           library: 'lucide',
           ...(ax.size !== undefined ? { fontSize: ax.size, width: ax.size, height: ax.size } : {}),
           ...(ax.fill !== undefined ? { fill: paintToPen(ax.fill) } : {}),
+          ...(ax.shadow !== undefined ? { effect: shadowToPen(ax.shadow) } : {}),
         }
       case 'rect':
       case 'ellipse':
@@ -217,6 +227,7 @@ export const exportAxToPenDocument = (
           ...(ax.strokeWidth !== undefined ? { strokeWidth: ax.strokeWidth } : {}),
           ...(ax.cornerRadius !== undefined ? { cornerRadius: ax.cornerRadius } : {}),
           ...(ax.innerRadius !== undefined ? { innerRadius: ax.innerRadius } : {}),
+          ...(ax.shadow !== undefined ? { effect: shadowToPen(ax.shadow) } : {}),
         }
       case 'path':
         return {
@@ -227,6 +238,7 @@ export const exportAxToPenDocument = (
           ...(ax.viewBox ? { viewBox: ax.viewBox } : {}),
           ...(ax.fill !== undefined ? { fill: paintToPen(ax.fill) } : {}),
           ...(ax.stroke !== undefined ? { stroke: paintToPen(ax.stroke) } : {}),
+          ...(ax.shadow !== undefined ? { effect: shadowToPen(ax.shadow) } : {}),
         }
       case 'image':
         return {

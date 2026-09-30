@@ -9,7 +9,6 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { decodeBase64ToBytes } from './base64'
 
 export type { UnlistenFn } from '@tauri-apps/api/event'
 
@@ -117,21 +116,7 @@ export const onSshUploadEvent = async (
   return listen<SshUploadEvent>(SSH_UPLOAD_EVENT, (event) => handler(event.payload))
 }
 
-/**
- * 订阅指定主机的会话输出：字节流经流式 UTF-8 解码为字符串（跨 chunk 的
- * 多字节字符不丢），done 以 exitCode 回调。返回取消订阅函数。
- */
-export const subscribeSshSessionOutput = async (
-  hostId: string,
-  onData: (data: string) => void,
-  onDone: (exitCode: number | null) => void,
-): Promise<UnlistenFn> => {
-  const decoder = new TextDecoder()
-  return onSshSessionEvent((event) => {
-    if (event.hostId !== hostId) return
-    if (event.data) {
-      onData(decoder.decode(decodeBase64ToBytes(event.data), { stream: true }))
-    }
-    if (event.done) onDone(event.exitCode ?? null)
-  })
-}
+// 曾有 per-host 的 subscribeSshSessionOutput（各订阅一份、各自 decoder）：实际
+// 消费方 useSshTerminals 用的是**单订阅 + 按主机路由到各实例的独立 decoder**
+// （多主机只需一份监听），两份流式解码逻辑双轨维护违反单一事实源——已删除，
+// 解码的唯一实现随订阅方内联在 useSshTerminals。

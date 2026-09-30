@@ -5,7 +5,7 @@
 //! 受陷渲染进程无法把密钥库里的密钥发到任意 host——见 `AGENTS.md` 安全模型段
 //! 「模型端点绑定」与 `model_http.rs::stream_model_http_to_events` 的 origin 校验。
 //!
-//! Provider Profile 文档解析（v4/v3/v2/legacy 迁移）与 secretId 规范化/迁移也在此
+//! Provider Profile 文档解析（v5/v4/v3/v2/legacy 迁移）与 secretId 规范化/迁移也在此
 //! 作为唯一权威源（`decode_profile_document` / `normalize_profile_draft`），WebView
 //! 只传原始 JSON，由本模块校验后返回规范化结果。
 //!
@@ -19,11 +19,17 @@ use serde_json::{json, Map, Value};
 use crate::model_http::ModelApiFormat;
 use crate::network_policy::{is_allowed_plain_http_host, url_origin, validate_model_url};
 
-pub(crate) const PROVIDER_PROFILE_SCHEMA_VERSION: u64 = 4;
-const PREVIOUS_PROVIDER_PROFILE_SCHEMA_VERSION: u64 = 3;
+pub(crate) const PROVIDER_PROFILE_SCHEMA_VERSION: u64 = 5;
+const PREVIOUS_PROVIDER_PROFILE_SCHEMA_VERSION: u64 = 4;
 /// v2 是最后一个使用 legacy secret 前缀的版本：只有 v2 文档需要 secretId
 /// 迁移（legacy 前缀 → 当前 namespace）；v3 起文档已持有当前 namespace。
 const SECRET_MIGRATION_SCHEMA_VERSION: u64 = 2;
+/// v3 文档已持有当前 secret namespace（无 website / imageInput）：解码合法，
+/// 只需重写版本号。bump 逐次抬高时它退为具名版本而非被静默丢弃。
+const CURRENT_SECRET_NAMESPACE_SCHEMA_VERSION: u64 = 3;
+/// v5 起文档可携带图片输入能力声明（imageInput）；低版本携带即按未知字段
+/// fail-closed 拒绝，与 TS `providerProfile.ts` 逐字对偶。
+const IMAGE_INPUT_DECLARATION_SCHEMA_VERSION: u64 = 5;
 
 // Provider 内置表、边界常量、secret 前缀与 per-provider 可信 host 均由
 // `contracts/providers.json` 生成（`generated_provider_table.rs`）。此处 re-export
@@ -237,6 +243,18 @@ fn parse_capabilities_strict(value: Option<&Value>) -> Result<(bool, bool), Stri
     Ok((tool_references, tool_search))
 }
 
+/// 归一化图片输入能力声明（与 TS `normalizeImageInputImpl` 逐字等价）：缺省归一为
+/// `catalog`（跟随目录），三态之外的值报错而非静默落到某一档——静默归一会让
+/// 「声明支持图片」被读成仅文本（或反之），能力结论随之错误。
+fn normalize_image_input(value: Option<&Value>) -> Result<ImageInputDeclaration, String> {
+    match value {
+        None => Ok(ImageInputDeclaration::Catalog),
+        Some(Value::String(raw)) => ImageInputDeclaration::parse(raw)
+            .ok_or_else(|| "Provider Profile 图片输入能力声明无效".to_string()),
+        Some(_) => Err("Provider Profile 图片输入能力声明无效".into()),
+    }
+}
+
 /// 判断 `secret_id` 是否落在该 provider 当前 secretId namespace（默认前缀或其子级）。
 fn is_secret_id_compatible_with_provider(provider_id: &str, secret_id: &str) -> bool {
     let Ok(entry) = find_profile(provider_id) else {
@@ -330,6 +348,34 @@ struct CapabilitiesDoc {
     tool_search: bool,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum ImageInputDeclaration {
+    /// 跟随目录（缺省）。
+    Catalog,
+    Text,
+    Image,
+}
+
+impl ImageInputDeclaration {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Catalog => "catalog",
+            Self::Text => "text",
+            Self::Image => "image",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "catalog" => Some(Self::Catalog),
+            "text" => Some(Self::Text),
+            "image" => Some(Self::Image),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProviderProfileDoc {
@@ -347,6 +393,9 @@ struct ProviderProfileDoc {
     max_output_tokens: u64,
     context_window: u64,
     capabilities: CapabilitiesDoc,
+    /// 图片输入能力声明。demo 固定契约不携带（能力恒为仅文本，声明无处存放）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_input: Option<ImageInputDeclaration>,
     #[serde(skip_serializing_if = "Option::is_none")]
     secret_id: Option<String>,
 }
@@ -384,6 +433,8 @@ fn demo_profile_doc() -> ProviderProfileDoc {
             tool_references: false,
             tool_search: false,
         },
+        // demo 固定契约不携带声明字段：能力恒为仅文本，声明无处存放。
+        image_input: None,
         secret_id: None,
     }
 }
@@ -478,6 +529,7 @@ fn normalize_profile_draft(draft: &Value) -> Result<ProviderProfileDoc, String> 
     );
     let (requested_tool_references, requested_tool_search) =
         parse_capabilities_lenient(draft.get("capabilities"));
+    let image_input = normalize_image_input(draft.get("imageInput"))?;
     let secret_id =
         normalize_secret_id(provider_id, draft.get("secretId").and_then(Value::as_str))?;
     Ok(ProviderProfileDoc {
@@ -497,6 +549,7 @@ fn normalize_profile_draft(draft: &Value) -> Result<ProviderProfileDoc, String> 
                 && requested_tool_references,
             tool_search: entry.supported_capabilities.tool_search && requested_tool_search,
         },
+        image_input: Some(image_input),
         secret_id,
     })
 }
@@ -580,7 +633,7 @@ fn provider_secret_migration(
     })
 }
 
-/// 解码已持久化的 Provider Profile 文档（v4/v3/v2/legacy），返回规范化 profile 与迁移元数据。
+/// 解码已持久化的 Provider Profile 文档（v5/v4/v3/v2/legacy），返回规范化 profile 与迁移元数据。
 fn decode_profile_fields(
     value: &Map<String, Value>,
     version: u64,
@@ -598,9 +651,15 @@ fn decode_profile_fields(
         "maxOutputTokens",
         "contextWindow",
         "capabilities",
-        "secretId",
     ];
-    assert_exact_fields(value, FIELDS, &format!("Provider Profile v{version}"))?;
+    // 声明字段按版本门禁：仅 v5 文档允许携带 imageInput，低版本携带即按未知
+    // 字段 fail-closed 拒绝（与 TS 侧 assertExactFields 逐字对偶）。
+    let mut allowed: Vec<&str> = FIELDS.to_vec();
+    if version >= IMAGE_INPUT_DECLARATION_SCHEMA_VERSION {
+        allowed.push("imageInput");
+    }
+    allowed.push("secretId");
+    assert_exact_fields(value, &allowed, &format!("Provider Profile v{version}"))?;
     let profile_id = value
         .get("profileId")
         .and_then(Value::as_str)
@@ -638,6 +697,12 @@ fn decode_profile_fields(
     };
     let (requested_tool_references, requested_tool_search) =
         parse_capabilities_strict(value.get("capabilities"))?;
+    // 低于 v5 的文档缺该键 → 按「跟随目录」解释（不视为错误）。
+    let image_input = if version >= IMAGE_INPUT_DECLARATION_SCHEMA_VERSION {
+        normalize_image_input(value.get("imageInput"))?
+    } else {
+        ImageInputDeclaration::Catalog
+    };
     // 已移除的内置 minimax provider 向前兼容：providerId='minimax' 的 v2/v3
     // profile 统一降级为 generic-anthropic-compatible（endpoint/modelId 原样保留）。
     let provider_id = if raw_provider_id == "minimax" {
@@ -659,6 +724,8 @@ fn decode_profile_fields(
             || normalized.model_name.as_deref() != model_name.filter(|name| !name.is_empty())
             || normalized.website.as_deref() != website.filter(|site| !site.is_empty())
             || normalized.secret_id.is_some()
+            // demo 固定契约不携带声明字段：文档携带即非规范化数据。
+            || value.get("imageInput").is_some()
             || normalized.capabilities.tool_references != requested_tool_references
             || normalized.capabilities.tool_search != requested_tool_search
         {
@@ -711,6 +778,7 @@ fn decode_profile_fields(
             "toolReferences": requested_tool_references,
             "toolSearch": requested_tool_search,
         },
+        "imageInput": image_input.as_str(),
         "secretId": migrated_secret_id,
     });
     let normalized = normalize_profile_draft(&draft)?;
@@ -723,6 +791,7 @@ fn decode_profile_fields(
         || normalized.max_output_tokens != max_output_tokens
         || normalized.context_window != context_window
         || normalized.secret_id != migrated_secret_id
+        || normalized.image_input != Some(image_input)
         || normalized.capabilities.tool_references != requested_tool_references
         || normalized.capabilities.tool_search != requested_tool_search
     {
@@ -746,8 +815,19 @@ fn decode_profile_document(raw: &Value) -> Result<DecodedProfileDoc, String> {
     if value.get("schemaVersion").and_then(Value::as_u64)
         == Some(PREVIOUS_PROVIDER_PROFILE_SCHEMA_VERSION)
     {
-        // v3 起文档已持有当前 secret namespace：只需重写版本号，无 secret 迁移。
+        // v4 文档缺 imageInput：按「跟随目录」解释（不视为错误），只需重写版本号。
         let profile = decode_profile_fields(value, PREVIOUS_PROVIDER_PROFILE_SCHEMA_VERSION)?;
+        return Ok(DecodedProfileDoc {
+            profile,
+            requires_persistence_migration: true,
+            secret_migration: None,
+        });
+    }
+    if value.get("schemaVersion").and_then(Value::as_u64)
+        == Some(CURRENT_SECRET_NAMESPACE_SCHEMA_VERSION)
+    {
+        // v3 文档（无 website / imageInput）：已持有当前 secret namespace，无 secret 迁移。
+        let profile = decode_profile_fields(value, CURRENT_SECRET_NAMESPACE_SCHEMA_VERSION)?;
         return Ok(DecodedProfileDoc {
             profile,
             requires_persistence_migration: true,
@@ -932,9 +1012,9 @@ pub(crate) fn is_known_legacy_provider_secret(secret_id: String) -> bool {
 mod tests {
     use super::*;
 
-    fn v4_profile() -> Value {
+    fn v5_profile() -> Value {
         json!({
-            "schemaVersion": 4,
+            "schemaVersion": 5,
             "profileId": "work.openai",
             "providerId": "openai",
             "apiFormat": "openai-responses",
@@ -948,9 +1028,17 @@ mod tests {
         })
     }
 
+    fn downgraded(mut value: Value, version: u64) -> Value {
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("schemaVersion".into(), Value::from(version));
+        value
+    }
+
     #[test]
-    fn decodes_normalized_v4_profile_without_migration() {
-        let decoded = decode_profile_document(&v4_profile()).unwrap();
+    fn decodes_normalized_v5_profile_without_migration() {
+        let decoded = decode_profile_document(&v5_profile()).unwrap();
         assert!(!decoded.requires_persistence_migration);
         assert!(decoded.secret_migration.is_none());
         assert_eq!(decoded.profile.profile_id, "work.openai");
@@ -958,11 +1046,89 @@ mod tests {
             decoded.profile.secret_id.as_deref(),
             Some("provider.openai-responses.api-key")
         );
+        // 缺声明按「跟随目录」归一（Domain 不变量 3）。
+        assert_eq!(decoded.profile.image_input, Some(ImageInputDeclaration::Catalog));
     }
 
     #[test]
-    fn rejects_v4_profile_with_unknown_field() {
-        let mut value = v4_profile();
+    fn decodes_v5_profile_with_image_input_declaration() {
+        for (raw, expected) in [
+            ("image", ImageInputDeclaration::Image),
+            ("text", ImageInputDeclaration::Text),
+            ("catalog", ImageInputDeclaration::Catalog),
+        ] {
+            let mut value = v5_profile();
+            value
+                .as_object_mut()
+                .unwrap()
+                .insert("imageInput".into(), Value::from(raw));
+            let decoded = decode_profile_document(&value).unwrap();
+            assert_eq!(decoded.profile.image_input, Some(expected), "raw={raw}");
+        }
+    }
+
+    #[test]
+    fn rejects_v5_profile_with_unknown_image_input_declaration() {
+        let mut value = v5_profile();
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("imageInput".into(), Value::from("multimodal"));
+        let error = decode_profile_document(&value).unwrap_err();
+        assert!(
+            error.contains("图片输入能力声明无效"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_image_input_declaration_on_pre_v5_documents() {
+        // 版本门禁：v4 文档携带 imageInput 按未知字段 fail-closed 拒绝。
+        for version in [4, 3, 2] {
+            let mut value = downgraded(v5_profile(), version);
+            value
+                .as_object_mut()
+                .unwrap()
+                .insert("imageInput".into(), Value::from("image"));
+            let error = decode_profile_document(&value).unwrap_err();
+            assert!(
+                error.contains("未知字段"),
+                "v{version} unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_image_input_declaration_on_demo_document() {
+        // demo 固定契约不携带声明字段，文档携带即非规范化数据。
+        let mut value = json!({
+            "schemaVersion": 5,
+            "profileId": "builtin.demo",
+            "providerId": "demo",
+            "apiFormat": "demo",
+            "endpoint": "",
+            "modelId": "demo-v1",
+            "timeoutMs": 60_000,
+            "maxOutputTokens": 4_096,
+            "contextWindow": 128_000,
+            "capabilities": { "toolReferences": false, "toolSearch": false }
+        });
+        let decoded = decode_profile_document(&value).unwrap();
+        assert_eq!(decoded.profile.image_input, None);
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("imageInput".into(), Value::from("image"));
+        let error = decode_profile_document(&value).unwrap_err();
+        assert!(
+            error.contains("不是规范化数据"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_v5_profile_with_unknown_field() {
+        let mut value = v5_profile();
         value
             .as_object_mut()
             .unwrap()
@@ -972,8 +1138,8 @@ mod tests {
     }
 
     #[test]
-    fn decodes_v4_profile_with_model_name_and_website() {
-        let mut value = v4_profile();
+    fn decodes_v5_profile_with_model_name_and_website() {
+        let mut value = v5_profile();
         {
             let object = value.as_object_mut().unwrap();
             object.insert("modelName".into(), Value::from("GPT-4.1 主力"));
@@ -986,25 +1152,37 @@ mod tests {
     }
 
     #[test]
-    fn decodes_previous_v3_profile_with_persistence_migration() {
-        // v3 旧文档（无 website）：解码成功但需重写持久化；secret 已是当前
-        // namespace，不产生 secret 迁移。
-        let mut value = v4_profile();
-        value
-            .as_object_mut()
-            .unwrap()
-            .insert("schemaVersion".into(), Value::from(3));
-        let decoded = decode_profile_document(&value).unwrap();
+    fn decodes_previous_v4_profile_with_persistence_migration() {
+        // v4 旧文档（无 imageInput）：解码成功但需重写持久化；secret 已是当前
+        // namespace，不产生 secret 迁移。缺声明按「跟随目录」解释。
+        let decoded = decode_profile_document(&downgraded(v5_profile(), 4)).unwrap();
+        assert!(decoded.requires_persistence_migration);
+        assert!(decoded.secret_migration.is_none());
+        assert_eq!(decoded.profile.image_input, Some(ImageInputDeclaration::Catalog));
+        assert_eq!(decoded.profile.schema_version, PROVIDER_PROFILE_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn decodes_v3_profile_with_persistence_migration() {
+        // v3 旧文档（无 website / imageInput）：同样只重写版本号。
+        let decoded = decode_profile_document(&downgraded(v5_profile(), 3)).unwrap();
         assert!(decoded.requires_persistence_migration);
         assert!(decoded.secret_migration.is_none());
         assert_eq!(decoded.profile.website, None);
-        assert_eq!(decoded.profile.schema_version, PROVIDER_PROFILE_SCHEMA_VERSION);
+        assert_eq!(decoded.profile.image_input, Some(ImageInputDeclaration::Catalog));
+    }
+
+    #[test]
+    fn rejects_future_profile_schema_version() {
+        // 高于当前版本的文档 fail-closed 拒绝，不静默降级。
+        let error = decode_profile_document(&downgraded(v5_profile(), 6)).unwrap_err();
+        assert!(error.contains("格式无效"), "unexpected error: {error}");
     }
 
     #[test]
     fn normalizes_model_name_with_trim_and_empty_omission() {
         let trimmed = normalize_profile_draft(&json!({
-            "schemaVersion": 4,
+            "schemaVersion": 5,
             "profileId": "work.openai",
             "providerId": "openai",
             "apiFormat": "openai-responses",
@@ -1021,7 +1199,7 @@ mod tests {
         assert_eq!(trimmed.model_name.as_deref(), Some("GPT-4.1 主力"));
 
         let empty = normalize_profile_draft(&json!({
-            "schemaVersion": 4,
+            "schemaVersion": 5,
             "profileId": "work.openai",
             "providerId": "openai",
             "apiFormat": "openai-responses",
@@ -1041,7 +1219,7 @@ mod tests {
     #[test]
     fn normalizes_website_with_trim_and_empty_omission() {
         let trimmed = normalize_profile_draft(&json!({
-            "schemaVersion": 4,
+            "schemaVersion": 5,
             "profileId": "work.openai",
             "providerId": "openai",
             "apiFormat": "openai-responses",
@@ -1058,7 +1236,7 @@ mod tests {
         assert_eq!(trimmed.website.as_deref(), Some("https://openai.com"));
 
         let empty = normalize_profile_draft(&json!({
-            "schemaVersion": 4,
+            "schemaVersion": 5,
             "profileId": "work.openai",
             "providerId": "openai",
             "apiFormat": "openai-responses",
@@ -1079,7 +1257,7 @@ mod tests {
     fn rejects_overlong_model_name() {
         let model_name = "x".repeat(MODEL_ID_MAX_BYTES + 1);
         let error = normalize_profile_draft(&json!({
-            "schemaVersion": 4,
+            "schemaVersion": 5,
             "profileId": "work.openai",
             "providerId": "openai",
             "apiFormat": "openai-responses",
@@ -1100,7 +1278,7 @@ mod tests {
     fn rejects_overlong_website() {
         let website = "x".repeat(MODEL_ID_MAX_BYTES + 1);
         let error = normalize_profile_draft(&json!({
-            "schemaVersion": 4,
+            "schemaVersion": 5,
             "profileId": "work.openai",
             "providerId": "openai",
             "apiFormat": "openai-responses",
@@ -1249,9 +1427,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_normalized_v4_profile() {
-        let mut value = v4_profile();
-        // 越界 maxOutputTokens 在 v4 文档中必须 fail-closed（strict 校验）。
+    fn rejects_non_normalized_v5_profile() {
+        let mut value = v5_profile();
+        // 越界 maxOutputTokens 在 v5 文档中必须 fail-closed（strict 校验）。
         // 用常量 + 1 而非旧魔数：范围由契约生成，写死字面量会在上限变更时静默失效
         // （64000 → 512000 时 99_999 变为合法值，用例曾因此失去意义）。
         value
@@ -1374,7 +1552,7 @@ mod tests {
     #[test]
     fn normalizes_draft_with_clamped_bounds_and_default_secret() {
         let draft = json!({
-            "schemaVersion": 4,
+            "schemaVersion": 5,
             "profileId": "draft.profile",
             "providerId": "generic-anthropic-compatible",
             "apiFormat": "anthropic-compatible",
@@ -1400,7 +1578,7 @@ mod tests {
     #[test]
     fn rejects_draft_without_model_id() {
         let mut draft = json!({
-            "schemaVersion": 4,
+            "schemaVersion": 5,
             "profileId": "draft.profile",
             "providerId": "openai",
             "apiFormat": "openai-responses",
@@ -1418,7 +1596,7 @@ mod tests {
     #[test]
     fn rejects_credentials_inside_endpoint() {
         let draft = json!({
-            "schemaVersion": 4,
+            "schemaVersion": 5,
             "profileId": "draft.profile",
             "providerId": "openai",
             "apiFormat": "openai-responses",
@@ -1432,7 +1610,7 @@ mod tests {
     #[test]
     fn demo_draft_always_normalizes_to_builtin_demo() {
         let draft = json!({
-            "schemaVersion": 4,
+            "schemaVersion": 5,
             "profileId": "whatever",
             "providerId": "demo",
             "apiFormat": "demo",

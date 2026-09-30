@@ -103,8 +103,8 @@ describe('tool registry', () => {
     expect(browser?.recoveryPolicy).toBe('never')
     expect(browser?.requiresApproval).toBe(false)
     expect(browser?.executionMode).toBe('sequential')
-    // v6：新增 dblclick / set_viewport / downloads / read_download（迁移链见 toolNameMigrations.ts）。
-    expect(browser?.runtimeVersion).toBe('6')
+    // v8：仅文本判定下 screenshot 降级文案收敛到统一占位子串（迁移链见 toolNameMigrations.ts）。
+    expect(browser?.runtimeVersion).toBe('8')
     expect(createProductToolRuntime(['workspace:read', 'web:browser'], undefined).activeToolNames)
       .not.toContain('browser')
   })

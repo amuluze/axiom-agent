@@ -17,12 +17,15 @@ import type { Root } from 'react-dom/client'
 import type { CSSProperties } from 'react'
 import { parseAxDocument, projectAxToPenDocument } from '@/agent/design/axParser'
 import type { AxDocument } from '@/agent/design/axSchema'
-import type {
-  DesignPageRenderRequest,
-  DesignPageRenderResult,
-  DesignScanPageRenderRequest,
-  DesignScanPageRenderResult,
+import {
+  setDesignScanRenderConcurrency,
+  type DesignPageRenderFailure,
+  type DesignPageRenderRequest,
+  type DesignPageRenderResult,
+  type DesignScanPageRenderRequest,
+  type DesignScanPageRenderResult,
 } from '@/agent/design/designRenderHost'
+import type { RgbaImage } from '@/agent/design/visualCompare'
 import { useUiStore } from '@/stores/uiStore'
 import type { PenDocument, PenNode } from '@/agent/design/penParser'
 import PenNodeView from '../PenNodeView'
@@ -112,8 +115,10 @@ export const mountPenPageElement = async (
   container.setAttribute('data-ax-render-host', '')
   // capture 模式必须**可见**（takeSnapshot 只截当前视口）：铺满视口 + 不透明底，
   // 避免截图混入应用其它 UI；offscreen 模式沿用视口外定位（display:none 无布局）。
+  // pointer-events:none 让遮罩期间的点击穿透到下层 UI——扫描的 staging 回退是
+  // 连续多页的遮罩闪烁，吞掉输入等于用户「想停也停不了」。
   container.style.cssText = options.mode === 'capture'
-    ? `position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;background:${background};`
+    ? `position:fixed;inset:0;z-index:2147483000;pointer-events:none;display:flex;align-items:center;justify-content:center;background:${background};`
     : 'position:fixed;left:-100000px;top:0;pointer-events:none;'
   window.document.body.appendChild(container)
   // capture 模式等比缩放适配视口（Retina 截图仍是 2× 像素，缩略图预算足够）。
@@ -199,20 +204,28 @@ export const mountAxPageElement = async (
   return mountPenPageElement(projection, pageIdOrIndex, themeMode, options)
 }
 
-/** 宿主提供者实现：挂载 → 光栅化（原生截图优先，foreignObject 回退）→ 拆容器。 */
+/** 宿主提供者实现：挂载 → 光栅化（原生截图优先，foreignObject 回退）→ 拆容器。
+ * 失败一律返回 ok:false + 可读原因（解析/挂载/光栅化/预算各有措辞），不再静默归
+ * null——工具据此把「这一次为什么没渲染出来」透传给模型，而非笼统报无渲染器。 */
 export const renderAxPageToPng = async (
   request: DesignPageRenderRequest,
-): Promise<DesignPageRenderResult | null> => {
+): Promise<DesignPageRenderResult | DesignPageRenderFailure | null> => {
   const parsed = parseAxDocument(request.source)
-  if (!parsed.document) return null
+  if (!parsed.document) {
+    const detail = parsed.error
+      ?? parsed.diagnostics
+        .filter((item) => item.level === 'error')
+        .map((item) => `${item.path ?? '?'}: ${item.message}`)
+        .join('; ')
+    return { ok: false, reason: `设计稿解析失败：${detail || '未知错误'}` }
+  }
   const themeMode = currentThemeMode()
   const native = await nativeCaptureSupported()
   const { mounted, error } = await mountAxPageElement(parsed.document, request.pageIdOrIndex, themeMode, {
     mode: native ? 'capture' : 'offscreen',
   })
   if (!mounted) {
-    console.error('[renderPageHost] 页面挂载失败：', error)
-    return null
+    return { ok: false, reason: `页面挂载失败：${error ?? '未知原因'}` }
   }
   try {
     // 原生路径（WKWebView）：Webkit 污染含 foreignObject 的 SVG 画布，唯一可靠光栅化源。
@@ -231,8 +244,10 @@ export const renderAxPageToPng = async (
     }
     // foreignObject 回退（浏览器 dev / Chromium）：按预算降采样。
     const background = getComputedStyle(mounted.element).backgroundColor || '#ffffff'
+    let smallest = ''
     for (const scale of SCALE_LADDER) {
       const base64 = await renderPageToPngBase64(mounted.element, { background, scale })
+      smallest = base64
       // base64 字符数 ≈ 字节数（PNG 是 8bit 二进制，base64 后 4/3 膨胀）。
       if (base64.length <= request.maxBytes) {
         return {
@@ -245,11 +260,9 @@ export const renderAxPageToPng = async (
         }
       }
     }
-    return null
+    return { ok: false, reason: `PNG 超出图片预算：最小档倍率仍 ${smallest.length} > ${request.maxBytes} 字符（可调大 imageMaxBytes 重试）` }
   } catch (error) {
-    // 观测点：渲染模式的降级文案较简（无渲染能力/超预算），细节落 console 供诊断。
-    console.error('[renderPageHost] 页面渲染失败：', error)
-    return null
+    return { ok: false, reason: `光栅化失败：${error instanceof Error ? error.message : String(error)}` }
   } finally {
     mounted.dispose()
   }
@@ -260,6 +273,17 @@ export const renderAxPageToPng = async (
  * 控制单页成本比控制保真度更重要。
  */
 const SCAN_SCALE_LADDER = [1, 0.5, 0.25] as const
+
+/**
+ * 扫描验证的扫描渲染并发度：native 截图走 capture 模式挂载（容器铺满视口），
+ * 并行会互相污染截图，必须串行；offscreen（foreignObject）容器各自独立在
+ * 视口外，3 路并行安全。探测结果有缓存（nativeCaptureSupported）。
+ */
+export const configureScanRenderConcurrency = (): void => {
+  void nativeCaptureSupported().then((native) => {
+    setDesignScanRenderConcurrency(native ? 1 : 3)
+  })
+}
 
 /**
  * 扫描验证的单页渲染实现（main.tsx 注入 `setDesignScanPageRenderProvider`）：
@@ -364,6 +388,31 @@ export const renderPenPageForScan = async (
     }
   } finally {
     mounted.dispose()
+  }
+}
+
+/**
+ * PNG → RGBA 解码实现（main.tsx 注入 `setPngDecodeProvider`，视觉对拍用）：
+ * data: URL 加载（不污染画布）→ 1:1 绘制 → getImageData。解码失败归一 null。
+ */
+export const decodePngToRgbaHost = async (base64: string): Promise<RgbaImage | null> => {
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const element = new Image()
+      element.onload = () => resolve(element)
+      element.onerror = () => reject(new Error('PNG 解码失败'))
+      element.src = `data:image/png;base64,${base64}`
+    })
+    const canvas = window.document.createElement('canvas')
+    canvas.width = image.width
+    canvas.height = image.height
+    const context = canvas.getContext('2d', { willReadFrequently: true })
+    if (!context) return null
+    context.drawImage(image, 0, 0)
+    const { width, height, data } = context.getImageData(0, 0, image.width, image.height)
+    return { width, height, data }
+  } catch {
+    return null
   }
 }
 

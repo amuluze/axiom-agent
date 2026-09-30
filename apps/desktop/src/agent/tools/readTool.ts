@@ -2,6 +2,7 @@ import type { AgentTool, JsonValue, ToolResultContentBlock } from '@/agent/core/
 import type { AgentEnvironment } from '@/agent/environment/AgentEnvironment'
 import { desktopAgentEnvironment } from '@/agent/environment/agentEnvironmentHost'
 import { DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES } from './truncate'
+import { UNSUPPORTED_IMAGE_NOTE } from '../core/stripUnsupportedImages'
 import { hasOnlyKeys, isJsonObject, optionalInteger } from './workspaceToolUtils'
 
 const MAX_PATH_LENGTH = 16 * 1024
@@ -31,7 +32,7 @@ export const createReadTool = (
     '大文件用 offset 和 limit 分页读取，不要靠猜。',
     '读取结果末尾附带完整文件 SHA-256，用于编辑冲突检测；回显内容时请保留该值。',
   ],
-  runtimeVersion: '6',
+  runtimeVersion: '7',
   recoveryPolicy: 'idempotent',
   idempotencyKey: (input) => {
     if (!isJsonObject(input)) return 'read:invalid'
@@ -127,8 +128,10 @@ export const createReadTool = (
     if (result.image) {
       const textContent = `${result.content}\n\n[Full file sha256: ${result.sha256}]`
       if (context.modelAcceptsImage === false) {
+        // 占位子串取单一常量（Domain 不变量 6）：措辞与请求侧降级及其它产图工具
+        // 逐字一致，且明确「模型能力所限」而非「环境故障」。
         return {
-          content: `${textContent}\n\n[The current model does not support images. The image content was omitted. Describe the image to the user or switch to a vision-capable model.]`,
+          content: `${textContent}\n\n${UNSUPPORTED_IMAGE_NOTE} 这是模型能力所限（当前模型不接受图片输入），不是读取失败；如需查看图片请让用户直接打开文件，或切换到支持视觉的模型。`,
           details,
         }
       }

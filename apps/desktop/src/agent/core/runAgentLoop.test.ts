@@ -2441,3 +2441,57 @@ describe('empty assistant responses from a successful stream', () => {
     expect(assistants[0]!.content).toBe('基于上述思考，给出最终方案')
   })
 })
+
+// 验收 16：能力结论在 run 启动时快照，run 内不重算；新 run 才用新声明。
+describe('run 级图片能力快照', () => {
+  const imageUserMessage: UserMessage = {
+    id: 'u-img',
+    role: 'user',
+    content: '看这张图',
+    contentBlocks: [
+      { type: 'text', text: '看这张图' },
+      { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: 'aGk=' } },
+    ],
+    createdAt: 1,
+  }
+  const textOnlyContext = (): AgentContext => ({
+    ...createContext(),
+    model: { provider: 'test', model: 'test-model', input: ['text'] },
+  })
+  const imageForwarded = (transport: ScriptedTransport) =>
+    JSON.stringify(transport.requests.map((request) => request.messages)).includes('"type":"image"')
+
+  it('同一 run 的后续轮次沿用 run 启动快照（中途改声明不生效）', async () => {
+    const transport = new ScriptedTransport([
+      toolResponse('{"value":"a"}'),
+      textResponse('完成'),
+    ])
+    const result = await runAgentLoop({
+      context: { ...textOnlyContext(), tools: [createEchoTool(async () => ({ content: 'ok' }))] },
+      prompts: [imageUserMessage],
+      transport,
+      emit: () => {},
+    })
+
+    expect(result.reason).toBe('completed')
+    // 两轮请求都走了降级：无图片负载抵达 provider。
+    expect(transport.requests).toHaveLength(2)
+    expect(imageForwarded(transport)).toBe(false)
+    expect(JSON.stringify(transport.requests[0].messages))
+      .toContain('[图片已省略：当前模型不支持图片输入]')
+    // 持久化侧不变（Domain 不变量 5）。
+    expect(JSON.stringify(result.messages)).toContain('"type":"image"')
+  })
+
+  it('新 run 使用 run 启动时的判定（重新解析后支持图片即原样发出）', async () => {
+    // 同一份持久化消息，仅 ModelRef 的 input 不同：结论随 run 启动值而非历史缓存。
+    const multimodal = new ScriptedTransport([textResponse('ok')])
+    await runAgentLoop({
+      context: { ...createContext(), model: { provider: 'test', model: 'm', input: ['text', 'image'] } },
+      prompts: [imageUserMessage],
+      transport: multimodal,
+      emit: () => {},
+    })
+    expect(imageForwarded(multimodal)).toBe(true)
+  })
+})

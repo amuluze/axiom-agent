@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { PROVIDER_CONSTANTS } from './generatedProviderData'
-import { validateProviderNumericDraft } from './providerDraftValidation'
+import { isValidProviderImageInputDraft, validateProviderNumericDraft } from './providerDraftValidation'
 
 const validDraft = {
   timeoutMs: PROVIDER_CONSTANTS.timeoutDefaultMs,
@@ -46,5 +46,21 @@ describe('validateProviderNumericDraft', () => {
       .toBe('contextWindow')
     expect(validateProviderNumericDraft({ ...validDraft, timeoutMs: 10 })?.field)
       .toBe('timeoutMs')
+  })
+})
+
+describe('isValidProviderImageInputDraft', () => {
+  it('缺省与三态取值均通过（缺省 = 跟随目录）', () => {
+    expect(isValidProviderImageInputDraft({})).toBe(true)
+    for (const imageInput of ['catalog', 'text', 'image'] as const) {
+      expect(isValidProviderImageInputDraft({ imageInput })).toBe(true)
+    }
+  })
+
+  it('三态之外的取值一律拒绝（fail-closed，不静默归一）', () => {
+    for (const imageInput of ['multimodal', 'TEXT', '', null, 1, {}] as unknown[]) {
+      expect(isValidProviderImageInputDraft({ imageInput } as never), `imageInput=${String(imageInput)}`)
+        .toBe(false)
+    }
   })
 })

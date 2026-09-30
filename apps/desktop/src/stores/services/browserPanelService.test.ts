@@ -218,10 +218,20 @@ describe('browserPanelService Agent 联动', () => {
     expect(useBrowserStore.getState().liveView).toBe(true)
   })
 
-  it('ignores agent actions other than newTab', () => {
+  it('opens the rail when the agent navigates an existing tab', () => {
     initBrowserPanelService()
     useUiStore.setState({ runtimeRailOpen: false, runtimeRailPane: 'picker' })
-    agentListener?.({ action: 'navigate' } as never, { type: 'done' })
+    agentListener?.({ action: 'navigate' } as never, { type: 'navigated', url: 'http://localhost:5173/about', title: 'About' })
+    expect(useUiStore.getState().runtimeRailOpen).toBe(true)
+    expect(useUiStore.getState().runtimeRailPane).toBe('browser')
+    expect(useBrowserStore.getState().liveView).toBe(true)
+  })
+
+  it('ignores agent actions other than newTab/navigate', () => {
+    initBrowserPanelService()
+    useUiStore.setState({ runtimeRailOpen: false, runtimeRailPane: 'picker' })
+    agentListener?.({ action: 'snapshot' } as never, { type: 'done' })
+    agentListener?.({ action: 'reload' } as never, { type: 'done' })
     expect(useUiStore.getState().runtimeRailOpen).toBe(false)
     expect(useBrowserStore.getState().liveView).toBe(false)
   })

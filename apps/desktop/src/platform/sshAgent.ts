@@ -33,7 +33,8 @@ export type SshAgentCommandRequest =
       command: string
       timeoutMs?: number
     }
-  | { action: 'sessionGrants'; sessionId: string }
+  // sessionGrants 查询已删除：授权表进程内存、重启清空，TS 镜像不做跨重启补水
+  //（sshApprovalGrants.ts 同口径）——「镜像重建」永远无物可补，该分支无调用方。
   | { action: 'revokeSessionGrants'; sessionId: string }
 
 export interface SshAgentExecResult {
@@ -48,7 +49,6 @@ export interface SshAgentExecResult {
 export type SshAgentCommandResponse =
   | { type: 'hosts'; hosts: SshAgentHost[] }
   | ({ type: 'exec' } & SshAgentExecResult)
-  | { type: 'grants'; hosts: string[] }
   | { type: 'ack' }
 
 /** 会话授权事件（Rust → 前端，`axiom:ssh-agent-grant`）：原生对话框「本会话内

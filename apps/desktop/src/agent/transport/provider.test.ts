@@ -17,6 +17,7 @@ import {
   resolveSessionProviderConfig,
   secretIdForProvider,
   type LegacyProviderConfig,
+  PROVIDER_PROFILE_SCHEMA_VERSION,
   type ProviderConfig,
 } from './provider'
 import { OpenAIResponsesTransport } from './OpenAIResponsesTransport'
@@ -24,7 +25,7 @@ import { OpenAICompatibleTransport } from './OpenAICompatibleTransport'
 import { AnthropicCompatibleTransport } from './AnthropicCompatibleTransport'
 
 const OPENAI_RESPONSES_CONFIG: ProviderConfig = {
-  schemaVersion: 4,
+  schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
   profileId: 'test.openai-responses',
   providerId: 'openai',
   apiFormat: 'openai-responses',
@@ -34,13 +35,15 @@ const OPENAI_RESPONSES_CONFIG: ProviderConfig = {
   maxOutputTokens: 16_384,
   contextWindow: 400_000,
   capabilities: { toolReferences: false, toolSearch: true },
+  // 归一化后声明恒有值（缺省归一为跟随目录），fixture 按契约写出而非省略。
+  imageInput: 'catalog',
 }
 
 // 一个 generic-anthropic-compatible Profile，替代历史上作为 fixture 使用的
 // 内置 minimax 入口（已移除）。endpoint/modelId 取 minimax 旧值，便于在
 // legacy 降级断言里复用同一条迁移路径。
 const ANTHROPIC_COMPATIBLE_CONFIG: ProviderConfig = {
-  schemaVersion: 4,
+  schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
   profileId: 'test.anthropic',
   providerId: 'generic-anthropic-compatible',
   apiFormat: 'anthropic-compatible',
@@ -50,6 +53,7 @@ const ANTHROPIC_COMPATIBLE_CONFIG: ProviderConfig = {
   maxOutputTokens: 4_096,
   contextWindow: 128_000,
   capabilities: { toolReferences: false, toolSearch: false },
+  imageInput: 'catalog',
   secretId: 'provider.generic-anthropic-compatible.api-key',
 }
 
@@ -149,7 +153,7 @@ describe('Provider Registry 与 Profile', () => {
     })
   })
 
-  it('restores a valid V4 Provider without requiring setup', async () => {
+  it('restores a valid current Provider without requiring setup', async () => {
     expect(await resolveInitialProviderSelection(JSON.stringify(ANTHROPIC_COMPATIBLE_CONFIG), false)).toEqual({
       config: ANTHROPIC_COMPATIBLE_CONFIG,
       requiresSetup: false,
@@ -167,7 +171,7 @@ describe('Provider Registry 与 Profile', () => {
       contextWindow: 128_000,
     }
     expect(await normalizeProviderConfig(legacy)).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
       providerId: 'generic-anthropic-compatible',
       apiFormat: 'anthropic-compatible',
       modelId: 'claude-test',
@@ -190,16 +194,18 @@ describe('Provider Registry 与 Profile', () => {
     })).rejects.toThrow('Secret ID')
   })
 
-  it('migrates V2 Anthropic profiles into Provider-scoped V3 namespaces', async () => {
+  it('migrates V2 Anthropic profiles into current Provider-scoped namespaces', async () => {
     expect(secretIdForProvider('generic-anthropic-compatible'))
       .toBe('provider.generic-anthropic-compatible.api-key')
 
-    const { secretId: _secretId, ...currentWithoutSecret } = ANTHROPIC_COMPATIBLE_CONFIG
+    // 历史版本文档不得携带 imageInput：v5 才引入该键，低版本携带按未知字段
+    // fail-closed 拒绝（否则声明会在本不存在声明的文档上生效）。
+    const { secretId: _secretId, imageInput: _imageInput, ...currentWithoutSecret } = ANTHROPIC_COMPATIBLE_CONFIG
     const legacyV2 = { ...currentWithoutSecret, schemaVersion: 2, secretId: 'provider.anthropic-compatible.api-key' }
     const decoded = await decodeProviderProfileWithMetadata(legacyV2)
     expect(decoded).toMatchObject({
       profile: {
-        schemaVersion: 4,
+        schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
         secretId: 'provider.generic-anthropic-compatible.api-key',
       },
       requiresPersistenceMigration: true,
@@ -208,8 +214,10 @@ describe('Provider Registry 与 Profile', () => {
       sourceSecretId: 'provider.anthropic-compatible.api-key',
       targetSecretId: 'provider.generic-anthropic-compatible.api-key',
     })
+    await expect(decodeProviderProfile({ ...legacyV2, imageInput: 'catalog' }))
+      .rejects.toThrow('包含未知字段')
     expect(await decodeProviderProfile(currentWithoutSecret)).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
       secretId: 'provider.generic-anthropic-compatible.api-key',
     })
     expect(await resolveSessionProviderConfig({
@@ -217,7 +225,7 @@ describe('Provider Registry 与 Profile', () => {
       modelProvider: 'generic-anthropic-compatible',
       modelId: 'claude-test',
     }, OPENAI_RESPONSES_CONFIG, false)).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
       secretId: 'provider.generic-anthropic-compatible.api-key',
     })
     expect((await normalizeProviderConfig({
@@ -249,7 +257,7 @@ describe('Provider Registry 与 Profile', () => {
       capabilities: { toolReferences: false, toolSearch: false },
     } as Record<string, unknown>
     expect(await decodeProviderProfile(persistedMinimaxV3)).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
       providerId: 'generic-anthropic-compatible',
       apiFormat: 'anthropic-compatible',
       endpoint: 'https://api.minimaxi.com/anthropic/v1/messages',
@@ -284,16 +292,17 @@ describe('Provider Registry 与 Profile', () => {
     })
   })
 
-  it('marks persisted V2 selection for a V3 localStorage projection', async () => {
+  it('marks persisted V2 selection for a current localStorage projection', async () => {
+    const { imageInput: _imageInput, ...currentDocument } = ANTHROPIC_COMPATIBLE_CONFIG
     const legacyV2 = {
-      ...ANTHROPIC_COMPATIBLE_CONFIG,
+      ...currentDocument,
       schemaVersion: 2,
       secretId: 'provider.anthropic-compatible.api-key.versioned',
     }
 
     expect(await resolveInitialProviderSelection(JSON.stringify(legacyV2), false)).toMatchObject({
       config: {
-        schemaVersion: 4,
+        schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
         secretId: 'provider.generic-anthropic-compatible.api-key.versioned',
       },
       requiresSetup: false,
@@ -339,7 +348,7 @@ describe('Provider Registry 与 Profile', () => {
     }
   })
 
-  it('fails closed for malformed V4 fields instead of normalizing persisted data', async () => {
+  it('fails closed for malformed current fields instead of normalizing persisted data', async () => {
     const { capabilities: _capabilities, ...missingCapabilities } = OPENAI_RESPONSES_CONFIG
     for (const value of [
       missingCapabilities,
@@ -488,7 +497,7 @@ describe('Provider Registry 与 Profile', () => {
       providerId: 'openai',
       modelId: 'gpt-5',
       source: 'profile-compatibility',
-      input: undefined,
+      input: ['text'],
       supportsReasoning: false,
     }))
     expect(listModelsForProfile(ANTHROPIC_COMPATIBLE_CONFIG)).toContainEqual(expect.objectContaining({

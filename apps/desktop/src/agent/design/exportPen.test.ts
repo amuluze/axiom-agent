@@ -54,3 +54,22 @@ describe('exportAxToPenDocument：overlay scrim', () => {
     expect(warnings.some((warning) => warning.includes('scrim'))).toBe(true)
   })
 })
+
+describe('exportAxToPenDocument：shadow（1.3 外阴影）', () => {
+  it('shadow 导出为 .pen 的 effect 形态，且经 penParser 读回与视图模型等价（往返零损）', async () => {
+    const { parsePenDocument } = await import('./penParser')
+    const { raw, warnings } = exportTree([{
+      id: 'c1', kind: 'frame', width: 320, height: 200, fill: '#ffffff',
+      shadow: { color: '$shadow-color', offsetX: 0, offsetY: 4, blur: 12 },
+      children: [],
+    }])
+    expect(warnings).toEqual([])
+    // .pen 形态：penParser 的 normalizeShadow 读 color/offset.{x,y}/blur。
+    expect(raw.effect).toEqual({ color: '$shadow-color', offset: { x: 0, y: 4 }, blur: 12 })
+    // 读回：投影出的 PenShadow 与 .ax 投影同形（color 原样、几何字段一致）。
+    const reparsed = parsePenDocument(JSON.stringify({ children: [raw] }), 'a.pen')
+    // 单顶层节点即页根：pages[0] 就是导出的帧本身。
+    const frame = reparsed.document?.pages[0] as { shadow?: unknown } | undefined
+    expect(frame?.shadow).toEqual({ color: '$shadow-color', x: 0, y: 4, blur: 12 })
+  })
+})

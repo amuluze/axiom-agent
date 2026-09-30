@@ -13,8 +13,10 @@ import type { PenDiagnostic } from './penParser'
  * 单跳迁移；只加可选字段走 minor。major 不匹配且无迁移 → 加载失败（fail-closed）。
  *
  * 1.2：overlay 增加可选 `scrim`（遮罩语义，见 AxScrim）——1.1 的稿逐字节合法。
+ * 1.3：frame/text/icon/rect/ellipse/path 增加可选 `shadow`（外阴影，见 AxShadow）
+ * ——1.2 的稿逐字节合法。
  */
-export const AX_FORMAT_VERSION = '1.2'
+export const AX_FORMAT_VERSION = '1.3'
 
 /** 解析器已验证的格式主版本；超出即拒绝（与 .pen 的「记诊断继续渲染」不同）。 */
 export const AX_SUPPORTED_MAJOR = 1
@@ -140,6 +142,8 @@ export interface AxNode {
   fill?: string | AxGradient | AxImageFill
   stroke?: string | AxGradient
   strokeWidth?: number | AxPerSideStrokeWidth
+  /** 外阴影（1.3）：卡片/弹层的投影，见 AxShadow。 */
+  shadow?: AxShadow
   /** 圆角：px 数值、token 引用（`$radius-8`），或四角 `[tl,tr,br,bl]`。 */
   cornerRadius?: number | string | Array<number | string>
   /** ellipse */
@@ -157,6 +161,20 @@ export interface AxNode {
   offset?: [number, number]
   /** overlay：整页遮罩（弹窗/抽屉背后的变暗层），由实现渲染成 backdrop，不用矩形手搭。 */
   scrim?: AxScrim
+}
+
+/**
+ * 外阴影（1.3）：对齐 `.pen` 的 effect 子集与画布渲染器既有的 `box-shadow` 通道。
+ * `color` 是 token 引用或字面色（渲染经 tokenToCss）；偏移与模糊是 **px 数值**
+ * （规则 5 单位显式：数值即 px，token 引用后续按需放开——视图模型 PenShadow
+ * 的几何是纯数值，放开 token 会引入投影层解析）。`.pen` 的 `spread` 与内阴影
+ * 实测设计稿未用到（docs/ax-format.md 第八轮），不引入。
+ */
+export interface AxShadow {
+  color: string
+  offsetX: number
+  offsetY: number
+  blur: number
 }
 
 /**
@@ -251,21 +269,23 @@ export const AX_ALLOWED_KEYS: Record<AxNodeKind, readonly string[]> = {
     'justifyContent', 'alignItems', 'clip', 'theme', 'children',
     // 容器同样可以带背景/描边/圆角（.pen 实测 frame 大量使用；第八轮已验证渲染语义）。
     'fill', 'stroke', 'strokeWidth', 'cornerRadius',
+    // 外阴影（1.3）：与 fill 同一的六个种类。
+    'shadow',
   ],
   text: [
     'id', 'kind', 'text', 'fontSize', 'fontWeight', 'fontFamily', 'lineHeight',
-    'letterSpacing', 'textAlign', 'wrap', 'fill', 'width', 'height', 'theme',
+    'letterSpacing', 'textAlign', 'wrap', 'fill', 'width', 'height', 'theme', 'shadow',
   ],
-  icon: ['id', 'kind', 'name', 'size', 'fill', 'theme'],
+  icon: ['id', 'kind', 'name', 'size', 'fill', 'shadow', 'theme'],
   rect: [
     'id', 'kind', 'width', 'height', 'fill', 'stroke', 'strokeWidth',
-    'cornerRadius', 'theme',
+    'cornerRadius', 'shadow', 'theme',
   ],
   ellipse: [
     'id', 'kind', 'width', 'height', 'fill', 'stroke', 'strokeWidth',
-    'cornerRadius', 'innerRadius', 'theme',
+    'cornerRadius', 'shadow', 'innerRadius', 'theme',
   ],
-  path: ['id', 'kind', 'geometry', 'viewBox', 'fill', 'stroke', 'width', 'height', 'theme'],
+  path: ['id', 'kind', 'geometry', 'viewBox', 'fill', 'stroke', 'shadow', 'width', 'height', 'theme'],
   image: ['id', 'kind', 'asset', 'mode', 'width', 'height', 'cornerRadius', 'theme'],
   overlay: ['id', 'kind', 'anchor', 'offset', 'scrim', 'children'],
 }
@@ -279,6 +299,9 @@ export const AX_TOKEN_KEYS = ['$type', '$value'] as const
 export const AX_COMPONENT_DECL_KEYS = ['variant', 'props'] as const
 /** scrim 对象的允许键：遮罩只有绘制值（半透明色/渐变/图片填充）。 */
 export const AX_SCRIM_KEYS = ['fill'] as const
+
+/** shadow 对象的允许键（color 必填 + 三个 px 数值）。 */
+export const AX_SHADOW_KEYS = ['color', 'offsetX', 'offsetY', 'blur'] as const
 
 /** 布局方向取值（`layout` 缺省为 horizontal，与 .pen 一致）。 */
 export const AX_LAYOUTS = ['horizontal', 'vertical'] as const

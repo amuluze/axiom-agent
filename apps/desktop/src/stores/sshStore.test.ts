@@ -227,6 +227,7 @@ describe('sshStore', () => {
       entries: [
         { name: 'boot', sizeBytes: 4096, isDir: true, perms: 'drwxr-xr-x', modifiedAt: 'May 3 2026 06:08' },
       ],
+      truncated: false,
     })
     expect(useSshStore.getState().currentDir['id-1']).toBe('~')
     expect(useSshStore.getState().dirError['id-1']).toBeNull()
@@ -252,6 +253,7 @@ describe('sshStore', () => {
       entries: [
         { name: 'boot', sizeBytes: 4096, isDir: true, perms: 'drwxr-xr-x', modifiedAt: 'May 3 2026 06:08' },
       ],
+      truncated: false,
     })
     // 恢复成功后 dirError 清除。
     mocks.sshCommand.mockResolvedValueOnce({

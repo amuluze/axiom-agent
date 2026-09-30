@@ -55,7 +55,7 @@ import {
   revokeObjectUrl,
   toImageContentBlock,
 } from '@/components/composer/imagePaste'
-import { resolveModelDescriptor } from '@/agent/transport/modelCatalog'
+import { resolveImageInputCapability } from '@/agent/transport/modelCatalog'
 import { ContextBudgetControl } from '@/components/composer/ContextBudgetControl'
 import { ReasoningPicker } from '@/components/composer/ReasoningPicker'
 import { useT } from '@/i18n'
@@ -501,11 +501,13 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
     attachmentsRef.current = attachments
   }, [attachments])
 
-  // 非视觉模型直接拒绝附加（对齐运行时 model.input 校验，避免可预知的失败）；
-  // profile 缺失等未知情形放行，交由运行时兜底。
+  // 非视觉模型直接拒绝附加（对齐运行时的发送副本降级，避免可预知的失败）。
+  // 判定统一走 resolveImageInputCapability（Domain 不变量 1 的单一入口）：目录内
+  // 取目录标注、目录外 fail-safe 判为仅文本、demo 恒仅文本；profile 解析不了
+  // （未知情形）才放行，交由运行时兜底。
   const modelAcceptsImages = useMemo(() => {
     try {
-      return resolveModelDescriptor(provider).input?.includes('image') ?? false
+      return resolveImageInputCapability(provider) === 'image'
     } catch {
       return true
     }

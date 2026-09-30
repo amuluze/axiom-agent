@@ -2,6 +2,9 @@ import { PROVIDER_CONSTANTS, type ProviderProfileDraft } from './providerProfile
 
 export type ProviderNumericField = 'timeoutMs' | 'maxOutputTokens' | 'contextWindow'
 
+/** 三态声明的合法取值域（Domain 不变量 3）：与 Rust 侧白名单逐字对偶。 */
+const IMAGE_INPUT_DECLARATIONS = ['catalog', 'text', 'image'] as const
+
 export interface ProviderNumericViolation {
   field: ProviderNumericField
   /** 越界/非有限数值；NaN 表示输入框为空或非数字。 */
@@ -41,3 +44,16 @@ export const validateProviderNumericDraft = (
   }
   return undefined
 }
+
+/**
+ * 保存 Provider 前的图片输入声明校验：取值必须落在三态内，缺省视为 `catalog`。
+ *
+ * 与数值字段同一保存入口自检：归一化链（TS 参考实现 / Rust 权威）对非法声明
+ * fail-closed 报错，但那条路径在浏览器 demo 下不经过 Rust；自检放在写入口可保证
+ * 「非法值绝不落库」在任何宿主下都成立，且不静默归一为某一档（静默归一会让
+ * 「声明支持图片」被读成仅文本，能力结论随之错误）。
+ */
+export const isValidProviderImageInputDraft = (
+  draft: Pick<ProviderProfileDraft, 'imageInput'>,
+): boolean => draft.imageInput === undefined
+  || IMAGE_INPUT_DECLARATIONS.includes(draft.imageInput)

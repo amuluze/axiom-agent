@@ -802,6 +802,18 @@ fn remote_append_command(remote_target: &str) -> String {
 /// exec 通道（上传/探测）命令参数：与终端通道同一超时与保活约定——ControlPath
 /// 指向的 master 已死时 ssh 会回退直连，无 ConnectTimeout 会挂到系统 TCP 超时
 /// （分钟级），把 resumeUpload 的前端 promise 一起拖住。`--` 与终端通道同理。
+/// exec 通道（上传/列目录/建目录/探测）一次性 ssh 子进程的统一构造：绝对路径
+/// 解析（f1760b2 的 multi-threaded fork 崩溃修复）+ **独立进程组**——
+/// `cancel_upload` 对传输 pid 发 `kill(-pid)`，子进程若留在 app 进程组则 pid
+/// 不是 pgid、信号落空（ESRCH 被吞），强杀实际不生效；与 ssh_agent /
+/// workspace_command 的子进程形态对齐。stdio 由调用方按需补。
+fn exec_channel_command(args: &[String]) -> Result<std::process::Command, String> {
+    let mut command = std::process::Command::new(resolve_ssh_program()?);
+    command.args(args);
+    crate::platform_process::spawn_in_new_process_group(&mut command);
+    Ok(command)
+}
+
 fn build_exec_args(control_socket: &Path, host: &SshTarget, remote_command: &str) -> Vec<String> {
     vec![
         "-o".into(),
@@ -1048,13 +1060,13 @@ async fn resume_upload(app: AppHandle, host_id: String) -> Result<SshCommandResp
         &remote_probe_size_command(&remote_target),
     );
     let remote_offset = {
-        let output = tauri::async_runtime::spawn_blocking(move || {
-            std::process::Command::new("ssh")
-                .args(&probe_args)
+        let output = tauri::async_runtime::spawn_blocking(move || -> Result<std::process::Output, String> {
+            let mut command = exec_channel_command(&probe_args)?;
+            command
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output()
+                .stderr(std::process::Stdio::piped());
+            command.output().map_err(|error| error.to_string())
         })
         .await
         .map_err(|error| format!("SSH 续传任务中断：{error}"))?
@@ -1179,13 +1191,12 @@ fn run_upload(context: UploadContext<'_>) -> Result<UploadOutcome, String> {
         pid_slot,
         start_offset,
     } = context;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
-    let mut command = Command::new("ssh");
+    let mut command = exec_channel_command(args)?;
     // 继承宿主环境（用户通道）；数据面无 shell 参与，remote_command 作为
     // 单个参数交付远端默认 shell。
     command
-        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -1438,13 +1449,13 @@ async fn list_files(
     let control_socket =
         control_socket_path(&crate::storage_paths::axiom_data_root(&app)?, &host_id);
     let list_args = build_exec_args(&control_socket, &target, &remote_list_command(&path_checked));
-    let output = tauri::async_runtime::spawn_blocking(move || {
-        std::process::Command::new("ssh")
-            .args(&list_args)
+    let output = tauri::async_runtime::spawn_blocking(move || -> Result<std::process::Output, String> {
+        let mut command = exec_channel_command(&list_args)?;
+        command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
+            .stderr(std::process::Stdio::piped());
+        command.output().map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| format!("SSH 列目录任务中断：{error}"))?
@@ -1458,12 +1469,30 @@ async fn list_files(
             format!("列出远程目录失败：{detail}")
         });
     }
+    let (entries, truncated) = cap_dir_entries(parse_ls_output(&output.stdout));
     Ok(SshCommandResponse::Files {
         host_id,
         path: path_checked,
-        entries: parse_ls_output(&output.stdout),
-        truncated: false,
+        entries,
+        truncated,
     })
+}
+
+/// 列目录条目上限：SFTP 浏览器一次呈现的量级（巨型目录防输出内存与前端渲染
+/// 失控；对齐 ssh.rs Files 契约「目录条目数超出上限时截断（前端提示继续）」的
+/// 声明——此前 truncated 恒 false 是空头承诺）。
+const MAX_LIST_ENTRIES: usize = 1000;
+
+/// 条目截断（纯函数）：超出上限保留前 N 条并置 truncated。
+fn cap_dir_entries(entries: Vec<RemoteDirEntry>) -> (Vec<RemoteDirEntry>, bool) {
+    if entries.len() > MAX_LIST_ENTRIES {
+        (
+            entries.into_iter().take(MAX_LIST_ENTRIES).collect(),
+            true,
+        )
+    } else {
+        (entries, false)
+    }
 }
 
 /// 创建远程目录（`mkdir -p`，父级不存在也成功）。
@@ -1489,13 +1518,13 @@ async fn make_dir(
     let control_socket =
         control_socket_path(&crate::storage_paths::axiom_data_root(&app)?, &host_id);
     let mkdir_args = build_exec_args(&control_socket, &target, &remote_mkdir_command(&path_checked));
-    let output = tauri::async_runtime::spawn_blocking(move || {
-        std::process::Command::new("ssh")
-            .args(&mkdir_args)
+    let output = tauri::async_runtime::spawn_blocking(move || -> Result<std::process::Output, String> {
+        let mut command = exec_channel_command(&mkdir_args)?;
+        command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
+            .stderr(std::process::Stdio::piped());
+        command.output().map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| format!("SSH 建目录任务中断：{error}"))?
@@ -1585,6 +1614,30 @@ fn scope_folder_entries(
 /// 对每个文件复用 run_upload 流式写入（ControlPath 复用握手）。进度按文件
 /// 回传（逐文件 Start/Progress，属于对现有单文件投影模型的近似——前端显示
 /// 文件夹内相对路径）。中断的文件登记完整远端目标，续传打回原位。
+/// 文件夹上传的取消收口（mkdir 阶段与文件间隙共用）：清在途句柄、按需记续传
+/// 材料（Some((本地路径, 远端目标)) 时）、发 Cancelled 事件——与单文件上传的
+/// 取消语义一致，绝不报 Done、绝不清材料。
+fn emit_folder_upload_cancelled(
+    app: &AppHandle,
+    host_id: &str,
+    folder_name: &str,
+    interrupted: Option<(PathBuf, String)>,
+) {
+    if let Some(state) = app.try_state::<SshSessionState>() {
+        state.mark_upload_finished(host_id);
+        if let Some((local_path, remote_target)) = interrupted {
+            state.mark_upload_interrupted(host_id, local_path, folder_name, &remote_target);
+        }
+    }
+    let _ = app.emit(
+        SSH_UPLOAD_EVENT,
+        SshUploadEvent::Cancelled {
+            host_id: host_id.to_string(),
+            name: folder_name.to_string(),
+        },
+    );
+}
+
 async fn upload_folder(
     app: AppHandle,
     host_id: String,
@@ -1682,18 +1735,37 @@ async fn upload_folder(
     let folder_name_thread = folder_name.clone();
     let remote_dir_thread = remote_dir_checked.clone();
     std::thread::spawn(move || {
-        // 先建所有远程子目录。
+        // 先建所有远程子目录；每步先查取消位（取消后继续建目录违背用户意图，
+        // 且 mkdir 是串行 ssh 往返、大目录树耗时可观）。
         for rel in &dirs {
+            if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                emit_folder_upload_cancelled(
+                    &app_thread,
+                    &host_id_thread,
+                    &folder_name_thread,
+                    // mkdir 阶段取消：一个文件都没传，把首个文件记为续传起点
+                    //（空文件夹无材料可记），续传语义与文件间隙取消一致。
+                    files.first().map(|(first_rel, abs, _)| {
+                        (abs.clone(), join_remote(&remote_dir_thread, first_rel))
+                    }),
+                );
+                return;
+            }
             let mkdir_cmd = remote_mkdir_command(&join_remote(&remote_dir_thread, rel));
             let mkdir_args = build_exec_args(&control_socket, &target, &mkdir_cmd);
-            let ok = std::process::Command::new("ssh")
-                .args(&mkdir_args)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|status| status.success())
-                .unwrap_or(false);
+            let ok = match exec_channel_command(&mkdir_args) {
+                Ok(mut command) => {
+                    command
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null());
+                    command
+                        .status()
+                        .map(|status| status.success())
+                        .unwrap_or(false)
+                }
+                Err(_) => false,
+            };
             if !ok {
                 let _ = app_thread.emit(
                     SSH_UPLOAD_EVENT,
@@ -1713,7 +1785,16 @@ async fn upload_folder(
         // 逐文件流式上传。
         for (rel, abs, size) in &files {
             if cancel.load(std::sync::atomic::Ordering::SeqCst) {
-                break;
+                // 文件间隙取消：当前文件尚未开始——把它记为续传起点并报 Cancelled，
+                // 与单文件上传的取消语义一致。绝不落到末尾的 Done + take_interrupted
+                //（原实现的 break 穿透会把取消报告成成功并清掉续传材料）。
+                emit_folder_upload_cancelled(
+                    &app_thread,
+                    &host_id_thread,
+                    &folder_name_thread,
+                    Some((abs.clone(), join_remote(&remote_dir_thread, rel))),
+                );
+                return;
             }
             let full_target = join_remote(&remote_dir_thread, rel);
             let remote_cmd = remote_write_command(&full_target);
@@ -2138,6 +2219,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&empty);
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn caps_directory_entries_beyond_limit_with_truncated_flag() {
+        let entry = || RemoteDirEntry {
+            name: "a".into(),
+            size_bytes: 1,
+            is_dir: false,
+            perms: "-rw-r--r--".into(),
+            modified_at: "2026-09-29".into(),
+        };
+        // 未超限：原样保留、不置截断。
+        let small: Vec<_> = (0..10).map(|_| entry()).collect();
+        let (kept, truncated) = cap_dir_entries(small);
+        assert_eq!(kept.len(), 10);
+        assert!(!truncated);
+        // 超限：保留前 MAX_LIST_ENTRIES 条并置截断（Files 契约的「前端提示继续」信号）。
+        let huge: Vec<_> = (0..MAX_LIST_ENTRIES + 1).map(|_| entry()).collect();
+        let (kept, truncated) = cap_dir_entries(huge);
+        assert_eq!(kept.len(), MAX_LIST_ENTRIES);
+        assert!(truncated);
+        // 恰好等于上限：不截断。
+        let exact: Vec<_> = (0..MAX_LIST_ENTRIES).map(|_| entry()).collect();
+        let (kept, truncated) = cap_dir_entries(exact);
+        assert_eq!(kept.len(), MAX_LIST_ENTRIES);
+        assert!(!truncated);
     }
 
     #[test]

@@ -5,13 +5,14 @@
  * （当前页扫描光束 + 已完成页的状态描边），两者消费同一份运行状态。
  * 面板（DesignScanPanel）与画布叠加层都从这里取数。
  */
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PenDocument } from '@/agent/design/penParser'
 import {
   extractScanPages,
   scanDesignPages,
+  scanDesignPagesBatch,
   type DesignPageStatus,
-  type DesignScanPageInput,
+  type DesignScanBatchRenderPage,
   type DesignScanRenderPage,
   type DesignScanReport,
 } from '@/agent/design/designScan'
@@ -28,36 +29,81 @@ export interface DesignScanState {
   statuses: ReadonlyMap<string, DesignPageStatus>
   /** 当前正在扫描的页（串行执行的在途页），画布在其上显示扫描光束。 */
   currentId: string | null
+  /** 在途页集合（批量扫掠可多页并行，画布据此同时点亮多道扫描环）。 */
+  activeIds: ReadonlySet<string>
   run: () => Promise<void>
 }
+
+/**
+ * 批量渲染器（画布原位扫掠注入；缺省走 staging 单页渲染路径）。
+ * DesignCanvas 提供它时扫描在画布内原位并行进行；否则（jsdom 测试 / 无原生
+ * 截图能力）回落到既有 per-page 渲染回调路径。
+ */
+export type DesignScanBatchRender = DesignScanBatchRenderPage
 
 export const useDesignScan = ({
   doc,
   requireSize,
+  batchRender,
 }: {
   doc: PenDocument
   requireSize: boolean
+  /** 画布原位扫掠（原生截图可用时由 DesignCanvas 注入）；缺省 staging 路径。 */
+  batchRender?: DesignScanBatchRender
 }): DesignScanState => {
   const [running, setRunning] = useState(false)
   const [progress, setProgress] = useState({ done: 0, total: 0 })
   const [report, setReport] = useState<DesignScanReport | null>(null)
   const [statuses, setStatuses] = useState<ReadonlyMap<string, DesignPageStatus>>(new Map())
+  const [activeIds, setActiveIds] = useState<ReadonlySet<string>>(new Set())
   // 序号收口：文档换代 / 重开后迟到的扫描不写回状态。
   const runSeqRef = useRef(0)
-  // 当前在途页 = 扫描序里下标为 done 的页（串行）；引擎 onProgress 只给计数，
-  // 页序由这里持有的提取结果补全。
-  const pagesRef = useRef<readonly DesignScanPageInput[]>([])
+
+  // 文档换代即在途扫描作废：内容已变，迟到的判定/报告只会误导（引擎仍会跑完，
+  // 但所有写回都被 alive() 拦下；扫掠相机由画布层的内容换代 abort 让位）。
+  // 这里同步收掉运行态，避免 running 卡在 true、面板停在半程进度。
+  useEffect(() => {
+    runSeqRef.current += 1
+    setRunning(false)
+    setProgress({ done: 0, total: 0 })
+    setStatuses(new Map())
+    setActiveIds(new Set())
+  }, [doc])
 
   const run = useCallback(async () => {
     const seq = runSeqRef.current + 1
     runSeqRef.current = seq
     const { pages, documentIssues } = extractScanPages(doc)
-    pagesRef.current = pages
     setRunning(true)
     setReport(null)
     setStatuses(new Map())
+    setActiveIds(new Set())
     setProgress({ done: 0, total: pages.length })
+    const alive = () => runSeqRef.current === seq
+    const recordVerdict = (verdict: { id: string; status: DesignPageStatus }) => {
+      setStatuses((previous) => new Map(previous).set(verdict.id, verdict.status))
+    }
+    // 在途页统一由引擎 onActive 显式回报（串行 = 单元素；批量/并发 = 集合），
+    // 不从 onProgress 计数推导——并发完成乱序时下标推导必然错位。
+    const handleActive = (ids: readonly string[] | null) => {
+      if (!alive()) return
+      setActiveIds(new Set(ids ?? []))
+    }
     try {
+      if (batchRender) {
+        // 批量路径（画布原位扫掠）：引擎按页回报判定与在途集合，画布逐页点亮。
+        const next = await scanDesignPagesBatch(pages, documentIssues, batchRender, {
+          requireSize,
+          onProgress: (update) => {
+            if (!alive()) return
+            setProgress({ done: update.done, total: update.total })
+            recordVerdict(update.verdict)
+          },
+          onActive: handleActive,
+        })
+        if (alive()) setReport(next)
+        return
+      }
       const renderPage: DesignScanRenderPage | undefined = canRenderDesignScanPage()
         ? async (page) => {
           const result = await renderDesignScanPage({
@@ -80,23 +126,23 @@ export const useDesignScan = ({
       const next = await scanDesignPages(pages, documentIssues, renderPage, {
         requireSize,
         onProgress: (update) => {
-          if (runSeqRef.current !== seq) return
+          if (!alive()) return
           setProgress({ done: update.done, total: update.total })
-          setStatuses((previous) => new Map(previous).set(update.verdict.id, update.verdict.status))
+          recordVerdict(update.verdict)
         },
+        onActive: handleActive,
       })
-      if (runSeqRef.current === seq) setReport(next)
+      if (alive()) setReport(next)
     } finally {
-      if (runSeqRef.current === seq) setRunning(false)
+      if (alive()) {
+        setRunning(false)
+        setActiveIds(new Set())
+      }
     }
-  }, [doc, requireSize])
+  }, [doc, requireSize, batchRender])
 
-  // 在途页 = 扫描序里下标为 done 的页（onProgress 在每页完成后计数，
-  // 第 k 页在途时 done === k）；扫完（done === total）或未运行时为 null。
-  const currentId =
-    running && progress.done < progress.total
-      ? pagesRef.current[progress.done]?.id ?? null
-      : null
+  // 当前在途页：onActive 回报集合的第一个元素（串行路径恒为单元素）。
+  const currentId = running && activeIds.size > 0 ? [...activeIds][0] ?? null : null
 
-  return { running, progress, report, statuses, currentId, run }
+  return { running, progress, report, statuses, currentId, activeIds, run }
 }

@@ -15,7 +15,7 @@ import { useUiStore } from '@/stores/uiStore'
  * 时才对 active tab 推流，切走即停（面板不可见时白流 JPEG 帧纯浪费 IPC）。
  *
  * Agent 联动（对齐 zcode「tabs.new() 自动打开内嵌面板」）：Agent 经环境通道
- * 成功 newTab 时自动打开右栏、切到 browser tab 并开启实时画面。
+ * 成功 newTab 或 navigate 时自动打开右栏、切到 browser tab 并开启实时画面。
  */
 
 let serviceStarted = false
@@ -96,7 +96,10 @@ const syncScreencast = async (): Promise<void> => {
 }
 
 const handleAgentActivity = (request: { action: string }): void => {
-  if (request.action !== 'newTab') return
+  // newTab 与 navigate 都是「Agent 打开了新页面」：同幅联动展开面板，避免
+  // Agent 复用已有 tab 导航时用户对面板外的浏览毫无感知。reload/back/forward
+  // 属同页内的次要导航，不触发。
+  if (request.action !== 'newTab' && request.action !== 'navigate') return
   const ui = useUiStore.getState()
   // 展开会重置 pane 为 picker；先 open 再设 pane，保证最终停在浏览器面板。
   ui.setRuntimeRailOpen(true)

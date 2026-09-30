@@ -36,10 +36,32 @@ export const RUNTIME_TOOL_NAME_MIGRATIONS: Record<string, string> = {
 export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   // design_query → v4（契约扩展：mode=component 单组件详单 + scan 可选 tokensCss
   // 一致性报告 + 组件节点注册表核对——输入新增 component/tokensCss 可选字段）。
-  // 历史条目随 bump 统一改指 live 版本（恢复查表要求 currentVersion === live）。
-  { previousName: 'design_query', previousVersion: '1', currentName: 'design_query', currentVersion: '4' },
-  { previousName: 'design_query', previousVersion: '2', currentName: 'design_query', currentVersion: '4' },
-  { previousName: 'design_query', previousVersion: '3', currentName: 'design_query', currentVersion: '4' },
+  // design_query → v5：render 失败原因透传——available:false 携带解析/挂载/光栅化/
+  // 预算的具体 reason（不再一律归「no renderer available」），promptGuidelines 补
+  // 「单次失败 ≠ 环境无渲染能力」引导；schema 不变，输出语义变化。
+  // design_query → v6：新增 mode=reconcile（设计 ↔ 实现结构对账，输入新增可选
+  // implementation 字段）——docs/ax-format.md §4.6.4 的 P4 遗留项；既有模式不变。
+  // design_query → v7：扫描验证优化——① blank 误报防御：页面树有文本节点时
+  // 「近乎空白」由 warning 降为 info（blankSparse，不影响页级全绿门禁），纯图形页
+  // 仍 warning；② reconcile 文件收集上限 200→800（真实单仓源码含测试可达数百
+  // 文件，过小使整目录对账必然触顶失真），guidelines 补 fileCapReached 收窄
+  // roots 分批重跑的处置；③ 扫描渲染支持有界并发（offscreen 路径 3 lane，
+  // native capture 保持串行防截图污染），判定与进度始终按页序，输出形状不变；
+  // ④ 新增 mode=compare（设计页 ↔ 实现路由像素对拍，advisory：vendored
+  // pixelmatch + 设计渲染/浏览器截图双源，输入新增 url/waitMs 可选字段）。
+  // design_query → v8：感知 modelAcceptsImage——仅文本判定下 render 跳过光栅化、
+  // scan 丢缩略图并给说明（产图工具服从同一能力判定）。
+  // design_query → v9：说明文案收敛到与其它产图工具同一占位子串，并明确
+  // 「模型能力所限 ≠ 环境无渲染能力」（Domain 不变量 6）。
+  // 历史条目随 bump 统一改指 live v9（恢复查表要求 currentVersion === live）。
+  { previousName: 'design_query', previousVersion: '1', currentName: 'design_query', currentVersion: '9' },
+  { previousName: 'design_query', previousVersion: '2', currentName: 'design_query', currentVersion: '9' },
+  { previousName: 'design_query', previousVersion: '3', currentName: 'design_query', currentVersion: '9' },
+  { previousName: 'design_query', previousVersion: '4', currentName: 'design_query', currentVersion: '9' },
+  { previousName: 'design_query', previousVersion: '5', currentName: 'design_query', currentVersion: '9' },
+  { previousName: 'design_query', previousVersion: '6', currentName: 'design_query', currentVersion: '9' },
+  { previousName: 'design_query', previousVersion: '7', currentName: 'design_query', currentVersion: '9' },
+  { previousName: 'design_query', previousVersion: '8', currentName: 'design_query', currentVersion: '9' },
   // design_import → v2：租约改按 create_workspace_file 口径绑定编译产物（approvalLeaseInput）
   // ——v1 的租约绑定模型输入 {source,target}，与写通道消费侧失配，该工具从未能落盘；
   // schema 不变，属行为修复。
@@ -133,19 +155,25 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   { previousName: 'examine_subagent', previousVersion: '4', currentName: 'examine_subagent', currentVersion: '6' },
   { previousName: 'examine_subagent', previousVersion: '5', currentName: 'examine_subagent', currentVersion: '6' },
 
-  // read → v6 (formerly read_workspace_file / read_authorized_text)
+  // read → v7：仅文本判定下的图片降级文案收敛到统一占位子串（UNSUPPORTED_IMAGE_NOTE），
+  // 并明确「模型能力所限 ≠ 读取失败」（Domain 不变量 6）。schema 不变，输出语义变化。
+  { previousName: 'read', previousVersion: '6', currentName: 'read', currentVersion: '7' },
+  // browser → v8：screenshot 降级文案同上收敛。schema 不变，输出语义变化。
+  { previousName: 'browser', previousVersion: '7', currentName: 'browser', currentVersion: '8' },
+  // computer → v3：state/screenshot 两个产图点降级文案同上收敛。schema 不变。
+  { previousName: 'computer', previousVersion: '2', currentName: 'computer', currentVersion: '3' },
   // v5：工作区外绝对路径读取从「未授权直接拒绝」改为按需原生授权确认
   // （仅本次运行允许/始终允许/拒绝，Rust 侧 file_access.rs 审批对话框 +
   // 持久注册表）；schema 不变，授权语义增强。
   // v6：读取面免审批（对齐 codex 全盘读语义）——绝对路径直接读取，敏感
   // 路径（凭据载体 + ~/.axiom）由 Rust 侧 sensitive_read_denied fail-closed
   // 拒绝；「文件授权」机制降级为引用列表（无安全职能）。
-  { previousName: 'read_workspace_file', previousVersion: '1', currentName: 'read', currentVersion: '6' },
-  { previousName: 'read_authorized_text', previousVersion: '1', currentName: 'read', currentVersion: '6' },
-  { previousName: 'read', previousVersion: '2', currentName: 'read', currentVersion: '6' },
-  { previousName: 'read', previousVersion: '3', currentName: 'read', currentVersion: '6' },
-  { previousName: 'read', previousVersion: '4', currentName: 'read', currentVersion: '6' },
-  { previousName: 'read', previousVersion: '5', currentName: 'read', currentVersion: '6' },
+  { previousName: 'read_workspace_file', previousVersion: '1', currentName: 'read', currentVersion: '7' },
+  { previousName: 'read_authorized_text', previousVersion: '1', currentName: 'read', currentVersion: '7' },
+  { previousName: 'read', previousVersion: '2', currentName: 'read', currentVersion: '7' },
+  { previousName: 'read', previousVersion: '3', currentName: 'read', currentVersion: '7' },
+  { previousName: 'read', previousVersion: '4', currentName: 'read', currentVersion: '7' },
+  { previousName: 'read', previousVersion: '5', currentName: 'read', currentVersion: '7' },
 
   // ls → v4 (formerly list_workspace)
   { previousName: 'list_workspace', previousVersion: '1', currentName: 'ls', currentVersion: '4' },
@@ -199,28 +227,41 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   // browser → v2：新增 console 动作（读取页面 console 输出与运行时错误，
   // dev server 验证的主要观测面）；快照新增控件状态注记（[已禁用]/[已勾选]
   // 等）。schema 向后兼容（新增可选 limit 字段），行为增强。
-  { previousName: 'browser', previousVersion: '1', currentName: 'browser', currentVersion: '2' },
-
   // browser → v3：新增 hover / wait（text+durationMs）/ find（服务端 AX 树
   // 关键词检索）三个动作；screenshot 增加可选 ref（元素区域裁剪截图）。对齐
   // zcode/ChatGPT 浏览器控制的节奏与检索原语；schema 向后兼容（新增动作与
   // 可选字段，旧会话恢复无需迁移即可读）。
-  { previousName: 'browser', previousVersion: '2', currentName: 'browser', currentVersion: '3' },
-
   // browser → v4：新增 select_tab（切前台）、select_option（原生下拉按可见
   // 文本选择，focus+type-ahead+AX 值自校验）、upload_file（DOM.setFileInputFiles，
   // path 限授权工作区内防宿主文件外传）。schema 向后兼容（新增动作与可选字段）。
-  { previousName: 'browser', previousVersion: '3', currentName: 'browser', currentVersion: '4' },
-
   // browser → v5：promptGuidelines 新增调度指引（视觉/交互验证优先内置
   // browser，排除 curl/web_fetch/computer 替代通道）。纯提示词语义增强，
   // schema 与动作集不变。
-  { previousName: 'browser', previousVersion: '4', currentName: 'browser', currentVersion: '5' },
-
   // browser → v6：新增 dblclick / set_viewport（渲染视口覆盖，响应式验证）/
   // downloads / read_download（下载目录清单与受控文本读回——~/.axiom 对 read
   // 工具 deny，模型无法直读下载产物）。既有动作与语义不变，向后兼容。
-  { previousName: 'browser', previousVersion: '5', currentName: 'browser', currentVersion: '6' },
+  // browser → v7：downloads 返回文案修正——移除「文件路径可直接交给 read 工具读取」
+  // 的误导指引（下载目录位于 ~/.axiom 数据根，对 read 工具是敏感拒绝路径，直读必被
+  // 拒），改为只引导 read_download。schema 与动作集不变，纯输出文案修正。
+  // 历史条目随 v7 bump 统一改指 live：此前各条目指向中间版本，而恢复查表要求
+  // currentVersion === live（runtimeDependencyManifest.ts 的 toolMigration 校验），
+  // 中间版本指向会让更早版本时代激活过 browser 的旧会话恢复被拒——与 design_query
+  // 当年的统一修正同理（见上方注释）。
+  { previousName: 'browser', previousVersion: '1', currentName: 'browser', currentVersion: '8' },
+  { previousName: 'browser', previousVersion: '2', currentName: 'browser', currentVersion: '8' },
+  { previousName: 'browser', previousVersion: '3', currentName: 'browser', currentVersion: '8' },
+  { previousName: 'browser', previousVersion: '4', currentName: 'browser', currentVersion: '8' },
+  { previousName: 'browser', previousVersion: '5', currentName: 'browser', currentVersion: '8' },
+  { previousName: 'browser', previousVersion: '6', currentName: 'browser', currentVersion: '8' },
+
+  // computer → v2：① 快照输出修正——passwordbox 的 AXValue 不再回显（原生
+  // SecureTextField 通常不给明文，但 Electron/Qt 自绘 UI 的 a11y 实现不保证，
+  // 防御性排除）；② stateToken 锚点放宽到最近两次 state 内有效（抗界面微动
+  // 导致锚点立即失效，第三代起淘汰）；③ click_at 的右键/双击不再被 AXPress
+  // 语义路径吞掉意图；④ 提示词治本——写文本到指定元素首选 set_value（AXValue
+  // 直设无焦点依赖），type_text/key 定位为前台应用的键盘快捷路径（元素锚点
+  // 仅先聚焦，schema 描述同步）。schema 不变，输出与行为语义变化。
+  { previousName: 'computer', previousVersion: '1', currentName: 'computer', currentVersion: '3' },
 
   // bash → v13 (formerly run_workspace_command / run_command)
   // v9：安全守卫扩展——sudo 命令上下文边界、重定向到引号/变量/noclobber/命令替换目标

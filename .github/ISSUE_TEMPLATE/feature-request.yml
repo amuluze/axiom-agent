@@ -1,0 +1,41 @@
+name: Feature Request
+description: Suggest a feature or improvement for Axiom.
+title: "[Feature] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      content: |
+        Use this template for new feature ideas or improvements to existing
+        behavior. For bugs, please use the Bug Report template.
+
+        Note: This repo is a public mirror re-exported from a private
+        upstream on every release. Pull requests are not accepted; please
+        file issues only.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Motivation
+      description: What problem are you trying to solve? Why is it worth solving?
+      validations:
+        required: true
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed solution
+      description: How would you like Axiom to behave?
+      validations:
+        required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      validations:
+        required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      placeholder: "Use cases, examples, workarounds you're using today, etc."
+      validations:
+        required: false

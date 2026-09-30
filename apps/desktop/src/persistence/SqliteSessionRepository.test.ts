@@ -7,6 +7,7 @@ import {
   NativeSessionDatabase,
   type NativeProviderProfileMigration,
 } from '@/platform/sessionDatabase'
+import { PROVIDER_PROFILE_SCHEMA_VERSION } from '@/agent/transport/provider'
 import { MemorySessionRepository } from './MemorySessionRepository'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
@@ -162,12 +163,12 @@ describe('SqliteSessionRepository destructive commit boundary', () => {
     expect(initialized.recoveredRuns).toBe(1)
     expect(migrateSessionProviderProfiles).toHaveBeenCalledOnce()
     expect(JSON.parse(row.provider_config_json)).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
       providerId: 'generic-anthropic-compatible',
       secretId: 'provider.generic-anthropic-compatible.api-key',
     })
     expect(initialized.active.session.providerConfig).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
       providerId: 'generic-anthropic-compatible',
       secretId: 'provider.generic-anthropic-compatible.api-key',
     })

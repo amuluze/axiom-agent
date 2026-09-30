@@ -14,12 +14,15 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": false, "toolSearch": true },
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": true
+        },
         "secretId": "provider.openai-responses.api-key"
       },
       "expected": {
         "profile": {
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "profileId": "work.openai",
           "providerId": "openai",
           "apiFormat": "openai-responses",
@@ -28,10 +31,14 @@
           "timeoutMs": 60000,
           "maxOutputTokens": 4096,
           "contextWindow": 128000,
-          "capabilities": { "toolReferences": false, "toolSearch": true },
+          "capabilities": {
+            "toolReferences": false,
+            "toolSearch": true
+          },
+          "imageInput": "catalog",
           "secretId": "provider.openai-responses.api-key"
         },
-        "requiresPersistenceMigration": false,
+        "requiresPersistenceMigration": true,
         "secretMigration": null
       }
     },
@@ -49,12 +56,15 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": false, "toolSearch": true },
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": true
+        },
         "secretId": "provider.openai-responses.api-key"
       },
       "expected": {
         "profile": {
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "profileId": "work.openai",
           "providerId": "openai",
           "apiFormat": "openai-responses",
@@ -65,10 +75,14 @@
           "timeoutMs": 60000,
           "maxOutputTokens": 4096,
           "contextWindow": 128000,
-          "capabilities": { "toolReferences": false, "toolSearch": true },
+          "capabilities": {
+            "toolReferences": false,
+            "toolSearch": true
+          },
+          "imageInput": "catalog",
           "secretId": "provider.openai-responses.api-key"
         },
-        "requiresPersistenceMigration": false,
+        "requiresPersistenceMigration": true,
         "secretMigration": null
       }
     },
@@ -84,12 +98,15 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": false, "toolSearch": true },
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": true
+        },
         "secretId": "provider.openai-responses.api-key"
       },
       "expected": {
         "profile": {
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "profileId": "work.openai",
           "providerId": "openai",
           "apiFormat": "openai-responses",
@@ -98,7 +115,11 @@
           "timeoutMs": 60000,
           "maxOutputTokens": 4096,
           "contextWindow": 128000,
-          "capabilities": { "toolReferences": false, "toolSearch": true },
+          "capabilities": {
+            "toolReferences": false,
+            "toolSearch": true
+          },
+          "imageInput": "catalog",
           "secretId": "provider.openai-responses.api-key"
         },
         "requiresPersistenceMigration": true,
@@ -118,9 +139,14 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": false, "toolSearch": true }
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": true
+        }
       },
-      "expected": { "expectError": true }
+      "expected": {
+        "expectError": true
+      }
     },
     {
       "name": "v3 越界 maxOutputTokens 拒绝",
@@ -134,9 +160,14 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 600000,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": false, "toolSearch": true }
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": true
+        }
       },
-      "expected": { "expectError": true }
+      "expected": {
+        "expectError": true
+      }
     },
     {
       "name": "v2 anthropic 迁移 + secret 迁移",
@@ -150,12 +181,15 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": true, "toolSearch": false },
+        "capabilities": {
+          "toolReferences": true,
+          "toolSearch": false
+        },
         "secretId": "provider.anthropic-compatible.api-key"
       },
       "expected": {
         "profile": {
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "profileId": "legacy.anthropic",
           "providerId": "generic-anthropic-compatible",
           "apiFormat": "anthropic-compatible",
@@ -164,7 +198,11 @@
           "timeoutMs": 60000,
           "maxOutputTokens": 4096,
           "contextWindow": 128000,
-          "capabilities": { "toolReferences": true, "toolSearch": false },
+          "capabilities": {
+            "toolReferences": true,
+            "toolSearch": false
+          },
+          "imageInput": "catalog",
           "secretId": "provider.generic-anthropic-compatible.api-key"
         },
         "requiresPersistenceMigration": true,
@@ -186,12 +224,15 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": true, "toolSearch": false },
+        "capabilities": {
+          "toolReferences": true,
+          "toolSearch": false
+        },
         "secretId": "provider.minimax.api-key.team-a"
       },
       "expected": {
         "profile": {
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "profileId": "legacy.team-a",
           "providerId": "generic-anthropic-compatible",
           "apiFormat": "anthropic-compatible",
@@ -200,7 +241,11 @@
           "timeoutMs": 60000,
           "maxOutputTokens": 4096,
           "contextWindow": 128000,
-          "capabilities": { "toolReferences": true, "toolSearch": false },
+          "capabilities": {
+            "toolReferences": true,
+            "toolSearch": false
+          },
+          "imageInput": "catalog",
           "secretId": "provider.generic-anthropic-compatible.api-key.team-a"
         },
         "requiresPersistenceMigration": true,
@@ -222,12 +267,15 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": true, "toolSearch": false },
+        "capabilities": {
+          "toolReferences": true,
+          "toolSearch": false
+        },
         "secretId": "provider.minimax.api-key"
       },
       "expected": {
         "profile": {
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "profileId": "legacy.minimax",
           "providerId": "generic-anthropic-compatible",
           "apiFormat": "anthropic-compatible",
@@ -236,7 +284,11 @@
           "timeoutMs": 60000,
           "maxOutputTokens": 4096,
           "contextWindow": 128000,
-          "capabilities": { "toolReferences": true, "toolSearch": false },
+          "capabilities": {
+            "toolReferences": true,
+            "toolSearch": false
+          },
+          "imageInput": "catalog",
           "secretId": "provider.generic-anthropic-compatible.api-key"
         },
         "requiresPersistenceMigration": true,
@@ -260,7 +312,7 @@
       },
       "expected": {
         "profile": {
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "profileId": "migrated.generic-openai-compatible",
           "providerId": "generic-openai-compatible",
           "apiFormat": "openai-compatible",
@@ -269,7 +321,11 @@
           "timeoutMs": 30000,
           "maxOutputTokens": 8192,
           "contextWindow": 256000,
-          "capabilities": { "toolReferences": false, "toolSearch": false },
+          "capabilities": {
+            "toolReferences": false,
+            "toolSearch": false
+          },
+          "imageInput": "catalog",
           "secretId": "provider.openai-compatible.api-key"
         },
         "requiresPersistenceMigration": true,
@@ -288,11 +344,14 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": false, "toolSearch": false }
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        }
       },
       "expected": {
         "profile": {
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "profileId": "builtin.demo",
           "providerId": "demo",
           "apiFormat": "demo",
@@ -301,9 +360,12 @@
           "timeoutMs": 60000,
           "maxOutputTokens": 4096,
           "contextWindow": 128000,
-          "capabilities": { "toolReferences": false, "toolSearch": false }
+          "capabilities": {
+            "toolReferences": false,
+            "toolSearch": false
+          }
         },
-        "requiresPersistenceMigration": false,
+        "requiresPersistenceMigration": true,
         "secretMigration": null
       }
     },
@@ -319,11 +381,14 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": false, "toolSearch": false }
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        }
       },
       "expected": {
         "profile": {
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "profileId": "work.ollama",
           "providerId": "ollama",
           "apiFormat": "openai-compatible",
@@ -332,9 +397,13 @@
           "timeoutMs": 60000,
           "maxOutputTokens": 4096,
           "contextWindow": 128000,
-          "capabilities": { "toolReferences": false, "toolSearch": false }
+          "capabilities": {
+            "toolReferences": false,
+            "toolSearch": false
+          },
+          "imageInput": "catalog"
         },
-        "requiresPersistenceMigration": false,
+        "requiresPersistenceMigration": true,
         "secretMigration": null
       }
     },
@@ -350,12 +419,15 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 8192,
         "contextWindow": 1000000,
-        "capabilities": { "toolReferences": false, "toolSearch": false },
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        },
         "secretId": "provider.gemini.api-key"
       },
       "expected": {
         "profile": {
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "profileId": "work.gemini",
           "providerId": "gemini",
           "apiFormat": "openai-compatible",
@@ -364,10 +436,14 @@
           "timeoutMs": 60000,
           "maxOutputTokens": 8192,
           "contextWindow": 1000000,
-          "capabilities": { "toolReferences": false, "toolSearch": false },
+          "capabilities": {
+            "toolReferences": false,
+            "toolSearch": false
+          },
+          "imageInput": "catalog",
           "secretId": "provider.gemini.api-key"
         },
-        "requiresPersistenceMigration": false,
+        "requiresPersistenceMigration": true,
         "secretMigration": null
       }
     },
@@ -383,12 +459,15 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": false, "toolSearch": false },
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        },
         "secretId": "provider.minimax-chat.api-key"
       },
       "expected": {
         "profile": {
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "profileId": "work.minimax",
           "providerId": "minimax-chat",
           "apiFormat": "openai-compatible",
@@ -397,10 +476,14 @@
           "timeoutMs": 60000,
           "maxOutputTokens": 4096,
           "contextWindow": 128000,
-          "capabilities": { "toolReferences": false, "toolSearch": false },
+          "capabilities": {
+            "toolReferences": false,
+            "toolSearch": false
+          },
+          "imageInput": "catalog",
           "secretId": "provider.minimax-chat.api-key"
         },
-        "requiresPersistenceMigration": false,
+        "requiresPersistenceMigration": true,
         "secretMigration": null
       }
     },
@@ -416,12 +499,15 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": false, "toolSearch": false },
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        },
         "secretId": "provider.kimi.api-key"
       },
       "expected": {
         "profile": {
-          "schemaVersion": 4,
+          "schemaVersion": 5,
           "profileId": "work.kimi",
           "providerId": "kimi",
           "apiFormat": "openai-compatible",
@@ -430,10 +516,14 @@
           "timeoutMs": 60000,
           "maxOutputTokens": 4096,
           "contextWindow": 128000,
-          "capabilities": { "toolReferences": false, "toolSearch": false },
+          "capabilities": {
+            "toolReferences": false,
+            "toolSearch": false
+          },
+          "imageInput": "catalog",
           "secretId": "provider.kimi.api-key"
         },
-        "requiresPersistenceMigration": false,
+        "requiresPersistenceMigration": true,
         "secretMigration": null
       }
     },
@@ -449,10 +539,15 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": false, "toolSearch": true },
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": true
+        },
         "secretId": "provider.openai-compatible.api-key"
       },
-      "expected": { "expectError": true }
+      "expected": {
+        "expectError": true
+      }
     },
     {
       "name": "缺失 modelId 拒绝",
@@ -465,9 +560,355 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": false, "toolSearch": true }
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": true
+        }
       },
-      "expected": { "expectError": true }
+      "expected": {
+        "expectError": true
+      }
+    },
+    {
+      "name": "v5 缺声明按 catalog 归一",
+      "input": {
+        "schemaVersion": 5,
+        "profileId": "work.openai",
+        "providerId": "openai",
+        "apiFormat": "openai-responses",
+        "endpoint": "https://api.openai.com/v1/responses",
+        "modelId": "gpt-4.1",
+        "timeoutMs": 60000,
+        "maxOutputTokens": 4096,
+        "contextWindow": 128000,
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": true
+        },
+        "secretId": "provider.openai-responses.api-key"
+      },
+      "expected": {
+        "profile": {
+          "schemaVersion": 5,
+          "profileId": "work.openai",
+          "providerId": "openai",
+          "apiFormat": "openai-responses",
+          "endpoint": "https://api.openai.com/v1/responses",
+          "modelId": "gpt-4.1",
+          "timeoutMs": 60000,
+          "maxOutputTokens": 4096,
+          "contextWindow": 128000,
+          "capabilities": {
+            "toolReferences": false,
+            "toolSearch": true
+          },
+          "imageInput": "catalog",
+          "secretId": "provider.openai-responses.api-key"
+        },
+        "requiresPersistenceMigration": false,
+        "secretMigration": null
+      }
+    },
+    {
+      "name": "v5 显式声明 image 覆盖目录",
+      "input": {
+        "schemaVersion": 5,
+        "profileId": "work.openai",
+        "providerId": "openai",
+        "apiFormat": "openai-responses",
+        "endpoint": "https://api.openai.com/v1/responses",
+        "modelId": "gpt-4.1",
+        "timeoutMs": 60000,
+        "maxOutputTokens": 4096,
+        "contextWindow": 128000,
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": true
+        },
+        "secretId": "provider.openai-responses.api-key",
+        "imageInput": "image"
+      },
+      "expected": {
+        "profile": {
+          "schemaVersion": 5,
+          "profileId": "work.openai",
+          "providerId": "openai",
+          "apiFormat": "openai-responses",
+          "endpoint": "https://api.openai.com/v1/responses",
+          "modelId": "gpt-4.1",
+          "timeoutMs": 60000,
+          "maxOutputTokens": 4096,
+          "contextWindow": 128000,
+          "capabilities": {
+            "toolReferences": false,
+            "toolSearch": true
+          },
+          "imageInput": "image",
+          "secretId": "provider.openai-responses.api-key"
+        },
+        "requiresPersistenceMigration": false,
+        "secretMigration": null
+      }
+    },
+    {
+      "name": "v5 显式声明 text 覆盖目录",
+      "input": {
+        "schemaVersion": 5,
+        "profileId": "work.openai",
+        "providerId": "openai",
+        "apiFormat": "openai-responses",
+        "endpoint": "https://api.openai.com/v1/responses",
+        "modelId": "gpt-4.1",
+        "timeoutMs": 60000,
+        "maxOutputTokens": 4096,
+        "contextWindow": 128000,
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": true
+        },
+        "secretId": "provider.openai-responses.api-key",
+        "imageInput": "text"
+      },
+      "expected": {
+        "profile": {
+          "schemaVersion": 5,
+          "profileId": "work.openai",
+          "providerId": "openai",
+          "apiFormat": "openai-responses",
+          "endpoint": "https://api.openai.com/v1/responses",
+          "modelId": "gpt-4.1",
+          "timeoutMs": 60000,
+          "maxOutputTokens": 4096,
+          "contextWindow": 128000,
+          "capabilities": {
+            "toolReferences": false,
+            "toolSearch": true
+          },
+          "imageInput": "text",
+          "secretId": "provider.openai-responses.api-key"
+        },
+        "requiresPersistenceMigration": false,
+        "secretMigration": null
+      }
+    },
+    {
+      "name": "v5 非法声明取值 fail-closed",
+      "input": {
+        "schemaVersion": 5,
+        "profileId": "work.openai",
+        "providerId": "openai",
+        "apiFormat": "openai-responses",
+        "endpoint": "https://api.openai.com/v1/responses",
+        "modelId": "gpt-4.1",
+        "timeoutMs": 60000,
+        "maxOutputTokens": 4096,
+        "contextWindow": 128000,
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": true
+        },
+        "secretId": "provider.openai-responses.api-key",
+        "imageInput": "multimodal"
+      },
+      "expected": {
+        "expectError": true
+      }
+    },
+    {
+      "name": "v4 携带声明按未知字段拒绝",
+      "input": {
+        "schemaVersion": 4,
+        "profileId": "work.openai",
+        "providerId": "openai",
+        "apiFormat": "openai-responses",
+        "endpoint": "https://api.openai.com/v1/responses",
+        "modelId": "gpt-4.1",
+        "timeoutMs": 60000,
+        "maxOutputTokens": 4096,
+        "contextWindow": 128000,
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": true
+        },
+        "secretId": "provider.openai-responses.api-key",
+        "imageInput": "image"
+      },
+      "expected": {
+        "expectError": true
+      }
+    },
+    {
+      "name": "v4 缺声明按 catalog 归一并标记迁移",
+      "input": {
+        "schemaVersion": 4,
+        "profileId": "work.openai",
+        "providerId": "openai",
+        "apiFormat": "openai-responses",
+        "endpoint": "https://api.openai.com/v1/responses",
+        "modelId": "gpt-4.1",
+        "timeoutMs": 60000,
+        "maxOutputTokens": 4096,
+        "contextWindow": 128000,
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": true
+        },
+        "secretId": "provider.openai-responses.api-key"
+      },
+      "expected": {
+        "profile": {
+          "schemaVersion": 5,
+          "profileId": "work.openai",
+          "providerId": "openai",
+          "apiFormat": "openai-responses",
+          "endpoint": "https://api.openai.com/v1/responses",
+          "modelId": "gpt-4.1",
+          "timeoutMs": 60000,
+          "maxOutputTokens": 4096,
+          "contextWindow": 128000,
+          "capabilities": {
+            "toolReferences": false,
+            "toolSearch": true
+          },
+          "imageInput": "catalog",
+          "secretId": "provider.openai-responses.api-key"
+        },
+        "requiresPersistenceMigration": true,
+        "secretMigration": null
+      }
+    },
+    {
+      "name": "v3 缺声明按 catalog 归一并标记迁移",
+      "input": {
+        "schemaVersion": 3,
+        "profileId": "work.openai",
+        "providerId": "openai",
+        "apiFormat": "openai-responses",
+        "endpoint": "https://api.openai.com/v1/responses",
+        "modelId": "gpt-4.1",
+        "timeoutMs": 60000,
+        "maxOutputTokens": 4096,
+        "contextWindow": 128000,
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": true
+        },
+        "secretId": "provider.openai-responses.api-key"
+      },
+      "expected": {
+        "profile": {
+          "schemaVersion": 5,
+          "profileId": "work.openai",
+          "providerId": "openai",
+          "apiFormat": "openai-responses",
+          "endpoint": "https://api.openai.com/v1/responses",
+          "modelId": "gpt-4.1",
+          "timeoutMs": 60000,
+          "maxOutputTokens": 4096,
+          "contextWindow": 128000,
+          "capabilities": {
+            "toolReferences": false,
+            "toolSearch": true
+          },
+          "imageInput": "catalog",
+          "secretId": "provider.openai-responses.api-key"
+        },
+        "requiresPersistenceMigration": true,
+        "secretMigration": null
+      }
+    },
+    {
+      "name": "legacy kind 迁移按 catalog 归一",
+      "input": {
+        "kind": "openai-compatible",
+        "endpoint": "https://api.example.com/v1/chat/completions",
+        "model": "custom-model",
+        "timeoutMs": 30000,
+        "maxTokens": 8192,
+        "contextWindow": 256000,
+        "supportsToolReferences": false,
+        "supportsToolSearch": true
+      },
+      "expected": {
+        "profile": {
+          "schemaVersion": 5,
+          "profileId": "migrated.generic-openai-compatible",
+          "providerId": "generic-openai-compatible",
+          "apiFormat": "openai-compatible",
+          "endpoint": "https://api.example.com/v1/chat/completions",
+          "modelId": "custom-model",
+          "timeoutMs": 30000,
+          "maxOutputTokens": 8192,
+          "contextWindow": 256000,
+          "capabilities": {
+            "toolReferences": false,
+            "toolSearch": false
+          },
+          "imageInput": "catalog",
+          "secretId": "provider.openai-compatible.api-key"
+        },
+        "requiresPersistenceMigration": true,
+        "secretMigration": null
+      }
+    },
+    {
+      "name": "v5 demo 文档不携带声明",
+      "input": {
+        "schemaVersion": 5,
+        "profileId": "builtin.demo",
+        "providerId": "demo",
+        "apiFormat": "demo",
+        "endpoint": "",
+        "modelId": "demo-v1",
+        "timeoutMs": 60000,
+        "maxOutputTokens": 4096,
+        "contextWindow": 128000,
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        }
+      },
+      "expected": {
+        "profile": {
+          "schemaVersion": 5,
+          "profileId": "builtin.demo",
+          "providerId": "demo",
+          "apiFormat": "demo",
+          "endpoint": "",
+          "modelId": "demo-v1",
+          "timeoutMs": 60000,
+          "maxOutputTokens": 4096,
+          "contextWindow": 128000,
+          "capabilities": {
+            "toolReferences": false,
+            "toolSearch": false
+          }
+        },
+        "requiresPersistenceMigration": false,
+        "secretMigration": null
+      }
+    },
+    {
+      "name": "v5 demo 携带声明按非规范化拒绝",
+      "input": {
+        "schemaVersion": 5,
+        "profileId": "builtin.demo",
+        "providerId": "demo",
+        "apiFormat": "demo",
+        "endpoint": "",
+        "modelId": "demo-v1",
+        "timeoutMs": 60000,
+        "maxOutputTokens": 4096,
+        "contextWindow": 128000,
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        },
+        "imageInput": "image"
+      },
+      "expected": {
+        "expectError": true
+      }
     }
   ]
 }

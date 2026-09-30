@@ -674,18 +674,6 @@ impl SshAgentState {
         }
     }
 
-    fn grants_for_session(&self, session_id: &str) -> Vec<String> {
-        self.session_host_grants
-            .lock()
-            .map(|grants| {
-                grants
-                    .get(session_id)
-                    .map(|hosts| hosts.iter().cloned().collect())
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default()
-    }
-
     fn revoke_session(&self, session_id: &str) {
         if let Ok(mut grants) = self.session_host_grants.lock() {
             grants.remove(session_id);
@@ -917,8 +905,6 @@ pub enum SshAgentCommandRequest {
         command: String,
         timeout_ms: Option<u64>,
     },
-    /// 查询会话已授权主机（TS 授权镜像重建用）。
-    SessionGrants { session_id: String },
     /// 会话删除时回收授权。
     RevokeSessionGrants { session_id: String },
 }
@@ -948,7 +934,6 @@ pub enum SshAgentCommandResponse {
         duration_ms: u64,
         timed_out: bool,
     },
-    Grants { hosts: Vec<String> },
     Ack,
 }
 
@@ -1058,13 +1043,9 @@ pub(crate) async fn ssh_agent_command(
                 timed_out: outcome.timed_out,
             })
         }
-        SshAgentCommandRequest::SessionGrants { session_id } => {
-            let session_id = validate_agent_session_id(&session_id)?;
-            let state = app.state::<SshAgentState>();
-            Ok(SshAgentCommandResponse::Grants {
-                hosts: state.grants_for_session(session_id),
-            })
-        }
+        // SessionGrants 查询分支已删除：授权表进程内存、重启清空，TS 镜像不做
+        // 跨重启补水（sshApprovalGrants.ts 同口径）——「镜像重建」永远无物可补，
+        // 该分支从未有调用方；免卡预检命中 Rust 权威表失配时回落审批卡即可。
         SshAgentCommandRequest::RevokeSessionGrants { session_id } => {
             let session_id = validate_agent_session_id(&session_id)?;
             app.state::<SshAgentState>().revoke_session(session_id);
@@ -1247,10 +1228,8 @@ mod tests {
         assert!(state.grant_exists("s1", "prod"));
         // 授权按会话隔离。
         assert!(!state.grant_exists("s2", "prod"));
-        assert_eq!(state.grants_for_session("s1"), vec!["prod".to_string()]);
         state.revoke_session("s1");
         assert!(!state.grant_exists("s1", "prod"));
-        assert!(state.grants_for_session("s1").is_empty());
     }
 
     #[test]

@@ -1255,3 +1255,17 @@
   background: var(--bg-input);
   color: var(--text-tertiary);
 }
+
+/* SSH 面板的保活挂载层（RuntimeRail）：pane 切换不卸载终端实例，非激活时
+   hidden。display:flex 会覆盖 [hidden] 的 UA display:none，须显式补守卫。 */
+.rail__pane-stack {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.rail__pane-stack[hidden] {
+  display: none;
+}

@@ -15,7 +15,7 @@
  * 输出是**源码文本**：转义集中在一处（`escapeJsxText`/`literalOf`）并有单测；语法
  * 有效性由用例经 TypeScript 解析器断言（生成物必须能被解析、能被 tsc 检查）。
  */
-import type { AxDocument, AxGradient, AxImageFill, AxNode, AxPage, AxSize } from './axSchema'
+import type { AxDocument, AxGradient, AxImageFill, AxNode, AxPage, AxShadow, AxSize } from './axSchema'
 import { axPartClassNames, axPartSpecOf } from './axParts'
 
 /** 组件导入信息（来自注册表的 `sourcePath`，由调用方注入）。 */
@@ -119,6 +119,10 @@ const textChildOf = (value: unknown, unresolved: EmitUnresolved[], node: AxNode)
 
 /** token 引用原样保留为 `var(--name)`（`.ax` 的 `$name` → CSS 变量）。 */
 const cssValueOf = (value: string): string => (value.startsWith('$') ? `var(--${value.slice(1)})` : value)
+
+/** shadow 直译：`{offsetX offsetY blur color}` 形态对齐 CSS box-shadow（color 走 token→var 映射）。 */
+const boxShadowOf = (shadow: AxShadow): string =>
+  `${shadow.offsetX}px ${shadow.offsetY}px ${shadow.blur}px ${cssValueOf(shadow.color)}`
 
 const sizeOf = (value: AxSize | undefined): string | null => {
   if (value === undefined) return null
@@ -310,6 +314,7 @@ export const emitAxPageToTsx = (
       }
       const paint = paintOf(node.fill)
       if (paint) style[paint.key] = paint.css
+      if (node.shadow) style.boxShadow = boxShadowOf(node.shadow)
       const children = (node.children ?? []).map((child) => nodeToJsx(child, depth + 1)).filter((item) => item !== null)
       const body = children.map((child) => `${wrap(depth + 1)}${child}`).join('\n')
       return `<div style=${objectLiteralOf(style)}>\n${body}\n${wrap(depth)}</div>`
@@ -325,6 +330,7 @@ export const emitAxPageToTsx = (
       if (node.lineHeight) style.lineHeight = node.lineHeight.unit === 'multiplier' ? String(node.lineHeight.value) : `${node.lineHeight.value}px`
       if (node.letterSpacing !== undefined) style.letterSpacing = typeof node.letterSpacing === 'number' ? `${node.letterSpacing}px` : cssValueOf(node.letterSpacing)
       if (node.textAlign) style.textAlign = node.textAlign
+      if (node.shadow) style.boxShadow = boxShadowOf(node.shadow)
       style.whiteSpace = node.wrap === 'nowrap' ? 'nowrap' : 'pre-wrap'
       return `<div style=${objectLiteralOf(style)}>${textChildOf(node.text, unresolved, node)}</div>`
     }
@@ -339,7 +345,9 @@ export const emitAxPageToTsx = (
       lucideIcons.add(pascal)
       const size = node.size ?? 16
       const paint = paintOf(node.fill)
-      return `<${pascal} size={${size}}${paint ? ` style=${objectLiteralOf({ color: paint.css })}` : ''} />`
+      const iconStyle: Record<string, string> = { ...(paint ? { color: paint.css } : {}) }
+      if (node.shadow) iconStyle.filter = `drop-shadow(${node.shadow.offsetX}px ${node.shadow.offsetY}px ${node.shadow.blur}px ${cssValueOf(node.shadow.color)})`
+      return `<${pascal} size={${size}}${Object.keys(iconStyle).length > 0 ? ` style=${objectLiteralOf(iconStyle)}` : ''} />`
     }
 
     if (node.kind === 'rect' || node.kind === 'ellipse') {
@@ -350,6 +358,7 @@ export const emitAxPageToTsx = (
       if (stroke) style.border = `1px solid ${stroke.css}`
       if (node.cornerRadius !== undefined && typeof node.cornerRadius === 'number') style.borderRadius = `${node.cornerRadius}px`
       if (node.kind === 'ellipse') style.borderRadius = '50%'
+      if (node.shadow) style.boxShadow = boxShadowOf(node.shadow)
       return `<div style=${objectLiteralOf(style)} />`
     }
 
@@ -358,7 +367,11 @@ export const emitAxPageToTsx = (
       const fill = node.fill !== undefined && typeof node.fill === 'string' ? cssValueOf(node.fill) : 'none'
       const viewBox = node.viewBox ? ` viewBox=${literalOf(node.viewBox.join(' '))}` : ''
       const sizeAttrs = `${width ? ` width=${literalOf(width)}` : ''}${height ? ` height=${literalOf(height)}` : ''}`
-      return `<svg${viewBox}${sizeAttrs}>\n${wrap(depth + 1)}<path d=${literalOf(node.geometry ?? '')} fill=${literalOf(fill)} />\n${wrap(depth)}</svg>`
+      // path 的阴影走 filter drop-shadow：box-shadow 对 svg 是矩形盒、不跟随路径形状。
+      const filter = node.shadow
+        ? ` style=${objectLiteralOf({ filter: `drop-shadow(${node.shadow.offsetX}px ${node.shadow.offsetY}px ${node.shadow.blur}px ${cssValueOf(node.shadow.color)})` })}`
+        : ''
+      return `<svg${viewBox}${sizeAttrs}${filter}>\n${wrap(depth + 1)}<path d=${literalOf(node.geometry ?? '')} fill=${literalOf(fill)} />\n${wrap(depth)}</svg>`
     }
 
     if (node.kind === 'image') {

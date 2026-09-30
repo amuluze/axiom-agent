@@ -133,9 +133,9 @@ describe('Runtime dependency manifest', () => {
   it.each([
     ['discover_agent_tools', '2', 'idempotent', '4'],
     ['discover_agent_tools', '3', 'idempotent', '4'],
-    ['read', '3', 'idempotent', '6'],
-    ['read', '4', 'idempotent', '6'],
-    ['read', '5', 'idempotent', '6'],
+    ['read', '3', 'idempotent', '7'],
+    ['read', '4', 'idempotent', '7'],
+    ['read', '5', 'idempotent', '7'],
     ['ls', '2', 'idempotent', '4'],
     ['ls', '3', 'idempotent', '4'],
     ['grep', '3', 'idempotent', '5'],

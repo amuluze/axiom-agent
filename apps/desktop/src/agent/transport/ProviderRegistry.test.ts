@@ -124,7 +124,9 @@ describe('ProviderRegistry (builtin)', () => {
       contextWindow: 64_000,
     }
     const model = BUILTIN_PROVIDER_REGISTRY.resolveModel(customProfile)
-    expect(model.input).toBeUndefined()
+    // 目录外模型按 Domain 不变量 2（fail-safe）判定为仅文本，不再省略 input：
+    // input 恒有值后请求侧必走 stripUnsupportedImages 降级而非抛错整轮。
+    expect(model.input).toEqual(['text'])
   })
 
   it('resolveModel 对目录内多模态模型标注 image 输入', () => {

@@ -9,6 +9,22 @@
 import { captureWebViewViewport, probeWebViewCapture } from '@/platform/webviewCapture'
 import { sampleCanvasPixels, type PngPixelStats } from './exportPagePng'
 
+/**
+ * 原生截图瞬时失败重试一次：快照经主线程派发（Rust 侧 15s 有界等待），渲染队列
+ * 拥塞、窗口瞬时遮挡等会造成偶发超时与空快照，重试大概率恢复。能走到这里的调用方
+ * 都已通过支持性探测（命令已注册），失败只剩瞬时类；两次都失败按第二次的错误抛出。
+ */
+const captureViewportWithRetry = async (
+  rect?: [number, number, number, number],
+): Promise<Awaited<ReturnType<typeof captureWebViewViewport>>> => {
+  try {
+    return await captureWebViewViewport(rect)
+  } catch {
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    return captureWebViewViewport(rect)
+  }
+}
+
 /** 支持性探测只做一次（Rust 侧 probe 不真正截图，无画面闪动）。 */
 let supportPromise: Promise<boolean> | null = null
 
@@ -48,6 +64,35 @@ const dataUrlBase64Of = (canvas: HTMLCanvasElement): string => {
   return dataUrl.slice(comma + 1)
 }
 
+export interface CapturedRegionStats {
+  /** 全分辨率像素统计（空白判定）。 */
+  stats: PngPixelStats
+  /** 截图像素尺寸（Retina 下为 CSS 尺寸 × dpr）。 */
+  width: number
+  height: number
+}
+
+/**
+ * 原位矩形采集（画布扫描的光栅步骤）：视口坐标 rect → 原生截图 → 解码 → 像素
+ * 统计。与 captureMountedPage 的差别：页面**已经在画布上渲染**，无须挂载，也不
+ * 产缩略图（画布扫描只消费统计；工具路径的缩略图走 staging 挂载路径）。
+ */
+export const captureRectStats = async (
+  rect: [number, number, number, number],
+): Promise<CapturedRegionStats> => {
+  const shot = await captureViewportWithRetry(rect)
+  if (!shot.imageBase64) {
+    throw new Error('原生截图返回空数据')
+  }
+  const image = await loadImageFromBase64(shot.imageBase64)
+  const canvas = canvasFromImage(image, image.width, image.height)
+  return {
+    stats: sampleCanvasPixels(canvas),
+    width: image.width,
+    height: image.height,
+  }
+}
+
 export interface CapturedPagePng {
   base64: string
   /** 输出像素尺寸。 */
@@ -84,7 +129,7 @@ export const captureMountedPage = async (
   if (rect.width <= 0 || rect.height <= 0) {
     throw new Error('页面没有可截取的可见区域')
   }
-  const shot = await captureWebViewViewport([rect.x, rect.y, rect.width, rect.height])
+  const shot = await captureViewportWithRetry([rect.x, rect.y, rect.width, rect.height])
   if (!shot.imageBase64) {
     throw new Error('原生截图返回空数据')
   }

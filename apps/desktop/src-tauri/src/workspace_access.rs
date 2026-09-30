@@ -480,7 +480,9 @@ pub(crate) fn validate_relative_path(raw_path: Option<&str>) -> Result<PathBuf, 
 
 /// Single-file writes must not touch repository/app control directories,
 /// matching the batch apply_workspace_changes policy.
-fn reject_reserved_write_components(relative: &Path) -> Result<(), String> {
+/// 拒保留目录（`.git`/`.axiom`）写入：按 ASCII 小写比较（APFS/HFS+ 默认大小写
+/// 不敏感，`.GIT`/`.Git` 会解析到真实的 `.git`）。设计稿画布写通道同口径复用。
+pub(crate) fn reject_reserved_write_components(relative: &Path) -> Result<(), String> {
     if relative.components().any(|component| match component {
         // APFS/HFS+ 默认大小写不敏感：`.GIT`、`.Git` 会解析到真实的 `.git`，
         // 因此按 ASCII 小写比较，避免大小写变体绕过保留目录。
@@ -602,7 +604,9 @@ fn no_change_error(path: &str, total_edits: usize) -> String {
     }
 }
 
-fn sync_parent_directory(path: &Path) -> Result<(), String> {
+/// rename 持久化后再 fsync 父目录：否则崩溃时可产生「rename 已记入目录、数据
+/// 未落盘」的空文件。设计稿画布写通道与 Agent 写路径共用同一收口。
+pub(crate) fn sync_parent_directory(path: &Path) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "workspace file has no parent directory".to_string())?;

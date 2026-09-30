@@ -20,6 +20,8 @@ import {
 import type { LegacyProviderConfig } from './providerProfile'
 
 const ANTHROPIC_SECRET = 'provider.generic-anthropic-compatible.api-key'
+// 上一版文档版本（跨版本兼容解码的入口）：写死字面量会在下一次 bump 时静默失效。
+const PREVIOUS_PROFILE_SCHEMA_VERSION = 4 as const
 
 const anthropicProfile = {
   schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
@@ -165,6 +167,39 @@ describe('normalizeProviderProfileDraft', () => {
       website: 'x'.repeat(257),
     })).rejects.toThrow('官网地址过长')
   })
+
+  it('defaults a missing image input declaration to the catalog', async () => {
+    const normalized = await normalizeProviderProfileDraft(anthropicProfile)
+    expect(normalized.imageInput).toBe('catalog')
+  })
+
+  it('keeps each explicit image input declaration', async () => {
+    for (const imageInput of ['catalog', 'text', 'image'] as const) {
+      expect((await normalizeProviderProfileDraft({ ...anthropicProfile, imageInput })).imageInput)
+        .toBe(imageInput)
+    }
+  })
+
+  it('rejects an image input declaration outside the three states', async () => {
+    await expect(normalizeProviderProfileDraft({
+      ...anthropicProfile,
+      imageInput: 'multimodal' as never,
+    })).rejects.toThrow('图片输入能力声明无效')
+    await expect(normalizeProviderProfileDraft({
+      ...anthropicProfile,
+      imageInput: 1 as never,
+    })).rejects.toThrow('图片输入能力声明无效')
+  })
+
+  it('drops the image input declaration for the fixed demo contract', async () => {
+    const normalized = await normalizeProviderProfileDraft({
+      ...anthropicProfile,
+      providerId: 'demo',
+      apiFormat: 'demo',
+      imageInput: 'image',
+    })
+    expect(normalized.imageInput).toBeUndefined()
+  })
 })
 
 describe('legacy provider config migration', () => {
@@ -204,17 +239,78 @@ describe('legacy provider config migration', () => {
 })
 
 describe('decodeProviderProfileWithMetadata', () => {
-  it('passes through schema v4 profiles without persistence migration', async () => {
+  it('passes through current schema profiles without persistence migration', async () => {
     const decoded = await decodeProviderProfileWithMetadata(anthropicProfile)
     expect(decoded.requiresPersistenceMigration).toBe(false)
     expect(decoded.secretMigration).toBeUndefined()
     expect(decoded.profile.providerId).toBe('generic-anthropic-compatible')
+    expect(decoded.profile.imageInput).toBe('catalog')
     await expect(decodeProviderProfile(anthropicProfile)).resolves.toEqual(decoded.profile)
   })
 
-  it('marks schema v3 profiles for persistence migration without secret migration', async () => {
-    // v3 文档已持有当前 secret namespace：只重写版本号，不产生 secret 迁移。
-    const value = { ...anthropicProfile, schemaVersion: 3 }
+  it('carries the image input declaration through decoding', async () => {
+    for (const imageInput of ['catalog', 'text', 'image'] as const) {
+      const decoded = await decodeProviderProfileWithMetadata({ ...anthropicProfile, imageInput })
+      expect(decoded.profile.imageInput).toBe(imageInput)
+      expect(decoded.requiresPersistenceMigration).toBe(false)
+    }
+  })
+
+  it('rejects a document whose image input declaration is outside the three states', async () => {
+    await expect(decodeProviderProfileWithMetadata({
+      ...anthropicProfile,
+      imageInput: 'multimodal',
+    })).rejects.toThrow('图片输入能力声明无效')
+    // 既有合法文档不受影响（fail-closed 是逐文档的）。
+    await expect(decodeProviderProfile(anthropicProfile)).resolves.toMatchObject({
+      imageInput: 'catalog',
+    })
+  })
+
+  it('rejects the declaration field on pre-v5 documents and on demo documents', async () => {
+    // 版本门禁：旧版本文档携带 imageInput 按未知字段拒绝——旧文档的语义是
+    // 「跟随目录」，静默接受会让本不存在声明的文档凭空获得显式覆盖。
+    for (const schemaVersion of [4, 3, 2]) {
+      await expect(decodeProviderProfileWithMetadata({
+        ...anthropicProfile,
+        schemaVersion,
+        imageInput: 'image',
+      })).rejects.toThrow('包含未知字段')
+    }
+    await expect(decodeProviderProfileWithMetadata({
+      ...anthropicProfile,
+      profileId: 'builtin.demo',
+      providerId: 'demo',
+      apiFormat: 'demo',
+      endpoint: '',
+      modelId: 'demo-v1',
+      capabilities: { toolReferences: false, toolSearch: false },
+      secretId: undefined,
+      imageInput: 'image',
+    })).rejects.toThrow('不是规范化数据')
+  })
+
+  it('interprets a missing declaration on older documents as catalog', async () => {
+    for (const schemaVersion of [4, 3]) {
+      const decoded = await decodeProviderProfileWithMetadata({
+        ...anthropicProfile,
+        schemaVersion,
+      })
+      expect(decoded.profile.imageInput).toBe('catalog')
+      expect(decoded.requiresPersistenceMigration).toBe(true)
+    }
+  })
+
+  it('rejects a document from a newer schema version', async () => {
+    await expect(decodeProviderProfileWithMetadata({
+      ...anthropicProfile,
+      schemaVersion: (PROVIDER_PROFILE_SCHEMA_VERSION + 1) as never,
+    })).rejects.toThrow('Provider Profile 格式无效')
+  })
+
+  it('marks older profiles for persistence migration without secret migration', async () => {
+    // 旧文档已持有当前 secret namespace：只重写版本号，不产生 secret 迁移。
+    const value = { ...anthropicProfile, schemaVersion: PREVIOUS_PROFILE_SCHEMA_VERSION }
     const decoded = await decodeProviderProfileWithMetadata(value)
     expect(decoded.requiresPersistenceMigration).toBe(true)
     expect(decoded.secretMigration).toBeUndefined()

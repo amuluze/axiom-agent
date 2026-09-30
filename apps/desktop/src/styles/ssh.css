@@ -915,6 +915,14 @@
   font-size: 0.8462rem;
 }
 
+/* 目录条目超限截断的提示行（Rust Files 契约 truncated 的前端落点）。 */
+.sshview__sftp-truncated {
+  display: block;
+  padding: 10px 16px;
+  color: var(--warn);
+  font-size: 0.8462rem;
+}
+
 .sshview__sftp-row {
   display: flex;
   align-items: center;

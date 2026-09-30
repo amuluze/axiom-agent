@@ -28,6 +28,9 @@ import { useT } from '@/i18n'
  *   目录可进入、可返回上级。
  * - 主机增删改：下拉菜单「添加主机…」打开 SshHostsPanel 覆盖层（保留全部
  *   管理能力），不在 rail 内展开常驻管理列。
+ * - 主机列表在面板挂载时即拉取（loadHosts）：列表就绪前呈现加载/错误态，
+ *   不以「列表未到」冒充「没有主机」——否则已配置主机的用户首次打开面板
+ *   会被误导进添加主机引导。
  */
 
 const getStatusText = (phase: SshSessionPhase, t: (key: string) => string): string => {
@@ -53,6 +56,9 @@ const SFTP_RESIZING_CLASS = 'sshview__sftp--resizing'
 export const SshTerminalPanel = () => {
   const { t } = useT()
   const hosts = useSshStore((state) => state.hosts)
+  const listStatus = useSshStore((state) => state.listStatus)
+  const listError = useSshStore((state) => state.error)
+  const loadHosts = useSshStore((state) => state.loadHosts)
   const sessions = useSshStore((state) => state.sessions)
   const uploads = useSshStore((state) => state.uploads)
   const activeHostId = useSshStore((state) => state.activeHostId)
@@ -126,7 +132,10 @@ export const SshTerminalPanel = () => {
   useEffect(() => {
     ensureSshEvents()
     void refreshSessions()
-  }, [refreshSessions])
+    // 主机列表不依赖管理面板才加载：面板打开即拉取，保证「已配置主机 → 直达
+    // 终端/列表」而非误入空态引导。
+    void loadHosts()
+  }, [refreshSessions, loadHosts])
 
   /** 打开文件浏览器时定位到当前目录（缺省 `~`）。 */
   useEffect(() => {
@@ -388,6 +397,37 @@ export const SshTerminalPanel = () => {
     cachedListing && cachedListing.path === dirPath ? cachedListing.entries : null
 
   if (hosts.length === 0) {
+    // 列表未就绪（idle/loading）只呈现加载态：此刻不能区分「真的没主机」与
+    // 「列表还没到」，误导进添加引导；错误态提供重试。
+    if (listStatus === 'idle' || listStatus === 'loading') {
+      return (
+        <section ref={paneRef} className="sshview__terminal-pane sshpanel" aria-label={t('app.sshView.terminal.aria')}>
+          <div className="sshview__empty" role="status">
+            <Loader2 className="sshview__sftp-spin" size={26} strokeWidth={1.5} />
+            <div className="sshview__empty-title">{t('app.sshView.hosts.loading')}</div>
+          </div>
+        </section>
+      )
+    }
+    if (listStatus === 'error') {
+      return (
+        <section ref={paneRef} className="sshview__terminal-pane sshpanel" aria-label={t('app.sshView.terminal.aria')}>
+          <div className="sshview__empty">
+            <SquareTerminal size={34} strokeWidth={1.5} />
+            <div className="sshview__empty-title">{t('app.sshView.terminal.listError.title')}</div>
+            {listError && <div className="sshview__empty-hint">{listError}</div>}
+            <button
+              type="button"
+              className="sshpanel__empty-add"
+              onClick={() => void loadHosts()}
+            >
+              <RefreshCw size={13} aria-hidden />
+              <span>{t('app.sshView.hosts.errorRetry')}</span>
+            </button>
+          </div>
+        </section>
+      )
+    }
     return (
       <section ref={paneRef} className="sshview__terminal-pane sshpanel" aria-label={t('app.sshView.terminal.aria')}>
         <div className="sshview__empty">
@@ -765,25 +805,32 @@ export const SshTerminalPanel = () => {
             ) : entries.length === 0 ? (
               <span className="sshview__sftp-empty">{t('app.sshView.terminal.sftp.empty')}</span>
             ) : (
-              entries.map((entry) => (
-                <button
-                  key={entry.name}
-                  type="button"
-                  className="sshview__sftp-row"
-                  onClick={() => openEntry(activeHostId, entry)}
-                >
-                  <span className="sshview__sftp-row-icon" aria-hidden>
-                    {entry.isDir ? <Folder size={15} /> : <File size={15} />}
+              <>
+                {entries.map((entry) => (
+                  <button
+                    key={entry.name}
+                    type="button"
+                    className="sshview__sftp-row"
+                    onClick={() => openEntry(activeHostId, entry)}
+                  >
+                    <span className="sshview__sftp-row-icon" aria-hidden>
+                      {entry.isDir ? <Folder size={15} /> : <File size={15} />}
+                    </span>
+                    <span className="sshview__sftp-row-name" title={entry.name}>
+                      {entry.name}
+                    </span>
+                    <span className="sshview__sftp-row-meta">
+                      <span className="sshview__sftp-row-date">{entry.modifiedAt}</span>
+                      <span className="sshview__sftp-row-perms">{entry.perms}</span>
+                    </span>
+                  </button>
+                ))}
+                {cachedListing?.truncated && cachedListing.path === dirPath && (
+                  <span className="sshview__sftp-truncated">
+                    {t('app.sshView.terminal.sftp.truncated')}
                   </span>
-                  <span className="sshview__sftp-row-name" title={entry.name}>
-                    {entry.name}
-                  </span>
-                  <span className="sshview__sftp-row-meta">
-                    <span className="sshview__sftp-row-date">{entry.modifiedAt}</span>
-                    <span className="sshview__sftp-row-perms">{entry.perms}</span>
-                  </span>
-                </button>
-              ))
+                )}
+              </>
             )}
           </div>
         </div>

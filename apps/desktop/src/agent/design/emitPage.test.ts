@@ -92,6 +92,26 @@ describe('emitAxPageToTsx：映射', () => {
     expect(syntaxErrorsOf(result.code)).toEqual([])
   })
 
+  it('shadow 直译：box-shadow（token color → var）；path 用 drop-shadow 跟随形状', () => {
+    const source = JSON.stringify({
+      ax: '1.2',
+      tokens: { 'shadow-color': { $type: 'color', $value: 'rgba(0,0,0,0.18)' } },
+      components: {},
+      pages: [{ id: 'p', name: 'Cards', width: 800, height: 600, tree: [
+        { id: 'c1', kind: 'frame', width: 320, height: 200, fill: '#ffffff',
+          shadow: { color: '$shadow-color', offsetX: 0, offsetY: 4, blur: 12 }, children: [] },
+        { id: 'mark', kind: 'path', geometry: 'M0 0h10v10z', viewBox: [0, 0, 10, 10],
+          shadow: { color: '#000000', offsetX: 2, offsetY: 2, blur: 4 } },
+      ] }],
+    })
+    const parsed = parseAxDocument(source).document as AxDocument
+    const result = emitAxPageToTsx(parsed, 'p')!
+    expect(result.code).toContain("boxShadow: '0px 4px 12px var(--shadow-color)'")
+    // path 的阴影走 filter drop-shadow（box-shadow 对 svg 是矩形盒，不跟随路径形状）。
+    expect(result.code).toContain("filter: 'drop-shadow(2px 2px 4px #000000)'")
+    expect(syntaxErrorsOf(result.code)).toEqual([])
+  })
+
   it('$bind 不产出未定义标识符：注释说明接线点 + 占位文本 + 进 unresolved', () => {
     const result = emit()!
     expect(result.code).toContain('{/* $bind: session.title */}session.title')

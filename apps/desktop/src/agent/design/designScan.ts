@@ -38,6 +38,8 @@ export interface DesignScanPageInput {
   width: number | null
   height: number | null
   nodeCount: number
+  /** 非空文本节点数（blank 误报防御的交叉核验信号）。 */
+  textNodes: number
   /** 未知节点降级占位框数（含 originalType 摘要）。 */
   unknownNodes: string[]
   /** ref 指向未定义组件的节点 id。 */
@@ -49,9 +51,10 @@ export interface DesignScanPageInput {
 export type DesignPageStatus = 'ok' | 'warn' | 'fail'
 
 export interface DesignScanIssue {
-  /** 机器可读检查名（render/blank/size/empty/placeholder/refMissing/diagnostic）。 */
+  /** 机器可读检查名（render/blank/blankSparse/size/empty/placeholder/refMissing/diagnostic）。 */
   check: string
-  level: 'error' | 'warning'
+  /** info 不影响页状态（供参考的核验结论，如稀疏文本页的 blank 疑似误报）。 */
+  level: 'error' | 'warning' | 'info'
   message: string
 }
 
@@ -107,12 +110,16 @@ export const extractScanPages = (
     const unknownNodes: string[] = []
     const refMissingIds: string[] = []
     let nodeCount = 0
+    let textNodes = 0
     walkNodes([page], (node) => {
       nodeCount += 1
       if (node.type === 'unknown') {
         unknownNodes.push(`${node.name ?? node.id}(${node.originalType})`)
       } else if (node.type === 'ref' && node.refMissing) {
         refMissingIds.push(node.id)
+      }
+      if (node.type === 'text' && typeof node.content === 'string' && node.content.trim() !== '') {
+        textNodes += 1
       }
     })
     return {
@@ -122,6 +129,7 @@ export const extractScanPages = (
       width: 'width' in page && typeof page.width === 'number' ? page.width : null,
       height: 'height' in page && typeof page.height === 'number' ? page.height : null,
       nodeCount,
+      textNodes,
       unknownNodes,
       refMissingIds,
       diagnostics: [],
@@ -157,8 +165,10 @@ export interface DesignScanProgress {
 }
 
 /**
- * 逐页扫描。渲染按页串行（离屏挂载 + 光栅化是 DOM 重活，并行会互相拖慢）；
- * onProgress 在每页完成后回调，供 UI 显示进度与逐页点亮画布。
+ * 逐页扫描。渲染默认逐页串行；renderConcurrency > 1 时有界并发（仅对并行安全的
+ * 渲染路径开放——offscreen 独立容器，见 DesignScanOptions）。onProgress 始终按
+ * 页序在每页判定就绪时回调，供 UI 显示进度与逐页点亮画布；onActive 显式回报
+ * 在途页集合（串行 = 单元素，并发 = 已开始未完成的页）。
  *
  * requireSize 的两种口径：`.ax` 的页面按格式必须声明尺寸（缺尺寸是作者错误，
  * 判 fail）；`.pen` 的顶层 frame 允许无高度（实测 axiom.pen 的 6 条 `Section — …`
@@ -168,6 +178,15 @@ export interface DesignScanProgress {
 export interface DesignScanOptions {
   requireSize?: boolean
   onProgress?: (progress: DesignScanProgress) => void
+  /** 批量扫描：在途页集合变化（null = 无在途；画布据此显示多页扫描光束）。 */
+  onActive?: (pageIds: readonly string[] | null) => void
+  /**
+   * 渲染并发 lane 数（默认 1 = 逐页串行；上限 8）。判定与进度**始终按页序**产出，
+   * 与并发无关。是否可以并行由宿主渲染路径决定——例如 capture 模式的挂载容器
+   * 铺满视口（WKWebView 原生截图的前提），并行挂载会互相污染截图，必须传 1；
+   * offscreen（视口外独立容器）并行安全。
+   */
+  renderConcurrency?: number
 }
 
 export const scanDesignPages = async (
@@ -176,13 +195,53 @@ export const scanDesignPages = async (
   renderPage: DesignScanRenderPage | undefined,
   options: DesignScanOptions = {},
 ): Promise<DesignScanReport> => {
-  const verdicts: DesignScanPageVerdict[] = []
-  for (const page of pages) {
-    const verdict = await scanSinglePage(page, renderPage, options.requireSize ?? true)
-    verdicts.push(verdict)
-    options.onProgress?.({ done: verdicts.length, total: pages.length, verdict })
+  const concurrency = Math.max(1, Math.min(8, options.renderConcurrency ?? 1))
+  const requireSize = options.requireSize ?? true
+  const outcomes: (DesignScanPageVerdict | undefined)[] = new Array(pages.length).fill(undefined)
+
+  if (!renderPage || concurrency === 1) {
+    // 串行路径：在途页经 onActive 显式回报（与批量路径同一契约，不依赖
+    // 「onProgress 计数 = 下标」的隐式推导）。
+    for (const [index, page] of pages.entries()) {
+      options.onActive?.([page.id])
+      const verdict = await scanSinglePage(page, renderPage, requireSize)
+      outcomes[index] = verdict
+      options.onProgress?.({ done: index + 1, total: pages.length, verdict })
+    }
+    options.onActive?.(null)
+  } else {
+    // 并发路径：有界 lane 渲染（offscreen 容器各自独立），判定按页序产出——
+    // onProgress 语义与串行一致（第 N 次回报 = 页序第 N 页），消费方无需感知并发。
+    let cursor = 0
+    const active = new Set<string>()
+    let emitted = 0
+    const emitOrdered = (): void => {
+      while (emitted < pages.length && outcomes[emitted] !== undefined) {
+        const verdict = outcomes[emitted]!
+        emitted += 1
+        options.onProgress?.({ done: emitted, total: pages.length, verdict })
+      }
+    }
+    const worker = async (): Promise<void> => {
+      while (cursor < pages.length) {
+        const index = cursor
+        cursor += 1
+        const page = pages[index]!
+        active.add(page.id)
+        options.onActive?.([...active])
+        outcomes[index] = await scanSinglePage(page, renderPage, requireSize)
+        active.delete(page.id)
+        options.onActive?.([...active])
+        emitOrdered()
+      }
+    }
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, pages.length) }, () => worker()),
+    )
+    options.onActive?.(null)
   }
 
+  const verdicts = outcomes.map((verdict) => verdict!)
   const summary = { total: verdicts.length, ok: 0, warn: 0, fail: 0 }
   for (const verdict of verdicts) summary[verdict.status] += 1
   return { pages: verdicts, documentIssues: [...documentIssues], summary, rendered: renderPage !== undefined }
@@ -198,14 +257,10 @@ export const scanDesignDocument = async (
   return scanDesignPages(pages, documentIssues, renderPage, options)
 }
 
-const scanSinglePage = async (
-  page: DesignScanPageInput,
-  renderPage: DesignScanRenderPage | undefined,
-  requireSize: boolean,
-): Promise<DesignScanPageVerdict> => {
+/** 单页的**结构**检查（无渲染）；批量扫描先做结构检查、渲染判定随后逐页合入。 */
+export const structureIssuesOf = (page: DesignScanPageInput, requireSize: boolean): DesignScanIssue[] => {
   const issues: DesignScanIssue[] = []
   const hasSize = page.width !== null && page.height !== null && page.width > 0 && page.height > 0
-
   if (!hasSize) {
     if (requireSize) {
       issues.push({ check: 'size', level: 'error', message: '页面没有有效尺寸，无法渲染' })
@@ -233,40 +288,154 @@ const scanSinglePage = async (
   for (const diagnostic of page.diagnostics) {
     issues.push({ check: 'diagnostic', level: diagnostic.level, message: diagnostic.message })
   }
+  return issues
+}
 
+/** 结构问题 + 渲染判定 → 页级判定（两条路径共用）。 */
+const verdictOf = (
+  page: DesignScanPageInput,
+  issues: readonly DesignScanIssue[],
+  render: DesignScanPageVerdict['render'],
+  outcome: DesignScanRenderOutcome | undefined,
+  renderWidth?: number,
+  renderHeight?: number,
+): DesignScanPageVerdict => {
+  const all = [...issues]
+  if (outcome?.ok === false) {
+    all.push({ check: 'render', level: 'error', message: `渲染失败：${outcome.reason ?? '渲染器不可用'}` })
+  }
+  const fraction = outcome?.topColorFraction
+  if (outcome?.ok === true && fraction !== undefined && fraction >= BLANK_TOP_COLOR_FRACTION) {
+    // 交叉核验：页面树有非空文本节点时，「近乎空白」大概率是稀疏文本页的形态
+    // （深底一行小字的像素占比可 < 0.5%），降为 info 不阻断全绿门禁；无文本
+    // 节点的页仍按 warning 处理（图形页画空了是真实问题）。
+    if (page.textNodes > 0) {
+      all.push({
+        check: 'blankSparse',
+        level: 'info',
+        message: `渲染近乎空白（${(fraction * 100).toFixed(1)}% 像素同色），但页面树有 ${page.textNodes} 个文本节点——稀疏文本页的常见形态，疑似误报；需确认用 mode=render 单页渲染自查`,
+      })
+    } else {
+      all.push({
+        check: 'blank',
+        level: 'warning',
+        message: `渲染结果近乎空白（${(fraction * 100).toFixed(1)}% 像素为同一颜色${
+          outcome.distinctColors !== undefined ? `，共 ${outcome.distinctColors} 种颜色` : ''
+        }）`,
+      })
+    }
+  }
+  const status: DesignPageStatus = all.some((issue) => issue.level === 'error')
+    ? 'fail'
+    : all.some((issue) => issue.level === 'warning') ? 'warn' : 'ok'
+  return {
+    index: page.index,
+    id: page.id,
+    name: page.name,
+    status,
+    issues: all,
+    render,
+    ...(renderWidth !== undefined ? { renderWidth } : {}),
+    ...(renderHeight !== undefined ? { renderHeight } : {}),
+  }
+}
+
+/**
+ * 批量扫描（画布原位扫描的引擎侧）：结构检查先做（纯逻辑），渲染交给调用方的
+ * **批量渲染器**——它一次拿到全部待渲染页，自行决定并行/分组策略（画布扫掠 =
+ * 相机按行推进 + 并行矩形截图），每页完成时经 onPageDone 回报，引擎即时产出
+ * 判定与进度（画布逐页点亮不等待整批结束）。
+ *
+ * 批量渲染器**必须**对每个待渲染页回报一次；未回报（扫描被中断等）的页记
+ * warning「渲染检查未完成」而不是 fail——中断不应伪装成页面错误。
+ */
+export type DesignScanBatchRenderPage = (
+  pages: readonly DesignScanPageInput[],
+  onPageDone: (pageId: string, outcome: DesignScanRenderOutcome) => void,
+  onActive: (pageIds: readonly string[] | null) => void,
+) => Promise<void>
+
+export const scanDesignPagesBatch = async (
+  pages: readonly DesignScanPageInput[],
+  documentIssues: readonly DesignScanIssue[],
+  batchRender: DesignScanBatchRenderPage,
+  options: DesignScanOptions = {},
+): Promise<DesignScanReport> => {
+  const requireSize = options.requireSize ?? true
+  const verdicts = new Map<string, DesignScanPageVerdict>()
+  const structureByid = new Map<string, DesignScanIssue[]>()
+  const renderable: DesignScanPageInput[] = []
+  for (const page of pages) {
+    const issues = structureIssuesOf(page, requireSize)
+    structureByid.set(page.id, issues)
+    const hasSize = page.width !== null && page.height !== null && page.width > 0 && page.height > 0
+    if (hasSize) renderable.push(page)
+    else verdicts.set(page.id, verdictOf(page, issues, 'skipped', undefined))
+  }
+
+  let done = verdicts.size
+  const complete = (page: DesignScanPageInput, outcome?: DesignScanRenderOutcome) => {
+    if (verdicts.has(page.id)) return
+    const issues = [...structureByid.get(page.id) ?? []]
+    let render: DesignScanPageVerdict['render']
+    if (outcome === undefined) {
+      // 批量渲染器未回报（中断/漏报）：skipped + warning，不伪装成通过或失败。
+      render = 'skipped'
+      issues.push({ check: 'render', level: 'warning', message: '渲染检查未完成（扫描中断）' })
+    } else {
+      render = outcome.ok ? 'ok' : 'fail'
+    }
+    const verdict = verdictOf(page, issues, render, outcome, outcome?.width, outcome?.height)
+    verdicts.set(page.id, verdict)
+    done += 1
+    options.onProgress?.({ done, total: pages.length, verdict })
+  }
+
+  await batchRender(
+    renderable,
+    (pageId, outcome) => {
+      const page = renderable.find((item) => item.id === pageId)
+      if (page) complete(page, outcome)
+    },
+    (pageIds) => options.onActive?.(pageIds),
+  )
+  // 批量渲染器未回报的页（中断/漏报）：skipped + warning，不伪装成通过或失败。
+  for (const page of renderable) complete(page)
+
+  const ordered = pages.map((page) => verdicts.get(page.id)!).filter(Boolean)
+  const summary = { total: ordered.length, ok: 0, warn: 0, fail: 0 }
+  for (const verdict of ordered) summary[verdict.status] += 1
+  return { pages: ordered, documentIssues: [...documentIssues], summary, rendered: true }
+}
+
+/**
+ * 串行单页扫描（staging 回退路径）：结构检查与判定合成**复用批量路径的纯函数**
+ * （`structureIssuesOf`/`verdictOf`）——同一份检查规则只存在一份实现，改规则不会
+ * 出现单页/批量口径漂移。渲染回调抛错按「渲染器不可用或超时」合成失败结果。
+ */
+const scanSinglePage = async (
+  page: DesignScanPageInput,
+  renderPage: DesignScanRenderPage | undefined,
+  requireSize: boolean,
+): Promise<DesignScanPageVerdict> => {
+  const issues = structureIssuesOf(page, requireSize)
+  const hasSize = page.width !== null && page.height !== null && page.width > 0 && page.height > 0
   // 渲染检查：无渲染环境时 skipped（结构检查兜底）；无尺寸页面按 requireSize
   // 口径处理——`.pen` 的组织性 frame 跳过渲染，`.ax` 的缺尺寸页直接 fail。
   let render: DesignScanPageVerdict['render'] = 'skipped'
-  let renderWidth: number | undefined
-  let renderHeight: number | undefined
+  let outcome: DesignScanRenderOutcome | undefined
   if (renderPage !== undefined && hasSize) {
-    const outcome = await renderPage(page).catch(() => null)
-    if (outcome?.ok !== true) {
-      render = 'fail'
-      issues.push({
-        check: 'render',
-        level: 'error',
-        message: `渲染失败：${outcome?.ok === false ? outcome.reason : '渲染器不可用或超时'}`,
-      })
-    } else {
+    const result = await renderPage(page).catch(() => null)
+    if (result?.ok === true) {
       render = 'ok'
-      renderWidth = outcome.width
-      renderHeight = outcome.height
-      const fraction = outcome.topColorFraction
-      if (fraction !== undefined && fraction >= BLANK_TOP_COLOR_FRACTION) {
-        issues.push({
-          check: 'blank',
-          level: 'warning',
-          message: `渲染结果近乎空白（${(fraction * 100).toFixed(1)}% 像素为同一颜色${
-            outcome.distinctColors !== undefined ? `，共 ${outcome.distinctColors} 种颜色` : ''
-          }）`,
-        })
+      outcome = result
+    } else {
+      render = 'fail'
+      outcome = {
+        ok: false,
+        reason: result?.ok === false ? result.reason : '渲染器不可用或超时',
       }
     }
   }
-
-  const status: DesignPageStatus = issues.some((issue) => issue.level === 'error')
-    ? 'fail'
-    : issues.length > 0 ? 'warn' : 'ok'
-  return { index: page.index, id: page.id, name: page.name, status, issues, render, renderWidth, renderHeight }
+  return verdictOf(page, issues, render, outcome, outcome?.width, outcome?.height)
 }

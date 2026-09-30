@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Globe, Grid2x2, Monitor, Server, type LucideIcon } from 'lucide-react'
 import {
   DEFAULT_RUNTIME_RAIL_WIDTH,
@@ -46,6 +46,11 @@ export const RuntimeRail = () => {
   const dragStateRef = useRef<{ startX: number; startWidth: number } | null>(null)
   const { t } = useT()
   const railPanes = useMemo(() => buildRailPanes(t), [t])
+  // SSH pane 首开后保持面板挂载（见渲染处的 hidden 保活说明）。
+  const [sshMounted, setSshMounted] = useState(false)
+  useEffect(() => {
+    if (pane === 'ssh') setSshMounted(true)
+  }, [pane])
 
   // 把手拖拽经 pointer capture 保证指针移出把手仍持续收到 move/up；rail 靠右，
   // 向左拖增大宽度。clamp 集中在 uiStore 的 setRuntimeRailWidth。
@@ -129,11 +134,22 @@ export const RuntimeRail = () => {
           </div>
           {activePane.id === 'browser' ? (
             <BrowserPanel />
-          ) : activePane.id === 'ssh' ? (
-            <SshTerminalPanel />
-          ) : (
+          ) : activePane.id === 'computer' ? (
             <ComputerPanel />
-          )}
+          ) : null}
+          {/* SSH 面板一旦打开过就保持挂载、非激活时 hidden：终端是有状态资源
+              （xterm 实例 + 回滚缓冲 + Rust 会话投影），条件渲染会在切 pane/
+              回卡片页时销毁全部实例——切回来历史全丢。hidden 保活与面板内部
+              「多主机 term-slot hidden 切换」同一模式（fit 的 0 尺寸间隙由
+              useSshTerminals 的 try/catch + 激活 fit 兜底）。浏览器/电脑控制
+              面板无此诉求，维持条件渲染。 */}
+          <div
+            className="rail__pane-stack"
+            hidden={pane !== 'ssh'}
+            aria-hidden={pane !== 'ssh'}
+          >
+            {sshMounted ? <SshTerminalPanel /> : null}
+          </div>
         </>
       )}
     </aside>

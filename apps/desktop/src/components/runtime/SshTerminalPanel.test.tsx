@@ -103,11 +103,27 @@ afterEach(() => {
 })
 
 describe('SshTerminalPanel 空态（无主机）', () => {
-  it('guides to adding a host in the rail panel', () => {
+  it('guides to adding a host in the rail panel', async () => {
+    // 空态引导只在列表就绪（ready）且为空时出现：面板挂载即拉取列表，
+    // mock 保持返回空列表，等待加载完成后再断言引导内容。
+    mocks.sshCommand.mockResolvedValue({ type: 'hosts', hosts: [] })
     render(<SshTerminalPanel />)
-    expect(screen.getByText('尚未连接任何主机')).toBeTruthy()
+    expect(await screen.findByText('尚未连接任何主机')).toBeTruthy()
     expect(screen.getByText('添加主机后，远程终端会在这里打开。')).toBeTruthy()
     expect(screen.getByRole('button', { name: '添加主机…' })).toBeTruthy()
+  })
+
+  it('首次打开即拉取主机列表：列表到达后直达终端而非空态引导', async () => {
+    // 回归：此前 loadHosts 只由管理面板触发，已配置主机的用户首次点开
+    // SSH 面板会误见「添加主机」空态。
+    mocks.sshCommand.mockImplementation(async (input: unknown) => {
+      const action = (input as { action: string }).action
+      if (action === 'listHosts') return { type: 'hosts', hosts: [host] }
+      return { type: 'sessions', sessions: [] }
+    })
+    render(<SshTerminalPanel />)
+    await waitFor(() => expect(terminalInstances).toHaveLength(1))
+    expect(screen.queryByText('尚未连接任何主机')).toBeNull()
   })
 
   it('creates the terminal once the host list arrives asynchronously', async () => {
@@ -122,6 +138,34 @@ describe('SshTerminalPanel 空态（无主机）', () => {
     })
     await waitFor(() => expect(terminalInstances).toHaveLength(1))
     expect(terminalInstances[0].open).toHaveBeenCalled()
+  })
+
+  it('列表加载中呈现加载态而非空态引导', () => {
+    // listHosts 永不 resolve，锁定加载分支（默认 mock 会 reject，落到错误态）。
+    mocks.sshCommand.mockImplementation(() => new Promise(() => {}))
+    render(<SshTerminalPanel />)
+    expect(screen.getByText('正在加载主机…')).toBeTruthy()
+    expect(screen.queryByText('尚未连接任何主机')).toBeNull()
+  })
+
+  it('加载失败呈现错误与重试，重试成功后进入终端', async () => {
+    mocks.sshCommand.mockImplementation(async (input: unknown) => {
+      const action = (input as { action: string }).action
+      if (action === 'listHosts') throw new Error('registry unavailable')
+      return { type: 'sessions', sessions: [] }
+    })
+    render(<SshTerminalPanel />)
+    expect(await screen.findByText('主机列表加载失败')).toBeTruthy()
+    expect(screen.getByText('registry unavailable')).toBeTruthy()
+
+    mocks.sshCommand.mockImplementation(async (input: unknown) => {
+      const action = (input as { action: string }).action
+      if (action === 'listHosts') return { type: 'hosts', hosts: [host] }
+      return { type: 'sessions', sessions: [] }
+    })
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    await waitFor(() => expect(terminalInstances).toHaveLength(1))
+    expect(screen.queryByText('主机列表加载失败')).toBeNull()
   })
 })
 
@@ -487,6 +531,7 @@ describe('SshTerminalPanel 终端态', () => {
           entries: [
             { name: 'stale-entry', sizeBytes: 1, isDir: false, perms: '-rw-r--r--', modifiedAt: 'x' },
           ],
+          truncated: false,
         },
       },
     })
@@ -534,12 +579,13 @@ describe('SshTerminalPanel 终端态', () => {
     expect(terminalInstances[1].write).toHaveBeenCalledWith('B')
   })
 
-  it('renders the default empty chrome in SSR', () => {
-    // SSR 下 zustand useSyncExternalStore 只读初始态（AGENTS 约定：只断言
-    // 默认态）——默认无主机，渲染空态引导。
+  it('renders the default loading chrome in SSR', () => {
+    // SSR 下 zustand useSyncExternalStore 只读 getInitialState（创建时快照，
+    // setState 不可达；AGENTS 约定：只断言默认态）——初始 listStatus=idle
+    // 渲染加载态，空态/终端分支由上方 jsdom 用例覆盖。
     const html = renderToStaticMarkup(<SshTerminalPanel />)
     expect(html).toContain('sshview__terminal-pane')
-    expect(html).toContain('尚未连接任何主机')
+    expect(html).toContain('正在加载主机…')
   })
 })
 

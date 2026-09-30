@@ -257,6 +257,29 @@ describe('硬规则 7/8：token 引用与 id 唯一性', () => {
 })
 
 describe('幂等序列化', () => {
+  it('页级 layout/gap/padding 进序列化产物（漏写会让写盘稿塌成默认横向布局）', () => {
+    const parsed = parseAxDocument(doc({
+      pages: [{
+        id: 'p1',
+        name: '官网首页',
+        layout: 'vertical',
+        gap: 24,
+        padding: [0, 32],
+        width: 1440,
+        height: 900,
+        tree: [{ id: 'n1', kind: 'frame', layout: 'vertical', children: [] }],
+      }],
+    }))
+    expect(parsed.error).toBeNull()
+    const first = serializeAxDocument(parsed.document as AxDocument)
+    const page = JSON.parse(first).pages[0] as Record<string, unknown>
+    expect(page.layout).toBe('vertical')
+    expect(page.gap).toBe(24)
+    expect(page.padding).toEqual([0, 32])
+    // 幂等：往返后仍在，且二次序列化字节一致
+    expect(serializeAxDocument(parseAxDocument(first).document as AxDocument)).toBe(first)
+  })
+
   it('parse → serialize → parse 等值，且两次 serialize 字节一致', () => {
     const parsed = parseAxDocument(doc({
       pages: [{
@@ -437,6 +460,66 @@ describe('overlay scrim（1.2 遮罩语义）', () => {
     expect(placement.offset).toEqual([0, 0])
     const origin = absoluteOriginOf(placement, { width: 400, height: 300 }, { width: 320, height: 200 })
     expect(origin).toEqual({ x: 40, y: 50 })
+  })
+})
+
+
+describe('节点 shadow（1.3 外阴影）', () => {
+  const shadowDoc = (tree: unknown[]): string => JSON.stringify({
+    ax: '1.2',
+    tokens: { 'shadow-color': { $type: 'color', $value: 'rgba(0,0,0,0.18)' } },
+    components: {},
+    pages: [{ id: 'p1', width: 400, height: 300, tree }],
+  })
+  const shadowNode = {
+    id: 'f1', kind: 'frame', width: 320, height: 200,
+    shadow: { color: '$shadow-color', offsetX: 0, offsetY: 4, blur: 12 },
+    children: [],
+  }
+
+  it('合法 shadow 通过校验；1.2 旧稿经单跳迁移加载为当前版本', () => {
+    const migrated = parseAxDocument(shadowDoc([shadowNode]))
+    expect(migrated.document?.ax).toBe('1.3')
+    expect(migrated.document?.pages[0]?.tree[0]?.shadow).toEqual({
+      color: '$shadow-color', offsetX: 0, offsetY: 4, blur: 12,
+    })
+    expect(errorsOf(shadowDoc([shadowNode]))).toEqual([])
+  })
+
+  it('shadow 形状错误逐项报错（非对象 / 未知键 / 缺 color / 非数值偏移 / 负 blur）', () => {
+    const diagnosticsOf = (shadow: unknown) => parseAxDocument(shadowDoc([
+      { id: 'f1', kind: 'rect', width: 10, height: 10, shadow },
+    ])).diagnostics.filter((item) => item.level === 'error')
+
+    expect(diagnosticsOf('rgba(0,0,0,0.2)')[0]?.message).toMatch(/shadow 必须是对象/)
+    // 未知键：消息点名键名（键集白名单的统一口径）。
+    const unknownKey = diagnosticsOf({ color: '#000', offsetX: 0, offsetY: 0, blur: 4, spread: 2 })
+    expect(unknownKey.some((item) => item.path === 'pages[0].tree[0].shadow' && item.message.includes('`spread`'))).toBe(true)
+    expect(diagnosticsOf({ offsetX: 0, offsetY: 0, blur: 4 })[0]?.message).toMatch(/shadow 缺少 `color`/)
+    expect(diagnosticsOf({ color: '#000', offsetX: '4px', offsetY: 0, blur: 4 })[0]?.message).toMatch(/offsetX 必须是数值/)
+    expect(diagnosticsOf({ color: '#000', offsetX: 0, offsetY: 0, blur: -1 })[0]?.message).toMatch(/blur 不能为负/)
+  })
+
+  it('不在允许集的节点写 shadow 即报错（键集白名单：overlay/component/part 无阴影）', () => {
+    const diagnostics = parseAxDocument(shadowDoc([
+      { id: 'o1', kind: 'overlay', anchor: 'center', shadow: { color: '#000', offsetX: 0, offsetY: 0, blur: 4 }, children: [] },
+    ])).diagnostics.filter((item) => item.level === 'error')
+    expect(diagnostics.some((item) => item.path === 'pages[0].tree[0]' && item.message.includes('`shadow`'))).toBe(true)
+  })
+
+  it('shadow 参与幂等序列化（parse → serialize → parse 等值）', () => {
+    const parsed = parseAxDocument(shadowDoc([shadowNode]))
+    expect(parsed.document).not.toBeNull()
+    const once = serializeAxDocument(parsed.document as AxDocument)
+    const twice = serializeAxDocument(parseAxDocument(once).document as AxDocument)
+    expect(twice).toBe(once)
+    expect(once).toContain('"shadow"')
+  })
+
+  it('投影：shadow → 视图模型 PenShadow（offsetX/offsetY → x/y，color 原样交渲染层解析 token）', () => {
+    const parsed = parseAxDocument(shadowDoc([shadowNode]))
+    const nodes = childrenOfFirstPage(projectAxToPenDocument(parsed.document as AxDocument, 'a.ax').document)
+    expect((nodes[0] as PenNode).shadow).toEqual({ color: '$shadow-color', x: 0, y: 4, blur: 12 })
   })
 })
 

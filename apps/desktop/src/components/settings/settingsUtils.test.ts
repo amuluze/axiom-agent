@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { PROVIDER_PROFILE_SCHEMA_VERSION } from '@/agent/transport/providerProfile'
 import {
   shouldCloseProviderSetup,
   submitProviderSettings,
@@ -6,7 +7,7 @@ import {
 
 const DRAFT = {
   profileId: 'draft-profile',
-  schemaVersion: 4 as const,
+  schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
   providerId: 'generic-anthropic-compatible',
   apiFormat: 'anthropic-compatible',
   endpoint: 'https://example.test/v1/messages',

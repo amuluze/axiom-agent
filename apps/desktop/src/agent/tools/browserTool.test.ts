@@ -5,6 +5,7 @@ import type {
   BrowserCommandResponse,
 } from '@/agent/environment/AgentEnvironment'
 import { createFakeAgentEnvironment } from './__fixtures__/fakeAgentEnvironment'
+import { UNSUPPORTED_IMAGE_NOTE } from '../core/stripUnsupportedImages'
 import { createBrowserTool, BROWSER_MAX_URL_CHARS } from './browserTool'
 
 const baseContext = (overrides: Partial<AgentToolExecutionContext> = {}): AgentToolExecutionContext => ({
@@ -304,24 +305,29 @@ describe('browserTool execute', () => {
   })
 
   it('degrades screenshots to a text note for non-vision models', async () => {
-    const tool = createBrowserTool(
-      createFakeAgentEnvironment({
-        browserCommand: respondsWith({
-          type: 'screenshot',
-          imageBase64: 'aGVsbG8=',
-          mimeType: 'image/png',
-          width: 1280,
-          height: 800,
-          resized: true,
-        }),
+    const environment = createFakeAgentEnvironment({
+      browserCommand: respondsWith({
+        type: 'screenshot',
+        imageBase64: 'aGVsbG8=',
+        mimeType: 'image/png',
+        width: 1280,
+        height: 800,
+        resized: true,
       }),
-    )
+    })
+    const tool = createBrowserTool(environment)
     const result = await tool.execute(
       { action: 'screenshot', tabId: 't1' },
       baseContext({ modelAcceptsImage: false }),
     )
+    // 验收 9/19：无图 + 钉死占位子串 + 封闭词表逐词否定（能力受限 ≠ 环境故障）。
     expect(result.contentBlocks).toBeUndefined()
-    expect(result.content).toContain('不支持图片')
+    expect(result.content).toContain(UNSUPPORTED_IMAGE_NOTE)
+    for (const word of ['渲染器不可用', '环境故障', 'no renderer', 'host seam not injected', 'sandbox', 'fallback']) {
+      expect(result.content.includes(word), `不应出现封闭词「${word}」`).toBe(false)
+    }
+    // 验收 19（不产出即不花费）：派发前短路——宿主截图命令一次都不发起。
+    expect(environment.browser.command).toHaveBeenCalledTimes(0)
   })
 
   it('surfaces dialog state and forwards respondDialog', async () => {
@@ -453,6 +459,10 @@ describe('browserTool execute', () => {
     expect(list.browser.command).toHaveBeenCalledWith({ action: 'downloads' })
     expect(listResult.content).toContain('report.json')
     expect(listResult.content).toContain('/Users/x/.axiom/browser/downloads/report.json')
+    // 下载目录位于 ~/.axiom 数据根，read 工具的敏感拒绝路径——文案只引导
+    // read_download，不得再出现「交给 read 工具」的误导指引（browser v7 修正）。
+    expect(listResult.content).toContain('read_download')
+    expect(listResult.content).not.toContain('交给 read 工具')
 
     const content = createFakeAgentEnvironment({
       browserCommand: respondsWith({
@@ -494,7 +504,8 @@ describe('browserTool contract metadata', () => {
   it('declares never-recovery and serialized execution for stateful browser actions', () => {
     const tool = createBrowserTool(createFakeAgentEnvironment())
     expect(tool.name).toBe('browser')
-    expect(tool.runtimeVersion).toBe('6')
+    // v8：仅文本判定下 screenshot 降级文案收敛到统一占位子串。
+    expect(tool.runtimeVersion).toBe('8')
     expect(tool.recoveryPolicy).toBe('never')
     expect(tool.requiresApproval).toBe(false)
     expect(tool.executionMode).toBe('sequential')

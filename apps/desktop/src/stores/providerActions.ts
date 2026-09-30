@@ -29,6 +29,7 @@ import type { SessionSnapshot } from '@/persistence/types'
 import type { AgentGet, AgentSet, StoreRuntimeDeps } from './sessionActions'
 import type { ProviderSaveResult } from './agentStateTypes'
 import {
+  isValidProviderImageInputDraft,
   validateProviderNumericDraft,
   type ProviderNumericField,
 } from '@/agent/transport/providerDraftValidation'
@@ -83,6 +84,10 @@ export const saveProvider = async (
         min: String(numericViolation.min),
         max: String(numericViolation.max),
       }))
+    }
+    // 图片输入声明非法时 fail-closed：零写入、错误可见（不静默归一为某一档）。
+    if (!isValidProviderImageInputDraft(draft)) {
+      throw new Error(storeT('status.provider.imageInputInvalid'))
     }
     const previousConfig = get().provider
     let config = await normalizeProviderConfig(draft)

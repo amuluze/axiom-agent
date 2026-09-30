@@ -117,6 +117,32 @@ describe('RuntimeRail panel 态', () => {
     fireEvent.click(screen.getByLabelText('返回标签页选择'))
     expect(mocks.setRuntimeRailPane).toHaveBeenCalledWith('picker')
   })
+
+  it('keeps the ssh panel mounted (hidden) while another pane is active——终端历史保活', () => {
+    mocks.runtimeRailPane = 'ssh'
+    const { rerender } = render(<RuntimeRail />)
+    expect(screen.getByTestId('ssh-panel-mock')).toBeTruthy()
+    // 切到 browser pane：SSH 面板保持挂载（终端实例与回滚缓冲不销毁），
+    // 保活层 hidden；浏览器面板正常可见。
+    mocks.runtimeRailPane = 'browser'
+    rerender(<RuntimeRail />)
+    expect(screen.getByTestId('browser-panel-mock')).toBeTruthy()
+    const sshStack = screen.getByTestId('ssh-panel-mock').closest('.rail__pane-stack')
+    expect(sshStack).not.toBeNull()
+    expect(sshStack?.hasAttribute('hidden')).toBe(true)
+    // 回到 SSH pane：保活层解除 hidden，面板回到前台。
+    mocks.runtimeRailPane = 'ssh'
+    rerender(<RuntimeRail />)
+    expect(
+      screen.getByTestId('ssh-panel-mock').closest('.rail__pane-stack')?.hasAttribute('hidden'),
+    ).toBe(false)
+  })
+
+  it('does not mount the ssh panel before it has ever been opened', () => {
+    mocks.runtimeRailPane = 'browser'
+    render(<RuntimeRail />)
+    expect(screen.queryByTestId('ssh-panel-mock')).toBeNull()
+  })
 })
 
 describe('RuntimeRail resizer', () => {

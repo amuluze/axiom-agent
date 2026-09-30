@@ -5,6 +5,7 @@ import type {
   ComputerCommandResponse,
 } from '@/agent/environment/AgentEnvironment'
 import { createFakeAgentEnvironment } from './__fixtures__/fakeAgentEnvironment'
+import { UNSUPPORTED_IMAGE_NOTE } from '../core/stripUnsupportedImages'
 import { createComputerTool, COMPUTER_MAX_TEXT_CHARS } from './computerTool'
 
 const baseContext = (overrides: Partial<AgentToolExecutionContext> = {}): AgentToolExecutionContext => ({
@@ -182,15 +183,51 @@ describe('computerTool execute', () => {
       },
     ])
 
-    const nonVision = createComputerTool(
-      createFakeAgentEnvironment({ computerCommand: respondsWith(stateResponse) }),
-    )
-    const degraded = await nonVision.execute(
+    // mock 遵守 includeScreenshot:false 契约：不附截图（真实宿主同语义）。
+    const nonVisionEnvironment = createFakeAgentEnvironment({
+      computerCommand: respondsWith({
+        ...stateResponse,
+        screenshot: undefined,
+      }),
+    })
+    const degraded = await createComputerTool(nonVisionEnvironment).execute(
       { action: 'state', pid: 321, screenshot: true },
       baseContext({ modelAcceptsImage: false }),
     )
+    // 验收 9/19：无图 + 钉死占位子串 + 封闭词表逐词否定。
     expect(degraded.contentBlocks).toBeUndefined()
-    expect(degraded.content).toContain('不支持图片输入')
+    expect(degraded.content).toContain(UNSUPPORTED_IMAGE_NOTE)
+    for (const word of ['渲染器不可用', '环境故障', 'no renderer', 'host seam not injected', 'sandbox', 'fallback']) {
+      expect(degraded.content.includes(word), `不应出现封闭词「${word}」`).toBe(false)
+    }
+    // 验收 19：state 文本树照常读取，但截图在上游抑制（includeScreenshot:false）。
+    expect(nonVisionEnvironment.computer.command).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'appState', includeScreenshot: false }),
+    )
+  })
+
+  it('short-circuits the screenshot action before dispatching for non-vision models', async () => {
+    // 验收 19（不产出即不花费）：screenshot 动作派发前短路——宿主命令零调用。
+    const environment = createFakeAgentEnvironment({
+      computerCommand: respondsWith({
+        type: 'screenshot',
+        imageBase64: 'aGVsbG8=',
+        mimeType: 'image/png',
+        width: 1280,
+        height: 800,
+        resized: false,
+      }),
+    })
+    const result = await createComputerTool(environment).execute(
+      { action: 'screenshot' },
+      baseContext({ modelAcceptsImage: false }),
+    )
+    expect(result.contentBlocks).toBeUndefined()
+    expect(result.content).toContain(UNSUPPORTED_IMAGE_NOTE)
+    for (const word of ['渲染器不可用', '环境故障', 'no renderer', 'host seam not injected', 'sandbox', 'fallback']) {
+      expect(result.content.includes(word), `不应出现封闭词「${word}」`).toBe(false)
+    }
+    expect(environment.computer.command).toHaveBeenCalledTimes(0)
   })
 
   it('formats the status response with permissions, grants and allowlist', async () => {
@@ -244,13 +281,18 @@ describe('computerTool contract metadata', () => {
   it('declares never-recovery, serialized execution and no per-call approval', () => {
     const tool = createComputerTool(createFakeAgentEnvironment())
     expect(tool.name).toBe('computer')
-    expect(tool.runtimeVersion).toBe('1')
+    // v3：state/screenshot 降级文案收敛到统一占位子串。
+    expect(tool.runtimeVersion).toBe('3')
     expect(tool.recoveryPolicy).toBe('never')
     expect(tool.requiresApproval).toBe(false)
     expect(tool.executionMode).toBe('sequential')
     expect(tool.idempotencyKey).toBeUndefined()
     expect(tool.promptSnippet).toBeTruthy()
     expect(tool.promptGuidelines?.length).toBeGreaterThan(0)
+    // 治本引导（v2 ④）：写文本到指定元素首选 set_value，键盘输入定位为前台
+    // 应用的快捷路径（元素锚点仅先聚焦）。
+    expect(tool.promptGuidelines?.some((line) => line.includes('首选 set_value'))).toBe(true)
+    expect(tool.promptGuidelines?.some((line) => line.includes('始终作用于前台应用'))).toBe(true)
   })
 
   it('keeps discoverability keywords in the description surface', () => {

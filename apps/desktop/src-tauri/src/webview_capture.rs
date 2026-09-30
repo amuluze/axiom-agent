@@ -49,6 +49,24 @@ pub(crate) struct WebViewCapture {
     pub height: u32,
 }
 
+/// rect 前置校验：NaN/±Inf 会绕过 `<= 0` 数值比较直传 WKSnapshotConfiguration
+/// （结果尺寸守卫在快照**之后**才生效，超大矩形还可能在快照阶段就吃内存）；
+/// 负/零宽高同样无意义。不合法矩形就地拒绝，不进主线程派发。
+pub(crate) fn validate_capture_rect(rect: Option<[f64; 4]>) -> Result<(), String> {
+    let Some([x, y, width, height]) = rect else {
+        return Ok(());
+    };
+    if [x, y, width, height].iter().all(|value| value.is_finite())
+        && width > 0.0
+        && height > 0.0
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "截图矩形无效：x={x}, y={y}, width={width}, height={height}（须为有限值且宽高 > 0）"
+    ))
+}
+
 /// 截取调用方窗口 WebView 的当前视口（可选 rect 限页面矩形，视口坐标为 CSS px）。
 /// `probe=true` 只做平台支持性探测（macOS 返回空载荷、其它平台返回错误），不真正
 /// 截图——前端据此选择原生路径还是 foreignObject 回退，避免一次多余的画面闪动。
@@ -58,6 +76,7 @@ pub(crate) async fn capture_webview_viewport(
     rect: Option<[f64; 4]>,
     probe: Option<bool>,
 ) -> Result<WebViewCapture, String> {
+    validate_capture_rect(rect)?;
     #[cfg(target_os = "macos")]
     {
         return capture_impl(&window, rect, probe.unwrap_or(false)).await;
@@ -227,7 +246,7 @@ fn encode_snapshot_to_png(image: *mut objc2::runtime::AnyObject) -> Result<WebVi
 
 #[cfg(test)]
 mod tests {
-    use super::WebViewCapture;
+    use super::{validate_capture_rect, WebViewCapture};
 
     #[test]
     fn serializes_camel_case_for_ts_mirror() {
@@ -237,5 +256,20 @@ mod tests {
         let json = serde_json::to_value(&payload).expect("serialize");
         assert!(json.get("imageBase64").is_some(), "字段必须是 camelCase");
         assert!(json.get("image_base64").is_none(), "不得出现蛇形字段");
+    }
+
+    #[test]
+    fn capture_rect_validation_rejects_non_finite_and_non_positive() {
+        // 合法：None（整视口）与有限值 + 正宽高（负坐标是合法矩形——视口外偏移）。
+        assert!(validate_capture_rect(None).is_ok());
+        assert!(validate_capture_rect(Some([0.0, 0.0, 800.0, 600.0])).is_ok());
+        assert!(validate_capture_rect(Some([-100.0, -20.0, 50.0, 50.0])).is_ok());
+        // NaN/±Inf：绕过 <= 0 比较的路径必须被 finite 判定拦下。
+        assert!(validate_capture_rect(Some([0.0, 0.0, f64::NAN, 600.0])).is_err());
+        assert!(validate_capture_rect(Some([f64::INFINITY, 0.0, 10.0, 10.0])).is_err());
+        assert!(validate_capture_rect(Some([0.0, f64::NEG_INFINITY, 10.0, 10.0])).is_err());
+        // 非正宽高。
+        assert!(validate_capture_rect(Some([0.0, 0.0, 0.0, 600.0])).is_err());
+        assert!(validate_capture_rect(Some([0.0, 0.0, 800.0, -1.0])).is_err());
     }
 }

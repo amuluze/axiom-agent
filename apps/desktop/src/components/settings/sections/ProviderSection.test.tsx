@@ -18,12 +18,13 @@ interface HookOverrides {
   apiKey?: string
   setApiKey?: (value: string) => void
   modelCatalog?: ProviderDraftHook['modelCatalog']
+  draft?: ProviderDraftHook['draft']
 }
 
 const buildHook = (overrides: HookOverrides = {}): ProviderDraftHook => ({
   profiles: [TEST_ANTHROPIC_PROFILE],
   creatingProfile: false,
-  draft: baseDraft,
+  draft: overrides.draft ?? baseDraft,
   apiKey: overrides.apiKey ?? '',
   providerRequiresApiKey: false,
   draftIsSaved: true,
@@ -235,5 +236,82 @@ describe('ProviderSection', () => {
     } finally {
       Object.defineProperty(globalThis.navigator, 'language', { value: 'zh-CN', configurable: true })
     }
+  })
+})
+
+// 验收 15：可解释性——声明切换后展示随之变化；目录外有「默认按仅文本」说明；
+// demo 无控件但恒显示仅文本。
+describe('ProviderSection 图片输入能力展示', () => {
+  const render = (draft: Record<string, unknown>, overrides: HookOverrides = {}) =>
+    renderToStaticMarkup(createElement(ProviderSection, {
+      hook: buildHook({ ...overrides, draft: draft as never }),
+      context: baseContext,
+      providerLabel_: 'Anthropic Compatible',
+      providerHasKey: false,
+      desktop: true,
+    }))
+
+  it('目录内模型跟随目录：展示支持图片（目录标注），无目录外说明', () => {
+    const html = render({
+      ...baseDraft,
+      providerId: 'zhipu-glm',
+      apiFormat: 'openai-compatible',
+      modelId: 'glm-5.3-flash',
+      imageInput: 'catalog',
+    })
+    expect(html).toContain('图片输入：支持图片（目录标注）')
+    expect(html).not.toContain('目录外模型默认按仅文本处理')
+    // 目录内模型也有三态下拉。
+    expect(html).toContain('图片输入能力')
+    expect(html).toContain('跟随目录')
+  })
+
+  it('显式声明切换后展示与依据随之变化（catalog → text → image）', () => {
+    const inCatalog = {
+      providerId: 'zhipu-glm',
+      apiFormat: 'openai-compatible',
+      modelId: 'glm-5.3-flash',
+    }
+    const follow = render({ ...baseDraft, ...inCatalog, imageInput: 'catalog' })
+    expect(follow).toContain('支持图片（目录标注）')
+    const textOnly = render({ ...baseDraft, ...inCatalog, imageInput: 'text' })
+    expect(textOnly).toContain('仅文本（显式声明）')
+    const withImage = render({ ...baseDraft, ...inCatalog, imageInput: 'image' })
+    expect(withImage).toContain('支持图片（显式声明）')
+  })
+
+  it('目录外模型展示「默认按仅文本处理」说明行', () => {
+    const html = render({
+      ...baseDraft,
+      modelId: 'custom-finetuned-9000',
+      imageInput: 'catalog',
+    }, {
+      modelCatalog: [{
+        providerId: 'generic-anthropic-compatible',
+        modelId: 'claude-test',
+        label: 'Claude Test',
+        contextWindow: 200_000,
+        maxOutputTokens: 8_192,
+        supportsReasoning: true,
+      }],
+    })
+    expect(html).toContain('仅文本（目录外默认）')
+    expect(html).toContain('目录外模型默认按仅文本处理，可在此显式声明支持图片。')
+  })
+
+  it('demo 无下拉控件但恒显示仅文本', () => {
+    const html = render({
+      ...baseDraft,
+      providerId: 'demo',
+      apiFormat: 'demo',
+      endpoint: '',
+      modelId: 'demo-v1',
+      modelName: undefined,
+      imageInput: 'image',
+    })
+    expect(html).toContain('图片输入：仅文本')
+    // 三态控件不出现（demo 声明无处存放，避免无效开关）。
+    expect(html).not.toContain('跟随目录')
+    expect(html).not.toContain('图片输入能力')
   })
 })

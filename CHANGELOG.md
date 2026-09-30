@@ -2,6 +2,24 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.6.2] - 2026-09-23
+
+### Added
+
+- **SSH 远程执行强化**（#91 系列）：远程命令执行期心跳进度上报；SSH 终端切 pane 保活；列目录 1000 条上限与真 truncated 提示；文件夹上传取消收口（Cancelled 事件 + 续传材料保留）；exec 通道子进程统一独立进程组与绝对路径解析；done 事件双订阅收敛到幂等状态机。
+- **设计工具链**：.ax 1.3 新增 shadow 外阴影字段（格式/校验/投影/画布渲染）；shadow 的 .pen 导入迁移与反向导出（往返零损）、codegen 直译；design_query v6 `mode=reconcile` 结构对账、v7 scan 输出细化与 `mode=compare` 像素对拍；画布原位并行扫描（光栅扫掠 + 扫描环外置）。
+- **浏览器**：Agent navigate 同幅联动展开右栏浏览器面板；downloads 指引统一引导 `read_download`（迁移表 v7）。
+- **电脑控制 v2**：会话门加固与快照/输入修正。
+- **模型图片能力**：model catalog 图片输入能力声明与运行时校验（#101）。
+
+### Fixed
+
+- **SSH 运行时面板**：首开即拉取主机列表，加载/错误分支完整化。
+- **设计画布扫掠三处缺陷**：视口坐标换算、中断收口、遮罩吞输入；原生截图 rect 前置有限值校验；画布写通道接入写锁与原子落盘硬化。
+- **DMG 图标**：bundle.icon 显式声明 icon.icns（防 bundler 行为变化退化到 PNG 派生）。
+- **官网安全加固**（#102）：nginx 安全响应头（CSP/nosniff/DENY/HSTS/server_tokens off）双 include 防继承失效；docs 页 TOC 锚点不再覆盖路由 hash；清单就绪后并发 HEAD 探测全部候选下载地址，未同步平台入口自动隐藏（防 404）。
+
+
 ## [0.6.1] - 2026-09-23
 
 ### Added

@@ -19,8 +19,8 @@ import './styles/connect.css'
 import { runRuntimeFaultAutomation } from './platform/runtimeFaultAutomation'
 import { setDesignComponentDetailProvider, setDesignComponentInventoryProvider } from '@/agent/design/componentInventoryHost'
 import { axComponentDetailOf, axComponentInventorySummary } from '@/components/design/ax/registry'
-import { renderAxPageToPng, renderPenPageForScan } from '@/components/design/ax/renderPageHost'
-import { setDesignPageRenderProvider, setDesignScanPageRenderProvider } from '@/agent/design/designRenderHost'
+import { configureScanRenderConcurrency, decodePngToRgbaHost, renderAxPageToPng, renderPenPageForScan } from '@/components/design/ax/renderPageHost'
+import { setDesignPageRenderProvider, setDesignScanPageRenderProvider, setPngDecodeProvider } from '@/agent/design/designRenderHost'
 import { WorkspaceRecoveryGate } from './components/WorkspaceRecoveryGate'
 import { initConnectService } from './stores/services/connectService'
 import { initBrowserPanelService } from './stores/services/browserPanelService'
@@ -45,6 +45,12 @@ setDesignComponentDetailProvider(axComponentDetailOf)
 setDesignPageRenderProvider(renderAxPageToPng)
 // 扫描验证：逐页离屏渲染 + 像素统计（`design_query` mode=scan 与画布扫描面板共用）。
 setDesignScanPageRenderProvider(renderPenPageForScan)
+// 扫描渲染并发度按光栅化路径定：native（capture 挂载铺满视口）必须串行，
+// offscreen 独立容器 3 路并行安全。
+configureScanRenderConcurrency()
+// 视觉对拍（`design_query` mode=compare）的 PNG 解码：设计渲染与实现截图都经
+// 此解到 RGBA 再做像素对拍。
+setPngDecodeProvider(decodePngToRgbaHost)
 
 // 连接服务：订阅聊天平台事件并路由到 agentStore（浏览器 dev 模式为空操作）。
 initConnectService()

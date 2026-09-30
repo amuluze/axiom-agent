@@ -21,11 +21,11 @@ import { importPenDocument, penInstanceTexts } from './importPen'
 import { axInstanceOfPenComponent } from './axComponentMap'
 import { exportAxToPenDocument } from './exportPen'
 
-const PEN_FILES = ['.pen/axiom.pen', '.pen/website.pen']
+const PEN_FILES = ['.pen/axiom.pen', '.pen/website.pen', '.pen/axiom-website.pen']
 
 /**
  * P0 已知的未迁移字段清单，分两类，每新增一项都要在此登记（否则用例失败）：
- * 1. **真未覆盖**：`shadow`（.pen 的 effect）、`opacity`、`strokeLinejoin`、`flipX/Y`、
+ * 1. **真未覆盖**：`opacity`、`strokeLinejoin`、`flipX/Y`、
  *    `metadata`/`context`（设计注记，本就不该进实现）、图片的远程 URL 填充；
  * 2. **在该节点种类上语义无效**：`.pen` 的解析器会往所有节点上带 `layout`/`gap`/
  *    `padding`/`justifyContent`/`alignItems`/`theme`（共享字段），而 `.ax` 只让
@@ -35,7 +35,7 @@ const PEN_FILES = ['.pen/axiom.pen', '.pen/website.pen']
  * 渲染器同样忽略），导入器镜像该容错并记账。
  */
 const KNOWN_UNMIGRATED_FIELDS = [
-  'shadow', 'opacity', 'strokeLinejoin', 'flipX', 'flipY', 'metadata', 'context',
+  'opacity', 'strokeLinejoin', 'flipX', 'flipY', 'metadata', 'context',
   'layout', 'gap', 'padding', 'justifyContent', 'alignItems', 'theme',
   'width', 'height', 'stroke', 'strokeWidth', 'cornerRadius', 'fill',
   'padding(非数组)',
@@ -202,9 +202,10 @@ const upgradedInstanceCount = (document: PenDocument): number => {
   return count
 }
 
-// 真实 `.pen` 源稿是导入往返用例的前提；工作区把稿迁移成 `.ax` 并删除 `.pen` 后，
-// describe.each 会拿到空数组（= 无套件，vitest 直接报套件级错误）。空表时落一个
-// 显式占位用例：跳过是显式的，不让 `npm test` 变红。
+// 真实 `.pen` 源稿是导入往返用例的前提。样稿迁移成 `.ax` 并删除 `.pen` 后（已发生：
+// axiom.pen/website.pen/axiom-website.pen 均已迁移），清单整体落空——空表时显式占位
+// 用例兜底（跳过可见，不让 `npm test` 变红也不静默全跳）。工作区重新放入 `.pen`
+// 样稿时把路径加进清单即可恢复端到端往返验收（结构等价/字节幂等/零校验错误）。
 const AVAILABLE_PEN_FILES = PEN_FILES.filter((file) => readPen(file) !== null)
 
 if (AVAILABLE_PEN_FILES.length === 0) {
@@ -351,6 +352,68 @@ describe.each(AVAILABLE_PEN_FILES)('导入 %s', (file) => {
       compared += 1
     }
     expect(compared).toBe(before.size)
+  })
+
+  it('frame 的描边/线宽/圆角随导入迁移（容器与 rect 同口径，不再记为未迁移）', () => {
+    const parsed = parsePenDocument(source, file.split('/').pop() ?? 'a.pen')
+    const { document, warnings } = importPenDocument(parsed.document!)
+
+    // 两侧都只数最终成为 `.ax` frame 的节点：`.pen` 的组件实例本身就是 frame（带
+    // refComponentName），未升级时同样展开成 frame 并带走描边/圆角——源侧不排除。
+    const penFrames = (pick: (pen: PenNode) => boolean): number => {
+      let total = 0
+      const visit = (node: PenNodeUnion): void => {
+        const pen = node as PenNode
+        if (pen.type === 'frame' && pick(pen)) total += 1
+        ;(pen.children ?? []).forEach(visit)
+      }
+      parsed.document!.pages.forEach(visit)
+      return total
+    }
+    const axFrames = (pick: (node: AxNode) => boolean): number => {
+      let total = 0
+      document.pages.forEach((page) => {
+        const stack = [...page.tree]
+        while (stack.length > 0) {
+          const node = stack.shift() as AxNode
+          if (node.kind === 'frame' && pick(node)) total += 1
+          stack.push(...(node.children ?? []), ...(node.slot ?? []))
+        }
+      })
+      return total
+    }
+
+    const strokes = penFrames((pen) => pen.stroke !== undefined)
+    const corners = penFrames((pen) => pen.cornerRadius !== undefined)
+    // 本用例要求源稿含非平凡输入（描边分隔线/圆角卡片）；否则计数全 0 就没有回归价值。
+    expect(strokes + corners).toBeGreaterThan(0)
+    expect(axFrames((node) => node.stroke !== undefined)).toBe(strokes)
+    expect(axFrames((node) => node.cornerRadius !== undefined)).toBe(corners)
+    // 逐边线宽（.pen 的 `{"bottom":1}` 分隔线）原样透传。
+    expect(axFrames((node) => node.strokeWidth !== undefined))
+      .toBe(penFrames((pen) => pen.strokeWidth !== undefined))
+    // 迁了的字段不得再记进「未迁移字段」账（否则导入器与渲染器口径漂移）。
+    // 记账 warning 带节点路径 → 反查该节点的种类，只对 frame 生效：text/icon 上的
+    // 描边仍应正常记账（.ax 的这些种类没有描边语义）。
+    const kindAtPath = (path: string): string | undefined => {
+      const segments = path.split('.')
+      const first = /^pages\[(\d+)\]$/u.exec(segments[0] ?? '')
+      if (!first) return undefined
+      let nodes: AxNode[] = document.pages[Number(first[1])]!.tree
+      for (const segment of segments.slice(1)) {
+        const match = /^(?:tree|children|slot)\[(\d+)\]$/u.exec(segment)
+        if (!match) return undefined
+        const index = Number(match[1])
+        const next = nodes.flatMap((node) =>
+          segment.startsWith('tree') ? [node] : (node.children ?? []).concat(node.slot ?? []))
+        nodes = next[index] ? [next[index]!] : []
+      }
+      return nodes[0]?.kind
+    }
+    const droppedOnFrame = warnings
+      .filter((item) => /未迁移字段 `(stroke|strokeWidth|cornerRadius)`/.test(item.message))
+      .filter((item) => kindAtPath(item.path) === 'frame')
+    expect(droppedOnFrame).toEqual([])
   })
 
   it('未迁移字段只出现在已知清单里（无静默丢失）', () => {

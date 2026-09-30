@@ -188,6 +188,32 @@ describe('overlay scrim 的画布渲染（1.2）', () => {
   })
 })
 
+
+describe('节点 shadow 的画布渲染（1.3）', () => {
+  it('shadow 投影为 PenShadow 并渲染成 box-shadow（token color 经 CSS 变量解析）', async () => {
+    const source = JSON.stringify({
+      ax: '1.2',
+      tokens: { 'shadow-color': { $type: 'color', $value: 'rgba(0,0,0,0.18)' } },
+      components: {},
+      pages: [{ id: 'p-cards', name: '卡片', width: 400, height: 300, tree: [
+        { id: 'c1', kind: 'frame', width: 320, height: 200, fill: '#ffffff',
+          shadow: { color: '$shadow-color', offsetX: 0, offsetY: 4, blur: 12 }, children: [
+            { id: 't1', kind: 'text', text: { $mock: '卡片内容' }, wrap: 'nowrap' },
+          ] },
+      ] }],
+    })
+    const parsed = parseAxDocument(source).document as AxDocument
+    const { mounted } = await mountAxPageElement(parsed, 'p-cards', 'light')
+    expect(mounted).not.toBeNull()
+    const card = mounted?.element.querySelector('[data-pen-id="c1"]') as HTMLElement
+    expect(card).not.toBeNull()
+    // 投影（offsetX/offsetY → x/y）+ 渲染（`${x}px ${y}px ${blur}px ${color}`，token → var(--shadow-color)）。
+    expect(card.style.boxShadow).toBe('0px 4px 12px var(--shadow-color)')
+    expect(mounted?.element.textContent).toContain('卡片内容')
+    mounted?.dispose()
+  })
+})
+
 describe('mountPenPageElement capture 模式（原生截图的可见挂载）', () => {
   it('可见挂载：容器铺满视口 + 内容照常渲染；视口大于页面时 fitScale 为 1', async () => {
     const { mounted, error } = await mountPenPageElement(penDocument_, 'pen-page-1', 'light', { mode: 'capture' })

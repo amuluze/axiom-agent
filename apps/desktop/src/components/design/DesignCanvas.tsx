@@ -14,7 +14,19 @@ import { findPenNode, parsePenDocument } from '@/agent/design/penParser'
 import type { PenDocument, PenNode, PenNodeUnion } from '@/agent/design/penParser'
 import PenNodeView from './PenNodeView'
 import DesignScanPanel from './DesignScanPanel'
-import { useDesignScan } from './useDesignScan'
+import { useDesignScan, type DesignScanBatchRender } from './useDesignScan'
+import type { DesignScanRenderOutcome } from '@/agent/design/designScan'
+import {
+  domRectToViewportFrame,
+  fitsViewport,
+  fullyInsideViewport,
+  panTargetFor,
+  rasterOrderOf,
+  rectsIntersect,
+  runPool,
+} from './canvasScanSweep'
+import { captureRectStats, nativeCaptureSupported } from './nativePageCapture'
+import { renderPenPageForScan } from './ax/renderPageHost'
 import { buildDesignImplementationPrompt } from './designImplementationPrompt'
 import { renderPenPageToPngBase64 } from './ax/renderPageHost'
 import { useCanvasThemeMode } from './useCanvasThemeMode'
@@ -381,6 +393,29 @@ const DesignCanvas = ({
   const redoStackRef = useRef<DesignEditPatch[][]>([])
   const editRef = useRef(edit)
   editRef.current = edit
+  // 扫掠（原位扫描）的命令面：offset/scale 镜像供异步编排读取；abort 由用户
+  // pointerdown 置位（扫掠在步进间隙检查，让位给用户操作）。
+  const offsetRef = useRef(offset)
+  offsetRef.current = offset
+  const scaleRef = useRef(scale)
+  scaleRef.current = scale
+  const sweepActiveRef = useRef(false)
+  const sweepAbortRef = useRef(false)
+  // 原生截图可用性（异步探测，一次缓存）：可用时画布扫描走原位扫掠，否则回落
+  // staging 单页路径（jsdom 测试 / 浏览器 dev 均无原生截图）。
+  const [nativeScanReady, setNativeScanReady] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    void nativeCaptureSupported().then((ok) => {
+      if (!cancelled) setNativeScanReady(ok)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+  // 扫掠编排器经 ref 注入（定义在 placements 之后；trampoline 稳定传给 hook）。
+  const scanBatchRef = useRef<DesignScanBatchRender | null>(null)
+  const [sweeping, setSweeping] = useState(false)
 
   const viewDoc = edit?.doc ?? doc
 
@@ -391,7 +426,16 @@ const DesignCanvas = ({
 
   // 扫描运行状态上提到画布层：面板与画布叠加层（当前页扫描光束 / 已完成页
   // 状态描边）消费同一份数据，扫描时画布逐页点亮（pen.dev 的动态扫描效果）。
-  const scan = useDesignScan({ doc: viewDoc, requireSize: axReview })
+  const scanBatchTrampoline = useCallback<DesignScanBatchRender>(async (pages, onPageDone, onActive) => {
+    const impl = scanBatchRef.current
+    if (!impl) throw new Error('扫掠编排器未就绪')
+    await impl(pages, onPageDone, onActive)
+  }, [])
+  const scan = useDesignScan({
+    doc: viewDoc,
+    requireSize: axReview,
+    batchRender: nativeScanReady ? scanBatchTrampoline : undefined,
+  })
   // 打开面板即扫一轮（与原面板挂载语义一致）；文档换代不自动重扫，由用户重跑。
   const runScanRef = useRef(scan.run)
   runScanRef.current = scan.run
@@ -711,14 +755,22 @@ const DesignCanvas = ({
     [focusBounds],
   )
 
-  // 扫描面板点击问题页：选中并聚焦该页（与页标签双击同一行为）。
+  // 用户按下即中断扫掠：扫掠在步进间隙检查并让位（还原视口、剩余页记未完成）。
+  // 只读 ref，useCallback 空依赖保持引用稳定，消费方（面板聚焦/换代 effect）可入依赖。
+  const abortSweepIfActive = useCallback(() => {
+    if (sweepActiveRef.current) sweepAbortRef.current = true
+  }, [])
+
+  // 扫描面板点击问题页：选中并聚焦该页（与页标签双击同一行为）。聚焦与扫掠相机
+  // 会抢 offset——用户显式聚焦优先，扫掠让位中断。
   const focusPageFromScan = useCallback(
     (pageId: string) => {
+      abortSweepIfActive()
       const placement = placements.find((item) => item.page.id === pageId)
       setSelectedId(pageId)
       if (placement) focusPlacement(placement)
     },
-    [placements, focusPlacement],
+    [placements, focusPlacement, abortSweepIfActive],
   )
 
   // 初次拿到内容自动给视野：优先看全貌，但全部页一次铺开常需 10% 级倍率
@@ -829,6 +881,193 @@ const DesignCanvas = ({
     [editable, applyEditPatches, doc.fileName],
   )
 
+  // ---------------------------------------------------------------- 画布原位扫描（扫掠编排器）
+  //
+  // pen.dev 式扫描：页面**留在画布原位**，相机（视口）按光栅序推进，每一停驻点
+  // 先让扫描光束自上而下扫过本批页（动态效果），光束出 DOM 后再**并行**原位截图
+  // （原生截图按页矩形，零挂载；光带画在矩形内，截图时必须在 DOM 之外，否则
+  // 污染像素统计）。判定逐页回报点亮画布。装不进视口的巨页与相交页走 staging
+  // 挂载回退（正确性优先）；平移落定仍不可见的页同样降级回退（自愈，不空转）；
+  // 用户 pointerdown / 滚轮或内容换代即中断扫掠（让位给用户），未扫页记
+  // 「渲染检查未完成」而非失败；结束后还原用户视口。
+  const SCREEN_CAPTURE_CONCURRENCY = 4
+  const SWEEP_SETTLE_MS = 260
+  // 光束停驻：与 design.css 的 design-scan-sweep 动画时长（0.9s）一致——每个
+  // 停驻点光束恰好自上而下扫一遭；CLEAR 是光束出 DOM 的缓冲（React 提交 + 绘制）。
+  const SWEEP_BEAM_MS = 900
+  const SWEEP_BEAM_CLEAR_MS = 80
+
+  const stagingOutcomeOf = async (pageId: string): Promise<DesignScanRenderOutcome> => {
+    try {
+      const result = await renderPenPageForScan({ doc: viewDoc, pageIdOrIndex: pageId, maxBytes: 16 * 1024 })
+      if (!result) return { ok: false, reason: '渲染器不可用' }
+      if (!result.ok) return { ok: false, reason: result.reason }
+      return {
+        ok: true,
+        width: result.width,
+        height: result.height,
+        samples: result.samples,
+        distinctColors: result.distinctColors,
+        topColorFraction: result.topColorFraction,
+      }
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  const runScanSweep: DesignScanBatchRender = async (pages, onPageDone, onActive) => {
+    // 视口的窗口 rect 一次取齐：尺寸（可见性/装得下判定）+ 原点（DOM 真值换算基点）。
+    // getBoundingClientRect 是 WebView 窗口坐标，而扫掠几何全在画布视口坐标系工作
+    // ——画布视口被侧栏/顶栏偏移几百像素，DOM 真值必须减原点换算，否则平移居中的
+    // 页永远判不可见、成片降级 staging（用户看到成片「渲染检查未完成」）。窗口 rect
+    // 测不到（jsdom 全 0）时回退 ResizeObserver 的 viewportSize。
+    const viewportWindowRect = viewportRef.current?.getBoundingClientRect()
+    const viewportOrigin = {
+      left: viewportWindowRect?.left ?? 0,
+      top: viewportWindowRect?.top ?? 0,
+    }
+    const viewport =
+      viewportWindowRect && viewportWindowRect.width > 0 && viewportWindowRect.height > 0
+        ? { width: viewportWindowRect.width, height: viewportWindowRect.height }
+        : { width: viewportSize.width, height: viewportSize.height }
+    const placementOf = new Map(placements.map((item) => [item.page.id, item]))
+    const pageById = new Map(pages.map((page) => [page.id, page]))
+    const screenRectOf = (item: PagePlacement) => {
+      const rect = surfaceRef.current
+        ?.querySelector<HTMLElement>(`[data-page-wrapper="${item.page.id}"]`)
+        ?.getBoundingClientRect()
+      // DOM 真值优先（含 transform），但必须换算到视口坐标系；取不到时按
+      // offset/scale 推算（推算本来就是视口坐标系）。
+      if (rect && rect.width > 0 && rect.height > 0) {
+        return domRectToViewportFrame(
+          { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+          viewportOrigin,
+        )
+      }
+      return {
+        x: item.x * scaleRef.current + offsetRef.current.x,
+        y: item.y * scaleRef.current + offsetRef.current.y,
+        width: item.width * scaleRef.current,
+        height: item.height * scaleRef.current,
+      }
+    }
+
+    // staging 回退集合：装不进视口的巨页 + 与其它页相交的页（原位截图会拍到覆盖
+    // 其上的内容，统计失真）。
+    const fallbackIds = new Set<string>()
+    for (const item of placements) {
+      if (!fitsViewport(screenRectOf(item), viewport)) fallbackIds.add(item.page.id)
+    }
+    for (const a of placements) {
+      for (const b of placements) {
+        if (a.page.id >= b.page.id) continue
+        if (rectsIntersect(screenRectOf(a), screenRectOf(b))) {
+          fallbackIds.add(a.page.id)
+          fallbackIds.add(b.page.id)
+        }
+      }
+    }
+    const sweepable = pages.filter((page) => placementOf.has(page.id) && !fallbackIds.has(page.id))
+    const stagingPages = pages.filter((page) => !sweepable.includes(page))
+
+    sweepActiveRef.current = true
+    sweepAbortRef.current = false
+    const restoreOffset = offsetRef.current
+    setSweeping(true)
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+    try {
+      // 光栅序（画布坐标排序与平移无关）：相机左→右、上→下逐行推进。
+      let pending = rasterOrderOf(
+        sweepable.flatMap((page) => {
+          const item = placementOf.get(page.id)
+          if (!item) return []
+          return [{ id: page.id, screen: { x: item.x, y: item.y, width: item.width, height: item.height } }]
+        }),
+        viewport,
+      )
+      // 每轮必有进展（采集或降级），循环至多 2N 轮自然终止，无须 guard 兜底。
+      let stalledFor: string | null = null
+      while (pending.length > 0) {
+        if (sweepAbortRef.current) break
+        // 本停驻点：完全可见的待扫页先亮光束、后并行原位截图。
+        const visible = pending.filter((id) => {
+          const item = placementOf.get(id)
+          return item !== undefined && fullyInsideViewport(screenRectOf(item), viewport)
+        })
+        if (visible.length > 0) {
+          onActive(visible)
+          await sleep(SWEEP_BEAM_MS)
+          if (sweepAbortRef.current) break
+          onActive(null)
+          await sleep(SWEEP_BEAM_CLEAR_MS)
+          await runPool(visible, SCREEN_CAPTURE_CONCURRENCY, async (id) => {
+            const rect = surfaceRef.current
+              ?.querySelector<HTMLElement>(`[data-page-wrapper="${id}"]`)
+              ?.getBoundingClientRect()
+            if (!rect || rect.width <= 0 || rect.height <= 0) {
+              onPageDone(id, { ok: false, reason: '页面矩形不可用' })
+              return
+            }
+            try {
+              const stats = await captureRectStats([rect.x, rect.y, rect.width, rect.height])
+              onPageDone(id, {
+                ok: true,
+                width: stats.width,
+                height: stats.height,
+                samples: stats.stats.samples,
+                distinctColors: stats.stats.distinctColors,
+                topColorFraction: stats.stats.topColorFraction,
+              })
+            } catch (error) {
+              onPageDone(id, { ok: false, reason: `原位截图失败：${error instanceof Error ? error.message : String(error)}` })
+            }
+          })
+          pending = pending.filter((id) => !visible.includes(id))
+          stalledFor = null
+          continue
+        }
+        // 平移到下一页（居中），等过渡落定后重试；落定仍不可见（几何口径边缘）
+        // 该页降级 staging——平移循环不空转，剩余页不会成片「扫描中断」。
+        const nextId = pending[0]
+        const next = nextId !== undefined ? placementOf.get(nextId) : undefined
+        if (!next) break
+        if (stalledFor === nextId) {
+          pending = pending.slice(1)
+          const page = nextId !== undefined ? pageById.get(nextId) : undefined
+          if (page) stagingPages.push(page)
+          stalledFor = null
+          continue
+        }
+        stalledFor = nextId ?? null
+        setOffset(panTargetFor({ x: next.x, y: next.y, width: next.width, height: next.height }, scaleRef.current, viewport))
+        await sleep(SWEEP_SETTLE_MS)
+      }
+    } finally {
+      setSweeping(false)
+      onActive(null)
+      setOffset(restoreOffset)
+    }
+    // staging 回退（巨页/相交页/几何降级页）：串行挂载路径，逐页检查中断——
+    // 扫掠被中断时剩余页一并放弃（未回报页由引擎记「渲染检查未完成」）。每页
+    // 报告在途集合，staging 期间画布同样有扫描光束（否则只有遮罩闪、没有进度感）。
+    for (const page of stagingPages) {
+      if (sweepAbortRef.current) break
+      onActive([page.id])
+      onPageDone(page.id, await stagingOutcomeOf(page.id))
+    }
+    onActive(null)
+    sweepActiveRef.current = false
+  }
+  scanBatchRef.current = runScanSweep
+
+  // 内容换代（Agent 写盘 / 编辑重解析）即在途扫掠作废：旧 placements 闭包下的
+  // 相机推进对新布局失准，续跑只会产出成片「扫描中断」误报——让位并还原视口；
+  // 过期扫描的状态写回由 useDesignScan 的换代失效拦下。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: viewDoc 是刻意的重触发器（换代即中断），effect 体内不直接消费
+  useEffect(() => {
+    abortSweepIfActive()
+  }, [viewDoc, abortSweepIfActive])
+
   // 键盘：Esc 取消选中；Del/Backspace 删除；Cmd/Ctrl+Z 撤销（+Shift 重做）。
   // 输入控件聚焦时不劫持按键。
   useEffect(() => {
@@ -861,6 +1100,7 @@ const DesignCanvas = ({
   }, [editable, selectedId, undo, redo, deleteSelected])
 
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    abortSweepIfActive()
     const target = event.target as HTMLElement | null
     // 中键拖拽：无论落点一律平移——放大后页面铺满视口、页内按下已被「拖页」
     // 占用时，中键是保底的平移出口（与 Figma 同款）。
@@ -1094,6 +1334,9 @@ const DesignCanvas = ({
   // 滚轮 pan / ctrl 滚轮以光标为中心缩放，挂在原生监听上（合成事件 passive 无法 preventDefault）。
   const onWheel = useCallback((event: WheelEvent) => {
     event.preventDefault()
+    // 用户接管相机（pan/缩放）即中断扫掠：与 pointerdown 同一让位语义，
+    // 否则扫掠的 setOffset 会和用户抢相机（ref 跨渲染稳定，可直接置位）。
+    if (sweepActiveRef.current) sweepAbortRef.current = true
     if (event.ctrlKey || event.metaKey) {
       const rect = viewportRef.current?.getBoundingClientRect()
       const cursorX = rect ? event.clientX - rect.left : 0
@@ -1233,7 +1476,7 @@ const DesignCanvas = ({
     <div className="design-canvas">
       <div
         ref={viewportRef}
-        className="design-canvas__viewport"
+        className={`design-canvas__viewport${sweeping ? ' is-sweeping' : ''}`}
         data-theme-mode={themeMode}
         style={{
           backgroundPosition: `${offset.x}px ${offset.y}px`,
@@ -1307,7 +1550,7 @@ const DesignCanvas = ({
         </div>
         {/* 页卡片层：屏幕空间绘制（1px 边框/标签不随缩放变形）。内容仍在上面的
             变换面里；低倍率时卡片接管指针，让「点中某页」成为可行操作。 */}
-        <div className="design-canvas__page-layer" data-testid="design-canvas-page-layer">
+        <div className={`design-canvas__page-layer${sweeping ? ' is-scanning' : ''}`} data-testid="design-canvas-page-layer">
           {visiblePlacements.map((placement) => {
             // 尺寸标签只在页真有高度时显示：无高度 frame 的 240 是兜底值，
             // 显示出来就是给设计稿编造一个它没有的尺寸。
@@ -1325,7 +1568,9 @@ const DesignCanvas = ({
             // 扫描动态效果（pen.dev 同款）：在途页显示扫描光束，已完成的页按
             // 判定显示状态描边（ok 不描——65 页全绿时满屏描边等于没有信息）。
             const scanStatus = scanOpen ? scan.statuses.get(placement.page.id) : undefined
-            const scanning = scanOpen && scan.currentId === placement.page.id
+            // 在途页集合驱动扫描环（批量扫掠可多页并行；串行路径由 useDesignScan
+            // 维护为单页集合，行为与旧 currentId 一致）。
+            const scanning = scanOpen && scan.activeIds.has(placement.page.id)
             return (
               <Fragment key={placement.page.id}>
                 {/* 卡片框的尺寸同样依赖兜底高度，对组织性 frame 画出来就是假边界。 */}

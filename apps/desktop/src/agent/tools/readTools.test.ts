@@ -204,3 +204,75 @@ describe('findTool execute', () => {
     expect(result.content).toContain('Result cap')
   })
 })
+
+// 验收 9/19：仅文本判定下产图点不产出图片负载、不调用编码宿主，说明文案
+// 含钉死占位子串且不把能力受限表述为环境故障（Domain 不变量 6）。
+describe('readTool 仅文本判定降级', () => {
+  const UNSUPPORTED_IMAGE_NOTE = '[图片已省略：当前模型不支持图片输入]'
+  // 封闭词表（Task Spec 验收 9 逐字钉死）：能力受限 ≠ 环境故障，两者可观测语义可区分。
+  const FORBIDDEN_WORDS = [
+    '渲染器不可用', '环境故障', 'no renderer', 'host seam not injected',
+    'sandbox', 'fallback',
+  ]
+
+  it('图片文件 → 无 image 块、含占位子串、无封闭词、宿主未产图', async () => {
+    const readTextCalls: unknown[] = []
+    const environment = createFakeAgentEnvironment({
+      readText: async (...args) => {
+        readTextCalls.push(args)
+        return {
+          workspace: { path: '/workspace/repo', name: 'repo' },
+          path: 'media/logo.png',
+          content: '',
+          sha256: 'c'.repeat(64),
+          startLine: 1,
+          endLine: 1,
+          totalLines: 1,
+          truncated: false,
+          image: { mimeType: 'image/png', dataBase64: 'aGk=', resized: true },
+        }
+      },
+    })
+    const result = await createReadTool(environment).execute(
+      { path: 'media/logo.png' },
+      baseContext({ modelAcceptsImage: false }),
+    )
+
+    expect(result.contentBlocks?.some((block) => block.type === 'image') ?? false).toBe(false)
+    expect(result.content).toContain(UNSUPPORTED_IMAGE_NOTE)
+    expect(result.content).toContain(`[Full file sha256: ${'c'.repeat(64)}]`)
+    for (const word of FORBIDDEN_WORDS) {
+      expect(result.content.includes(word), `不应出现封闭词「${word}」`).toBe(false)
+    }
+    // 验收 19：宿主读图（编码）恰被调用一次以获取 sha，但不产生图片负载。
+    expect(readTextCalls).toHaveLength(1)
+  })
+
+  it('占位文案与请求侧降级共用同一常量（不漂移）', async () => {
+    const environment = createFakeAgentEnvironment({
+      readText: async () => ({
+        workspace: { path: '/workspace/repo', name: 'repo' },
+        path: 'a.png',
+        content: '',
+        sha256: 'd'.repeat(64),
+        startLine: 1,
+        endLine: 1,
+        totalLines: 1,
+        truncated: false,
+        image: { mimeType: 'image/png', dataBase64: 'aGk=', resized: false },
+      }),
+    })
+    const result = await createReadTool(environment).execute(
+      { path: 'a.png' },
+      baseContext({ modelAcceptsImage: false }),
+    )
+    const withImage = await createReadTool(environment).execute(
+      { path: 'a.png' },
+      baseContext({ modelAcceptsImage: true }),
+    )
+    expect(withImage.contentBlocks?.some((block) => block.type === 'image')).toBe(true)
+    expect(result.content).toContain(UNSUPPORTED_IMAGE_NOTE)
+    // 支持图片时不带占位说明（不污染视觉模型的上下文）。
+    expect(withImage.content.includes(UNSUPPORTED_IMAGE_NOTE)).toBe(false)
+  })
+})

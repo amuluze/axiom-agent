@@ -80,6 +80,11 @@ export const useSshTerminals = ({
 
   // 事件单订阅：按 hostId 路由到对应实例（decoder 每实例独立，防跨主机串字节）。
   // 只注册一次，实例未建/已删则丢弃；不随 activeHostId 变化重订阅。
+  // done 必须走 handleSessionDone 完整状态机（而非 markSessionClosed）：本订阅与
+  // sshStore.ensureSshEvents 是两个独立 listener，到达顺序不确定——若此处先以
+  // markSessionClosed 把 phase 置成 closed，ensureSshEvents 侧的
+  // 「connecting+非零 → failed」「connected → 意外掉线」判定会全部失效。改调
+  // 幂等的 handleSessionDone 后无论谁先到都收敛到同一状态机（二次调用 no-op）。
   useEffect(() => {
     let disposed = false
     let unlisten: (() => void) | undefined
@@ -90,7 +95,7 @@ export const useSshTerminals = ({
         inst.term.write(inst.decoder.decode(decodeBase64ToBytes(event.data), { stream: true }))
       }
       if (event.done) {
-        useSshStore.getState().markSessionClosed(event.hostId)
+        useSshStore.getState().handleSessionDone(event.hostId, event.exitCode ?? null)
         inst.term.write(
           `\r\n\x1b[2m── 连接已断开${event.exitCode == null ? '' : `（退出码 ${event.exitCode}）`} ──\x1b[0m\r\n`,
         )

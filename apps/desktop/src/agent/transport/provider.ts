@@ -18,6 +18,7 @@ import {
 } from './providerProfile'
 
 export type {
+  ImageInputDeclaration,
   LegacyProviderConfig,
   ProviderCapabilities,
   ProviderId,
@@ -41,6 +42,7 @@ export {
   listBuiltinModels,
   listModelsForProfile,
   resolveModelDescriptor,
+  describeImageInputCapability,
 } from './modelCatalog'
 export type {
   ProviderAuthDescriptor,

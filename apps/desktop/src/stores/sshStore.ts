@@ -50,7 +50,7 @@ interface SshStoreState {
    * 不匹配一律不渲染，杜绝「A 目录的列表挂在 B 路径下」的陈旧内容
    * （曾导致列目录静默失败后界面停留在空/错列表，看起来像按钮失灵）。
    */
-  dirs: Record<string, { path: string; entries: RemoteDirEntry[] }>
+  dirs: Record<string, { path: string; entries: RemoteDirEntry[]; truncated: boolean }>
   /** per-host 当前浏览的远程路径（SFTP 面板定位）。 */
   currentDir: Record<string, string>
   /** per-host 目录列表加载态（SFTP 面板头部 spinner）。 */
@@ -177,7 +177,7 @@ export const useSshStore = create<SshStoreState>((set, get) => ({
       const response = await sshCommand({ action: 'listFiles', hostId, path })
       if (response.type !== 'files') throw new Error('SSH 目录列表响应类型不符合预期')
       set((state) => ({
-        dirs: { ...state.dirs, [hostId]: { path: response.path, entries: response.entries } },
+        dirs: { ...state.dirs, [hostId]: { path: response.path, entries: response.entries, truncated: response.truncated } },
         currentDir: { ...state.currentDir, [hostId]: response.path },
         dirError: { ...state.dirError, [hostId]: null },
         error: null,

@@ -10,7 +10,7 @@ import {
   migrateSecret,
   saveSecret,
 } from '@/platform/secrets'
-import { defaultProviderProfile } from '@/agent/transport/provider'
+import { defaultProviderProfile, PROVIDER_PROFILE_SCHEMA_VERSION } from '@/agent/transport/provider'
 import { TEST_ANTHROPIC_PROFILE } from '@/agent/transport/__fixtures__/testAnthropicProfile'
 
 // 覆盖 agentStore 模块加载时绑定的 Rust 宿主：测试环境无 Tauri command，解析用
@@ -284,7 +284,7 @@ describe('agentStore Tauri Provider Secret lifecycle', () => {
     expect(mocks.secrets.has('provider.generic-anthropic-compatible.api-key')).toBe(true)
     expect(mocks.secrets.has('provider.anthropic-compatible.api-key')).toBe(false)
     expect(JSON.parse(localStorage.getItem('axiom.provider.config.v1')!)).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
       secretId: 'provider.generic-anthropic-compatible.api-key',
     })
 
@@ -334,7 +334,7 @@ describe('agentStore Tauri Provider Secret lifecycle', () => {
 
     expect(retriedStore.getState().initializationError).toBeNull()
     expect(JSON.parse(localStorage.getItem('axiom.provider.config.v1')!)).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
       secretId: 'provider.generic-anthropic-compatible.api-key',
     })
     expect(mocks.secrets.has('provider.anthropic-compatible.api-key')).toBe(false)

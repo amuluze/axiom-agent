@@ -16,7 +16,7 @@
  */
 import { AX_FORMAT_VERSION, AX_OVERLAY_ID_SUFFIX } from '@/agent/design/axSchema'
 import { anchorPlacementOf } from '@/agent/design/axParser'
-import type { AxBinding, AxComponentDecl, AxDocument, AxNode, AxPage, AxToken, AxTokenType } from '@/agent/design/axSchema'
+import type { AxBinding, AxComponentDecl, AxDocument, AxNode, AxPage, AxShadow, AxToken, AxTokenType } from '@/agent/design/axSchema'
 import { AX_ALLOWED_KEYS } from '@/agent/design/axSchema'
 import type { AxGradient, AxImageFill } from '@/agent/design/axSchema'
 import type { PenDocument, PenNode, PenNodeUnion, PenPaint } from '@/agent/design/penParser'
@@ -199,6 +199,14 @@ export const importPenDocument = (document: PenDocument, name?: string): ImportP
     return value
   }
 
+  /** 视图模型 PenShadow（{x,y} 偏移）→ `.ax` 的 AxShadow（offsetX/offsetY 显式命名）。 */
+  const shadowToAx = (shadow: NonNullable<PenNode['shadow']>): AxShadow => ({
+    color: shadow.color,
+    offsetX: shadow.x,
+    offsetY: shadow.y,
+    blur: shadow.blur,
+  })
+
   /** 描边不接受图片填充（无意义）：命中即按未迁移记账。 */
   const fieldStroke = (
     paint: PenPaint | undefined,
@@ -337,6 +345,12 @@ export const importPenDocument = (document: PenDocument, name?: string): ImportP
           ...(pen.clip ? { clip: true } : {}),
           ...(pen.theme?.mode ? { theme: pen.theme.mode } : {}),
           ...(pen.fill ? { fill: fieldFill(pen.fill, path, 'fill') } : {}),
+          // 容器同样可以带描边/圆角（.pen 实测 frame 大量用描边画分隔线、圆角画卡片）；
+          // 漏掉会让导入稿丢掉这些视觉，且字段对账记成「未迁移」。
+          ...(pen.stroke ? { stroke: fieldStroke(pen.stroke, path, 'stroke') } : {}),
+          ...(pen.strokeWidth !== undefined ? { strokeWidth: pen.strokeWidth } : {}),
+          ...(pen.cornerRadius !== undefined ? { cornerRadius: pen.cornerRadius } : {}),
+          ...(pen.shadow ? { shadow: shadowToAx(pen.shadow) } : {}),
           children,
         }
         if (absolute) {
@@ -363,6 +377,7 @@ export const importPenDocument = (document: PenDocument, name?: string): ImportP
           ...(pen.textAlign ? { textAlign: pen.textAlign } : {}),
           wrap: wrapOf(pen.textGrowth),
           ...(pen.fill ? { fill: fieldFill(pen.fill, path, 'fill') } : {}),
+          ...(pen.shadow ? { shadow: shadowToAx(pen.shadow) } : {}),
           ...(pen.theme?.mode ? { theme: pen.theme.mode } : {}),
         }
         break
@@ -377,6 +392,7 @@ export const importPenDocument = (document: PenDocument, name?: string): ImportP
           ...(pen.icon ? { name: pen.icon } : {}),
           ...(iconSize !== undefined ? { size: iconSize } : {}),
           ...(pen.fill ? { fill: fieldFill(pen.fill, path, 'fill') } : {}),
+          ...(pen.shadow ? { shadow: shadowToAx(pen.shadow) } : {}),
           ...(pen.theme?.mode ? { theme: pen.theme.mode } : {}),
         }
         break
@@ -392,6 +408,7 @@ export const importPenDocument = (document: PenDocument, name?: string): ImportP
           ...(pen.stroke ? { stroke: fieldStroke(pen.stroke, path, 'stroke') } : {}),
           ...(pen.strokeWidth !== undefined ? { strokeWidth: pen.strokeWidth } : {}),
           ...(pen.cornerRadius !== undefined ? { cornerRadius: pen.cornerRadius } : {}),
+          ...(pen.shadow ? { shadow: shadowToAx(pen.shadow) } : {}),
           ...(pen.type === 'ellipse' && pen.innerRadius !== undefined ? { innerRadius: pen.innerRadius } : {}),
           ...(pen.theme?.mode ? { theme: pen.theme.mode } : {}),
         }
@@ -406,6 +423,7 @@ export const importPenDocument = (document: PenDocument, name?: string): ImportP
           ...(pen.height !== undefined ? { height: sizeOf(pen.height) } : {}),
           ...(pen.fill ? { fill: fieldFill(pen.fill, path, 'fill') } : {}),
           ...(pen.stroke ? { stroke: fieldStroke(pen.stroke, path, 'stroke') } : {}),
+          ...(pen.shadow ? { shadow: shadowToAx(pen.shadow) } : {}),
           ...(pen.theme?.mode ? { theme: pen.theme.mode } : {}),
         }
         break

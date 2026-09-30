@@ -1,5 +1,6 @@
 import type { ModelRef, ModelTransport, ProviderApiFormat } from '@/agent/core/types'
 import type { ModelProbeRequest } from './modelHttpContract'
+import { imageInputModalities } from './modelCatalog'
 import {
   BUILTIN_PROVIDER_DESCRIPTORS,
   type BuiltinProviderDescriptor,
@@ -132,11 +133,12 @@ export class ProviderRegistry {
       // 等模型不准确；自定义模型（不在目录中）回退 profile 值。
       contextWindow: builtin?.contextWindow ?? normalized.contextWindow,
       maxOutputTokens: normalized.maxOutputTokens,
-      // 目录内模型按目录标注；目录外模型能力未知 → input 省略（不硬编码 ['text']）：
-      // streamAssistantMessage 的图片硬闸只在 input 已声明且缺 image 时拦截，省略即
-      // 不误伤多模态自定义模型；工具侧 modelAcceptsImage 对未知 input 仍默认 false，
-      // 截图降级保持保守。
-      input: builtin?.input.slice(),
+      // 输入模态经单一判定入口产出（Domain 不变量 1/2）：目录内取目录标注，
+      // 目录外一律仅文本（fail-safe）。显式声明（imageInput）在 profile 阶段
+      // 进入该判定；此处不再重复推断。run 启动时固化，各轮只读不重算。
+      // 恒有值即「能力不匹配必走 stripUnsupportedImages 降级」，不再有
+      // 「未知即放行图片」的旁路。
+      input: imageInputModalities(normalized),
       supportsReasoning: builtin?.supportsReasoning ?? false,
     }
   }

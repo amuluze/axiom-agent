@@ -13,11 +13,25 @@ export type { ProviderCapabilities, ProviderId } from './providerDefinitions'
 // 取用，避免直连 generatedProviderData 绕过 Provider Runtime 边界（tauri-capability-audit 强制）。
 export { PROVIDER_CONSTANTS }
 
-const PREVIOUS_PROVIDER_PROFILE_SCHEMA_VERSION = 3 as const
-export const PROVIDER_PROFILE_SCHEMA_VERSION = 4 as const
+const PREVIOUS_PROVIDER_PROFILE_SCHEMA_VERSION = 4 as const
+export const PROVIDER_PROFILE_SCHEMA_VERSION = 5 as const
 // v2 是最后一个使用 legacy secret 前缀的版本：只有 v2 文档需要 secretId
 // 迁移（legacy 前缀 → 当前 namespace）；v3 起文档已持有当前 namespace。
 const SECRET_MIGRATION_SCHEMA_VERSION = 2 as const
+// v3 文档已持有当前 secret namespace（无 website / imageInput）：解码合法，
+// 只需重写版本号。bump 逐次抬高时它退为具名版本而非被静默丢弃。
+const CURRENT_SECRET_NAMESPACE_SCHEMA_VERSION = 3 as const
+// v5 起文档可携带图片输入能力声明（imageInput）。声明字段类型定义在本模块
+// （而非判定所在的 modelCatalog）：解码/归一化是它的权威入口，判定侧只消费。
+const IMAGE_INPUT_DECLARATION_SCHEMA_VERSION = 5 as const
+
+/**
+ * 图片输入能力的三态声明（Domain 不变量 3）：`catalog` 跟随目录（缺省）、
+ * `text` 强制仅文本、`image` 强制支持图片。显式档覆盖目录标注，单向生效。
+ */
+export type ImageInputDeclaration = 'catalog' | 'text' | 'image'
+
+const IMAGE_INPUT_DECLARATIONS: readonly ImageInputDeclaration[] = ['catalog', 'text', 'image']
 
 export interface ProviderProfile {
   schemaVersion: typeof PROVIDER_PROFILE_SCHEMA_VERSION
@@ -32,6 +46,12 @@ export interface ProviderProfile {
   maxOutputTokens: number
   contextWindow: number
   capabilities: ProviderCapabilities
+  /**
+   * 图片输入能力声明。缺省等价 `catalog`（跟随目录），归一化后恒有值——
+   * 判定入口据此合成唯一能力结论（Domain 不变量 1）。demo 的归一化固定契约
+   * 不写该字段：其能力恒为仅文本，声明无处存放。
+   */
+  imageInput?: ImageInputDeclaration
   secretId?: string
 }
 
@@ -167,6 +187,19 @@ const migrateLegacyProviderConfigImpl = (config: LegacyProviderConfig): Provider
   })
 }
 
+/**
+ * 归一化图片输入声明（Domain 不变量 3 的三态 + fail-closed）：缺省归一为
+ * `catalog`（跟随目录），三态之外的值直接报错而非静默落到某一档——静默归一
+ * 会让「用户声明支持图片」被读成仅文本（或反之），能力结论随之错误。
+ */
+const normalizeImageInputImpl = (value: unknown, label: string): ImageInputDeclaration => {
+  if (value === undefined) return 'catalog'
+  if (typeof value === 'string' && IMAGE_INPUT_DECLARATIONS.includes(value as ImageInputDeclaration)) {
+    return value as ImageInputDeclaration
+  }
+  throw new Error(`${label} 图片输入能力声明无效`)
+}
+
 const normalizeProviderProfileDraftImpl = (profile: ProviderProfileDraft): ProviderProfile => {
   if (profile?.schemaVersion !== PROVIDER_PROFILE_SCHEMA_VERSION) {
     throw new Error('不支持的 Provider Profile 版本')
@@ -218,6 +251,7 @@ const normalizeProviderProfileDraftImpl = (profile: ProviderProfileDraft): Provi
   }
   if (url.username || url.password) throw new Error('模型 Endpoint 不能包含用户名或密码')
   const secretId = normalizeSecretIdImpl(profile.providerId, profile.secretId)
+  const imageInput = normalizeImageInputImpl(profile.imageInput, 'Provider Profile')
   return {
     schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
     profileId,
@@ -249,6 +283,7 @@ const normalizeProviderProfileDraftImpl = (profile: ProviderProfileDraft): Provi
       toolSearch: definition.supportedCapabilities.toolSearch
         && profile.capabilities?.toolSearch === true,
     },
+    imageInput,
     ...(secretId ? { secretId } : {}),
     ...(modelName ? { modelName } : {}),
     ...(website ? { website } : {}),
@@ -264,8 +299,11 @@ const strictInteger = (value: unknown, minimum: number, maximum: number, label: 
 
 const decodeProviderProfileFieldsImpl = (
   value: Record<string, unknown>,
-  version: 2 | 3 | 4,
+  version: 2 | 3 | 4 | 5,
 ): ProviderProfile => {
+  // 声明字段按版本门禁：仅 v5 文档允许携带 imageInput。v2/v3/v4 携带即按
+  // 未知字段拒绝（fail-closed）——旧版本文档的语义是「跟随目录」，静默接受
+  // 会让一份本不存在声明的文档凭空获得显式覆盖。
   assertExactFields(value, [
     'schemaVersion',
     'profileId',
@@ -279,6 +317,7 @@ const decodeProviderProfileFieldsImpl = (
     'maxOutputTokens',
     'contextWindow',
     'capabilities',
+    ...(version >= IMAGE_INPUT_DECLARATION_SCHEMA_VERSION ? ['imageInput'] : []),
     'secretId',
   ], `Provider Profile v${version}`)
   if (typeof value.profileId !== 'string'
@@ -335,6 +374,9 @@ const decodeProviderProfileFieldsImpl = (
     PROVIDER_CONSTANTS.contextMax,
     'Provider contextWindow',
   )
+  const imageInput = version >= IMAGE_INPUT_DECLARATION_SCHEMA_VERSION
+    ? normalizeImageInputImpl(value.imageInput, `Provider Profile v${version}`)
+    : 'catalog'
   const normalized = normalizeProviderProfileDraftImpl({
     schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
     profileId: value.profileId,
@@ -351,6 +393,7 @@ const decodeProviderProfileFieldsImpl = (
       toolReferences: capabilities.toolReferences,
       toolSearch: capabilities.toolSearch,
     },
+    imageInput,
     ...(migratedSecretId !== undefined ? { secretId: migratedSecretId } : {}),
   })
   if (normalized.profileId !== value.profileId
@@ -362,6 +405,9 @@ const decodeProviderProfileFieldsImpl = (
     || normalized.maxOutputTokens !== maxOutputTokens
     || normalized.contextWindow !== contextWindow
     || normalized.secretId !== migratedSecretId
+    // demo 的归一化固定契约不携带声明字段（能力恒为仅文本）：文档携带即非
+    // 规范化数据，与 secretId 的处理同构。
+    || (providerId === 'demo' ? value.imageInput !== undefined : normalized.imageInput !== imageInput)
     || normalized.capabilities.toolReferences !== capabilities.toolReferences
     || normalized.capabilities.toolSearch !== capabilities.toolSearch) {
     throw new Error(`Provider Profile v${version} 不是规范化数据`)
@@ -410,8 +456,16 @@ const decodeProviderProfileWithMetadataImpl = (value: unknown): DecodedProviderP
     }
   }
   if (value.schemaVersion === PREVIOUS_PROVIDER_PROFILE_SCHEMA_VERSION) {
-    // v3 起文档已持有当前 secret namespace：只需重写版本号，无 secret 迁移。
+    // v4 文档缺 imageInput：按「跟随目录」解释（不视为错误），只需重写版本号。
     const profile = decodeProviderProfileFieldsImpl(value, PREVIOUS_PROVIDER_PROFILE_SCHEMA_VERSION)
+    return {
+      profile,
+      requiresPersistenceMigration: true,
+    }
+  }
+  if (value.schemaVersion === CURRENT_SECRET_NAMESPACE_SCHEMA_VERSION) {
+    // v3 文档（无 website / imageInput）：已持有当前 secret namespace，无 secret 迁移。
+    const profile = decodeProviderProfileFieldsImpl(value, CURRENT_SECRET_NAMESPACE_SCHEMA_VERSION)
     return {
       profile,
       requiresPersistenceMigration: true,

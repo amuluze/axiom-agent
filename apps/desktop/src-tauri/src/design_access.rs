@@ -17,7 +17,7 @@ use base64::Engine as _;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use tauri::Emitter;
+use tauri::{Emitter, Manager as _};
 
 use crate::image_detect::{detect_image_mime, is_supported_image_path};
 use crate::workspace_access::{authorized_roots, validate_relative_path, WorkspaceAccessState};
@@ -73,16 +73,26 @@ fn resolve_design_document(
     state: &tauri::State<'_, WorkspaceAccessState>,
     path: &str,
 ) -> Result<(PathBuf, PathBuf), String> {
+    resolve_design_document_in_roots(&authorized_roots(state), path)
+}
+
+/// resolve 的可测内核（roots 切片直入，对抗用例见 tests 模块）。安全判定：
+/// validate_relative_path 拒 `..`/绝对路径 → canonicalize 消解 symlink →
+/// starts_with root 兜底 → canonical 文件名与请求一致（防 symlink 置换改扩展名）。
+fn resolve_design_document_in_roots(
+    roots: &[PathBuf],
+    path: &str,
+) -> Result<(PathBuf, PathBuf), String> {
     let relative = validate_relative_path(Some(path))?;
     let file_name = relative
         .file_name()
         .ok_or_else(|| "design document path is empty".to_string())?;
-    for root in authorized_roots(state) {
+    for root in roots {
         let target = root.join(&relative);
         let Ok(canonical) = std::fs::canonicalize(&target) else {
             continue;
         };
-        if !canonical.starts_with(&root) {
+        if !canonical.starts_with(root) {
             continue;
         }
         if canonical.file_name() != Some(file_name) {
@@ -93,11 +103,22 @@ fn resolve_design_document(
         if !is_design_document_path(&canonical) {
             return Err("design documents only accept .pen or .ax files".into());
         }
-        return Ok((canonical, root));
+        return Ok((canonical, root.clone()));
     }
     Err(format!(
         "design document not found in any authorized workspace: {path}"
     ))
+}
+
+/// 写通道的 resolve 附加约束：保留目录（`.git`/`.axiom`）不可写入——与 Agent
+/// 写路径（create/edit/apply）同口径，画布手势通道不扩大例外面。
+fn resolve_design_document_for_write(
+    roots: &[PathBuf],
+    path: &str,
+) -> Result<(PathBuf, PathBuf), String> {
+    let relative = validate_relative_path(Some(path))?;
+    crate::workspace_access::reject_reserved_write_components(&relative)?;
+    resolve_design_document_in_roots(roots, path)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -168,6 +189,120 @@ mod tests {
         // 超上限：拒绝且不碰盘。
         let oversized = vec![b'a'; (MAX_DESIGN_DOCUMENT_BYTES + 1) as usize];
         assert!(write_design_document_bytes(&path, &oversized, None).is_err());
+    }
+
+    #[test]
+    fn write_bytes_preserves_source_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("a.pen");
+        std::fs::write(&path, br#"{"children":[]}"#).expect("seed file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640))
+            .expect("seed permissions");
+        write_design_document_bytes(&path, br#"{"children":[1]}"#, None).expect("write");
+        let mode = std::fs::metadata(&path)
+            .expect("stat")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o640, "写盘后必须保留源文件权限（tempfile 默认 0600 不得泄漏）");
+    }
+
+    /// roots 直入的 resolve 内核（tempdir 在 macOS 上经 /var → /private/var，先
+    /// canonicalize 根目录再判定 starts_with，与命令路径同坐标系）。
+    fn canonical_roots(dirs: &[&std::path::Path]) -> Vec<PathBuf> {
+        dirs.iter()
+            .map(|dir| std::fs::canonicalize(dir).expect("canonicalize root"))
+            .collect()
+    }
+
+    #[test]
+    fn resolve_rejects_traversal_absolute_and_missing() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        std::fs::write(directory.path().join("a.pen"), br#"{}"#).expect("seed");
+        let roots = canonical_roots(&[directory.path()]);
+        // `..` 与绝对路径在 validate_relative_path 一层即被拒。
+        assert!(resolve_design_document_in_roots(&roots, "../escape.pen").is_err());
+        assert!(resolve_design_document_in_roots(&roots, "/etc/passwd").is_err());
+        assert!(resolve_design_document_in_roots(&roots, "missing.pen").is_err());
+        // 命中：返回 canonical 路径与根。
+        let (canonical, root) =
+            resolve_design_document_in_roots(&roots, "a.pen").expect("resolve");
+        assert!(canonical.ends_with("a.pen"));
+        assert_eq!(root, roots[0]);
+    }
+
+    #[test]
+    fn resolve_rejects_symlink_escape_and_extension_swap() {
+        use std::os::unix::fs::symlink;
+
+        let inside = tempfile::tempdir().expect("inside");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(outside.path().join("evil.pen"), br#"{}"#).expect("outside target");
+        std::fs::write(outside.path().join("axiom.pen"), br#"{}"#).expect("outside same-name");
+        std::fs::write(inside.path().join("notes.txt"), b"not a design").expect("decoy");
+        // 同名越界：canonical 落在根外（starts_with 兜底拦截）。
+        symlink(
+            outside.path().join("axiom.pen"),
+            inside.path().join("axiom.pen"),
+        )
+        .expect("symlink same-name");
+        // 异名越界：canonical 文件名与请求不一致（置换防御）+ 落在根外。
+        symlink(
+            outside.path().join("evil.pen"),
+            inside.path().join("link.pen"),
+        )
+        .expect("symlink renamed");
+        // 根内扩展名置换：x.pen → x.txt（canonical 文件名不一致即拒）。
+        symlink(
+            inside.path().join("notes.txt"),
+            inside.path().join("x.pen"),
+        )
+        .expect("symlink extension swap");
+        let roots = canonical_roots(&[inside.path()]);
+        for name in ["axiom.pen", "link.pen", "x.pen"] {
+            assert!(
+                resolve_design_document_in_roots(&roots, name).is_err(),
+                "{name} 的 symlink 越界/置换必须被拒"
+            );
+        }
+        // 真实存在但非设计稿扩展名：显式报错（而不是静默 not found）。
+        let error = resolve_design_document_in_roots(&roots, "notes.txt")
+            .expect_err("non-design extension must be rejected");
+        assert!(error.contains("only accept .pen or .ax"));
+    }
+
+    #[test]
+    fn resolve_prefers_first_root_on_multi_root_hit() {
+        let first = tempfile::tempdir().expect("first");
+        let second = tempfile::tempdir().expect("second");
+        std::fs::write(first.path().join("shared.pen"), br#"{"first":true}"#).expect("seed first");
+        std::fs::write(second.path().join("shared.pen"), br#"{"second":true}"#).expect("seed second");
+        let roots = canonical_roots(&[first.path(), second.path()]);
+        let (canonical, root) =
+            resolve_design_document_in_roots(&roots, "shared.pen").expect("resolve");
+        assert_eq!(root, roots[0], "多根同名按授权顺序取首个");
+        assert_eq!(
+            std::fs::read(&canonical).expect("read"),
+            br#"{"first":true}"#
+        );
+    }
+
+    #[test]
+    fn resolve_for_write_rejects_reserved_directories() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(directory.path().join(".git")).expect("mkdir .git");
+        std::fs::write(directory.path().join(".git/hook.pen"), br#"{}"#).expect("seed");
+        std::fs::write(directory.path().join("normal.pen"), br#"{}"#).expect("seed");
+        let roots = canonical_roots(&[directory.path()]);
+        // 保留目录内的设计稿：读通道可解析（只读），写通道拒绝（与 Agent 写路径同口径）。
+        assert!(resolve_design_document_in_roots(&roots, ".git/hook.pen").is_ok());
+        let error = resolve_design_document_for_write(&roots, ".git/hook.pen")
+            .expect_err("reserved directory write must be rejected");
+        assert!(error.contains("control directories"), "实际错误：{error}");
+        // 大小写变体同样拒绝（APFS/HFS+ 大小写不敏感）。
+        assert!(resolve_design_document_for_write(&roots, ".GIT/hook.pen").is_err());
+        assert!(resolve_design_document_for_write(&roots, "normal.pen").is_ok());
     }
 }
 
@@ -355,12 +490,17 @@ pub(crate) struct WrittenDesignDocument {
 }
 
 /// 设计稿写盘核心：大小上限 + JSON 合法性 + CAS + 原子落盘。独立于 Tauri
-/// State 抽成纯函数供单测。原子 persist 与 Agent 写路径同款（tempfile + rename）。
+/// State 抽成纯函数供单测。落盘形态与 Agent 写路径同款：tempfile（**保留源
+/// 文件权限**——tempfile 默认 0600，直接 persist 会把 0644 的设计稿改权限）
+/// → write + sync_all → persist(rename) → 父目录 fsync（防崩溃产生「rename
+/// 已入目录、数据未落盘」的空文件）。
 fn write_design_document_bytes(
     canonical: &Path,
     bytes: &[u8],
     expected_sha256: Option<&str>,
 ) -> Result<WrittenDesignDocument, String> {
+    use std::io::Write;
+
     if bytes.len() as u64 > MAX_DESIGN_DOCUMENT_BYTES {
         return Err(format!(
             "design document exceeds the {} MiB limit",
@@ -386,15 +526,28 @@ fn write_design_document_bytes(
     let directory = canonical
         .parent()
         .ok_or_else(|| "design document has no parent directory".to_string())?;
+    let metadata = std::fs::metadata(canonical)
+        .map_err(|error| format!("failed to inspect design document: {error}"))?;
     let temporary = tempfile::Builder::new()
         .prefix(".axiom-pen-write-")
         .tempfile_in(directory)
         .map_err(|error| format!("failed to create temp file for design write: {error}"))?;
-    std::fs::write(temporary.path(), bytes)
+    temporary
+        .as_file()
+        .set_permissions(metadata.permissions())
+        .map_err(|error| format!("failed to preserve design document permissions: {error}"))?;
+    temporary
+        .as_file()
+        .write_all(bytes)
         .map_err(|error| format!("failed to write design document: {error}"))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|error| format!("failed to sync design document: {error}"))?;
     temporary
         .persist(canonical)
         .map_err(|error| format!("failed to save design document: {}", error.error))?;
+    crate::workspace_access::sync_parent_directory(canonical)?;
     Ok(WrittenDesignDocument {
         sha256: sha256_hex(bytes),
         size_bytes: bytes.len() as u64,
@@ -402,22 +555,38 @@ fn write_design_document_bytes(
 }
 
 /// 写设计稿（画布直接操控的写回通道，docs/design-canvas.md §11）：路径复用读
-/// 通道的 resolve（仅授权工作区根内的 `.pen`/`.ax`），8MiB 硬上限 + JSON 合法性 +
-/// CAS（expected_sha256 与盘上不一致即拒绝）。这是用户亲手操控画布的手势
-/// 通道（与终端 stdin 同一信任模型）：爆炸半径收敛在授权工作区的设计稿文件，
+/// 通道的 resolve（仅授权工作区根内的 `.pen`/`.ax`）+ 保留目录拒绝，8MiB 硬上限 +
+/// JSON 合法性 + CAS（expected_sha256 与盘上不一致即拒绝）。这是用户亲手操控画布的
+/// 手势通道（与终端 stdin 同一信任模型）：爆炸半径收敛在授权工作区的设计稿文件，
 /// 不为 WebView 打开任意写面。
+///
+/// CAS 是 check-then-act：必须与 Agent 写路径（apply_workspace_changes 等）在
+/// 同一把 per-workspace 写锁下全序化，否则窗口内 Agent 落盘的更新会被画布
+/// persist 静默覆盖（丢更新），反向亦然。锁序沿用写路径约定：
+/// `recovery_gate.read → per-workspace 写锁`（与撤销链不反向取锁，无死环）；
+/// 锁等待与文件 I/O 整体进 blocking 线程池，不占 tokio worker。
 #[tauri::command]
 pub(crate) async fn write_design_document(
-    state: tauri::State<'_, WorkspaceAccessState>,
+    app: tauri::AppHandle,
     path: String,
     content_base64: String,
     expected_sha256: Option<String>,
 ) -> Result<WrittenDesignDocument, String> {
-    let (canonical, _) = resolve_design_document(&state, &path)?;
-    let bytes = BASE64
-        .decode(content_base64.as_bytes())
-        .map_err(|error| format!("invalid base64 design content: {error}"))?;
     tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<WorkspaceAccessState>();
+        let (canonical, root) =
+            resolve_design_document_for_write(&authorized_roots(&state), &path)?;
+        let bytes = BASE64
+            .decode(content_base64.as_bytes())
+            .map_err(|error| format!("invalid base64 design content: {error}"))?;
+        let _recovery = state
+            .recovery_gate
+            .read()
+            .map_err(|_| "workspace recovery gate lock is poisoned".to_string())?;
+        let write_lock = state.workspace_write_lock(&root);
+        let _write_lock = write_lock
+            .lock()
+            .map_err(|_| "workspace write lock is poisoned".to_string())?;
         write_design_document_bytes(&canonical, &bytes, expected_sha256.as_deref())
     })
     .await

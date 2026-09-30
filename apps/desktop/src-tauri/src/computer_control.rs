@@ -828,7 +828,9 @@ fn format_ax_nodes(nodes: &[AxNodeData]) -> (String, bool) {
             if node.focused {
                 line.push_str(" [焦点中]");
             }
-            let text_like = ["textbox", "passwordbox", "combobox"];
+            // 密码框的值不回显：原生 SecureTextField 通常不给 AXValue 明文，但
+            // Electron/Qt 等自绘 UI 的 a11y 实现不保证——防御性排除，不赌平台行为。
+            let text_like = ["textbox", "combobox"];
             if !node.value.is_empty()
                 && text_like.iter().any(|candidate| role.eq_ignore_ascii_case(candidate))
             {
@@ -914,7 +916,9 @@ fn walk_ax_tree(
 // 会话状态 / 快照注册表 / allowlist
 // ---------------------------------------------------------------------------
 
-/// 每个 app 保留最近 N 代快照（元素注册表），旧代淘汰。
+/// 每个 app 保留最近 N 代快照（元素注册表），旧代淘汰。锚点在保留代内按
+/// generation 匹配——上一代仍可用（抗 state 之后界面一动就全过期的严格性
+/// 抖动），第三代起淘汰。
 #[cfg(target_os = "macos")]
 const KEPT_SNAPSHOT_GENERATIONS: usize = 2;
 
@@ -1061,86 +1065,119 @@ enum GateDialogChoice {
     Denied,
 }
 
-/// 会话门三选一 sheet：绑定主窗口（对齐 workspace_approval::confirm_interactive
-/// 的 parent 理由——无 parent 的对话框不在常规 AX 树内，值守自动化无法驱动）。
+/// 主窗口 sheet 模态确认框：返回按钮序号（0 起，按 addButton 顺序）。绑定主
+/// 窗口（对齐 workspace_approval::confirm_interactive 的 parent 理由——无
+/// parent 的对话框不在常规 AX 树内，值守自动化无法驱动）；无主窗口的异常形态
+/// 退 runModal 同步等待，保持 fail-closed（不确认不放行）。
+#[cfg(target_os = "macos")]
+async fn show_main_window_alert(
+    app: &AppHandle,
+    title: &str,
+    message: &str,
+    buttons: &[&str],
+) -> Result<usize, String> {
+    use objc2_app_kit::{NSAlert, NSWindow};
+    use objc2_foundation::{MainThreadMarker, NSString};
+
+    let button_count = buttons.len();
+    let app_handle = app.clone();
+    let (sender, receiver) = tokio::sync::oneshot::channel::<i64>();
+    let sender_cell = Arc::new(StdMutex::new(Some(sender)));
+    let sender_for_block = Arc::clone(&sender_cell);
+    let title = title.to_string();
+    let message = message.to_string();
+    let buttons = buttons.iter().map(|label| label.to_string()).collect::<Vec<_>>();
+    app.run_on_main_thread(move || {
+        let Some(mtm) = MainThreadMarker::new() else {
+            if let Some(tx) = sender_cell.lock().ok().and_then(|mut slot| slot.take()) {
+                let _ = tx.send(-1);
+            }
+            return;
+        };
+        let alert = NSAlert::new(mtm);
+        alert.setMessageText(&NSString::from_str(&title));
+        alert.setInformativeText(&NSString::from_str(&message));
+        alert.setAlertStyle(objc2_app_kit::NSAlertStyle::Warning);
+        for label in &buttons {
+            alert.addButtonWithTitle(&NSString::from_str(label));
+        }
+        let block = block2::RcBlock::new(move |response: isize| {
+            if let Some(tx) = sender_for_block.lock().ok().and_then(|mut slot| slot.take()) {
+                let _ = tx.send(response as i64);
+            }
+        });
+        let parent = app_handle
+            .get_webview_window("main")
+            .and_then(|window| window.ns_window().ok());
+        match parent {
+            Some(raw) if !raw.is_null() => {
+                let ns_window: &NSWindow = unsafe { &*(raw.cast::<NSWindow>()) };
+                alert.beginSheetModalForWindow_completionHandler(
+                    ns_window,
+                    Some(&*block),
+                );
+                // sheet 模态会话期间由 AppKit 持有 alert；forget 避免 Retained
+                // 提前释放打断会话（每次确认一个对象，频率极低可接受）。
+                std::mem::forget(alert);
+            }
+            _ => {
+                // 无主窗口（异常形态）：runModal 同步等用户选择，保持
+                // fail-closed（不确认不放行）。
+                let response = alert.runModal() as i64;
+                if let Some(tx) = sender_cell.lock().ok().and_then(|mut slot| slot.take()) {
+                    let _ = tx.send(response);
+                }
+            }
+        }
+    })
+    .map_err(|_| "确认对话框调度失败".to_string())?;
+    let response = receiver
+        .await
+        .map_err(|_| "确认对话框意外关闭".to_string())?;
+    if response < 0 {
+        return Err("确认对话框无法展示".into());
+    }
+    // NSAlertFirstButtonReturn = 1000 起；序号越界视为未知选项（fail-closed）。
+    let index = response - 1000;
+    if index < 0 || index as usize >= button_count {
+        return Err("确认对话框返回了未知选项".into());
+    }
+    Ok(index as usize)
+}
+
+/// 会话门三选一 sheet。
 #[cfg(target_os = "macos")]
 async fn show_gate_dialog(
     app: &AppHandle,
     app_name: &str,
 ) -> Result<GateDialogChoice, String> {
-    #[cfg(target_os = "macos")]
-    {
-                use objc2_app_kit::{NSAlert, NSWindow};
-        use objc2_foundation::{MainThreadMarker, NSString};
+    let index = show_main_window_alert(
+        app,
+        &format!("允许 Axiom 控制应用「{app_name}」？"),
+        "该会话中的 Agent 将能在此应用内点击、输入与操作。",
+        &["仅本会话允许", "始终允许", "拒绝"],
+    )
+    .await?;
+    Ok(match index {
+        0 => GateDialogChoice::AllowSession,
+        1 => GateDialogChoice::AllowAlways,
+        _ => GateDialogChoice::Denied,
+    })
+}
 
-        let title = format!("允许 Axiom 控制应用「{app_name}」？");
-        let message = "该会话中的 Agent 将能在此应用内点击、输入与操作。";
-        let app_handle = app.clone();
-        let (sender, receiver) = tokio::sync::oneshot::channel::<i64>();
-        let sender_cell = Arc::new(StdMutex::new(Some(sender)));
-        let sender_for_block = Arc::clone(&sender_cell);
-        app.run_on_main_thread(move || {
-            let Some(mtm) = MainThreadMarker::new() else {
-                if let Some(tx) = sender_cell.lock().ok().and_then(|mut slot| slot.take()) {
-                    let _ = tx.send(-1);
-                }
-                return;
-            };
-            let alert = NSAlert::new(mtm);
-            alert.setMessageText(&NSString::from_str(&title));
-            alert.setInformativeText(&NSString::from_str(message));
-            alert.setAlertStyle(objc2_app_kit::NSAlertStyle::Warning);
-            alert.addButtonWithTitle(&NSString::from_str("仅本会话允许"));
-            alert.addButtonWithTitle(&NSString::from_str("始终允许"));
-            alert.addButtonWithTitle(&NSString::from_str("拒绝"));
-            let block = block2::RcBlock::new(move |response: isize| {
-                if let Some(tx) = sender_for_block.lock().ok().and_then(|mut slot| slot.take()) {
-                    let _ = tx.send(response as i64);
-                }
-            });
-            let parent = app_handle
-                .get_webview_window("main")
-                .and_then(|window| window.ns_window().ok());
-            match parent {
-                Some(raw) if !raw.is_null() => {
-                    let ns_window: &NSWindow = unsafe { &*(raw.cast::<NSWindow>()) };
-                    alert.beginSheetModalForWindow_completionHandler(
-                        ns_window,
-                        Some(&*block),
-                    );
-                    // sheet 模态会话期间由 AppKit 持有 alert；forget 避免 Retained
-                    // 提前释放打断会话（每次确认一个对象，频率极低可接受）。
-                    std::mem::forget(alert);
-                }
-                _ => {
-                    // 无主窗口（异常形态）：runModal 同步等用户选择，保持
-                    // fail-closed（不确认不放行）。
-                    let response = alert.runModal() as i64;
-                    if let Some(tx) = sender_cell.lock().ok().and_then(|mut slot| slot.take()) {
-                        let _ = tx.send(response);
-                    }
-                }
-            }
-        })
-        .map_err(|_| "会话确认对话框调度失败".to_string())?;
-        let response = receiver
-            .await
-            .map_err(|_| "会话确认对话框意外关闭".to_string())?;
-        if response < 0 {
-            return Err("会话确认对话框无法展示".into());
-        }
-        // NSAlertFirstButtonReturn = 1000 起。
-        Ok(match response {
-            1000 => GateDialogChoice::AllowSession,
-            1001 => GateDialogChoice::AllowAlways,
-            _ => GateDialogChoice::Denied,
-        })
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (app, app_name);
-        Err("仅 macOS 支持电脑控制".into())
-    }
+/// allowlist 持久写入的原生两选一确认：持久授权面的扩张必须经用户手势——
+/// computer_command 对渲染进程就是普通 invoke，不经确认的写入会让受陷渲染
+/// 进程静默扩大跨重启的控制授权（撤销方向 unallowApp 免确认）。
+#[cfg(target_os = "macos")]
+async fn show_allowlist_dialog(app: &AppHandle, app_name: &str) -> Result<bool, String> {
+    show_main_window_alert(
+        app,
+        &format!("允许 Axiom 始终控制应用「{app_name}」？"),
+        "允许后，任何会话中的 Agent 都能在此应用内点击与输入，无需再次确认。",
+        &["允许", "取消"],
+    )
+    .await
+    .map(|index| index == 0)
 }
 
 /// 控制类动作的统一门：命中 allowlist/会话授权直接放行，否则弹原生确认。
@@ -1228,8 +1265,9 @@ fn store_snapshot(
     })
 }
 
-/// 取快照元素：stateToken（pid:generation）匹配最新代才有效；代际过期报
-/// 「重新 state」引导（与浏览器工具的「ref 过期重新 snapshot」同款纪律）。
+/// 取快照元素：stateToken（pid:generation）在保留代内匹配即有效（上一代
+/// 锚点仍可用，第三代起淘汰）；代际过期报「重新 state」引导（与浏览器工具的
+/// 「ref 过期重新 snapshot」同款纪律，窗口放宽到最近两次 state）。
 #[cfg(target_os = "macos")]
 fn take_snapshot_element(
     state: &ComputerSessionState,
@@ -1242,16 +1280,14 @@ fn take_snapshot_element(
             inner
                 .snapshots
                 .get(&pid)
-                .and_then(|queue| queue.back())
-                .and_then(|snapshot| {
-                    (snapshot.generation == generation)
-                        .then(|| snapshot.elements.get(&element_id).cloned())
-                        .flatten()
+                .and_then(|queue| {
+                    queue.iter().find(|snapshot| snapshot.generation == generation)
                 })
+                .and_then(|snapshot| snapshot.elements.get(&element_id).cloned())
                 .map(|element| (element, pid))
         })?
         .ok_or_else(|| {
-            "快照已过期或元素不存在：请重新执行 state 获取最新快照后再操作".to_string()
+            "快照已过期（锚点仅在最近两次 state 内有效）或元素不存在：请重新执行 state 获取最新快照后再操作".to_string()
         })
 }
 
@@ -1478,6 +1514,14 @@ fn element_has_action(element: AXUIElementRef, action: &str) -> bool {
         .collect::<Vec<_>>();
     unsafe { CFRelease(names as CFTypeRef) };
     actions.iter().any(|candidate| candidate == action)
+}
+
+/// click_at 是否走 a11y 语义路径：AXPress 只表达「左键单击」语义，右键（a11y
+/// 等价 AXShowMenu，语义不等同）与双击/三击必须投递真实事件序列，否则
+/// button/clicks 的意图被静默吞掉（右键退化成左键单击、双击退化成单击）。
+#[cfg(target_os = "macos")]
+fn click_prefers_semantic_press(button: Option<&str>, clicks: u32) -> bool {
+    button != Some("right") && clicks <= 1
 }
 
 /// element 语义点击（AXPress）：不移动真指针、不抢焦点（a11y 优先路径）。
@@ -1746,6 +1790,28 @@ fn post_unicode_text(text: &str) -> Result<(), String> {
                 CFRelease(event as CFTypeRef);
             }
         }
+    }
+    Ok(())
+}
+
+/// 键盘注入前的焦点复核：授权检查的是 authorize 前一刻的 kAXFocusedApplication，
+/// 而 post_unicode_text/post_key_chord 经 CGEventPost(CG_TAP_HID) 投递到「当下
+/// 前台」——两次之间焦点切换（用户点击/他应用抢焦点/系统弹窗）会把输入打进
+/// 未授权应用。复核把竞态窗口收窄到复核与投递之间；不改用 CGEventPostToPid：
+/// Unicode 键盘事件对 pid 投递的 IME/文本输入兼容性未验证（鼠标走 PostToPid
+/// 无此顾虑）。
+#[cfg(target_os = "macos")]
+async fn verify_keyboard_focus(
+    app: &AppHandle,
+    authorized_pid: i32,
+    authorized_name: &str,
+) -> Result<(), String> {
+    let (_, current) = focused_app(app).await?;
+    if current.pid != authorized_pid {
+        return Err(format!(
+            "键盘焦点已从「{authorized_name}」切换到「{}」：为避免输入到未授权应用，本次输入已取消，请重新执行",
+            current.name
+        ));
     }
     Ok(())
 }
@@ -2107,13 +2173,16 @@ async fn dispatch_computer_command(
             let (element, pid) = element_at_position(x, y)?;
             let (_, app_info) = app_element_for_pid(&app, pid).await?;
             authorize_app(&app, &state, &data_root, &session_id, pid, &app_info.name, app_info.bundle_id.as_deref()).await?;
-            // a11y 优先：命中元素支持 AXPress 就走语义路径（不移动指针）；
-            // 否则向该 app 投递合成鼠标事件。
-            if element_has_action(element.0, "AXPress") {
+            // a11y 优先：命中元素支持 AXPress 且意图是单击语义时走语义路径
+            // （不移动指针）；右键与双击/三击必须投递真实事件序列，否则意图被
+            // 静默吞掉。
+            let clicks = clicks.unwrap_or(1).clamp(1, 3);
+            if click_prefers_semantic_press(button.as_deref(), clicks)
+                && element_has_action(element.0, "AXPress")
+            {
                 element_press(element.0)?;
             } else {
                 let is_right = button.as_deref() == Some("right");
-                let clicks = clicks.unwrap_or(1).clamp(1, 3);
                 let (down_type, up_type, cg_button) = if is_right {
                     (CG_EVENT_RIGHT_MOUSE_DOWN, CG_EVENT_RIGHT_MOUSE_UP, 1)
                 } else {
@@ -2150,10 +2219,11 @@ async fn dispatch_computer_command(
                 authorize_app(&app, &state, &data_root, &session_id, pid, &app_info.name, app_info.bundle_id.as_deref()).await?;
                 element_focus(element.0)?;
             }
-            // 键盘注入作用于前台应用：以 kAXFocusedApplication 为门控目标。
-            let (focused, app_info) = focused_app(&app).await?;
+            // 键盘注入作用于前台应用：以 kAXFocusedApplication 为门控目标，
+            // 授权后复核焦点未变再投递（见 verify_keyboard_focus）。
+            let (_, app_info) = focused_app(&app).await?;
             authorize_app(&app, &state, &data_root, &session_id, app_info.pid, &app_info.name, app_info.bundle_id.as_deref()).await?;
-            let _ = focused;
+            verify_keyboard_focus(&app, app_info.pid, &app_info.name).await?;
             post_unicode_text(&text)?;
             Ok(ComputerCommandResponse::Done)
         }
@@ -2179,6 +2249,7 @@ async fn dispatch_computer_command(
             }
             let (_, app_info) = focused_app(&app).await?;
             authorize_app(&app, &state, &data_root, &session_id, app_info.pid, &app_info.name, app_info.bundle_id.as_deref()).await?;
+            verify_keyboard_focus(&app, app_info.pid, &app_info.name).await?;
             if let Some(virtual_key) = named_key_virtual_code(&key) {
                 post_key_chord(virtual_key, &modifier_defs)?;
             } else {
@@ -2211,6 +2282,12 @@ async fn dispatch_computer_command(
             Ok(ComputerCommandResponse::Done)
         }
         ComputerCommandRequest::AllowApp { bundle_id, name } => {
+            // 持久授权扩张必须过原生确认：computer_command 对渲染进程就是普通
+            // invoke，不经手势的写入会让受陷渲染进程静默扩大跨重启的控制授权
+            // （与工作区授权注册表「唯一写入方是原生手势」同一纪律）。
+            if !show_allowlist_dialog(&app, &name).await? {
+                return Err(format!("用户未确认允许「{name}」加入始终允许列表"));
+            }
             let mut allowlist = load_allowed_apps(&data_root).await;
             if !allowlist.iter().any(|entry| entry.bundle_id.eq_ignore_ascii_case(&bundle_id)) {
                 allowlist.push(ComputerAllowedApp { bundle_id, name });
@@ -2257,12 +2334,15 @@ mod tests {
         value_box.value = "当前值".into();
         let mut focused = node(5, "AXCheckBox", "记住我", Some(1));
         focused.focused = true;
+        let mut password = node(7, "AXSecureTextField", "密码", Some(1));
+        password.value = "明文不应回显".into();
         let nodes = vec![
             node(1, "AXApplication", "备忘录", None),
             node(2, "AXStaticText", "标题文本", Some(1)),
             disabled,
             value_box,
             focused,
+            password,
             node(6, "AXGroup", "", Some(1)), // 无名泛型被剪
         ];
         let (text, truncated) = format_ax_nodes(&nodes);
@@ -2272,8 +2352,24 @@ mod tests {
         assert!(text.contains("[eid=3] button \"提交\" [已禁用]"), "{text}");
         assert!(text.contains("[eid=4] textbox \"搜索\" = \"当前值\""), "{text}");
         assert!(text.contains("[eid=5] checkbox \"记住我\" [焦点中]"), "{text}");
+        // 密码框角色保留但值不回显（自绘 UI 的 a11y 实现不保证不泄明文）。
+        assert!(text.contains("[eid=7] passwordbox \"密码\""), "{text}");
+        assert!(!text.contains("明文不应回显"), "{text}");
         // 无名泛型整行不出现。
         assert!(!text.contains("group"), "{text}");
+    }
+
+    /// click_at 的语义路径判定：AXPress 只表达左键单击，右键/多击必须走事件
+    /// 投递（否则 button/clicks 意图被静默吞掉）。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn click_at_semantic_press_matrix() {
+        assert!(click_prefers_semantic_press(None, 1), "缺省 = 左键单击");
+        assert!(click_prefers_semantic_press(Some("left"), 1));
+        assert!(!click_prefers_semantic_press(Some("right"), 1), "右键不走 AXPress");
+        assert!(!click_prefers_semantic_press(None, 2), "双击不走 AXPress");
+        assert!(!click_prefers_semantic_press(Some("left"), 3), "三击不走 AXPress");
+        assert!(!click_prefers_semantic_press(Some("right"), 2));
     }
 
     #[cfg(target_os = "macos")]
@@ -2462,8 +2558,25 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.contains("重新执行 state"), "{error}");
-        let stale = take_snapshot_element(&state, &token, 1);
-        assert!(stale.is_err());
+        // 两代保留窗口：上一代 token 的 generation 仍可命中（此处因元素缺失报错，
+        // 与「代际被淘汰」同一错误出口）；第三代落地后最老一代被淘汰。
+        assert!(
+            take_snapshot_element(&state, &token, 1).is_err(),
+            "空注册表即使代际在窗口内元素也不存在"
+        );
+        let _third = store_snapshot(&state, 321, HashMap::new()).expect("store");
+        assert!(
+            take_snapshot_element(&state, &token, 1).is_err(),
+            "gen0 已被淘汰"
+        );
+        let kept = state
+            .0
+            .lock()
+            .expect("state lock")
+            .as_ref()
+            .and_then(|inner| inner.snapshots.get(&321))
+            .map(|queue| queue.len());
+        assert_eq!(kept, Some(KEPT_SNAPSHOT_GENERATIONS), "保留最近两代");
     }
 
     /// 回归：AXIsProcessTrustedWithOptions 的 options 必须是合法字典。传 NULL

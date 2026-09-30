@@ -256,12 +256,14 @@
     },
     {
       "id": "tool:design_query",
-      "version": "4",
+      "version": "9",
       "sourceFiles": [
         "src/agent/tools/designQueryTool.ts",
-        "src/agent/tools/workspaceToolUtils.ts"
+        "src/agent/tools/workspaceToolUtils.ts",
+        "src/agent/design/implementationUsage.ts",
+        "src/agent/design/designQueryModes.ts"
       ],
-      "semanticDigest": "37113f8258c77ac9bbc633cb5fe105451129f9ffa1e37684b1fbc01cf7551126"
+      "semanticDigest": "d2923674c8e6715ca9cb3aefb043efcbc0e52e91aa0088ada37330d910291553"
     },
     {
       "id": "tool:design_import",
@@ -316,7 +318,7 @@
         "src/agent/skills/parseSkillFile.ts",
         "src/agent/skills/builtinSkillBodies.ts"
       ],
-      "semanticDigest": "6392650e7f34a1db682eabe188d0f3c5c98a589eb936144d9b7f7eb9a651ec4d"
+      "semanticDigest": "b8582379aa5100029692e5daa5a189a5e9fbb80f93fba8af681d41785b3bf1bd"
     },
     {
       "id": "tool:ls",
@@ -329,12 +331,12 @@
     },
     {
       "id": "tool:read",
-      "version": "6",
+      "version": "7",
       "sourceFiles": [
         "src/agent/tools/readTool.ts",
         "src/agent/tools/workspaceToolUtils.ts"
       ],
-      "semanticDigest": "cda03524c8657d4b15c1f5c89fe94450b6dc5d2fa731e93dec5bb625a5ec97ae"
+      "semanticDigest": "a0f7553dca055630adad7229ae5d91bacdd312c50b3d9e8969102f428f85283d"
     },
     {
       "id": "tool:restore_trash",
@@ -392,21 +394,21 @@
     },
     {
       "id": "tool:browser",
-      "version": "6",
+      "version": "8",
       "sourceFiles": [
         "src/agent/tools/browserTool.ts",
         "src/agent/tools/workspaceToolUtils.ts"
       ],
-      "semanticDigest": "296e3691f5f942d12fa68c0994c180d72361fe83621900603caaebedec4d8eba"
+      "semanticDigest": "7b94e3280cea94abd6eded34208355fa8c3f6c7bc4348ce2b3fb9e98cbf107ec"
     },
     {
       "id": "tool:computer",
-      "version": "1",
+      "version": "3",
       "sourceFiles": [
         "src/agent/tools/computerTool.ts",
         "src/agent/tools/workspaceToolUtils.ts"
       ],
-      "semanticDigest": "e273af6af486fc37ab7535313e4acc2796f401307587ad4774f373510e76b71b"
+      "semanticDigest": "9d46a78d28b2e02371d51579e2137fdb2fa50f7415fce8ad6e2af0a92f71cf87"
     },
     {
       "id": "tool:ssh",
@@ -416,7 +418,7 @@
         "src/agent/tools/bashTool.ts",
         "src/agent/tools/workspaceToolUtils.ts"
       ],
-      "semanticDigest": "34c0145b233ccf1fb74a593b4902f227741ef582cb5a4e5ed910b8054be8419c"
+      "semanticDigest": "f198c51d352a870a95a2b78f117f4f7da6d067a2ad1f9d149ec24256e3b71bd0"
     },
     {
       "id": "tool:ssh_hosts",

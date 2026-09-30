@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 import { hashContextSummary, SUMMARY_PROMPT_VERSION } from '@/agent/context/compaction'
 import { decodeAgentMessage, encodeAgentMessage, isAgentMessage } from './messageCodec'
 import { MemorySessionRepository } from './MemorySessionRepository'
-import type { ProviderConfig } from '@/agent/transport/provider'
+import { PROVIDER_PROFILE_SCHEMA_VERSION, type ProviderConfig } from '@/agent/transport/provider'
 import type { AgentSessionJournalEntry } from '@/agent/runtime/mutationJournal'
 import {
   assertRuntimeDependenciesCompatible,
@@ -1142,7 +1142,7 @@ describe('MemorySessionRepository', () => {
 
   it('preserves independent Provider profiles across create, update, and branch operations', async () => {
     const providerA: ProviderConfig = {
-      schemaVersion: 4,
+      schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
       profileId: 'test.provider-a',
       providerId: 'generic-anthropic-compatible',
       apiFormat: 'anthropic-compatible',
@@ -1154,7 +1154,7 @@ describe('MemorySessionRepository', () => {
       capabilities: { toolReferences: true, toolSearch: false },
     }
     const providerB: ProviderConfig = {
-      schemaVersion: 4,
+      schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
       profileId: 'test.provider-b',
       providerId: 'openai',
       apiFormat: 'openai-responses',

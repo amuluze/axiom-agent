@@ -30,7 +30,10 @@ import { SessionMessageStream } from '@/components/session/SessionMessageStream'
 import { MessageContent, RichMessageContent } from '@/components/MessageContent'
 import { Sidebar } from '@/components/sidebar/Sidebar'
 import { Composer } from '@/components/composer/Composer'
-import type { ProviderProfile } from '@/agent/transport/providerProfile'
+import {
+  PROVIDER_PROFILE_SCHEMA_VERSION,
+  type ProviderProfile,
+} from '@/agent/transport/providerProfile'
 import type { AuthorizedWorkspace } from '@/platform/workspace'
 import type { DesignPreviewValue, DesignStoreSlices } from './previewContext'
 import type {
@@ -142,7 +145,7 @@ const designPreviewQueuedMessages = [
 
 /** 预览态 Provider Profile（Composer 模型菜单与 isComposerAvailable 消费）。 */
 const designPreviewProviderProfile: ProviderProfile = {
-  schemaVersion: 4,
+  schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
   profileId: 'design-preview-profile',
   providerId: 'demo',
   apiFormat: 'demo',

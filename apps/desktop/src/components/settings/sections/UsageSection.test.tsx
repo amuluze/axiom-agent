@@ -2,7 +2,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { UsageSection } from './UsageSection'
-import type { ProviderProfile } from '@/agent/transport/provider'
+import { PROVIDER_PROFILE_SCHEMA_VERSION, type ProviderProfile } from '@/agent/transport/provider'
 
 const mocks = vi.hoisted(() => ({
   providerProfiles: [] as ProviderProfile[],
@@ -30,7 +30,7 @@ vi.mock('@/platform/usageQuery', () => ({
 const mockQuery = mocks.queryProviderUsage
 
 const deepseekProfile: ProviderProfile = {
-  schemaVersion: 4,
+  schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
   profileId: 'builtin.deepseek',
   providerId: 'deepseek',
   apiFormat: 'openai-compatible',
@@ -44,7 +44,7 @@ const deepseekProfile: ProviderProfile = {
 }
 
 const ollamaProfile: ProviderProfile = {
-  schemaVersion: 4,
+  schemaVersion: PROVIDER_PROFILE_SCHEMA_VERSION,
   profileId: 'builtin.ollama',
   providerId: 'ollama',
   apiFormat: 'openai-compatible',

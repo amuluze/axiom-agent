@@ -13,6 +13,7 @@ import {
   snapshotModelRequest,
 } from './snapshots'
 import { validatedMessages } from './messageValidation'
+import { stripUnsupportedImages } from './stripUnsupportedImages'
 import type {
   AgentContext,
   AgentEventSink,
@@ -236,12 +237,10 @@ export const streamAssistantMessage = async (
       validatedContextMessages,
       signal,
     )
-    const hasImages = modelMessages.some((message) =>
-      (message.role === 'user' || message.role === 'tool')
-      && message.contentBlocks?.some((block) => block.type === 'image'))
-    if (hasImages && context.model.input && !context.model.input.includes('image')) {
-      throw new Error(`模型 ${context.model.provider}/${context.model.model} 不支持图片输入`)
-    }
+    // 能力不匹配不中断整轮（Domain 不变量 4）：原硬闸在此抛错，把「仅文本模型 +
+    // 历史图片消息」变成整轮失败。改为在 prepareModelRequest 的回写之后、即将发出
+    // 之前降级（见下方 stripUnsupportedImages 调用点）——只替换发出副本，
+    // context.messages / 持久化 / Artifact 引用不受影响。
     if (context.reasoning && context.model.supportsReasoning === false) {
       throw new Error(`模型 ${context.model.provider}/${context.model.model} 不支持 thinking/reasoning`)
     }
@@ -266,6 +265,15 @@ export const streamAssistantMessage = async (
       if (request.messages !== requestMessages) {
         context.messages = snapshotAgentMessages(request.messages)
       }
+    }
+    if (context.model.input?.includes('image') === false) {
+      // 能力结论读 context.model（run 启动时固化的 ModelRef），run 内不重算：
+      // 用户中途改声明只对下一个 run 生效（验收 16）。
+      const stripped = stripUnsupportedImages(request.messages)
+      // 无法替换的异常图片负载以显式失败中断（验收 18）：静默放行等于把读不懂的
+      // 负载发给仅文本模型。失败发生在 sentRequest 建立之前，向上抛给编排层。
+      if (!stripped.ok) throw new Error(stripped.error)
+      request = { ...request, messages: stripped.messages }
     }
     sentRequest = snapshotModelRequest(request)
     await emit({

@@ -142,30 +142,51 @@ export const createSshTool = (environment: AgentEnvironment): AgentTool => ({
       throw new Error('Missing workspace approval lease.')
     }
     const { host, command, timeoutMs } = asSshInput(input)
-    const response = await environment.ssh.command(
-      {
-        action: 'exec',
-        sessionId: context.sessionId,
-        host: host.trim(),
-        command,
-        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-      },
-      { approvalLease: context.approvalLease },
-    )
-    if (context.signal.aborted) throw new DOMException('Aborted', 'AbortError')
-    if (response.type !== 'exec') {
-      throw new Error('SSH 执行响应类型不符合预期')
+    // 心跳式进度：远程命令最长 10 分钟且执行期无输出流可上报（与 bash 的字节
+    // 进度不同源）——每 15s 报一次「已运行 n 秒」，让会话 UI 有活着的反馈而不是
+    // 零输出干等；命令结束后停表（成功/失败/中止都清理）。
+    const startedAt = Date.now()
+    let heartbeat: ReturnType<typeof setInterval> | undefined
+    const stopHeartbeat = (): void => {
+      if (heartbeat !== undefined) {
+        clearInterval(heartbeat)
+        heartbeat = undefined
+      }
     }
-    return {
-      content: renderExecResult(response),
-      details: {
-        exitCode: response.exitCode ?? null,
-        stdout: response.stdout,
-        stderr: response.stderr,
-        truncated: response.truncated,
-        durationMs: response.durationMs,
-        timedOut: response.timedOut,
-      },
+    heartbeat = setInterval(() => {
+      void context.reportProgress(
+        `SSH 命令在 ${host} 上已运行 ${Math.round((Date.now() - startedAt) / 1000)} 秒`,
+        { host, elapsedMs: Date.now() - startedAt },
+      )
+    }, 15_000)
+    try {
+      const response = await environment.ssh.command(
+        {
+          action: 'exec',
+          sessionId: context.sessionId,
+          host: host.trim(),
+          command,
+          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        },
+        { approvalLease: context.approvalLease },
+      )
+      if (context.signal.aborted) throw new DOMException('Aborted', 'AbortError')
+      if (response.type !== 'exec') {
+        throw new Error('SSH 执行响应类型不符合预期')
+      }
+      return {
+        content: renderExecResult(response),
+        details: {
+          exitCode: response.exitCode ?? null,
+          stdout: response.stdout,
+          stderr: response.stderr,
+          truncated: response.truncated,
+          durationMs: response.durationMs,
+          timedOut: response.timedOut,
+        },
+      }
+    } finally {
+      stopHeartbeat()
     }
   },
 })
