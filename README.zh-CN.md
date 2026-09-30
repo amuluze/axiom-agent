@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <img src="https://axiom.amuluze.com/axiom-desktop.png" width="900" alt="Axiom 桌面端截图" />
+  <img src="docs/axiom-demo.gif" width="900" alt="Axiom 演示 — 设计 → 开发 → 部署，在同一受控边界内闭环" />
 </p>
 
 ---

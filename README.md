@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <img src="https://axiom.amuluze.com/axiom-desktop.png" width="900" alt="Axiom desktop screenshot" />
+  <img src="docs/axiom-demo.gif" width="900" alt="Axiom demo — design → develop → deploy in one controlled boundary" />
 </p>
 
 ---
