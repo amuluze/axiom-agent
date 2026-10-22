@@ -49,7 +49,16 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: 核心源码门禁（无 Rust 依赖）
+      # job 名曾写「无 Rust 依赖」，但第一个门禁 generate:providers:check 会用 rustfmt
+      # 归一化 Rust 侧生成表——缺 rustfmt 时它在第一步就 AssertionError，发布全链路被阻断。
+      - name: 安装 Rust 工具链（rust-toolchain.toml 固定 1.96.0，含 rustfmt）
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          source "$HOME/.cargo/env"
+          rustup toolchain install
+      - name: 核心源码门禁
         run: |
           set -euo pipefail
           npm ci
