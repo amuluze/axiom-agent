@@ -105,19 +105,30 @@ fn validate_skills(value: &Value) -> Result<(), String> {
             true,
         )?;
         let digest = required_non_empty_string(skill, "contentSha256")?;
-        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit()) {
-            return Err("Runtime dependency manifest Skill contentSha256 必须为 64 位小写十六进制".to_string());
+        if digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        {
+            return Err(
+                "Runtime dependency manifest Skill contentSha256 必须为 64 位小写十六进制"
+                    .to_string(),
+            );
         }
         if skill
             .get("disableModelInvocation")
             .and_then(Value::as_bool)
             .is_none()
         {
-            return Err("Runtime dependency manifest Skill disableModelInvocation 必须是布尔值".to_string());
+            return Err(
+                "Runtime dependency manifest Skill disableModelInvocation 必须是布尔值".to_string(),
+            );
         }
         if let Some(previous) = previous_name {
             if previous >= name {
-                return Err("Runtime dependency manifest Skill 未按 ASCII name 规范顺序排列".to_string());
+                return Err(
+                    "Runtime dependency manifest Skill 未按 ASCII name 规范顺序排列".to_string(),
+                );
             }
         }
         previous_name = Some(name);
@@ -163,7 +174,10 @@ pub(crate) fn validate_bounded_text(
     Ok(())
 }
 
-pub(crate) fn required_non_empty_string<'a>(value: &'a Value, field: &str) -> Result<&'a str, String> {
+pub(crate) fn required_non_empty_string<'a>(
+    value: &'a Value,
+    field: &str,
+) -> Result<&'a str, String> {
     value
         .get(field)
         .and_then(Value::as_str)
@@ -224,7 +238,11 @@ pub(crate) fn validate_runtime_manifest(
     let object = manifest
         .as_object()
         .ok_or_else(|| "Runtime dependency manifest 必须是对象".to_string())?;
-    validate_exact_fields(object, &["schemaVersion", "provider", "tools", "hooks", "skills"], "")?;
+    validate_exact_fields(
+        object,
+        &["schemaVersion", "provider", "tools", "hooks", "skills"],
+        "",
+    )?;
     if object.get("schemaVersion").and_then(Value::as_u64)
         != Some(RUNTIME_DEPENDENCY_SCHEMA_VERSION)
     {
@@ -421,8 +439,7 @@ mod tests {
 
     #[test]
     fn exact_fields_rejects_unknown_keys() {
-        let dirty: Map<String, Value> =
-            serde_json::from_str(r#"{"name":"x","extra":1}"#).unwrap();
+        let dirty: Map<String, Value> = serde_json::from_str(r#"{"name":"x","extra":1}"#).unwrap();
         assert!(validate_exact_fields(&dirty, &["name"], "标签").is_err());
         let clean: Map<String, Value> = serde_json::from_str(r#"{"name":"x"}"#).unwrap();
         assert!(validate_exact_fields(&clean, &["name"], "标签").is_ok());
@@ -499,12 +516,15 @@ mod tests {
         // contentSha256 非 64 位小写 hex。
         let mut bad_digest = base_manifest();
         let mut bad_skill = skill_json("a-skill");
-        bad_skill["contentSha256"] = json!("ABCDEF0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789");
+        bad_skill["contentSha256"] =
+            json!("ABCDEF0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789");
         bad_digest["skills"] = json!({ "schemaVersion": 1, "skills": [bad_skill] });
         assert!(validate_runtime_manifest(&bad_digest.to_string(), &[]).is_err());
 
         // 数量超过安全上限 32。
-        let many: Vec<Value> = (0..33).map(|i| skill_json(&format!("skill-{i:02}"))).collect();
+        let many: Vec<Value> = (0..33)
+            .map(|i| skill_json(&format!("skill-{i:02}")))
+            .collect();
         let mut overflow = base_manifest();
         overflow["skills"] = json!({ "schemaVersion": 1, "skills": many });
         assert!(validate_runtime_manifest(&overflow.to_string(), &[]).is_err());
@@ -519,6 +539,3 @@ mod tests {
         assert!(validate_reasoning("not json").is_err());
     }
 }
-
-
-

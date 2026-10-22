@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Globe, Grid2x2, Monitor, Server, type LucideIcon } from 'lucide-react'
+import { Globe, Grid2x2, Server, type LucideIcon } from 'lucide-react'
 import {
   DEFAULT_RUNTIME_RAIL_WIDTH,
   MIN_RUNTIME_RAIL_WIDTH,
@@ -10,14 +10,11 @@ import {
 } from '@/stores/uiStore'
 import { useT, type TFunction } from '@/i18n'
 import { BrowserPanel } from './BrowserPanel'
-import { ComputerPanel } from './ComputerPanel'
 import { SshTerminalPanel } from './SshTerminalPanel'
 
-/** 按当前语言解析标签页元数据（picker 与 pane 标题共用同一事实来源）。
- * 顺序对齐设计稿：浏览器 / 电脑控制 / SSH。 */
+/** 按当前语言解析标签页元数据（picker 与 pane 标题共用同一事实来源）。 */
 const buildRailPanes = (t: TFunction): Array<{ id: RuntimeRailTab; label: string; description: string; Icon: LucideIcon }> => [
   { id: 'browser', label: t('app.runtimeRail.tab.browser.label'), description: t('app.runtimeRail.tab.browser.desc'), Icon: Globe },
-  { id: 'computer', label: t('app.runtimeRail.tab.computer.label'), description: t('app.runtimeRail.tab.computer.desc'), Icon: Monitor },
   { id: 'ssh', label: t('app.runtimeRail.tab.ssh.label'), description: t('app.runtimeRail.tab.ssh.desc'), Icon: Server },
 ]
 
@@ -32,7 +29,6 @@ const RESIZING_CLASS = 'runtime-rail--resizing'
  * 点卡片打开对应功能面板；面板顶部子条提供返回卡片页与当前 pane 标题。
  *
  * - 浏览器：内嵌浏览器（见 BrowserPanel）
- * - 电脑控制：权限/会话授权/allowlist（见 ComputerPanel）
  * - SSH：主机 tab + 下拉选择 + 远程终端（见 SshTerminalPanel）。
  *
  * 由 App ShellLayout 在 runtimeRailOpen 时挂载，宽度是
@@ -100,9 +96,8 @@ export const RuntimeRail = () => {
       // 变量供 grid 轨道使用）；此处兜底独立挂载场景。
       style={{ '--rail-current-width': `${width}px` } as React.CSSProperties}
     >
-      <div
+      <hr
         className="rail__resizer"
-        role="separator"
         aria-orientation="vertical"
         aria-label={t('app.runtimeRail.resizerAria')}
         aria-valuemin={MIN_RUNTIME_RAIL_WIDTH}
@@ -132,17 +127,13 @@ export const RuntimeRail = () => {
             </button>
             <span className="rail__pane-title">{activePane.label}</span>
           </div>
-          {activePane.id === 'browser' ? (
-            <BrowserPanel />
-          ) : activePane.id === 'computer' ? (
-            <ComputerPanel />
-          ) : null}
+          {activePane.id === 'browser' ? <BrowserPanel /> : null}
           {/* SSH 面板一旦打开过就保持挂载、非激活时 hidden：终端是有状态资源
               （xterm 实例 + 回滚缓冲 + Rust 会话投影），条件渲染会在切 pane/
               回卡片页时销毁全部实例——切回来历史全丢。hidden 保活与面板内部
               「多主机 term-slot hidden 切换」同一模式（fit 的 0 尺寸间隙由
-              useSshTerminals 的 try/catch + 激活 fit 兜底）。浏览器/电脑控制
-              面板无此诉求，维持条件渲染。 */}
+              useSshTerminals 的 try/catch + 激活 fit 兜底）。浏览器面板无此
+              诉求，维持条件渲染。 */}
           <div
             className="rail__pane-stack"
             hidden={pane !== 'ssh'}

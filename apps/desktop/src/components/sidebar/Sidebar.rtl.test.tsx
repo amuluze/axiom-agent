@@ -78,19 +78,7 @@ afterEach(() => {
   mocks.activateWorkspace.mockClear()
 })
 
-describe('Sidebar 技能菜单（RTL）', () => {
-  it('技能按钮可点击，点击后跳转到设置-技能页', () => {
-    render(<Sidebar />)
-    const button = screen.getByRole('button', { name: '技能' })
-    expect(button).not.toBeDisabled()
-
-    fireEvent.click(button)
-
-    expect(mocks.setSettingsSection).toHaveBeenCalledWith('skills')
-    expect(mocks.setView).toHaveBeenCalledWith('settings')
-    expect(mocks.closeSidebarOverlay).toHaveBeenCalledTimes(1)
-  })
-
+describe('Sidebar 工作目录展开（RTL）', () => {
   it('工作目录默认展开，点击折叠后隐藏会话并以不同图标区分', () => {
     mocks.authorizedWorkspaces = [{ path: '/repo', name: 'repo' }]
     mocks.sessions = [stubSession({

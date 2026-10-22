@@ -34,6 +34,7 @@ import { buildExamineSystemPrompt } from './reviewers/buildExaminePrompt'
 import { buildReviewSystemPrompt } from './reviewers/buildReviewPrompt'
 import { getBuiltinPromptOverrides, resolvePromptLanguage } from '@/agent/prompt/promptLocalizationHost'
 import { probeScopeEntries } from './scopeProbe'
+import { waitForDelegationOperation } from './delegationLifetime'
 
 /** 父工具 deadline 前预留清理时间，避免后台 API 消耗。 */
 const PARENT_DEADLINE_BUFFER_MS = 500
@@ -95,6 +96,8 @@ export const createSubAgentRuntime = (options: SubAgentRuntimeOptions = {}): Sub
     binding: SubAgentRuntimeBinding,
     signal: AbortSignal,
   ): Promise<AgentDelegationResult> {
+    request = { ...request, ...(request.scope ? { scope: [...request.scope] } : {}) }
+    binding = { ...binding, parentActiveToolNames: [...binding.parentActiveToolNames] }
     const startedAt = Date.now()
     // 按 breadth 选预算（childBudget 覆盖优先，用于产品测试全档位覆盖）。
     const budget = overrideBudget ?? SUBAGENT_BREADTH_BUDGETS[request.breadth ?? 'standard']
@@ -116,19 +119,6 @@ export const createSubAgentRuntime = (options: SubAgentRuntimeOptions = {}): Sub
         `同一父 run 的子 Agent 委派次数已达上限（${binding.parentRunLedger.budget.maxCallsPerParentRun} 次）。`
         + '父 run 内不能再委派：基于已收集的审查/探索结果直接收口，或由主 Agent 亲自完成剩余只读复核；继续委派只会被再次拒绝。',
       )
-    }
-
-    // scope 存在性快速校验（fail-closed）：scope 引用的路径必须位于授权工作区内，
-    // 否则子 agent 会按任务目录（而非授权工作区根）猜结构，空转多轮后才失败。
-    if (request.scope && request.scope.length > 0) {
-      const { invalid } = await probeScopeEntries(binding.environment, request.scope)
-      if (invalid.length > 0) {
-        throw new SubAgentExecutionError(
-          `scope 包含不在授权工作区内的路径，已拒绝执行：${invalid.join(', ')}。`
-            + `授权工作区根：${binding.workspacePath ?? '未知'}。`
-            + 'scope 必须是授权工作区内的相对路径；若任务目标在工作区之外，请先切换/授权对应工作区。',
-        )
-      }
     }
 
     const childSessionId = createId('sub-session')
@@ -173,14 +163,37 @@ export const createSubAgentRuntime = (options: SubAgentRuntimeOptions = {}): Sub
 
     let summaryCandidate: string | undefined
     let toolExecutions = 0
+    let turns = 0
     let lastProgressAt = 0
     /** 最近一次 tool_execution_start 的探索目标描述（tool_execution_end 后清除）。 */
     let lastTarget: string | undefined
     let errors = 0
 
     try {
-      const result = await runAgentLoop({
-        context: buildChildContext(request, binding, childSessionId, budget, effectiveMaxMessageBytes),
+      const scopedEnvironment = createScopedReadEnvironment(binding.environment, request.scope ?? [], {
+        allowedToolNames: binding.parentActiveToolNames,
+        signal: controller.signal,
+      })
+      // scope 存在性快速校验（fail-closed）：scope 引用的路径必须位于授权工作区内，
+      // 否则子 agent 会按任务目录（而非授权工作区根）猜结构，空转多轮后才失败。
+      if (request.scope && request.scope.length > 0) {
+        const { invalid } = await waitForDelegationOperation(
+          probeScopeEntries(scopedEnvironment, request.scope), controller.signal,
+        )
+        if (invalid.length > 0) {
+          throw new SubAgentExecutionError(
+            `scope 包含不在授权工作区内的路径，已拒绝执行：${invalid.join(', ')}。`
+              + `授权工作区根：${binding.workspacePath ?? '未知'}。`
+              + 'scope 必须是授权工作区内的相对路径；若任务目标在工作区之外，请先切换/授权对应工作区。',
+          )
+        }
+      }
+
+      const childContext = buildChildContext(
+        request, binding, childSessionId, budget, effectiveMaxMessageBytes, scopedEnvironment,
+      )
+      const loopResult = runAgentLoop({
+        context: childContext,
         prompts: [createUserMessage(request.task)],
         transport: binding.transport,
         signal: controller.signal,
@@ -199,6 +212,7 @@ export const createSubAgentRuntime = (options: SubAgentRuntimeOptions = {}): Sub
         providerLifecycle: binding.providerLifecycle,
         resolveModelAuth: binding.resolveModelAuth,
         prepareModelRequest: async (request) => {
+          if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
           // 预算状态注入：只在任一维度接近上限（≥75%）时把状态消息附加到
           // 本次请求。原地 push 保持引用不变，不触发 context.messages 同步——
           // 消息只进本次请求、不进子历史，不参与后续字节累计。
@@ -209,12 +223,15 @@ export const createSubAgentRuntime = (options: SubAgentRuntimeOptions = {}): Sub
           return request
         },
         onModelRequest: async (modelRequest, requestSignal) => {
+          if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
           const bytes = estimateModelMessagesBytes(modelRequest.messages)
           const exhaustion = ledger.debitModelRequest(bytes)
           if (exhaustion) throw new SubAgentContextLimitError(exhaustion)
           await binding.observation?.onModelRequest?.(modelRequest, observationContext, requestSignal)
+          if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
         },
         onModelResponse: async (message, modelRequest, requestSignal) => {
+          if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
           if (message.content?.trim()) summaryCandidate = message.content
           if (message.usage) {
             ledger.parentLedger.inputTokens += message.usage.inputTokens ?? 0
@@ -240,11 +257,14 @@ export const createSubAgentRuntime = (options: SubAgentRuntimeOptions = {}): Sub
           )
         },
         beforeToolCall: async () => {
+          if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
           const exhaustion = ledger.debitToolCall()
           if (exhaustion) throw new SubAgentContextLimitError(exhaustion)
           return { decision: 'approved' }
         },
         emit: (event) => {
+          if (controller.signal.aborted) return
+          if (event.type === 'turn_start') turns += 1
           if (event.type === 'tool_execution_start') {
             lastTarget = describeToolTarget(event.toolName, event.arguments)
           } else if (event.type === 'tool_execution_end') {
@@ -266,6 +286,10 @@ export const createSubAgentRuntime = (options: SubAgentRuntimeOptions = {}): Sub
             lastTarget = undefined
           }
         },
+      })
+      const result = await waitForDelegationOperation(loopResult, controller.signal).catch((error: unknown) => {
+        if (!controller.signal.aborted || signal.aborted) throw error
+        return { reason: 'time_limit' as const, turns, toolCalls: toolExecutions, newMessages: [] }
       })
       // 双 deadline timer（本 runtime 的 controller timer 与 runAgentLoop 的
       // limits.maxDurationMs timer）几乎同刻触发、外层先注册先到，runAgentLoop 多以
@@ -303,6 +327,9 @@ export const createSubAgentRuntime = (options: SubAgentRuntimeOptions = {}): Sub
         throw new SubAgentExecutionError(`子任务预算耗尽：${error.exhaustion}`)
       }
       if (error instanceof SubAgentExecutionError) throw error
+      if (controller.signal.aborted && !signal.aborted) {
+        throw new SubAgentExecutionError('子任务因 time_limit 中止且没有总结')
+      }
       if (signal.aborted || controller.signal.aborted || isAbortError(error)) {
         throw new SubAgentExecutionError('子任务已取消')
       }
@@ -310,6 +337,7 @@ export const createSubAgentRuntime = (options: SubAgentRuntimeOptions = {}): Sub
         `子任务执行失败：${error instanceof Error ? error.message : String(error)}`,
       )
     } finally {
+      controller.abort()
       clearTimeout(timer)
       signal.removeEventListener('abort', onParentAbort)
       ledger.settleDuration()
@@ -324,6 +352,7 @@ const buildChildContext = (
   childSessionId: string,
   budget: SubAgentChildBudget,
   effectiveMaxMessageBytes: number,
+  scopedEnvironment: SubAgentRuntimeBinding['environment'],
 ): AgentContext => {
   // child ModelRef：maxOutputTokens 收窄到产品上限，不继承父 reasoning budget。
   const childModel: ModelRef = {
@@ -333,15 +362,19 @@ const buildChildContext = (
       budget.maxOutputTokens,
     ),
   }
-  const scopedEnvironment = createScopedReadEnvironment(binding.environment, request.scope ?? [])
   const tools: AgentTool[] = createSubAgentReadonlyTools(scopedEnvironment, {
+    parentActiveToolNames: binding.parentActiveToolNames,
     // 子 Agent read 默认行数收窄：保证结果（含分页提示与 SHA）落在内联上限内，
     // 不被截断后丢失 offset 续读信息。
     read: { maxLines: SUBAGENT_READ_MAX_LINES },
   })
+  const toolNames = tools.map((tool) => tool.name).join(', ')
+  const toolNote = resolvePromptLanguage() === 'en'
+    ? `Current allowed tools: ${toolNames || 'none'}. A scoped search must select one delegated path.`
+    : `当前允许工具：${toolNames || '无'}。范围非空时，检索只能选择一个已委托路径。`
   return {
     sessionId: childSessionId,
-    systemPrompt: buildSubAgentSystemPrompt(request.kind, {
+    systemPrompt: `${buildSubAgentSystemPrompt(request.kind, {
       scope: request.scope,
       workspaceRoot: binding.workspacePath,
       contextWindow: binding.contextWindow,
@@ -351,7 +384,7 @@ const buildChildContext = (
         maxMessageBytes: effectiveMaxMessageBytes,
         maxInlineToolResultBytes: budget.maxInlineToolResultBytes,
       },
-    }),
+    })}\n${toolNote}`,
     model: childModel,
     messages: [],
     tools,
@@ -360,7 +393,7 @@ const buildChildContext = (
 }
 
 const settleResult = (
-  result: AgentLoopResult,
+  result: Pick<AgentLoopResult, 'reason' | 'turns' | 'toolCalls' | 'newMessages' | 'errorMessage'>,
   ledger: SubAgentBudgetLedger,
   summaryCandidate: string | undefined,
   startedAt: number,
@@ -461,7 +494,7 @@ const settleResult = (
   }
 }
 
-const providerErrorKindOf = (result: AgentLoopResult): ProviderErrorKind | undefined => {
+const providerErrorKindOf = (result: Pick<AgentLoopResult, 'newMessages'>): ProviderErrorKind | undefined => {
   for (let i = result.newMessages.length - 1; i >= 0; i -= 1) {
     const message = result.newMessages[i]
     if (message.role === 'assistant' && message.providerError) return message.providerError.kind

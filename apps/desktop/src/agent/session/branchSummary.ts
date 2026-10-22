@@ -12,6 +12,7 @@ import {
   modelRequestByteLength,
   utf8ByteLength,
 } from '@/agent/context/budget'
+import { mergeFileFacts } from '@/agent/context/fileFacts'
 import { serializeConversationForCompaction, CHECKPOINT_HEADINGS, CHECKPOINT_RULES } from '@/agent/context/compaction'
 import {
   resolveSummaryInstructions,
@@ -40,32 +41,21 @@ const branchModelMessages = (messages: AgentMessage[]): ModelMessage[] => messag
 })
 
 const branchFacts = (messages: AgentMessage[]): Pick<BranchSummarySource, 'readFiles' | 'modifiedFiles'> => {
-  const readFiles = new Set<string>()
-  const modifiedFiles = new Set<string>()
+  // 历史分支摘要里已经累积的文件事实先作为 previous 注入，再与新工具结果合并；
+  // 工具结果判定与 compaction 共用 fileFacts.ts，避免 includes('read') 漂移。
+  const previous = { readFiles: [] as string[], modifiedFiles: [] as string[] }
   for (const message of messages) {
-    if (message.role === 'custom' && message.customType === BRANCH_SUMMARY_CUSTOM_TYPE
-      && typeof message.data === 'object' && message.data && !Array.isArray(message.data)) {
-      const data = message.data as Record<string, JsonValue>
-      if (Array.isArray(data.readFiles)) {
-        for (const path of data.readFiles) if (typeof path === 'string') readFiles.add(path)
-      }
-      if (Array.isArray(data.modifiedFiles)) {
-        for (const path of data.modifiedFiles) if (typeof path === 'string') modifiedFiles.add(path)
-      }
+    if (message.role !== 'custom' || message.customType !== BRANCH_SUMMARY_CUSTOM_TYPE) continue
+    if (typeof message.data !== 'object' || !message.data || Array.isArray(message.data)) continue
+    const data = message.data as Record<string, JsonValue>
+    if (Array.isArray(data.readFiles)) {
+      for (const path of data.readFiles) if (typeof path === 'string') previous.readFiles.push(path)
     }
-    if (message.role !== 'tool' || message.isError || typeof message.details !== 'object'
-      || !message.details || Array.isArray(message.details)) continue
-    const details = message.details as Record<string, JsonValue>
-    const path = typeof details.path === 'string' ? details.path : undefined
-    if (!path) continue
-    if (details.operation === 'created' || details.operation === 'edited') modifiedFiles.add(path)
-    else if (message.toolName.includes('read')) readFiles.add(path)
+    if (Array.isArray(data.modifiedFiles)) {
+      for (const path of data.modifiedFiles) if (typeof path === 'string') previous.modifiedFiles.push(path)
+    }
   }
-  for (const path of modifiedFiles) readFiles.delete(path)
-  return {
-    readFiles: Array.from(readFiles).sort(),
-    modifiedFiles: Array.from(modifiedFiles).sort(),
-  }
+  return mergeFileFacts(previous, messages)
 }
 
 export interface GenerateBranchSummaryOptions extends SummaryInstructionOptions {

@@ -171,13 +171,21 @@ mod tests {
             "::10.0.0.1",
         ] {
             let ip: IpAddr = literal.parse().unwrap();
-            assert!(is_private_or_local_ip(ip), "{literal} must be private or local");
+            assert!(
+                is_private_or_local_ip(ip),
+                "{literal} must be private or local"
+            );
         }
         // unspecified：BSD/macOS 上 connect 到 0.0.0.0 等价连接回环。
         assert!(is_private_or_local_ip("0.0.0.0".parse().unwrap()));
         assert!(is_private_or_local_ip("::".parse().unwrap()));
         // 公网地址的映射/嵌入形式保持公网语义，不得误伤。
-        for literal in ["::ffff:8.8.8.8", "64:ff9b::808:808", "2001:db8::1", "8.8.8.8"] {
+        for literal in [
+            "::ffff:8.8.8.8",
+            "64:ff9b::808:808",
+            "2001:db8::1",
+            "8.8.8.8",
+        ] {
             let ip: IpAddr = literal.parse().unwrap();
             assert!(!is_private_or_local_ip(ip), "{literal} must stay public");
         }

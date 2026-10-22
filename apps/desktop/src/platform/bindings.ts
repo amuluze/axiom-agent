@@ -12,8 +12,8 @@ export const commands = {
 	 *  （对齐 codex 的全盘读语义）：不要求逐文件授权，但保留与 bash 沙箱同一集合
 	 *  的敏感路径 deny（凭据载体 + `~/.axiom` 数据根）——read 不得成为绕过沙箱
 	 *  凭据保护的旁路。canonicalize 先于 deny 判定：symlink 置换指向 deny 目标
-	 *  同样被拒；路径位于任一授权工作区内时豁免（镜像沙箱「工作区位于 deny 目录
-	 *  内时跳过该目录」语义）。HOME 来源与沙箱 profile 一致（`$HOME` 环境变量），
+	 *  同样被拒；只有经原生确认的隐私项目子根可以窄范围开放。HOME 来源与沙箱
+	 *  profile 一致（Windows 无 HOME 时回退 USERPROFILE），
 	 *  保证两侧 deny 集合判定在同一坐标系上。
 	 */
 	readAuthorizedText: (path: string) => __TAURI_INVOKE<AuthorizedTextContent>("read_authorized_text", { path }),
@@ -25,6 +25,22 @@ export const commands = {
 	getAuthorizedWorkspaces: () => __TAURI_INVOKE<AuthorizedWorkspace[]>("get_authorized_workspaces"),
 	activateAuthorizedWorkspace: (path: string) => __TAURI_INVOKE<AuthorizedWorkspace>("activate_authorized_workspace", { path }),
 	revokeWorkspace: (path: string | null) => __TAURI_INVOKE<boolean>("revoke_workspace", { path }),
+	listWorkspace: (path: string | null, limit: number | null, workspacePath: string | null) => __TAURI_INVOKE<WorkspaceListResult_Serialize>("list_workspace", { path, limit, workspacePath }),
+	readWorkspaceText: (path: string, offset: number | null, limit: number | null, workspacePath: string | null) => __TAURI_INVOKE<WorkspaceReadResult_Serialize>("read_workspace_text", { path, offset, limit, workspacePath }),
+	browserCommand: (request: BrowserCommandRequest) => __TAURI_INVOKE<BrowserCommandResponse_Serialize>("browser_command", { request }),
+	saveSessionCheckpoint: (request: SaveSessionCheckpointRequest) => __TAURI_INVOKE<null>("save_session_checkpoint", { request }),
+	listTestEnvironmentRecords: () => __TAURI_INVOKE<TestEnvironment[]>("list_test_environment_records"),
+	listTestRunRecords: (limit: number | null) => __TAURI_INVOKE<TestRunSummary[]>("list_test_run_records", { limit }),
+	latestTestBatchRecord: () => __TAURI_INVOKE<{
+	batchId: string,
+	runs: TestRunSummary[],
+	truncated: boolean,
+} | null>("latest_test_batch_record"),
+	getTestRunRecord: (runId: string) => __TAURI_INVOKE<{
+	summary: TestRunSummary,
+	planContentHash: string | null,
+	cases: TestCaseDetail[],
+} | null>("get_test_run_record", { runId }),
 };
 
 /* Types */
@@ -46,10 +62,423 @@ export type AuthorizedWorkspace = {
 	gitBranch: string | null,
 };
 
+export type BrowserCommandRequest = { action: "detect" } | { action: "validateExecutable"; path: string } | { action: "status" } | { action: "ensureRunning"; config: BrowserSpawnConfig } | { action: "shutdown" } | 
+/**
+ *  清理隔离 profile 的数据（设置页操作，不暴露给模型）：cache 档删 HTTP
+ *  缓存/Cache Storage/Service Worker，保留 Cookie 与站点登录态；all 档删除
+ *  整个 profile 重建（不可撤销）。浏览器运行中拒绝——文件级清理必须先关闭。
+ */
+{ action: "clearProfileData"; mode: string } | { action: "tabs" } | { action: "newTab"; url?: string | null } | { action: "closeTab"; tabId: string } | { action: "activateTab"; tabId: string } | 
+/**
+ *  双击：与 click 同一坐标注入管线（getBoxModel 中心点），第二段
+ *  Input.dispatchMouseEvent 携带 clickCount=2。
+ */
+{ action: "dblClick"; tabId: string; ref: number } | 
+/**
+ *  视口覆盖（响应式/设备尺寸测试）：width+height 同时给出 = 设置
+ *  Emulation.setDeviceMetricsOverride；同时缺省 = 清除覆盖回自然视口。
+ */
+{ action: "setViewport"; tabId: string; width?: number | null; height?: number | null } | 
+/**
+ *  下载目录清单（recent-first）：文件由 profile Preferences 预置的自动
+ *  下载落盘（下载动作无需先武装，点击下载链接触发即可）。
+ */
+{ action: "downloads"; limit?: number | null } | 
+/**  下载文件文本读回（仅 UTF-8 文本，200 KiB 截断；路径钉死在下载目录内）。 */
+{ action: "readDownload"; name: string } | { action: "navigate"; tabId: string; url: string } | { action: "snapshot"; tabId: string } | { action: "click"; tabId: string; ref: number } | { action: "fill"; tabId: string; ref: number; text: string } | 
+/**
+ *  原生 `<select>` 的显式选择：focus + 逐字符 type-ahead（关闭态 select 的
+ *  既有 Chrome 行为，前缀累积选中并发 change），选后回读 AX 值自校验。
+ *  fill 的 focus+insertText 管线对 select 无效，这是补齐的表单原语。
+ */
+{ action: "selectOption"; tabId: string; ref: number; text: string } | 
+/**
+ *  文件上传：DOM.setFileInputFiles（DOM 域，不执行页面 JS）。path 必须位于
+ *  已授权工作区内——模型不能把宿主任意文件（密钥库/凭据）喂给页面输入。
+ */
+{ action: "uploadFile"; tabId: string; ref: number; path: string } | { action: "typeText"; tabId: string; ref?: number | null; text: string } | { action: "press"; tabId: string; key: string; ref?: number | null } | { action: "scroll"; tabId: string; ref?: number | null; deltaX?: number | null; deltaY?: number | null } | { action: "screenshot"; tabId: string; 
+/**  可选元素锚点：截取该 ref 节点的边界区域而非整页（视觉验证元素状态）。 */
+ref?: number | null } | 
+/**
+ *  悬停在 ref 节点上（触发菜单/tooltip 后再 snapshot）。与 click 同一
+ *  ref→坐标管线，只是 mouseMoved 不携带按键。
+ */
+{ action: "hover"; tabId: string; ref: number } | 
+/**
+ *  等待页面就绪：text（轮询 AX 树做子串匹配）与 duration_ms（固定等待）
+ *  至少给一个；都给时先等文本、未命中再耗满时长。SPA 点击后过早 snapshot
+ *  会拿到陈旧树，wait 是对齐 zcode/ChatGPT 浏览器控制的节奏原语。
+ */
+{ action: "wait"; tabId: string; text?: string | null; durationMs?: number | null } | 
+/**
+ *  服务端 AX 树检索：按子串（大小写不敏感）过滤快照行并返回带 ref 的
+ *  匹配行。大页面 snapshot 会截断，find 让模型按需取定位信息而不吃满
+ *  200 KiB 预算。
+ */
+{ action: "find"; tabId: string; text: string; limit?: number | null } | 
+/**
+ *  结构化定位（U1-1）：testId/css 走 DOM 域，role/name/label/text 走 AX 全树，
+ *  结果只返回 backend node ref。歧义时不取第一个，由调用方决定如何处理。
+ */
+{ action: "resolveLocator"; tabId: string; locator: LocatorSpec } | { action: "back"; tabId: string } | { action: "forward"; tabId: string } | { action: "navigationHistory"; tabId: string } | { action: "reload"; tabId: string } | { action: "dialog"; tabId: string } | { action: "respondDialog"; tabId: string; accept: boolean; promptText?: string | null } | 
+/**
+ *  开启面板实时画面（CDP screencast）。maxWidth/maxHeight 由面板按显示
+ *  尺寸传入，Chrome 等比缩放控制帧体积；不传则按视口原始尺寸。
+ */
+{ action: "startScreencast"; tabId: string; maxWidth?: number | null; maxHeight?: number | null } | { action: "stopScreencast"; tabId: string } | 
+/**  读取页面 console 输出与运行时错误（dev server 验证的主要观测面）。 */
+{ action: "console"; tabId: string; limit?: number | null } | 
+/**
+ *  面板预览上的用户手势点击（视口坐标）。与 click（ref 锚点）是两个入口：
+ *  坐标来自用户在预览上的真实点击，不进 Agent 工具 schema——用户亲手操作
+ *  通道，类比终端 stdin 不属于逐次审批命令面。
+ */
+{ action: "clickAt"; tabId: string; x: number | null; y: number | null } | { action: "scrollAt"; tabId: string; x: number | null; y: number | null; deltaX?: number | null; deltaY?: number | null };
+
+export type BrowserCommandResponse = BrowserCommandResponse_Serialize | BrowserCommandResponse_Deserialize;
+
+export type BrowserCommandResponse_Deserialize = ({ type: "detected"; engines: BrowserEngineInfo[] }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "executableValid"; path: string; engine: string }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "status"; running: boolean; port: number | null; engine: string | null; headless: boolean | null; version: string | null; tabs: number | null }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engines?: never; entries?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; resized?: never; resolution?: never; sizeBytes?: never; tab?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; waitedMs?: never; width?: never } | ({ type: "tabs"; tabs: BrowserTabInfo[] }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "tabOpened"; tab: BrowserTabInfo }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "navigated"; url: string; title: string }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; total?: never; truncated?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "snapshot"; url: string; title: string; text: string; truncated: boolean; dialog: JsDialogInfo | null }) & { canGoBack?: never; canGoForward?: never; content?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; textMatched?: never; total?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "screenshot"; imageBase64: string; mimeType: string; width: number; height: number; resized: boolean }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; matches?: never; name?: never; path?: never; port?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never } | ({ type: "dialogState"; dialog: JsDialogInfo | null }) & { canGoBack?: never; canGoForward?: never; content?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "waited"; 
+/**  text 等待是否命中（false = 超时未出现，由模型决定下一步）。 */
+textMatched: boolean; waitedMs: number }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; width?: never } | ({ type: "locatorResolved"; resolution: LocatorResolution }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "found"; url: string; title: string; matches: string[]; 
+/**  命中总行数（可能超过 matches 长度，由 limit 截断）。 */
+total: number; truncated: boolean }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "navigationState"; canGoBack: boolean; canGoForward: boolean }) & { content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "screencastStarted" }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "consoleLog"; entries: ConsoleEntry[] }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | 
+/**  视口覆盖结果：width/height 为 None 表示已清除覆盖（回自然视口）。 */
+({ type: "viewportApplied"; width: number | null; height: number | null }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never } | 
+/**
+ *  下载目录清单（recent-first）：下载在 spawn 时经 profile Preferences
+ *  自动落盘（prompt 关闭），模型经此观测产物。
+ */
+({ type: "downloadList"; directory: string; entries: DownloadEntry[] }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; engine?: never; engines?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | 
+/**
+ *  下载文件文本读回（~/.axiom 在 read 工具 deny 清单内，模型无法直读；
+ *  只支持 UTF-8 文本且上限 200 KiB，二进制报错引导用户自行查看）。
+ */
+({ type: "downloadContent"; name: string; path: string; sizeBytes: number; truncated: boolean; content: string }) & { canGoBack?: never; canGoForward?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; port?: never; resized?: never; resolution?: never; running?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; url?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "done" }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never };
+
+export type BrowserCommandResponse_Serialize = ({ type: "detected"; engines: BrowserEngineInfo[] }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "executableValid"; path: string; engine: string }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "status"; running: boolean; port?: number | null; engine?: string | null; headless?: boolean | null; version?: string | null; tabs?: number | null }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engines?: never; entries?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; resized?: never; resolution?: never; sizeBytes?: never; tab?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; waitedMs?: never; width?: never } | ({ type: "tabs"; tabs: BrowserTabInfo[] }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "tabOpened"; tab: BrowserTabInfo }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "navigated"; url: string; title: string }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; total?: never; truncated?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "snapshot"; url: string; title: string; text: string; truncated: boolean; dialog?: JsDialogInfo | null }) & { canGoBack?: never; canGoForward?: never; content?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; textMatched?: never; total?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "screenshot"; imageBase64: string; mimeType: string; width: number; height: number; resized: boolean }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; matches?: never; name?: never; path?: never; port?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never } | ({ type: "dialogState"; dialog?: JsDialogInfo | null }) & { canGoBack?: never; canGoForward?: never; content?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "waited"; 
+/**  text 等待是否命中（false = 超时未出现，由模型决定下一步）。 */
+textMatched: boolean; waitedMs: number }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; width?: never } | ({ type: "locatorResolved"; resolution: LocatorResolution }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "found"; url: string; title: string; matches: string[]; 
+/**  命中总行数（可能超过 matches 长度，由 limit 截断）。 */
+total: number; truncated: boolean }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "navigationState"; canGoBack: boolean; canGoForward: boolean }) & { content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "screencastStarted" }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "consoleLog"; entries: ConsoleEntry[] }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | 
+/**  视口覆盖结果：width/height 为 None 表示已清除覆盖（回自然视口）。 */
+({ type: "viewportApplied"; width?: number | null; height?: number | null }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never } | 
+/**
+ *  下载目录清单（recent-first）：下载在 spawn 时经 profile Preferences
+ *  自动落盘（prompt 关闭），模型经此观测产物。
+ */
+({ type: "downloadList"; directory: string; entries: DownloadEntry[] }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; engine?: never; engines?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never } | 
+/**
+ *  下载文件文本读回（~/.axiom 在 read 工具 deny 清单内，模型无法直读；
+ *  只支持 UTF-8 文本且上限 200 KiB，二进制报错引导用户自行查看）。
+ */
+({ type: "downloadContent"; name: string; path: string; sizeBytes: number; truncated: boolean; content: string }) & { canGoBack?: never; canGoForward?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; port?: never; resized?: never; resolution?: never; running?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; url?: never; version?: never; waitedMs?: never; width?: never } | ({ type: "done" }) & { canGoBack?: never; canGoForward?: never; content?: never; dialog?: never; directory?: never; engine?: never; engines?: never; entries?: never; headless?: never; height?: never; imageBase64?: never; matches?: never; mimeType?: never; name?: never; path?: never; port?: never; resized?: never; resolution?: never; running?: never; sizeBytes?: never; tab?: never; tabs?: never; text?: never; textMatched?: never; title?: never; total?: never; truncated?: never; url?: never; version?: never; waitedMs?: never; width?: never };
+
+export type BrowserEngineInfo = {
+	engine: string,
+	path: string,
+	available: boolean,
+};
+
+export type BrowserSpawnConfig = {
+	enabled?: boolean,
+	/**  空串 = 自动探测（auto 档按固定候选序取第一个已安装引擎）。 */
+	executablePath?: string,
+	headless?: boolean,
+	/**
+	 *  忽略 HTTPS 证书校验（--ignore-certificate-errors）：仅作用于本隔离实例
+	 *  （自签/测试场景）。spawn 参数，改后需重启浏览器生效。
+	 */
+	ignoreCertificateErrors?: boolean,
+};
+
+export type BrowserTabInfo = {
+	tabId: string,
+	url: string,
+	title: string,
+	active: boolean,
+	hasDialog: boolean,
+};
+
+/**
+ *  console/运行时错误条目。level：error/warning/info/log/debug；source：
+ *  console（console.* 调用）/ exception（未捕获异常）/ network 等日志来源。
+ */
+export type ConsoleEntry = {
+	level: string,
+	text: string,
+	source: string,
+	timestamp: number,
+};
+
+/**  下载目录条目（recent-first，.crdownload 未完成文件被跳过）。 */
+export type DownloadEntry = {
+	name: string,
+	path: string,
+	sizeBytes: number,
+	/**  Unix 毫秒时间戳。 */
+	modifiedAt: number,
+};
+
+export type JsDialogInfo = {
+	kind: string,
+	message: string,
+};
+
+export type LocatorCandidate = {
+	ref: number,
+	role: string,
+	name: string,
+	value: string | null,
+	disabled: boolean,
+};
+
+/**  解析结果。`Unique` 才允许执行动作；`Ambiguous` 禁止默认取第一个。 */
+export type LocatorResolution = { status: "notFound" } | { status: "unique"; candidate: LocatorCandidate } | { status: "ambiguous"; total: number; candidates: LocatorCandidate[] };
+
+export type LocatorSpec = {
+	testId?: string | null,
+	role?: string | null,
+	name?: string | null,
+	label?: string | null,
+	text?: string | null,
+	css?: string | null,
+	exact?: boolean,
+};
+
 export type RuntimeInfo = {
 	appName: string,
 	appVersion: string,
 	operatingSystem: string,
 	architecture: string,
+	sandboxAvailable: boolean,
+};
+
+export type SaveSessionCheckpointRequest = {
+	id: string,
+	sessionId: string,
+	throughMessageId: string,
+	summary: string,
+	summaryHash: string,
+	reason: string,
+	tokensBefore: number,
+	estimatedTokensAfter: number,
+	requestBytesBefore: number,
+	requestBytesAfter: number,
+	modelProvider: string,
+	modelId: string,
+	promptVersion: number,
+	excludedMessageIds: string[],
+	facts: SessionCheckpointFacts,
+	createdAt: number,
+};
+
+export type SessionCheckpointFacts = {
+	readFiles: string[],
+	modifiedFiles: string[],
+	/**  旧 checkpoint 无此字段；反序列化缺失时默认为空（向后兼容）。 */
+	readProgress?: { [key in string]: SessionReadProgressCursor },
+	/**  旧 checkpoint 无此字段；反序列化缺失时默认为空（向后兼容）。 */
+	toolLedger?: SessionToolLedgerEntry[],
+	/**  旧 checkpoint 无此字段；反序列化缺失时默认为空（向后兼容）。 */
+	loadedSkills?: SessionLoadedSkillEntry[],
+	/**  旧 checkpoint 无此字段；反序列化缺失时默认为空（向后兼容）。 */
+	sddReviews?: SessionSddReviewEntry[],
+};
+
+export type SessionLoadedSkillEntry = {
+	name: string,
+	source: string,
+};
+
+/**
+ *  单文件确定性读取游标（nextOffset 为 null 表示已读完整）。与 TS 侧
+ *  ReadProgressCursor 一一对应；read_progress 用 BTreeMap 保证序列化确定性，
+ *  因为 save_checkpoint 幂等比对按 facts_json 字符串精确比较。
+ */
+export type SessionReadProgressCursor = {
+	nextOffset: number | null,
+	totalLines: number,
+	truncated: boolean,
+	sha256: string,
+};
+
+export type SessionSddReviewEntry = {
+	reviewer: string,
+	verdict: string,
+};
+
+/**  确定性执行账本条目的 Rust 镜像（id = toolCallId）。 */
+export type SessionToolLedgerEntry = {
+	id: string,
+	tool: string,
+	path?: string | null,
+	status: string,
+};
+
+export type TestArtifactReference = {
+	id: string,
+	kind: string,
+	mediaType: string,
+	relativePath: string,
+	contentHash: string,
+	sizeBytes: number,
+	createdAt: number,
+};
+
+export type TestBatchSummary = {
+	batchId: string,
+	runs: TestRunSummary[],
+	truncated: boolean,
+};
+
+export type TestCaseDetail = {
+	id: string,
+	caseId: string,
+	caseName: string,
+	status: TestStatus,
+	startedAt: number | null,
+	finishedAt: number | null,
+	failureKind: string | null,
+	/**
+	 *  宿主客观归因（`environment` / `approval` / `driver` / `assertion`，T3-2 写入）。
+	 *  与 `failure_kind`（来自运行状态）并列：前者说明「哪一类问题」，后者说明「什么状态」。
+	 */
+	failureOrigin: string | null,
+	steps: TestStepDetail[],
+};
+
+export type TestEnvironment = {
+	id: string,
+	name: string,
+	kind: string,
+	recipeJson: string | null,
+	webBaseUrl: string | null,
+	apiBaseUrl: string | null,
+	viewportWidth: number | null,
+	viewportHeight: number | null,
+	allowPrivateNetwork: boolean,
+	headersJson: string,
+	secretIdsJson: string,
+	createdAt: number,
+	updatedAt: number,
+};
+
+export type TestRunDetail = {
+	summary: TestRunSummary,
+	planContentHash: string | null,
+	cases: TestCaseDetail[],
+};
+
+export type TestRunSummary = {
+	id: string,
+	specPath: string,
+	specHash: string,
+	environmentId: string | null,
+	/**  套件运行分组键（T3-1）；单文件运行可以是 `None`。 */
+	batchId: string | null,
+	/**  本次实际环境与探针事实（T1-4），未记录时为 `None`。 */
+	envFactsJson: string | null,
+	status: TestStatus,
+	startedAt: number,
+	finishedAt: number | null,
+};
+
+export type TestStatus = "queued" | "running" | "waiting_approval" | "passed" | "failed" | "error" | "rejected" | "skipped" | "canceled" | "interrupted";
+
+export type TestStepDetail = {
+	id: string,
+	stepId: string,
+	action: string,
+	status: TestStatus,
+	startedAt: number | null,
+	finishedAt: number | null,
+	detailsJson: string | null,
+	evidenceContentHash: string | null,
+	evidenceArtifact: TestArtifactReference | null,
+};
+
+export type WorkspaceCommandError = {
+	code: WorkspaceCommandErrorCode,
+	message: string,
+};
+
+export type WorkspaceCommandErrorCode = "not_authorized" | "not_found" | "invalid_path" | "unavailable" | "unknown";
+
+export type WorkspaceEntry = WorkspaceEntry_Serialize | WorkspaceEntry_Deserialize;
+
+export type WorkspaceEntry_Deserialize = {
+	path: string,
+	name: string,
+	kind: string,
+	sizeBytes: number,
+	/**
+	 *  文件 mtime（Unix epoch ms）。文档索引用它配合 size 复用 revision 缓存，
+	 *  避免每次扫描都整文件重读计算 SHA；拿不到时缺省，前端必须回退到实际读取。
+	 */
+	modifiedMs: number | null,
+};
+
+export type WorkspaceEntry_Serialize = {
+	path: string,
+	name: string,
+	kind: string,
+	sizeBytes: number,
+	/**
+	 *  文件 mtime（Unix epoch ms）。文档索引用它配合 size 复用 revision 缓存，
+	 *  避免每次扫描都整文件重读计算 SHA；拿不到时缺省，前端必须回退到实际读取。
+	 */
+	modifiedMs?: number | null,
+};
+
+export type WorkspaceImage = {
+	mimeType: string,
+	dataBase64: string,
+	originalWidth: number | null,
+	originalHeight: number | null,
+	resized: boolean,
+};
+
+export type WorkspaceListResult = WorkspaceListResult_Serialize | WorkspaceListResult_Deserialize;
+
+export type WorkspaceListResult_Deserialize = {
+	workspace: AuthorizedWorkspace,
+	directory: string,
+	entries: WorkspaceEntry_Deserialize[],
+	truncated: boolean,
+};
+
+export type WorkspaceListResult_Serialize = {
+	workspace: AuthorizedWorkspace,
+	directory: string,
+	entries: WorkspaceEntry_Serialize[],
+	truncated: boolean,
+};
+
+export type WorkspaceReadResult = WorkspaceReadResult_Serialize | WorkspaceReadResult_Deserialize;
+
+export type WorkspaceReadResult_Deserialize = {
+	workspace: AuthorizedWorkspace,
+	path: string,
+	content: string,
+	sha256: string,
+	startLine: number,
+	endLine: number,
+	totalLines: number,
+	truncated: boolean,
+	nextOffset: number | null,
+	image: WorkspaceImage | null,
+};
+
+export type WorkspaceReadResult_Serialize = {
+	workspace: AuthorizedWorkspace,
+	path: string,
+	content: string,
+	sha256: string,
+	startLine: number,
+	endLine: number,
+	totalLines: number,
+	truncated: boolean,
+	nextOffset: number | null,
+	image?: WorkspaceImage | null,
 };
 

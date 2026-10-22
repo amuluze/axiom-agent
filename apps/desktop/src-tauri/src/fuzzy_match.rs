@@ -142,9 +142,9 @@ fn replacement_line_range(
         .match_index
         .saturating_add(replacement.match_length);
     // First line whose span contains the replacement start.
-    let start_line = lines.iter().position(|(s, e)| {
-        replacement.match_index >= *s && replacement.match_index < *e
-    })?;
+    let start_line = lines
+        .iter()
+        .position(|(s, e)| replacement.match_index >= *s && replacement.match_index < *e)?;
     // Advance end_line while lines fall before the replacement end.
     let mut end_line = start_line;
     while end_line < lines.len() && lines[end_line].1 < end_byte {
@@ -156,11 +156,20 @@ fn replacement_line_range(
 /// Apply replacements to `content` in reverse order (highest index first) so
 /// earlier offsets stay valid. `offset` is subtracted from each `match_index`
 /// (used when applying to a sliced sub-range).
-fn apply_replacements(content: &str, replacements: &[TextReplacement], new_texts: &[String], offset: usize) -> String {
+fn apply_replacements(
+    content: &str,
+    replacements: &[TextReplacement],
+    new_texts: &[String],
+    offset: usize,
+) -> String {
     let mut result = content.to_string();
     // Iterate from the end backwards.
     let mut order: Vec<usize> = (0..replacements.len()).collect();
-    order.sort_by(|&a, &b| replacements[b].match_index.cmp(&replacements[a].match_index));
+    order.sort_by(|&a, &b| {
+        replacements[b]
+            .match_index
+            .cmp(&replacements[a].match_index)
+    });
     for &i in &order {
         let r = replacements[i];
         let start = r.match_index.saturating_sub(offset);
@@ -248,9 +257,19 @@ pub(crate) fn apply_replacements_preserving_lines(
         let group_start_byte = base_lines[group.start_line].0;
         let group_end_byte = base_lines[group.end_line.saturating_sub(1)].1;
         let slice = &base[group_start_byte..group_end_byte];
-        let group_replacements: Vec<TextReplacement> = group.indices.iter().map(|&i| replacements[i]).collect();
-        let group_new_texts: Vec<String> = group.indices.iter().map(|&i| new_texts[i].clone()).collect();
-        let rewritten = apply_replacements(slice, &group_replacements, &group_new_texts, group_start_byte);
+        let group_replacements: Vec<TextReplacement> =
+            group.indices.iter().map(|&i| replacements[i]).collect();
+        let group_new_texts: Vec<String> = group
+            .indices
+            .iter()
+            .map(|&i| new_texts[i].clone())
+            .collect();
+        let rewritten = apply_replacements(
+            slice,
+            &group_replacements,
+            &group_new_texts,
+            group_start_byte,
+        );
         result.push_str(&rewritten);
         original_line_index = group.end_line;
     }
@@ -323,7 +342,8 @@ mod tests {
         }];
         let new_texts = vec!["updated".to_string()];
         let result =
-            apply_replacements_preserving_lines(original, &base, &replacements, &new_texts).unwrap();
+            apply_replacements_preserving_lines(original, &base, &replacements, &new_texts)
+                .unwrap();
         // Line 1 changed; line 2 retains original smart quotes.
         assert_eq!(result, "updated line\nkeep \u{201C}smart\u{201D} quotes");
     }

@@ -27,6 +27,7 @@ import type {
   SessionSnapshot,
   StoredAgentSession,
 } from '@/persistence/types'
+import { mergeRecoverySummaries } from '@/persistence/types'
 import {
   hasOtherRunningRuntime,
   getRuntimeProjection,
@@ -116,6 +117,17 @@ export interface StoreRuntimeDeps {
   sessionDefaults: (config: ProviderProfile) => SessionDefaults
   /** 同步 authorizedFiles 状态在 createRuntimeSession 侧的模块级镜像。 */
   updateAuthorizedReadFiles: (files: AuthorizedReadFile[]) => void
+  /**
+   * 撤回指定会话已入队的待决审批。权限降级必须调用：卡片是按降级**前**的权限
+   * 状态排队的，用户点「允许一次」走 interactive 签发路径，若 native 侧此刻仍
+   * 是 Automatic 就会被授予 `Unrestricted` 租约。按会话撤回，多会话互不影响。
+   */
+  cancelPendingApprovals: (sessionId: string, reason: string) => number
+  /**
+   * 访问模式变更后重建活动会话提示词，使 `# 访问模式` 段如实反映当前档位。
+   * run 进行中时内部跳过（systemPrompt 不可热替换），由下一轮提示词回流生效。
+   */
+  refreshSystemPromptForAccessMode: () => Promise<void>
 }
 
 const errorMessage = (error: unknown): string =>
@@ -162,15 +174,6 @@ export const queueSteering = (
   images?: ImageContentBlock[],
 ): Promise<QueueAcceptance> =>
   queueMessage(set, get, session, content, (s, c) => s.steer(c, images))
-
-export const queueFollowUp = (
-  set: AgentSet,
-  get: AgentGet,
-  session: AgentHarness,
-  content: string,
-  images?: ImageContentBlock[],
-): Promise<QueueAcceptance> =>
-  queueMessage(set, get, session, content, (s, c) => s.followUp(c, images))
 
 export const queueNextTurn = async (
   set: AgentSet,
@@ -390,6 +393,7 @@ export const send = async (
             contextCheckpoint: snapshot.checkpoint,
             contextUsage: deps.getSession().getContextUsage(),
             recoveredRuns: state.recoveredRuns + recovered.recoveredRuns,
+            recoverySummary: mergeRecoverySummaries(state.recoverySummary, recovered),
             ...queuedMessageState(deps.getSession()),
           }))
         }

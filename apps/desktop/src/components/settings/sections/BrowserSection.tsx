@@ -15,6 +15,7 @@ import {
   type BrowserEngineInfo,
 } from '@/platform/browserSession'
 import { useT } from '@/i18n'
+import { confirmDialog } from '@/components/dialogService'
 
 /**
  * 浏览器配置区：能力开关、引擎选择（自动探测 + 各引擎 + 自定义路径）、运行
@@ -162,7 +163,7 @@ export const BrowserSection = () => {
     const confirmText = mode === 'all'
       ? t('settings.browser.clearAllConfirm')
       : t('settings.browser.clearCacheConfirm')
-    if (!window.confirm(confirmText)) return
+    if (!await confirmDialog({ message: confirmText, danger: true })) return
     setBusy(mode === 'all' ? 'clearAll' : 'clearCache')
     setMessage(null)
     try {

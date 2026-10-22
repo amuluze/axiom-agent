@@ -56,10 +56,7 @@ pub(crate) fn validate_capture_rect(rect: Option<[f64; 4]>) -> Result<(), String
     let Some([x, y, width, height]) = rect else {
         return Ok(());
     };
-    if [x, y, width, height].iter().all(|value| value.is_finite())
-        && width > 0.0
-        && height > 0.0
-    {
+    if [x, y, width, height].iter().all(|value| value.is_finite()) && width > 0.0 && height > 0.0 {
         return Ok(());
     }
     Err(format!(
@@ -101,7 +98,11 @@ async fn capture_impl(
 
     if probe {
         // 支持性探测不进 with_webview（不必碰主线程）：本平台恒可用。
-        return Ok(WebViewCapture { image_base64: String::new(), width: 0, height: 0 });
+        return Ok(WebViewCapture {
+            image_base64: String::new(),
+            width: 0,
+            height: 0,
+        });
     }
 
     let (tx, rx) = mpsc::channel::<Result<WebViewCapture, String>>();
@@ -116,10 +117,10 @@ async fn capture_impl(
         .map_err(|error| format!("无法访问 WebView 主线程：{error}"))?;
 
     // spawn_blocking 等待通道（recv 可阻塞 14s，不占 worker）；外层 15s 兜底超时。
-    let joined = tokio::task::spawn_blocking(move || rx.recv_timeout(std::time::Duration::from_secs(14)));
+    let joined =
+        tokio::task::spawn_blocking(move || rx.recv_timeout(std::time::Duration::from_secs(14)));
     let payload = match tokio::time::timeout(std::time::Duration::from_secs(15), joined).await {
-        Ok(Ok(received)) => received
-            .map_err(|error| format!("WebView 截图失败：{error}"))?,
+        Ok(Ok(received)) => received.map_err(|error| format!("WebView 截图失败：{error}"))?,
         Ok(Err(error)) => return Err(format!("截图任务失败：{error}")),
         Err(_) => return Err("WebView 截图超时（15s）".to_string()),
     };
@@ -231,8 +232,7 @@ fn encode_snapshot_to_png(image: *mut objc2::runtime::AnyObject) -> Result<WebVi
             return Err("快照尺寸无效".to_string());
         }
         // 与 computer/browser 截图同一体积守卫（4 MiB 内降采样重编码）。
-        let (png, width, height, _) =
-            crate::browser_session::ensure_screenshot_within_cap(png)?;
+        let (png, width, height, _) = crate::browser_session::ensure_screenshot_within_cap(png)?;
         Ok(WebViewCapture {
             image_base64: base64::engine::general_purpose::STANDARD.encode(png),
             width,
@@ -252,7 +252,11 @@ mod tests {
     fn serializes_camel_case_for_ts_mirror() {
         // TS 镜像（platform/webviewCapture.ts）逐字读 imageBase64：漏了
         // rename_all 会序列化出蛇形 image_base64，TS 侧读 undefined、误报空数据。
-        let payload = WebViewCapture { image_base64: "abc".into(), width: 2, height: 1 };
+        let payload = WebViewCapture {
+            image_base64: "abc".into(),
+            width: 2,
+            height: 1,
+        };
         let json = serde_json::to_value(&payload).expect("serialize");
         assert!(json.get("imageBase64").is_some(), "字段必须是 camelCase");
         assert!(json.get("image_base64").is_none(), "不得出现蛇形字段");

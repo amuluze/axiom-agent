@@ -1,7 +1,7 @@
 /**
  * 设计助手侧栏（docs/design-canvas.md §11 第六轮；对齐 .pen 设计稿 XjPQ 的
  * 侧栏覆写：设计页隐藏 Nav/工作区/任务列表/底栏，Spacer 位置换成「绘画窗口」；
- * 侧栏 Composer 隐藏审批模式下拉）。
+ * 侧栏 Composer 保留审批模式下拉，设计写操作与普通会话使用同一权限档。
  *
  * 组成（自上而下）：返回/新建设计会话行 → 空态引导（无消息时）或消息流 → Composer。
  * 会话就是普通 Axiom 会话（§4.2）：设计页的对话与画布是同一份会话状态的两个投影，
@@ -87,8 +87,7 @@ const DesignAssistantPanel = () => {
       )}
       <div className="design-assistant__composer">
         {activeSessionId ? (
-          // 窄栏 Composer 隐藏审批模式下拉（设计稿 XjPQ 的 Controls Row 只留模型/预算/发送）。
-          <Composer variant="session" showAccessPicker={false} />
+          <Composer variant="session" />
         ) : (
           <button
             type="button"

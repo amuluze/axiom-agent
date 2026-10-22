@@ -117,13 +117,16 @@ afterEach(() => {
 })
 
 describe('Sidebar', () => {
-  it('renders the sidebar nav with 新任务、技能 and 设计 items', () => {
+  it('renders the sidebar nav with 新任务/文档/设计/测试 items (no 技能/SSH)', () => {
     const html = renderToStaticMarkup(createElement(Sidebar))
     expect(html).toContain('sidebar')
     expect(html).toContain('新任务')
-    expect(html).toContain('技能')
-    // SSH 已迁回 RuntimeRail 面板（无独立全窗口视图），侧栏入口换为设计画布。
+    // 侧栏导航已收敛为 新任务/文档/设计/测试（#110 从设计稿移除「技能」入口）。
+    expect(html).toContain('文档')
     expect(html).toContain('设计')
+    expect(html).toContain('测试')
+    expect(html).not.toContain('技能')
+    // SSH 已迁回 RuntimeRail 面板（无独立全窗口视图），侧栏入口不含 SSH。
     expect(html).not.toContain('SSH')
   })
 
@@ -131,6 +134,26 @@ describe('Sidebar', () => {
     const html = renderToStaticMarkup(createElement(Sidebar))
     expect(html).toContain('sidebar__nav-item--active')
     expect(html).toMatch(/active.*新任务|新任务.*active/u)
+  })
+
+  it('docs/testing 视图侧栏让位给助手面板：Nav/工作区/底栏不渲染（设计稿 XjPQ/docs-*/tsCases-* 覆写）', () => {
+    mocks.view = 'docs'
+    const html = renderToStaticMarkup(createElement(Sidebar))
+    // 助手面板经 Suspense 懒加载（SSR 渲染 fallback=null），但导航与底栏必须让位。
+    expect(html).not.toContain('新任务')
+    expect(html).not.toContain('sidebar__workspace-header')
+    expect(html).not.toContain('sidebar__bottom-bar')
+    mocks.view = 'testing'
+    const testingHtml = renderToStaticMarkup(createElement(Sidebar))
+    expect(testingHtml).not.toContain('新任务')
+    expect(testingHtml).not.toContain('sidebar__bottom-bar')
+  })
+
+  it('非助手视图（session）保留 Nav 且无 nav 项误亮', () => {
+    mocks.view = 'session'
+    const html = renderToStaticMarkup(createElement(Sidebar))
+    expect(html).toContain('文档')
+    expect(html.split('<button').filter((chunk) => chunk.includes('sidebar__nav-item--active'))).toHaveLength(0)
   })
 
   it('renders one icon-only add-directory action inside the workspace header', () => {
@@ -197,6 +220,24 @@ describe('Sidebar', () => {
     expect(html).toContain('title="该会话正在等待用户审批"')
   })
 
+  it('keeps full access visible on the session row', () => {
+    mocks.authorizedWorkspaces = [{ path: '/repo', name: 'repo' }]
+    mocks.sessions = [stubSession({
+      title: 'trusted task',
+      accessMode: 'no-approval',
+      workspace: { path: '/repo', name: 'repo' },
+    })]
+
+    const html = renderToStaticMarkup(createElement(Sidebar))
+    expect(html).toContain('完全访问')
+    // tooltip 必须列全四项后果（关沙箱 / 工作区外读写 / 凭据 / 出网 + 不再确认），
+    // 否则「读凭据」这一项在 UI 上无处可见。
+    expect(html).toContain('命令不经 OS 沙箱')
+    expect(html).toContain('可读写工作区外文件')
+    expect(html).toContain('可读本机凭据')
+    expect(html).toContain('写操作与命令均不再确认')
+  })
+
   it('moves archive action onto each session row without a delete button', () => {
     mocks.authorizedWorkspaces = [{ path: '/repo', name: 'repo' }]
     mocks.sessions = [stubSession({
@@ -232,7 +273,7 @@ describe('Sidebar', () => {
     expect(html).toContain('aria-label="向会话 idle task 发送消息"')
     // 运行中的后台会话可排队引导消息（不再只能停止），文案切换为排队语义。
     expect(html).toContain('aria-label="向会话 busy task 发送消息"')
-    expect(html).toContain('该会话正在运行：消息作为引导排队')
+    expect(html).toContain('运行中：消息作为引导排队注入')
     // 工作区已撤销的会话仍不可发。
     expect(html).not.toContain('aria-label="向会话 unbound task 发送消息"')
   })

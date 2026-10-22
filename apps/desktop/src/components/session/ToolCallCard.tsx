@@ -302,7 +302,7 @@ export const ToolCallCard = ({ toolCallId, toolName, call, result }: ToolCallCar
         {summaryContent ? (
           <div className="tool-card__summary-body">{summaryContent}</div>
         ) : (
-          <div className="tool-card__diff-body" aria-label={t('app.session.toolCard.diffAria')}>
+          <section className="tool-card__diff-body" aria-label={t('app.session.toolCard.diffAria')}>
             {(diffPreview as string).split('\n').map((line, index) => (
               <div
                 key={index}
@@ -311,14 +311,14 @@ export const ToolCallCard = ({ toolCallId, toolName, call, result }: ToolCallCar
                 {line.length > 0 ? line : ' '}
               </div>
             ))}
-          </div>
+          </section>
         )}
       </details>
     )
   }
 
   return (
-    <div className={cardClassName} role="group" aria-label={ariaLabel}>
+    <fieldset className={cardClassName} aria-label={ariaLabel}>
       {headerChildren}
       {resultImages.length > 0 && (
         <div className="tool-card__images">
@@ -327,6 +327,6 @@ export const ToolCallCard = ({ toolCallId, toolName, call, result }: ToolCallCar
           ))}
         </div>
       )}
-    </div>
+    </fieldset>
   )
 }

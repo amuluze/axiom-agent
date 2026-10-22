@@ -120,7 +120,11 @@ export const extractComponentUsage = (
   }
   // 别名 → 注册表本名：`import { Sidebar as SidePanel }` 后 JSX 写的是 <SidePanel/>。
   const aliasToCanonical = new Map<string, string>()
-  const skeleton = stripCodeNoise(source)
+  const skeleton = stripCodeNoise(source.replace(/<!--[\s\S]*?-->/g, (value) => value.replace(/[^\n]/g, ' ')))
+  for (const match of skeleton.matchAll(/import\s+(?:type\s+)?([A-Z][A-Za-z0-9_$]*)\s+from/g)) {
+    const name = match[1] ?? ''
+    if (target.has(name)) entryOf(name).imports += 1
+  }
   for (const match of skeleton.matchAll(NAMED_IMPORT_PATTERN)) {
     const clause = match[1] ?? ''
     for (const raw of clause.split(',')) {

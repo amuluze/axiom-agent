@@ -1,4 +1,4 @@
-import type { AgentTool, JsonValue } from '../core/types'
+import type { AgentTool, AgentToolResult, JsonValue } from '../core/types'
 import { hasOnlyKeys, isJsonObject, optionalInteger } from './workspaceToolUtils'
 
 const DEFAULT_LIMIT = 4
@@ -59,7 +59,7 @@ export const createDiscoverAgentToolsTool = (
     promptGuidelines: [
       '激活的工具在本次会话剩余时间内始终可用。',
     ],
-    runtimeVersion: '4',
+    runtimeVersion: '7',
     recoveryPolicy: 'idempotent',
     idempotencyKey: (input) => {
       const { query, limit } = asDiscoveryInput(input)
@@ -97,8 +97,12 @@ export const createDiscoverAgentToolsTool = (
       }
       return { ok: true, value: input }
     },
-    execute: async (input) => {
+    execute: async (input): Promise<AgentToolResult> => {
       const { query, limit } = asDiscoveryInput(input)
+      if (/^bash$|^run(?: tests| commands?)?$|执行命令|运行测试/iu.test(query)
+        && !tools.some((tool) => tool.name === 'bash')) {
+        throw new Error('当前运行时未开放命令执行能力。桌面端需要 Rust 确认可用的系统沙箱；工具发现不能绕过此限制。')
+      }
       const terms = queryTerms(query)
       const matches = tools
         .map((tool, index) => ({ tool, index, score: scoreTool(tool, normalizeQuery(query), terms) }))

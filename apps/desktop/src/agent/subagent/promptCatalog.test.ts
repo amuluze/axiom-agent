@@ -19,8 +19,13 @@ describe('promptCatalog（设置页查看/编辑入口）', () => {
     expect(getBuiltinSubAgentPromptTemplate('inspect', 'en')).toContain('{{TOOLS}}')
     expect(getBuiltinSubAgentPromptTemplate('examine', 'en')).toContain('{{FORBIDDEN}}')
     expect(getBuiltinSubAgentPromptTemplate('review', 'en')).not.toContain('# 角色')
-    // explore 的工具段为模板内联文本，无 {{TOOLS}} 占位符
-    expect(getBuiltinSubAgentPromptTemplate('explore', 'zh-CN')).not.toContain('{{TOOLS}}')
+    // 四类子代理的工具段一律走 {{TOOLS}} 占位符：清单从只读工厂表派生，
+    // 模板内不得再写死一份（此前 explore 是内联静态文本，形成第二事实源——
+    // 工具集增删后文案不会跟随，子模型据此尝试调用不存在的工具）。
+    for (const kind of ['explore', 'inspect', 'examine', 'review'] as const) {
+      expect(getBuiltinSubAgentPromptTemplate(kind, 'zh-CN')).toContain('{{TOOLS}}')
+      expect(getBuiltinSubAgentPromptTemplate(kind, 'en')).toContain('{{TOOLS}}')
+    }
   })
 
   it('preview 渲染掉全部占位符；传入覆写模板时按覆写渲染', () => {

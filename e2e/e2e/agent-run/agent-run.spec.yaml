@@ -1,0 +1,23 @@
+feature:
+  id: e2e-agent-run
+  title: Agent 运行旅程
+  summary: 从发送到工具审批的完整链路：模型流经宿主通道返回、工具调用经审批租约
+    才能触达工作区，拒绝路径必须完全不触达。
+business_rules:
+  - id: CE-E2E-RUN-001
+    title: 发送后模型请求经宿主模型流通道（stream_model_http）发起
+  - id: CE-E2E-RUN-002
+    title: 助手回复渲染进会话视图
+  - id: CE-E2E-RUN-003
+    title: L1 受保护工具经 discover 激活后调用，弹出审批卡片等待用户裁决
+  - id: CE-E2E-RUN-004
+    title: 允许后宿主签发租约，命令在工作区执行且结果回填到会话
+  - id: CE-E2E-RUN-005
+    title: 用户拒绝时命令不执行，宿主不收到租约请求（fail-closed）
+groups:
+  - id: stream
+    title: 文本流
+    cases: [text-run-streams]
+  - id: approval
+    title: 审批
+    cases: [bash-tool-approved, bash-tool-denied]

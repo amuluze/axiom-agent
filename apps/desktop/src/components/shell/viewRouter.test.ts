@@ -40,6 +40,16 @@ describe('viewRouter.resolveAutoView', () => {
     expect(resolveAutoView(false, false, 'design')).toBe('design')
   })
 
+  it('preserves an explicitly opened testing view when background messages change', () => {
+    expect(resolveAutoView(false, true, 'testing')).toBe('testing')
+    expect(resolveAutoView(false, false, 'testing')).toBe('testing')
+  })
+
+  it('preserves an explicitly opened docs view when background messages change', () => {
+    expect(resolveAutoView(false, true, 'docs')).toBe('docs')
+    expect(resolveAutoView(false, false, 'docs')).toBe('docs')
+  })
+
   it('still forces provider setup even when another view is active', () => {
     expect(resolveAutoView(true, true, 'session')).toBe('settings')
   })
@@ -88,6 +98,8 @@ describe('viewRouter.resolveViewRender', () => {
       shell: false,
       session: false,
       design: false,
+      docs: false,
+      testing: false,
     })
   })
 
@@ -97,6 +109,8 @@ describe('viewRouter.resolveViewRender', () => {
       shell: true,
       session: false,
       design: false,
+      docs: false,
+      testing: false,
     })
   })
 
@@ -106,6 +120,8 @@ describe('viewRouter.resolveViewRender', () => {
       shell: true,
       session: true,
       design: false,
+      docs: false,
+      testing: false,
     })
   })
 
@@ -115,6 +131,30 @@ describe('viewRouter.resolveViewRender', () => {
       shell: true,
       session: false,
       design: true,
+      docs: false,
+      testing: false,
+    })
+  })
+
+  it('signals shell + docs for the docs view', () => {
+    expect(resolveViewRender('docs')).toEqual({
+      settingsScreen: false,
+      shell: true,
+      session: false,
+      design: false,
+      docs: true,
+      testing: false,
+    })
+  })
+
+  it('signals shell + testing for the testing view', () => {
+    expect(resolveViewRender('testing')).toEqual({
+      settingsScreen: false,
+      shell: true,
+      session: false,
+      design: false,
+      docs: false,
+      testing: true,
     })
   })
 })

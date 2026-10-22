@@ -7,7 +7,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 
 import type { AgentMutationBatch } from '@/agent/core/types'
-import { commitSessionMutationBatch, createSessionMutationRequest } from './sessionMutations'
+import { createSessionMutationRequest } from '@/persistence/sessionMutationPayload'
+import { commitSessionMutationBatch } from './sessionMutations'
 
 beforeEach(() => {
   mocks.invoke.mockReset()

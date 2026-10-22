@@ -1,0 +1,41 @@
+{
+  "ax": "1.4",
+  "name": "NavItem",
+  "tokens": {},
+  "components": {},
+  "symbols": {
+    "NavItem": {
+      "props": { "label": "string" },
+      "body": [
+        {
+          "id": "nav-root",
+          "kind": "frame",
+          "layout": "horizontal",
+          "gap": 8,
+          "padding": [8, 12, 8, 12],
+          "width": "fill_container",
+          "alignItems": "center",
+          "children": [
+            { "id": "nav-icon", "kind": "icon", "name": "circle", "size": 16, "fill": "#1F1E1C" },
+            { "id": "nav-label", "kind": "text", "text": { "$param": "label" }, "wrap": "nowrap", "fontSize": 14, "fill": "#1F1E1C" }
+          ]
+        }
+      ]
+    }
+  },
+  "pages": [
+    {
+      "id": "nav-page",
+      "name": "NavItem 模式",
+      "width": 240,
+      "height": 360,
+      "layout": "vertical",
+      "tree": [
+        { "id": "n1", "kind": "component", "name": "NavItem", "props": { "label": "仪表盘" } },
+        { "id": "n2", "kind": "component", "name": "NavItem", "props": { "label": "订单管理" } },
+        { "id": "n3", "kind": "component", "name": "NavItem", "props": { "label": "用户管理" } },
+        { "id": "n4", "kind": "component", "name": "NavItem", "props": { "label": "设置" } }
+      ]
+    }
+  ]
+}

@@ -38,8 +38,7 @@ pub(crate) use crate::generated_provider_table::{
     CONTEXT_DEFAULT, CONTEXT_MAX, CONTEXT_MIN, CURRENT_PROVIDER_SECRET_PREFIXES,
     ENDPOINT_MAX_BYTES, GENERATED_PROVIDER_ENTRIES, IDENTIFIER_MAX_BYTES,
     LEGACY_PROVIDER_SECRET_PREFIXES, MAX_OUTPUT_DEFAULT, MAX_OUTPUT_MAX, MAX_OUTPUT_MIN,
-    MODEL_ID_MAX_BYTES, PROVIDER_TRUSTED_HOSTS, TIMEOUT_DEFAULT_MS, TIMEOUT_MAX_MS,
-    TIMEOUT_MIN_MS,
+    MODEL_ID_MAX_BYTES, PROVIDER_TRUSTED_HOSTS, TIMEOUT_DEFAULT_MS, TIMEOUT_MAX_MS, TIMEOUT_MIN_MS,
 };
 const BUILTIN_PROVIDER_PROFILES: &[ProviderProfileEntry] = GENERATED_PROVIDER_ENTRIES;
 
@@ -909,14 +908,15 @@ pub(crate) fn resolve_profile(
         .model_wires
         .iter()
         .find(|wire| Some(wire.model_id) == model_id);
-    let override_value = endpoint_override.map(str::trim).filter(|value| !value.is_empty());
+    let override_value = endpoint_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let raw_endpoint = match (override_value, model_wire) {
         (None, _) => wire_endpoint.to_string(),
         (Some(override_endpoint), None) => override_endpoint.to_string(),
         (Some(override_endpoint), Some(wire)) => {
             let override_url = validate_model_url(override_endpoint)?;
-            let default_origin =
-                url_origin(&validate_model_url(entry.default_profile.endpoint)?);
+            let default_origin = url_origin(&validate_model_url(entry.default_profile.endpoint)?);
             if url_origin(&override_url) == default_origin {
                 // 同 origin：用户没换 host，协议 path 由该模型的 wire 说了算。
                 wire_endpoint.to_string()
@@ -1047,7 +1047,10 @@ mod tests {
             Some("provider.openai-responses.api-key")
         );
         // 缺声明按「跟随目录」归一（Domain 不变量 3）。
-        assert_eq!(decoded.profile.image_input, Some(ImageInputDeclaration::Catalog));
+        assert_eq!(
+            decoded.profile.image_input,
+            Some(ImageInputDeclaration::Catalog)
+        );
     }
 
     #[test]
@@ -1147,7 +1150,10 @@ mod tests {
         }
         let decoded = decode_profile_document(&value).unwrap();
         assert_eq!(decoded.profile.model_name.as_deref(), Some("GPT-4.1 主力"));
-        assert_eq!(decoded.profile.website.as_deref(), Some("https://openai.com"));
+        assert_eq!(
+            decoded.profile.website.as_deref(),
+            Some("https://openai.com")
+        );
         assert!(!decoded.requires_persistence_migration);
     }
 
@@ -1158,8 +1164,14 @@ mod tests {
         let decoded = decode_profile_document(&downgraded(v5_profile(), 4)).unwrap();
         assert!(decoded.requires_persistence_migration);
         assert!(decoded.secret_migration.is_none());
-        assert_eq!(decoded.profile.image_input, Some(ImageInputDeclaration::Catalog));
-        assert_eq!(decoded.profile.schema_version, PROVIDER_PROFILE_SCHEMA_VERSION);
+        assert_eq!(
+            decoded.profile.image_input,
+            Some(ImageInputDeclaration::Catalog)
+        );
+        assert_eq!(
+            decoded.profile.schema_version,
+            PROVIDER_PROFILE_SCHEMA_VERSION
+        );
     }
 
     #[test]
@@ -1169,7 +1181,10 @@ mod tests {
         assert!(decoded.requires_persistence_migration);
         assert!(decoded.secret_migration.is_none());
         assert_eq!(decoded.profile.website, None);
-        assert_eq!(decoded.profile.image_input, Some(ImageInputDeclaration::Catalog));
+        assert_eq!(
+            decoded.profile.image_input,
+            Some(ImageInputDeclaration::Catalog)
+        );
     }
 
     #[test]
@@ -1299,12 +1314,21 @@ mod tests {
     fn resolves_own_official_host_per_provider() {
         // 每个 provider 放行自己的官方域名（默认 origin，或 providers.json `trustedHosts`）。
         for (provider_id, endpoint) in [
-            ("zhipu-glm", "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"),
-            ("minimax-chat", "https://api.minimaxi.com/v1/chat/completions"),
+            (
+                "zhipu-glm",
+                "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+            ),
+            (
+                "minimax-chat",
+                "https://api.minimaxi.com/v1/chat/completions",
+            ),
             ("deepseek", "https://api.deepseek.com/chat/completions"),
             ("kimi", "https://api.moonshot.cn/v1/chat/completions"),
             ("kimi-coding", "https://api.kimi.com/coding/v1/messages"),
-            ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"),
+            (
+                "gemini",
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            ),
         ] {
             let resolved = resolve_profile(provider_id, Some(endpoint), None).unwrap();
             assert_eq!(
@@ -1321,7 +1345,10 @@ mod tests {
             ("zhipu-glm", "https://api.minimaxi.com/v1/chat/completions"),
             ("minimax-chat", "https://api.deepseek.com/chat/completions"),
             ("deepseek", "https://api.moonshot.cn/v1/chat/completions"),
-            ("generic-anthropic-compatible", "https://api.kimi.com/coding/v1/messages"),
+            (
+                "generic-anthropic-compatible",
+                "https://api.kimi.com/coding/v1/messages",
+            ),
         ] {
             let error = resolve_profile(provider_id, Some(foreign_endpoint), None).unwrap_err();
             assert!(
@@ -1753,7 +1780,10 @@ mod tests {
         assert_eq!(chat.api_format, ModelApiFormat::OpenaiCompatible);
 
         let messages = resolve_profile("opencode-go", None, Some("minimax-m3")).unwrap();
-        assert_eq!(messages.url.as_str(), "https://opencode.ai/zen/go/v1/messages");
+        assert_eq!(
+            messages.url.as_str(),
+            "https://opencode.ai/zen/go/v1/messages"
+        );
         assert_eq!(messages.api_format, ModelApiFormat::AnthropicCompatible);
 
         let responses = resolve_profile("opencode-go", None, Some("grok-4.6")).unwrap();
@@ -1790,7 +1820,10 @@ mod tests {
             Some("minimax-m3"),
         )
         .unwrap();
-        assert_eq!(resolved.url.as_str(), "https://opencode.ai/zen/go/v1/messages");
+        assert_eq!(
+            resolved.url.as_str(),
+            "https://opencode.ai/zen/go/v1/messages"
+        );
         assert_eq!(resolved.api_format, ModelApiFormat::AnthropicCompatible);
     }
 
@@ -1803,7 +1836,10 @@ mod tests {
             Some("grok-4.6"),
         )
         .unwrap();
-        assert_eq!(resolved.url.as_str(), "http://127.0.0.1:8080/zen/go/v1/responses");
+        assert_eq!(
+            resolved.url.as_str(),
+            "http://127.0.0.1:8080/zen/go/v1/responses"
+        );
         assert_eq!(resolved.api_format, ModelApiFormat::OpenaiResponses);
     }
 
@@ -1829,7 +1865,10 @@ mod tests {
             Some("anything"),
         )
         .unwrap();
-        assert_eq!(resolved.url.as_str(), "https://api.openai.com/v1/other-path");
+        assert_eq!(
+            resolved.url.as_str(),
+            "https://api.openai.com/v1/other-path"
+        );
     }
 
     #[test]

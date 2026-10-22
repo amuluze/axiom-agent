@@ -43,7 +43,9 @@ struct ProviderSecretCleanupIntent {
 
 /// worker 请求：Bind 恒为首个请求（setup 在任何密钥操作前调用 bind_data_root）。
 enum SecretRequest {
-    Bind { data_root: PathBuf },
+    Bind {
+        data_root: PathBuf,
+    },
     Load {
         key: String,
         reply: mpsc::Sender<Result<Option<String>, String>>,
@@ -216,9 +218,7 @@ async fn run_secret_worker(mut receiver: tokio::sync::mpsc::UnboundedReceiver<Se
 /// 惰性打开密钥连接：密钥操作可能先于 `initialize_session_repository` 的
 /// migrate 执行（如 setup 阶段的 connect 长连接），因此建表用与 v15 迁移
 /// 同一 DDL 常量幂等保证；user_version 仍由 migrate() 独占管理。
-async fn ensure_connection(
-    state: &mut SecretWorkerState,
-) -> Result<&mut SqliteConnection, String> {
+async fn ensure_connection(state: &mut SecretWorkerState) -> Result<&mut SqliteConnection, String> {
     if state.connection.is_none() {
         let data_root = state
             .data_root
@@ -248,11 +248,7 @@ const SECRET_UPSERT_SQL: &str = "INSERT INTO secrets (secret_key, value, updated
 VALUES (?, ?, CAST(strftime('%s', 'now') AS INTEGER)) \
 ON CONFLICT(secret_key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at";
 
-async fn save_value(
-    state: &mut SecretWorkerState,
-    key: &str,
-    value: &str,
-) -> Result<(), String> {
+async fn save_value(state: &mut SecretWorkerState, key: &str, value: &str) -> Result<(), String> {
     let connection = ensure_connection(state).await?;
     sqlx::query(SECRET_UPSERT_SQL)
         .bind(key)
@@ -402,11 +398,9 @@ fn persist_provider_secret_cleanup_intent_to(
     }
     if source_secret_ids.is_empty() {
         match fs::remove_file(&intent_path) {
-            Ok(()) => {
-                crate::storage_paths::sync_directory(&directory).map_err(|error| {
-                    format!("failed to sync Provider Secret cleanup directory: {error}")
-                })
-            }
+            Ok(()) => crate::storage_paths::sync_directory(&directory).map_err(|error| {
+                format!("failed to sync Provider Secret cleanup directory: {error}")
+            }),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(format!(
                 "failed to remove Provider Secret cleanup intent: {error}"
@@ -427,9 +421,7 @@ fn persist_provider_secret_cleanup_intent_to(
         temporary
             .as_file()
             .set_permissions(fs::Permissions::from_mode(0o600))
-            .map_err(|error| {
-                format!("failed to secure Provider Secret cleanup intent: {error}")
-            })?;
+            .map_err(|error| format!("failed to secure Provider Secret cleanup intent: {error}"))?;
     }
     temporary
         .write_all(&encoded)
@@ -501,6 +493,60 @@ fn validate_connect_secret_key(key: &str) -> Result<&str, String> {
 /// SSH 主机密码等 SSH 专属凭据的命名空间（`ssh.host.<hostId>`）。与 connect
 /// 同一模式：只允许 Rust 侧专用 helper 读写，WebView 不经手明文。
 const SSH_SECRET_PREFIX: &str = "ssh.";
+const API_TEST_SECRET_PREFIX: &str = "apitest.";
+
+fn validate_api_test_secret_key(key: &str) -> Result<&str, String> {
+    let key = validate_secret_key(key)?;
+    if !key.starts_with(API_TEST_SECRET_PREFIX) || key.len() <= API_TEST_SECRET_PREFIX.len() {
+        return Err("secret key is outside the API test namespace".into());
+    }
+    Ok(key)
+}
+
+pub(crate) fn load_api_test_secret(
+    state: &SecretState,
+    key: &str,
+) -> Result<Option<String>, String> {
+    let key = validate_api_test_secret_key(key)?;
+    state.load(key)
+}
+
+pub(crate) fn store_api_test_secret(
+    state: &SecretState,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
+    let key = validate_api_test_secret_key(key)?;
+    let value = validate_secret_value(value)?;
+    state.save(key, value)
+}
+
+#[tauri::command]
+pub(crate) fn save_api_test_secret(
+    state: tauri::State<'_, SecretState>,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    store_api_test_secret(&state, &key, &value)
+}
+
+#[tauri::command]
+pub(crate) fn has_api_test_secret(
+    state: tauri::State<'_, SecretState>,
+    key: String,
+) -> Result<bool, String> {
+    let key = validate_api_test_secret_key(&key)?;
+    state.exists(key)
+}
+
+#[tauri::command]
+pub(crate) fn delete_api_test_secret(
+    state: tauri::State<'_, SecretState>,
+    key: String,
+) -> Result<(), String> {
+    let key = validate_api_test_secret_key(&key)?;
+    state.delete(key)
+}
 
 fn validate_ssh_secret_key(key: &str) -> Result<&str, String> {
     let key = validate_secret_key(key)?;
@@ -532,20 +578,24 @@ pub(crate) fn load_secret(state: &SecretState, key: &str) -> Result<Option<Strin
 }
 
 /// connect 状态展示专用：存在性检查（纯 DB 查询）。
-pub(crate) fn connect_secret_exists(
-    state: &SecretState,
-    key: &str,
-) -> Result<bool, String> {
+pub(crate) fn connect_secret_exists(state: &SecretState, key: &str) -> Result<bool, String> {
     let key = validate_connect_secret_key(key)?;
     state.exists(key)
 }
 
-pub(crate) fn load_connect_secret(state: &SecretState, key: &str) -> Result<Option<String>, String> {
+pub(crate) fn load_connect_secret(
+    state: &SecretState,
+    key: &str,
+) -> Result<Option<String>, String> {
     let key = validate_connect_secret_key(key)?;
     state.load(key)
 }
 
-pub(crate) fn save_connect_secret(state: &SecretState, key: &str, value: &str) -> Result<(), String> {
+pub(crate) fn save_connect_secret(
+    state: &SecretState,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
     let key = validate_connect_secret_key(key)?;
     let value = validate_secret_value(value)?;
     state.save(key, value)
@@ -642,6 +692,17 @@ mod tests {
         assert!(validate_connect_secret_key("provider.minimax.api-key").is_err());
         assert!(validate_connect_secret_key("connect").is_err());
         assert!(validate_connect_secret_key("connect.").is_err());
+    }
+
+    #[test]
+    fn restricts_api_test_secret_namespace() {
+        assert_eq!(
+            validate_api_test_secret_key("apitest.checkout-token"),
+            Ok("apitest.checkout-token")
+        );
+        assert!(validate_api_test_secret_key("provider.openai.key").is_err());
+        assert!(validate_api_test_secret_key("apitest.").is_err());
+        assert!(validate_api_test_secret_key("apitest").is_err());
     }
 
     #[test]

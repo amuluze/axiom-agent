@@ -6,6 +6,7 @@ import { RuntimeRail } from './RuntimeRail'
 import type { RuntimeRailPane } from '@/stores/uiStore'
 
 const mocks = vi.hoisted(() => ({
+  operatingSystem: 'macos',
   runtimeRailPane: 'picker' as RuntimeRailPane,
   setRuntimeRailPane: vi.fn(),
   runtimeRailWidth: 288,
@@ -14,10 +15,6 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('./BrowserPanel', () => ({
   BrowserPanel: () => <div data-testid="browser-panel-mock" />,
-}))
-
-vi.mock('./ComputerPanel', () => ({
-  ComputerPanel: () => <div data-testid="computer-panel-mock" />,
 }))
 
 vi.mock('./SshTerminalPanel', () => ({
@@ -30,6 +27,7 @@ vi.mock('@/stores/uiStore', async (importOriginal) => {
   // 每次调用重建状态，保证测试内在 beforeEach 修改的 mocks 值能被读到。
   const buildState = (): UiState => ({
     ...original.useUiStore.getState(),
+    operatingSystem: mocks.operatingSystem,
     runtimeRailPane: mocks.runtimeRailPane,
     setRuntimeRailPane: mocks.setRuntimeRailPane,
     runtimeRailWidth: mocks.runtimeRailWidth,
@@ -45,6 +43,7 @@ vi.mock('@/stores/uiStore', async (importOriginal) => {
 })
 
 afterEach(() => {
+  mocks.operatingSystem = 'macos'
   mocks.runtimeRailPane = 'picker'
   mocks.setRuntimeRailPane.mockClear()
   mocks.runtimeRailWidth = 288
@@ -52,12 +51,12 @@ afterEach(() => {
 })
 
 describe('RuntimeRail picker 卡片页', () => {
+
   it('defaults to the picker page with both pane cards and no panel mounted', () => {
     render(<RuntimeRail />)
     expect(screen.getByText('打开标签页')).toBeTruthy()
     expect(screen.getByText('选择要在侧边面板中打开的标签。')).toBeTruthy()
     expect(screen.getByRole('tab', { name: '浏览器' })).toBeTruthy()
-    expect(screen.getByRole('tab', { name: '电脑控制' })).toBeTruthy()
     expect(screen.getByRole('tab', { name: 'SSH' })).toBeTruthy()
     expect(screen.queryByTestId('browser-panel-mock')).toBeNull()
     expect(screen.queryByLabelText('返回标签页选择')).toBeNull()
@@ -67,12 +66,6 @@ describe('RuntimeRail picker 卡片页', () => {
     render(<RuntimeRail />)
     fireEvent.click(screen.getByRole('tab', { name: '浏览器' }))
     expect(mocks.setRuntimeRailPane).toHaveBeenCalledWith('browser')
-  })
-
-  it('opens the computer panel when its card is clicked', () => {
-    render(<RuntimeRail />)
-    fireEvent.click(screen.getByRole('tab', { name: '电脑控制' }))
-    expect(mocks.setRuntimeRailPane).toHaveBeenCalledWith('computer')
   })
 
   it('opens the ssh panel when its card is clicked', () => {
@@ -97,13 +90,6 @@ describe('RuntimeRail panel 态', () => {
     expect(screen.getByLabelText('返回标签页选择')).toBeTruthy()
   })
 
-  it('mounts the computer panel for the computer pane', () => {
-    mocks.runtimeRailPane = 'computer'
-    render(<RuntimeRail />)
-    expect(screen.getByText('电脑控制')).toBeTruthy()
-    expect(screen.getByTestId('computer-panel-mock')).toBeTruthy()
-  })
-
   it('mounts the ssh panel for the ssh pane', () => {
     mocks.runtimeRailPane = 'ssh'
     render(<RuntimeRail />)
@@ -112,7 +98,7 @@ describe('RuntimeRail panel 态', () => {
   })
 
   it('goes back to the picker page when the back button is clicked', () => {
-    mocks.runtimeRailPane = 'computer'
+    mocks.runtimeRailPane = 'browser'
     render(<RuntimeRail />)
     fireEvent.click(screen.getByLabelText('返回标签页选择'))
     expect(mocks.setRuntimeRailPane).toHaveBeenCalledWith('picker')
@@ -176,7 +162,6 @@ describe('RuntimeRail SSR', () => {
     const html = renderToStaticMarkup(<RuntimeRail />)
     expect(html).toContain('打开标签页')
     expect(html).toContain('浏览器')
-    expect(html).toContain('电脑控制')
     expect(html).toContain('SSH')
     expect(html).toContain('role="tablist"')
     mocks.runtimeRailPane = 'browser'

@@ -33,9 +33,16 @@ export const sessionsZh = {
   'settings.sessions.stat.artifactWarning': 'Artifact 清理异常：{warning}',
   'settings.sessions.gc': '清理未引用 Artifact',
   'settings.sessions.gcing': '正在清理…',
-  'settings.sessions.gcConfirm': '清理未引用的 Artifact 吗？\n\n仅回收不再被任何会话/审计 diff 包引用的内容寻址对象：先进入可恢复回收区（未引用超过宽限期后），超过保留期后彻底删除。删除的会话或分支相关对象可能在此被回收。',
+  'settings.sessions.gcConfirm': '清理未引用的 Artifact 吗？\n\n未引用对象先进入可恢复回收区，超过保留期后彻底删除。',
   'settings.sessions.gcResult': '回收 {trashed} 项（可恢复）· 清理 {purged} 项',
+  'settings.sessions.maintain': '压缩数据库',
+  'settings.sessions.maintaining': '正在压缩…',
+  'settings.sessions.maintainConfirm': '压缩 SQLite 数据库吗？\n\n会执行 WAL checkpoint，并在存在空洞时执行 VACUUM。不会删除任何会话或消息；数据库较大时可能需要一段时间。',
+  'settings.sessions.maintainResult': 'SQLite {before} → {after}（{vacuumed}）',
+  'settings.sessions.maintainVacuumed': '已执行 VACUUM',
+  'settings.sessions.maintainCheckpointOnly': '仅 WAL checkpoint',
   'settings.sessions.recovered': '本次启动已安全结束 {count} 个中断运行，没有自动重放工具。',
+  'settings.sessions.recoveryBreakdown': '其中已完成 {completed} 个、已失败 {failed} 个、状态未知 {unknown} 个；中断工具调用 {interrupted} 个，可能已执行但结果未保存 {possiblyExecuted} 个。',
 } satisfies Record<string, string>
 
 export const sessionsEn: Record<string, string> = {
@@ -69,16 +76,23 @@ export const sessionsEn: Record<string, string> = {
   'settings.sessions.stat.artifactWarning': 'Artifact cleanup issue: {warning}',
   'settings.sessions.gc': 'Clean up unreferenced artifacts',
   'settings.sessions.gcing': 'Cleaning…',
-  'settings.sessions.gcConfirm': 'Clean up unreferenced artifacts?\n\nOnly content-addressed objects no longer referenced by any session/audit diff are reclaimed: they move to the recoverable trash first (after the grace period), then are permanently deleted after the retention period. Objects of deleted sessions or branches may be reclaimed here.',
+  'settings.sessions.gcConfirm': 'Clean up unreferenced artifacts?\n\nUnreferenced objects move to the recoverable trash first, then are permanently deleted after the retention period.',
   'settings.sessions.gcResult': 'Reclaimed {trashed} items (recoverable) · purged {purged} items',
+  'settings.sessions.maintain': 'Compact database',
+  'settings.sessions.maintaining': 'Compacting…',
+  'settings.sessions.maintainConfirm': 'Compact the SQLite database?\n\nThis runs a WAL checkpoint and a VACUUM when free pages exist. It does not delete sessions or messages; a large database may take a while.',
+  'settings.sessions.maintainResult': 'SQLite {before} → {after} ({vacuumed})',
+  'settings.sessions.maintainVacuumed': 'VACUUM executed',
+  'settings.sessions.maintainCheckpointOnly': 'WAL checkpoint only',
   'settings.sessions.recovered': 'This launch safely finished {count} interrupted runs without auto-replaying tools.',
+  'settings.sessions.recoveryBreakdown': 'Completed {completed}, failed {failed}, unknown {unknown}; {interrupted} interrupted tool calls, {possiblyExecuted} possibly executed without a saved result.',
 }
 
 export const archivedZh = {
   'settings.archived.title': '已归档的会话',
   'settings.archived.count': '{count} 个',
   'settings.archived.empty.title': '没有已归档的会话',
-  'settings.archived.empty.desc': '在左侧任务栏中归档的会话会出现在这里，随时可以恢复或删除。',
+  'settings.archived.empty.desc': '左侧归档的会话会出现在这里，可随时恢复或删除。',
   'settings.archived.listAria': '已归档会话列表',
   'settings.archived.groupAria': '工作区 {name}',
   'settings.archived.justNow': '刚刚',
@@ -96,14 +110,14 @@ export const archivedZh = {
   'settings.archived.deleteAria': '删除会话',
   'settings.archived.confirm': '确认',
   'settings.archived.delete': '删除',
-  'settings.archived.note': '已归档的会话不会自动删除。删除后不可恢复，相关 artifact 会被清理。',
+  'settings.archived.note': '归档不会自动删除；删除不可恢复。',
 } satisfies Record<string, string>
 
 export const archivedEn: Record<string, string> = {
   'settings.archived.title': 'Archived sessions',
   'settings.archived.count': '{count}',
   'settings.archived.empty.title': 'No archived sessions',
-  'settings.archived.empty.desc': 'Sessions you archive from the left sidebar appear here and can be restored or deleted anytime.',
+  'settings.archived.empty.desc': 'Sessions archived from the sidebar appear here, ready to restore or delete.',
   'settings.archived.listAria': 'Archived session list',
   'settings.archived.groupAria': 'Workspace {name}',
   'settings.archived.justNow': 'Just now',
@@ -121,5 +135,5 @@ export const archivedEn: Record<string, string> = {
   'settings.archived.deleteAria': 'Delete session',
   'settings.archived.confirm': 'Confirm',
   'settings.archived.delete': 'Delete',
-  'settings.archived.note': 'Archived sessions are never deleted automatically. Deleting is permanent and related artifacts are cleaned up.',
+  'settings.archived.note': 'Archived sessions are never deleted automatically; deleting is permanent.',
 }

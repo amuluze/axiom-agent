@@ -1,4 +1,4 @@
-import type { AgentCapability } from '@/config/runtimePolicy'
+import type { AgentCapability, TestAutomationPolicy } from '@/config/runtimePolicy'
 import type { AgentTool } from '../core/types'
 import type { AgentEnvironment } from '@/agent/environment/AgentEnvironment'
 import { desktopAgentEnvironment } from '@/agent/environment/agentEnvironmentHost'
@@ -11,14 +11,19 @@ import { createEditTool } from './editTool'
 import { createApplyChangesTool } from './applyChangesTool'
 import { createBashTool } from './bashTool'
 import { createRestoreTrashTool } from './restoreTrashTool'
-import { createWebSearchTool } from './webSearchTool'
-import { createWebFetchTool } from './webFetchTool'
-import { createBrowserTool } from './browserTool'
-import { createComputerTool } from './computerTool'
-import { createSshHostsTool } from './sshHostsTool'
-import { createSshTool } from './sshTool'
 import { createDesignQueryTool } from './designQueryTool'
 import { createDesignImportTool } from './designImportTool'
+import { createUiSnapshotTool } from './uiSnapshotTool'
+import { createUiFindTool } from './uiFindTool'
+import { createUiScreenshotTool } from './uiScreenshotTool'
+import { createUiWaitTool } from './uiWaitTool'
+import { createUiAssertTool } from './uiAssertTool'
+import { createUiNavigateTool } from './uiNavigateTool'
+import { createUiClickTool } from './uiClickTool'
+import { createUiInputTool } from './uiInputTool'
+import { createUiSelectTool } from './uiSelectTool'
+import { createUiPressTool } from './uiPressTool'
+import { createApiRequestTool } from './apiRequestTool'
 import type { DesignComponentSummary } from '@/agent/design/componentInventoryHost'
 import { createLoadSkillTool } from '@/agent/skills/createLoadSkillTool'
 import { createExploreSubAgentTool } from '@/agent/subagent/explore/createExploreSubAgentTool'
@@ -29,13 +34,23 @@ import { createReviewSubAgentTool } from '@/agent/subagent/reviewers/createRevie
 export interface ToolRegistryOptions {
   capabilities: AgentCapability[]
   environment?: AgentEnvironment
+  /**
+   * H1-5 发布档策略（由 App 层从 `RUNTIME_POLICY.testAutomation` 注入）。Agent 层不 import
+   * app config 的**值**（既有方向是 `agent/**` 只做 type-only import），故策略经装配注入。
+   * 缺省取 fail-closed 的开发档：仅本地 loopback、不开放生成。
+   */
+  testAutomation?: TestAutomationPolicy
   /** `.ax` 组件清单来源（宿主装配注入；缺省由 design_query 用宿主接缝取）。 */
   designComponentInventory?: () => DesignComponentSummary[]
 }
 
+/** 未注入发布档策略时的 fail-closed 默认：等同开发 feature flag 档。 */
+const LOCKED_TEST_AUTOMATION: TestAutomationPolicy = { externalTargets: false, agentGeneration: false }
+
 export const createToolRegistry = ({
   capabilities,
   environment = desktopAgentEnvironment,
+  testAutomation = LOCKED_TEST_AUTOMATION,
   designComponentInventory,
 }: ToolRegistryOptions): AgentTool[] => {
   const enabled = new Set(capabilities)
@@ -46,9 +61,9 @@ export const createToolRegistry = ({
     tools.push(createReadTool(environment))
     if (enabled.has('workspace:read')) {
       tools.push(createLsTool(environment), createGrepTool(environment), createFindTool(environment))
-      // design_query：只读 .pen 子树查询（Rust read_design_document 通道），
-      // discover-gated 不进默认激活集——设计编辑会话由模型按需经
-      // discover_agent_tools 激活，避免非设计会话的工具表膨胀。
+      // design_query：只读 .ax 子树查询（Rust read_design_document 通道；.pen 仅经
+      // design_import 一次性迁移），discover-gated 不进默认激活集——设计编辑会话由
+      // 模型按需经 discover_agent_tools 激活，避免非设计会话的工具表膨胀。
       tools.push(createDesignQueryTool(environment, {
         ...(designComponentInventory ? { componentInventory: designComponentInventory } : {}),
       }))
@@ -81,6 +96,47 @@ export const createToolRegistry = ({
     )
   }
 
+  if (enabled.has('workspace:read') && enabled.has('ui-test:read')) {
+    // UI 只读探索（G1-2）：workspace:read + ui-test:read 才注册到完整工具表。
+    // 与子代理工具同为 discover-gated——不加入默认激活集（ALWAYS_ACTIVE_READ_TOOLS
+    // 只含 read/ls/grep/find），且宿主通道由 scopeAgentEnvironment 按 ui-test:read
+    // 门控：未授予时浏览器通道连宿主都不可达。只读，不设 requiresApproval。
+    tools.push(
+      createUiSnapshotTool(environment),
+      createUiFindTool(environment),
+      createUiScreenshotTool(environment),
+      createUiWaitTool(environment),
+      createUiAssertTool(environment),
+    )
+  }
+
+  if (enabled.has('workspace:read') && enabled.has('ui-test:write')) {
+    // UI 写探索（G1-3）：workspace:read + ui-test:write 才注册到完整工具表。
+    // 与只读块并列且同属 discover-gated——不加入默认激活集（ALWAYS_ACTIVE_READ_TOOLS
+    // 只含 read/ls/grep/find）。每个工具都 `requiresApproval`（逐次审批是 Agent 层的
+    // 门），宿主写通道由 scopeAgentEnvironment 按 ui-test:write 单独门控：未授予时
+    // 浏览器写通道连宿主都不可达。tabId 省略时要用活动标签页，因此工具还会走只读
+    // 通道（`ui-test:read`）——桌面默认同时授予两者，实际不会出现只写不读的会话。
+    tools.push(
+      createUiNavigateTool(environment),
+      createUiClickTool(environment),
+      createUiInputTool(environment),
+      createUiSelectTool(environment),
+      createUiPressTool(environment),
+    )
+  }
+
+  if (enabled.has('workspace:read') && enabled.has('api-test:request')) {
+    // API 探索（G1-4）：workspace:read + api-test:request 才注册到完整工具表。
+    // workspace:read 是因为测试环境与 API Driver 都以当前授权工作区为归属（Rust 按
+    // 工作区根加载 test_environments），与其它工具块同一前置条件。discover-gated——
+    // 不加入默认激活集（ALWAYS_ACTIVE_READ_TOOLS 只含 read/ls/grep/find）；工具自身
+    // `requiresApproval`（逐次审批），宿主通道由 scopeAgentEnvironment 按本能力单独
+    // 门控：未授予时 API 通道连宿主都不可达。另叠一层 H1-5 发布档目标门：开发档只放行
+    // 回环/本地目标（`testAutomation.externalTargets`）。
+    tools.push(createApiRequestTool(environment, testAutomation))
+  }
+
   if (enabled.has('workspace:write')) {
     tools.push(
       createWriteTool(environment),
@@ -94,39 +150,6 @@ export const createToolRegistry = ({
 
   if (enabled.has('workspace:execute')) {
     tools.push(createBashTool(environment))
-  }
-
-  // web 只读工具：独立 capability 门控（与工作区读取无关），discover-gated
-  // 不进入默认激活集——外部内容不可信且涉及查询词外发，由模型按需经
-  // discover_agent_tools 激活，不随会话启动默认暴露。
-  if (enabled.has('web:read')) {
-    tools.push(createWebSearchTool(environment), createWebFetchTool(environment))
-  }
-
-  // browser 工具：独立 capability 门控，discover-gated 不进默认激活集。注册只看
-  // capability（不随设置开关漂移）——持久化 activeToolNames 里的 browser 在用户
-  // 关闭设置后恢复会话时不至于因「未注册」而失败；「未启用」由 Rust 侧对 spawn
-  // 类动作 fail-closed 报错引导（恢复语义见 restoredActiveToolNames 的 throw 约定）。
-  // 主 Agent 专用：scopedReadEnvironment 结构性封死 browser 节，子 Agent 不共享
-  // 有状态浏览器会话。
-  if (enabled.has('web:browser')) {
-    tools.push(createBrowserTool(environment))
-  }
-
-  // computer 工具：与 browser 同款 capability 门控（discover-gated 不进默认
-  // 激活集，注册不随设置开关漂移）。主 Agent 专用：scopedReadEnvironment
-  // 结构性封死 computer 节——真用户桌面的控制权不下放子 Agent。
-  if (enabled.has('computer:control')) {
-    tools.push(createComputerTool(environment))
-  }
-
-  // ssh 工具：独立 capability 门控，discover-gated 不进默认激活集；注册只看
-  // capability（与 browser/computer 同一恢复安全语义）。实际放行是逐次审批
-  // （lease 绑定 {host, command}）+ Rust 会话授权表，无设置开关可漂移。主
-  // Agent 专用：scopedReadEnvironment 结构性封死 ssh 节——真实远程主机的
-  // 特权通道不共享给只读子 Agent。
-  if (enabled.has('ssh:remote')) {
-    tools.push(createSshHostsTool(environment), createSshTool(environment))
   }
 
   return tools

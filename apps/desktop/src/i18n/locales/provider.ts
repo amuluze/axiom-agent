@@ -42,13 +42,13 @@ export const providerZh = {
   'settings.provider.imageInputBasis.catalog': '目录标注',
   'settings.provider.imageInputBasis.catalog-missing': '目录外默认',
   'settings.provider.imageInputCurrent': '图片输入：{capability}（{basis}）',
-  'settings.provider.imageInputCatalogMissingNote': '目录外模型默认按仅文本处理，可在此显式声明支持图片。',
+  'settings.provider.imageInputCatalogMissingNote': '目录外模型默认仅文本，可在此声明支持图片。',
   'settings.provider.saving': '保存中…',
   'settings.provider.saveProfile': '保存配置',
   'settings.provider.testConnection': '验证连接',
   'settings.provider.deleteKey': '删除 Key',
-  'settings.provider.customKeyNote': '自定义（中转站）的 API Key 仅用于该中转站，可能被发往任意公网 https 端点；请勿填写内置厂商的 Key。',
-  'settings.provider.securityNote': 'API Key 不会进入 localStorage、模型消息或 WebView 事件；Rust 只在发起请求时从本地密钥库注入。',
+  'settings.provider.customKeyNote': '中转站的 Key 可能发往任意公网端点，请勿填写内置厂商的 Key。',
+  'settings.provider.securityNote': 'API Key 仅存本地密钥库，请求时由原生侧注入，不进入页面与消息。',
 } satisfies Record<string, string>
 
 export const providerEn: Record<string, string> = {
@@ -91,13 +91,13 @@ export const providerEn: Record<string, string> = {
   'settings.provider.imageInputBasis.catalog': 'catalog annotation',
   'settings.provider.imageInputBasis.catalog-missing': 'off-catalog default',
   'settings.provider.imageInputCurrent': 'Image input: {capability} ({basis})',
-  'settings.provider.imageInputCatalogMissingNote': 'Off-catalog models default to text-only; declare image support explicitly here.',
+  'settings.provider.imageInputCatalogMissingNote': 'Off-catalog models default to text-only; declare image support here.',
   'settings.provider.saving': 'Saving…',
   'settings.provider.saveProfile': 'Save configuration',
   'settings.provider.testConnection': 'Test connection',
   'settings.provider.deleteKey': 'Delete key',
-  'settings.provider.customKeyNote': 'API keys for custom (relay) providers are used only by that relay and may be sent to arbitrary public https endpoints; do not reuse keys issued by built-in vendors.',
-  'settings.provider.securityNote': 'API keys never enter localStorage, model messages or WebView events; Rust injects them from the local key store only when making requests.',
+  'settings.provider.customKeyNote': 'Relay keys may be sent to arbitrary public endpoints; do not reuse keys issued by built-in vendors.',
+  'settings.provider.securityNote': 'API keys stay in the local key store and are injected by the native side per request, never entering pages or messages.',
 }
 
 export const reasoningZh = {

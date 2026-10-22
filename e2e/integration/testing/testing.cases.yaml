@@ -1,0 +1,21 @@
+resource: app.testing
+operation: journey
+cases:
+  - id: scan-lists-specs
+    desc: 打开测试页后扫描工作区 tests/，展示用例文件、校验通过与需要修复的数量
+    verifies: [CE-E2E-TEST-001]
+    input:
+      scenario: scan_lists_specs
+      workspace_name: testing-scan
+  - id: run-with-approval
+    desc: 开始运行后写步骤等待审批，允许后运行完成并在测试页展示运行报告
+    verifies: [CE-E2E-TEST-002, CE-E2E-TEST-003]
+    input:
+      scenario: run_with_approval
+      workspace_name: testing-run
+  - id: report-handoff-to-session
+    desc: 失败报告经「发送并打开会话」回到会话视图，失败摘要渲染为会话消息
+    verifies: [CE-E2E-TEST-004]
+    input:
+      scenario: report_handoff
+      workspace_name: testing-handoff

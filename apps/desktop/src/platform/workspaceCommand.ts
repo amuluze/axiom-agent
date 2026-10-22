@@ -1,3 +1,4 @@
+import type { ToolApprovalScope } from '@/agent/core/approvalScope'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { isTauriRuntime } from './environment'
@@ -9,6 +10,8 @@ export interface WorkspaceCommandRequest {
   command: string
   cwd?: string
   timeoutMs?: number
+  vcsCredentials?: boolean
+  containerControl?: boolean
 }
 
 export interface WorkspaceCommandProgress {
@@ -29,7 +32,6 @@ export interface WorkspaceCommandResult {
   timedOut: boolean
   /** 本命令进程组内的 seatbelt deny 条目（仅沙箱执行且非空时存在）。 */
   sandboxDenials?: string[]
-  /** 本命令是否在 seatbelt 沙箱内执行；false 表示沙箱不可用、以常规用户权限回退执行。 */
   sandboxed?: boolean
 }
 
@@ -87,6 +89,7 @@ export const runWorkspaceCommand = async (
   onProgress: ((progress: WorkspaceCommandProgress) => void) | undefined,
   approvalLease: string,
   workspacePath?: string,
+  approvalScope?: ToolApprovalScope,
 ): Promise<WorkspaceCommandResult> => {
   if (!isTauriRuntime()) throw new Error('工作区命令仅能在 Axiom 桌面应用中执行')
   if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
@@ -121,6 +124,7 @@ export const runWorkspaceCommand = async (
     void invoke('run_workspace_command', {
       request,
       approvalLease,
+      ...(approvalScope ? { approvalScope } : {}),
       ...(workspacePath ? { workspacePath } : {}),
     }).catch((error: unknown) => {
       if (!terminalSeen) {

@@ -6,6 +6,7 @@ import {
   panTargetFor,
   rasterOrderOf,
   rectsIntersect,
+  stagingPageIds,
   runPool,
   type ScreenRect,
 } from './canvasScanSweep'
@@ -14,6 +15,26 @@ const rect = (x: number, y: number, width = 200, height = 120): ScreenRect => ({
 const VP = { width: 1024, height: 768 }
 
 describe('canvasScanSweep（画布原位扫描几何）', () => {
+  it('staging 回退集合：巨页与相交页入列，独立页留在原位采集', () => {
+    const place = (id: string, x: number, y: number, width: number, height: number) => ({ id, x, y, width, height })
+    // scale=1 便于对照；巨页尺寸超过视口，两页相交，另两页各不相交。
+    const placements = [
+      place('giant', 5000, 0, 4000, 3000),
+      place('overlap-a', 0, 0, 200, 120),
+      place('overlap-b', 150, 60, 200, 120),
+      place('solo-left', 600, 0, 200, 120),
+      place('solo-right', 0, 600, 200, 120),
+    ]
+    expect([...stagingPageIds(placements, 1, VP)].sort()).toEqual(['giant', 'overlap-a', 'overlap-b'])
+    // 相交的**双方**都要入列：漏掉任一方都会让它留在原位截图，拍到覆盖它的内容。
+    expect(stagingPageIds([place('a', 0, 0, 200, 120), place('b', 100, 100, 200, 120)], 1, VP).size).toBe(2)
+    // 恰好相邻不算相交（边界相接不重叠）。
+    expect(stagingPageIds([place('a', 0, 0, 200, 120), place('b', 200, 0, 200, 120)], 1, VP).size).toBe(0)
+    // 画布坐标 × scale 的判定与屏幕坐标等价：整体放大到装不下时也会转 staging。
+    expect([...stagingPageIds([place('a', 0, 0, 200, 120)], 10, VP)]).toEqual(['a'])
+    expect([...stagingPageIds([place('a', 0, 0, 200, 120)], 0.1, VP)]).toEqual([])
+  })
+
   it('光栅序：按行分桶（行内 x 升序），相机左→右、上→下推进', () => {
     const order = rasterOrderOf([
       { id: 'c', screen: rect(500, 900) },

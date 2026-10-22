@@ -1,0 +1,21 @@
+feature:
+  id: e2e-workspace-authorization
+  title: 工作区授权契约
+  summary: 授权是写工具与发送闸门的前置条件——入口在侧栏，权威状态在宿主注册表，
+    撤销后活动工作区必须复位。
+business_rules:
+  - id: CE-E2E-WS-001
+    title: 侧栏授权入口把所选目录登记进宿主授权注册表
+  - id: CE-E2E-WS-002
+    title: 新授权的工作区成为活动工作区
+  - id: CE-E2E-WS-003
+    title: 授权后输入区项目选择器绑定该工作区（发送闸门前置条件成立）
+  - id: CE-E2E-WS-004
+    title: 移除工作目录后注册表清空且活动工作区复位
+groups:
+  - id: authorize
+    title: 授权
+    cases: [pick-authorize-list, composer-binds-workspace]
+  - id: revoke
+    title: 撤销
+    cases: [revoke-workspace]

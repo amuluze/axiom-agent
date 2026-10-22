@@ -324,7 +324,7 @@ describe('Provider Registry 与 Profile', () => {
     expect(Reflect.set(registered, 'transportVersion', 'changed')).toBe(false)
     expect(Reflect.set(registered.auth, 'defaultSecretId', 'provider.changed.api-key')).toBe(false)
     expect(Reflect.set(registered.defaultProfile, 'endpoint', 'https://changed.example')).toBe(false)
-    expect(BUILTIN_PROVIDER_RUNTIME.getProvider('openai').transportVersion).toBe('10')
+    expect(BUILTIN_PROVIDER_RUNTIME.getProvider('openai').transportVersion).toBe('11')
   })
 
   it('scopes capabilities to the registered API format', async () => {
@@ -370,7 +370,7 @@ describe('Provider Registry 与 Profile', () => {
     expect(model).toMatchObject({ provider: 'openai', model: 'gpt-5' })
     expect(BUILTIN_PROVIDER_RUNTIME.getProvider('openai')).toMatchObject({
       apiFormat: 'openai-responses',
-      transportVersion: '10',
+      transportVersion: '11',
     })
 
     const probe = createProviderProbeRequest(OPENAI_RESPONSES_CONFIG, true)

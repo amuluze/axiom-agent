@@ -37,8 +37,8 @@ describe('GeneralSection 保持电脑运行开关', () => {
 
   it('开启前向用户说明作用范围（仅阻止空闲休眠）', () => {
     render(<GeneralSection />)
-    expect(screen.getByText(/手动睡眠与合盖休眠不受影响/)).toBeTruthy()
-    expect(screen.getByText(/Axiom 运行期间全局生效/)).toBeTruthy()
+    expect(screen.getByText(/手动睡眠与合盖不受影响/)).toBeTruthy()
+    expect(screen.getByText(/Axiom 运行期间阻止空闲休眠/)).toBeTruthy()
   })
 })
 
@@ -65,8 +65,8 @@ describe('GeneralSection 字体偏好', () => {
     expect(document.documentElement.style.getPropertyValue('--font-mono')).toContain('SFMono-Regular')
   })
 
-  it('字号切换说明文案声明只缩放文字不缩图标布局', () => {
+  it('字号切换说明文案声明仅缩放文字不缩图标布局', () => {
     render(<GeneralSection />)
-    expect(screen.getByText(/只缩放文字/)).toBeTruthy()
+    expect(screen.getByText(/仅缩放文字/)).toBeTruthy()
   })
 })

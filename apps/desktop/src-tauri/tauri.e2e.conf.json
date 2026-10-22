@@ -10,5 +10,11 @@
   },
   "bundle": {
     "active": true
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": ["http://127.0.0.1:47231/updates/latest.json"],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEyMzE0ODA1Nzc4M0M4QkUKUldTK3lJTjNCVWd4RW9ZaStKT1ZVaFVLZ3p2Z2NJMEtGMDR4OGh1RWRORUVhWGJDQlI1U1Eza2cK"
+    }
   }
 }

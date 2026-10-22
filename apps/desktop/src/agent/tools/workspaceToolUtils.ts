@@ -23,15 +23,23 @@ export const optionalInteger = (
   || (typeof value === 'number' && Number.isInteger(value) && value >= minimum && value <= maximum)
 
 /**
- * Stricter variant of `isSafeRelativePath` for write/edit/apply_changes tools:
- * additionally rejects paths containing `\` and any segment equal to `.git`
- * or `.axiom` (so workspace mutations cannot reach version-control or
- * Axiom-internal control directories). Use this predicate everywhere a tool
- * intends to mutate the workspace.
+ * 写工具（write/edit/apply_changes/restore_trash）的路径形状校验。
+ *
+ * 接受两种形状：工作区内相对路径，或绝对路径（完全访问）。**档位判定在 Rust 侧**
+ * ——标准模式下绝对路径会被 command 层以「只接受相对路径」拒绝，TS 这里只保证
+ * 形状合法（无 `..`、无反斜杠）。相对路径仍拒绝 `.git` / `.axiom` 段（标准模式
+ * 的版本控制与 Axiom 控制目录保护）；绝对路径段不在此判定，由 Rust 的
+ * `SensitivePathPolicy::mutation_denied` 统一处理。
  */
 export const isMutablePath = (value: unknown): value is string => {
-  if (typeof value !== 'string' || !isSafeRelativePath(value) || value.includes('\\')) return false
-  const parts = value.split('/').filter((part) => part && part !== '.')
+  if (typeof value !== 'string' || value.includes('\\')) return false
+  const normalized = value.trim()
+  if (!normalized) return false
+  if (normalized.startsWith('/')) {
+    return !normalized.split('/').some((part) => part === '..')
+  }
+  if (!isSafeRelativePath(normalized)) return false
+  const parts = normalized.split('/').filter((part) => part && part !== '.')
   return parts.length > 0 && !parts.some((part) => part === '.git' || part === '.axiom')
 }
 

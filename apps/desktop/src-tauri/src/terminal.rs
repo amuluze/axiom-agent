@@ -117,7 +117,10 @@ pub(crate) fn set_terminal_focus_state(state: &TerminalGestureState, focused: bo
 /// 校验并消费一个 stdin 写入配额：必须存在未消费配额（来自终端聚焦时的原生 keyDown），
 /// 且最近一次授予距现在不超过 `window`。每次写入消费一个配额（单次消费）；配额
 /// 陈旧则整体失效。返回 Err 表示本次写入未被任何真实用户按键授权。
-pub(crate) fn consume_stdin_gesture(state: &TerminalGestureState, window: Duration) -> Result<(), String> {
+pub(crate) fn consume_stdin_gesture(
+    state: &TerminalGestureState,
+    window: Duration,
+) -> Result<(), String> {
     let mut pending = state
         .pending_stdin_writes
         .lock()
@@ -464,7 +467,9 @@ async fn spawn_terminal_impl(
             .window("main")
             .permission("allow-write-terminal-stdin"),
     ) {
-        return Err(format!("failed to grant terminal stdin capability: {error}"));
+        return Err(format!(
+            "failed to grant terminal stdin capability: {error}"
+        ));
     }
 
     let pty_system = native_pty_system();

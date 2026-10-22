@@ -51,12 +51,12 @@ describe('createToolResultMessage message byte budget', () => {
       'run-1',
       makeOutcome({
         content: '截图完成',
-        // 两张 1 MiB base64 图：整体远超 1.5 MiB 消息预算，但首张可保留。
-        contentBlocks: [base64Image(1024), base64Image(1024)],
+        // 两张 700 KiB base64 图：整体远超 960 KiB 消息预算，但首张可保留。
+        contentBlocks: [base64Image(700), base64Image(700)],
       }),
       256 * 1024,
     )
-    expect(messageByteLength(message)).toBeLessThan(1536 * 1024)
+    expect(messageByteLength(message)).toBeLessThan(960 * 1024)
     expect(message.contentBlocks).toHaveLength(2)
     expect(message.contentBlocks?.[0]).toMatchObject({ type: 'text' })
     expect(message.content).toContain('截图完成')
@@ -66,10 +66,11 @@ describe('createToolResultMessage message byte budget', () => {
   it('drops every image block when even a single one busts the budget', async () => {
     const message = await createToolResultMessage(
       'run-1',
-      makeOutcome({ content: '截图完成', contentBlocks: [base64Image(4096)] }),
+      // 1.2 MiB 单图即超过 Rust 单条消息 1 MiB 上限，必须明确降级而非整体落库失败。
+      makeOutcome({ content: '截图完成', contentBlocks: [base64Image(1200)] }),
       256 * 1024,
     )
-    expect(messageByteLength(message)).toBeLessThan(1536 * 1024)
+    expect(messageByteLength(message)).toBeLessThan(960 * 1024)
     // 图片全部丢弃，只留下内联文本块。
     expect(message.contentBlocks?.every((block) => block.type === 'text')).toBe(true)
     expect(message.content).toContain('已省略尾部 1 张图片')

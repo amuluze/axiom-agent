@@ -62,32 +62,30 @@ describe('SettingsView SSR', () => {
     expect(html).toContain('模型')
     expect(html).not.toContain('上下文与队列</span>')
     expect(html).toContain('子智能体')
-    expect(html).toContain('会话与存储')
+    expect(html).toContain('已归档')
     expect(html).toContain('统计')
     // 「关于 & 更新」随自更新接入回归导航（SSR 下 & 转义为 &amp;）。
     expect(html).toContain('关于 &amp; 更新')
+    // 「会话与存储」并入已归档页，不再作为一级导航项出现。
+    expect(html).not.toContain('<span>会话与存储</span>')
   })
 
-  it('orders 基础设置 with 浏览器/电脑控制 after 已归档 and mounts 版本与统计 group as 统计/会话与存储/关于 & 更新', () => {
+  it('orders 基础设置 as 常规/模型/浏览器 and mounts 版本与统计 group as 统计/已归档/关于 & 更新', () => {
     const html = renderToStaticMarkup(createElement(SettingsView))
     const general = html.indexOf('常规')
     const models = html.indexOf('模型')
-    const archived = html.indexOf('已归档')
     const browser = html.indexOf('浏览器')
-    const computer = html.indexOf('电脑控制')
     const versionGroup = html.indexOf('版本与统计')
     const usage = html.indexOf('统计')
-    const sessions = html.indexOf('会话与存储')
+    const archived = html.indexOf('已归档')
     const about = html.indexOf('关于 &amp; 更新')
     expect(general).toBeGreaterThan(-1)
     expect(models).toBeGreaterThan(general)
-    expect(archived).toBeGreaterThan(models)
-    expect(browser).toBeGreaterThan(archived)
-    expect(computer).toBeGreaterThan(browser)
-    expect(versionGroup).toBeGreaterThan(computer)
+    expect(browser).toBeGreaterThan(models)
+    expect(versionGroup).toBeGreaterThan(browser)
     expect(usage).toBeGreaterThan(versionGroup)
-    expect(sessions).toBeGreaterThan(usage)
-    expect(about).toBeGreaterThan(sessions)
+    expect(archived).toBeGreaterThan(usage)
+    expect(about).toBeGreaterThan(archived)
   })
 
   it('marks exactly one nav item as active', () => {
@@ -97,22 +95,22 @@ describe('SettingsView SSR', () => {
   })
 
   it('reflects the active section from the store in the panel title', () => {
-    mocks.settingsSection = 'sessions'
+    mocks.settingsSection = 'archived'
     const html = renderToStaticMarkup(createElement(SettingsView))
-    expect(html).toMatch(/<h2 class="settings__panel-title">[^<]*会话与存储[^<]*<\/h2>/u)
+    expect(html).toMatch(/<h2 class="settings__panel-title">[^<]*已归档[^<]*<\/h2>/u)
   })
 
   it('shows the standard subtitle when the provider is ready', () => {
     const html = renderToStaticMarkup(createElement(SettingsView))
-    expect(html).toContain('Axiom 默认所有配置本地优先')
-    expect(html).not.toContain('生产模式不会使用模拟回答')
+    expect(html).toContain('所有配置仅保存在本机')
+    expect(html).not.toContain('请先保存并验证一个真实 Provider')
   })
 
   it('switches the subtitle when providerSetupRequired is true', () => {
     mocks.providerSetupRequired = true
     const html = renderToStaticMarkup(createElement(SettingsView))
-    expect(html).toContain('生产模式不会使用模拟回答')
-    expect(html).not.toContain('Axiom 默认所有配置本地优先')
+    expect(html).toContain('请先保存并验证一个真实 Provider')
+    expect(html).not.toContain('所有配置仅保存在本机')
   })
 
   it('disables the back button when blocking is true', () => {

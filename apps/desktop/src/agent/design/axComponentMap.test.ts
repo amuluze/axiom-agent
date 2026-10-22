@@ -99,6 +99,15 @@ describe('axInstanceOfPenComponent', () => {
 })
 
 describe('映射面与延后清单', () => {
+  it('未知导航状态与无法确定业务输入的旧对话框保留 primitive 并说明原因', () => {
+    for (const name of ['Settings Nav · unknown', 'Feedback Dialog', 'Summary Instructions Dialog', 'Builtin Prompt Editor Dialog']) {
+      const result = axInstanceOfPenComponent(`component/${name}`, { texts: ['用户原始草稿'] })
+      expect(result && 'defer' in result).toBe(true)
+    }
+    expect(axInstanceOfPenComponent('component/Settings Nav · models', { texts: [] })).toMatchObject({ component: 'SettingsNavigation', fixture: 'models' })
+    expect(axInstanceOfPenComponent('component/Summary Instructions Dialog · branch', { texts: ['自定义分支要求'] })).toHaveProperty('defer')
+  })
+
   it('两个清单互不相交（一个组件不能既升级又延后）', () => {
     const deferred = new Set(Object.keys(AX_DEFERRED_PEN_COMPONENTS))
     expect(axMappedPenComponentNames().filter((name) => deferred.has(name))).toEqual([])
@@ -112,8 +121,7 @@ describe('映射面与延后清单', () => {
   })
 
   it('映射面覆盖的注册表组件名可枚举（供注册表一致性用例核对）', () => {
-    // Sidebar/Composer 升级后映射面覆盖 5 个注册表组件（多 store 切片接缝落地）。
     expect(axMappedRegistryComponentNames())
-      .toEqual(['ApprovalCard', 'Composer', 'MessageActions', 'Sidebar', 'ToolCallCard'])
+      .toEqual(['ApprovalCard', 'BuiltinPromptEditorDialog', 'Composer', 'FeedbackDialog', 'MessageActions', 'SettingsNavigation', 'SettingsTopBar', 'Sidebar', 'SummaryInstructionsDialog', 'ToolCallCard', 'WindowActions'])
   })
 })

@@ -197,8 +197,7 @@ pub(crate) fn process_alive(process_id: u32) -> bool {
             if handle.is_null() {
                 // ERROR_ACCESS_DENIED：进程存在但无权查询（系统进程）——视为存活，
                 // 对齐 unix EPERM=alive 的判定方向。
-                return std::io::Error::last_os_error().raw_os_error()
-                    == Some(ERROR_ACCESS_DENIED);
+                return std::io::Error::last_os_error().raw_os_error() == Some(ERROR_ACCESS_DENIED);
             }
             let mut exit_code: u32 = 0;
             let queried = GetExitCodeProcess(handle, &mut exit_code);
@@ -297,11 +296,8 @@ mod windows_api {
 
     #[link(name = "kernel32")]
     extern "system" {
-        pub(crate) fn OpenProcess(
-            desiredaccess: u32,
-            inherithandle: i32,
-            processid: u32,
-        ) -> Handle;
+        pub(crate) fn OpenProcess(desiredaccess: u32, inherithandle: i32, processid: u32)
+            -> Handle;
         pub(crate) fn GetExitCodeProcess(handle: Handle, exitcode: *mut u32) -> i32;
         pub(crate) fn CloseHandle(handle: Handle) -> i32;
         pub(crate) fn CreateJobObjectW(
@@ -344,10 +340,10 @@ unsafe impl Send for ProcessJob {}
 impl ProcessJob {
     fn attach(process_id: u32) -> Result<Self, String> {
         use windows_api::{
-            AssignProcessToJobObject, CloseHandle, CreateJobObjectW, JobObjectBasicLimitInformation,
-            JobObjectExtendedLimitInformation, OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+            AssignProcessToJobObject, CloseHandle, CreateJobObjectW,
+            JobObjectBasicLimitInformation, JobObjectExtendedLimitInformation, OpenProcess,
             SetInformationJobObject, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
         };
         // SAFETY：标准 kernel32 Job 三件套；结构体按 win32 布局全零初始化后仅
         // 置 KILL_ON_JOB_CLOSE，句柄失败路径逐一 CloseHandle。
@@ -397,11 +393,7 @@ impl ProcessJob {
                 let _ = CloseHandle(job);
                 return Err(format!("SetInformationJobObject failed: {error}"));
             }
-            let process = OpenProcess(
-                PROCESS_SET_QUOTA | PROCESS_TERMINATE,
-                0,
-                process_id,
-            );
+            let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, process_id);
             if process.is_null() {
                 let error = std::io::Error::last_os_error();
                 let _ = CloseHandle(job);
@@ -412,7 +404,9 @@ impl ProcessJob {
             if assigned == 0 {
                 let error = std::io::Error::last_os_error();
                 let _ = CloseHandle(job);
-                return Err(format!("AssignProcessToJobObject({process_id}) failed: {error}"));
+                return Err(format!(
+                    "AssignProcessToJobObject({process_id}) failed: {error}"
+                ));
             }
             Ok(Self { handle: job })
         }

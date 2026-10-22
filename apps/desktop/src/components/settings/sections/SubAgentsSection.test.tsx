@@ -5,8 +5,6 @@ import { createReadTool } from '@/agent/tools/readTool'
 import { createLsTool } from '@/agent/tools/lsTool'
 import { createGrepTool } from '@/agent/tools/grepTool'
 import { createFindTool } from '@/agent/tools/findTool'
-import { createWebSearchTool } from '@/agent/tools/webSearchTool'
-import { createWebFetchTool } from '@/agent/tools/webFetchTool'
 import { createFakeAgentEnvironment } from '@/agent/tools/__fixtures__/fakeAgentEnvironment'
 import { BUILTIN_SUBAGENTS } from '@/agent/subagent/builtinSubAgents'
 import { SubAgentsSection } from './SubAgentsSection'
@@ -64,7 +62,7 @@ describe('SubAgentsSection', () => {
     expect(html).toContain('settings__subagent-kind')
     expect(html).toContain('已启用')
     expect(html).toContain('discover_agent_tools')
-    expect(html).toContain('允许工具：read、ls、grep、find')
+    expect(html).toContain('工具上限：read、ls、grep、find')
     // 子会话预算
     expect(html).toContain('16 轮')
     expect(html).toContain('48 次工具')
@@ -76,16 +74,18 @@ describe('SubAgentsSection', () => {
     expect(html).toContain('8 次调用')
     expect(html).toContain('120 次模型请求')
     expect(html).toContain('900 秒')
+    expect(html).toContain('runtime v16')
     expect(html).toContain('runtime v11')
+    expect(html).toContain('runtime v13')
     expect(html).toContain('sequential')
   })
 
   it('marks the sub-agent as inactive when capabilities are not granted', () => {
-    mocks.capabilities = ['web:read']
+    mocks.capabilities = ['workspace:write']
     const html = renderToStaticMarkup(createElement(SubAgentsSection))
     expect(html).toContain('未启用')
-    expect(html).toContain('需同时授予 workspace:read 与 subagent:explore 后才会注册该工具。')
-    expect(html).toContain('需同时授予 workspace:read 与 subagent:review 后才会注册该工具。')
+    expect(html).toContain('需同时授予 workspace:read 与 subagent:explore 后才注册。')
+    expect(html).toContain('需同时授予 workspace:read 与 subagent:review 后才注册。')
     expect(html).not.toContain('已启用')
   })
 
@@ -107,8 +107,6 @@ describe('BuiltinSubAgents catalog drift guard', () => {
       createLsTool(env).name,
       createGrepTool(env).name,
       createFindTool(env).name,
-      createWebSearchTool(env).name,
-      createWebFetchTool(env).name,
     ]
     const explore = BUILTIN_SUBAGENTS.find((sub) => sub.kind === 'explore')
     expect(explore).toBeDefined()

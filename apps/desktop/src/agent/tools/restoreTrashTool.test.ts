@@ -69,7 +69,7 @@ describe('restoreTrashTool execute path', () => {
     const result = await callWithFake(environment, { recoveryId: 'rec-7' })
     const restoreTrashMock = environment.workspace.restoreTrash as ReturnType<typeof vi.fn>
     expect(restoreTrashMock).toHaveBeenCalledTimes(1)
-    expect(restoreTrashMock.mock.calls[0]).toEqual(['rec-7', ZERO_LEASE])
+    expect(restoreTrashMock.mock.calls[0]).toEqual(['rec-7', ZERO_LEASE, { sessionId: 'session-test', runId: 'run-test', toolCallId: 'tool-call-test' }])
     expect(result.content).toContain('Restored trash batch rec-7 (1 paths).')
     expect(result.details).toMatchObject({
       recoveryId: 'rec-7',

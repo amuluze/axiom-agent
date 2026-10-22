@@ -1,19 +1,29 @@
 import { create } from 'zustand'
 import type { ImageContentBlock } from '@/agent/core/types'
 import { setIdleSleepPrevention } from '@/platform/power'
-import { setWorkspaceApprovalMode } from '@/platform/workspaceApproval'
+import type { UpdateInstallFailureStage } from '@/platform/updater'
 import { syncNativeWindowTheme } from '@/platform/windowTheme'
 import { detectSystemLanguage, resolveLanguage } from '@/i18n/locale'
 
-export type AppView = 'new-task' | 'session' | 'design' | 'settings'
-export type SettingsSection = 'general' | 'browser' | 'computer' | 'models' | 'sessions' | 'usage' | 'archived' | 'skills' | 'subagents' | 'about'
+export type AppView = 'new-task' | 'session' | 'design' | 'docs' | 'testing' | 'settings'
+export type SettingsSection = 'general' | 'browser' | 'models' | 'archived' | 'usage' | 'skills' | 'subagents' | 'about'
 /** 右侧运行时面板的视图枚举：浏览器 / 电脑控制 / SSH（均按设计稿的 rail pane）。会话内有效，不持久化。 */
-export type RuntimeRailTab = 'browser' | 'computer' | 'ssh'
+export type RuntimeRailTab = 'browser' | 'ssh'
 /** rail 面板模式：picker = 卡片选择页；其余为具体功能面板。 */
 export type RuntimeRailPane = 'picker' | RuntimeRailTab
-export type AccessMode = 'standard' | 'no-approval'
+export type { AccessMode } from '@/agent/approval/ApprovalCoordinator'
 export type UiLanguage = 'system' | 'zh-CN' | 'en'
 export type UiTheme = 'system' | 'dark' | 'light'
+
+type ViewChangeGuard = (nextView: AppView, currentView: AppView) => boolean | Promise<boolean>
+let viewChangeGuard: ViewChangeGuard | null = null
+
+export const installViewChangeGuard = (guard: ViewChangeGuard): (() => void) => {
+  viewChangeGuard = guard
+  return () => {
+    if (viewChangeGuard === guard) viewChangeGuard = null
+  }
+}
 /** 等宽字体偏好（代码块/内联代码/终端共用）；默认 JetBrains Mono（与 --font-mono 一致）。 */
 export type MonoFontFamily = 'jetbrains' | 'menlo' | 'sf-mono' | 'monaco'
 export type SummaryRequest =
@@ -54,8 +64,13 @@ export interface UpdateProgressState {
   downloadedBytes: number
   totalBytes: number | null
 }
+export interface UpdateFailureState {
+  version: string
+  stage: UpdateInstallFailureStage
+  message: string
+  failedAt: string
+}
 
-const ACCESS_MODE_STORAGE_KEY = 'axiom.access.mode.v1'
 const UI_LANGUAGE_STORAGE_KEY = 'axiom.ui.language.v1'
 const UI_THEME_STORAGE_KEY = 'axiom.ui.theme.v1'
 const UI_FONT_SIZE_STORAGE_KEY = 'axiom.ui.fontSizePx.v1'
@@ -192,14 +207,6 @@ const applyMonoFontFamily = (family: MonoFontFamily): void => {
   document.documentElement.style?.setProperty('--font-mono', MONO_FONT_STACKS[family])
 }
 
-const loadAccessMode = (): AccessMode => {
-  if (typeof window === 'undefined') return 'standard'
-  const stored = window.localStorage.getItem(ACCESS_MODE_STORAGE_KEY)
-  // 旧版 'high-risk' 已下线：收窄后自动映射为 standard（意图确认语义，fail-closed）。
-  if (stored === 'standard' || stored === 'no-approval') return stored
-  return 'standard'
-}
-
 const loadRecentWorkspacePaths = (): string[] => {
   if (typeof window === 'undefined') return []
   try {
@@ -220,11 +227,6 @@ const persistRecentWorkspacePaths = (paths: string[]): void => {
   window.localStorage.setItem(RECENT_WORKSPACE_STORAGE_KEY, JSON.stringify(paths))
 }
 
-const persistAccessMode = (mode: AccessMode): void => {
-  if (typeof window === 'undefined') return
-  window.localStorage.setItem(ACCESS_MODE_STORAGE_KEY, mode)
-}
-
 const loadGitBranchPrefix = (): string => {
   if (typeof window === 'undefined') return DEFAULT_GIT_BRANCH_PREFIX
   return window.localStorage.getItem(GIT_BRANCH_PREFIX_STORAGE_KEY) ?? DEFAULT_GIT_BRANCH_PREFIX
@@ -240,6 +242,8 @@ const loadPreventIdleSleep = (): boolean => {
   // 默认关闭（fail-safe）：阻止系统休眠是显式偏好，不做无依据默认开启。
   return window.localStorage.getItem(PREVENT_IDLE_SLEEP_STORAGE_KEY) === 'true'
 }
+
+/** 推理出口策略（C5）已随设置入口整体移除：Rust 执行面与 UI 一并清理。 */
 
 /** 终端面板高度统一在此 clamp：下限保证 header + 可读行数，上限保证会话主体可用。 */
 export const clampTerminalPanelHeight = (height: number, maxHeight: number): number =>
@@ -367,7 +371,6 @@ interface UiState {
   terminalPanelHeight: number
   sftpPanelHeight: number
   connectPanelOpen: boolean
-  accessMode: AccessMode
   language: UiLanguage
   theme: UiTheme
   fontSizePx: number
@@ -385,9 +388,10 @@ interface UiState {
   availableUpdate: AvailableAppUpdate | null
   updateProgress: UpdateProgressState | null
   updateMessage: string | null
+  updateFailure: UpdateFailureState | null
   recordRecentWorkspace: (path: string) => void
   patchUpdater: (
-    patch: Partial<Pick<UiState, 'updatePhase' | 'availableUpdate' | 'updateProgress' | 'updateMessage'>>,
+    patch: Partial<Pick<UiState, 'updatePhase' | 'availableUpdate' | 'updateProgress' | 'updateMessage' | 'updateFailure'>>,
   ) => void
   setView: (view: AppView) => void
   setOperatingSystem: (operatingSystem: string) => void
@@ -409,7 +413,6 @@ interface UiState {
   setConnectPanelOpen: (open: boolean) => void
   setTerminalPanelHeight: (height: number) => void
   setSftpPanelHeight: (height: number, maxHeight?: number) => void
-  setAccessMode: (mode: AccessMode) => void
   setLanguage: (language: UiLanguage) => void
   setTheme: (theme: UiTheme) => void
   setFontSizePx: (fontSizePx: number) => void
@@ -457,7 +460,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   terminalPanelHeight: loadTerminalPanelHeight(),
   sftpPanelHeight: loadSftpPanelHeight(),
   connectPanelOpen: false,
-  accessMode: loadAccessMode(),
   language: initialLanguage,
   theme: initialTheme,
   fontSizePx: initialFontSizePx,
@@ -475,6 +477,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   availableUpdate: null,
   updateProgress: null,
   updateMessage: null,
+  updateFailure: null,
   recordRecentWorkspace: (path) => {
     if (!path) return
     const next = [path, ...get().recentWorkspacePaths.filter((candidate) => candidate !== path)]
@@ -482,7 +485,20 @@ export const useUiStore = create<UiState>((set, get) => ({
     persistRecentWorkspacePaths(next)
     set({ recentWorkspacePaths: next })
   },
-  setView: (view) => set({ view }),
+  setView: (view) => {
+    const current = get().view
+    if (view === current) return
+    const decision = viewChangeGuard?.(view, current)
+    if (decision === false) return
+    if (decision instanceof Promise) {
+      // 异步守卫（如未保存文档确认）解析前不改视图；期间用户又切走则丢弃本次结果。
+      void decision.then((allowed) => {
+        if (allowed && get().view === current) set({ view })
+      })
+      return
+    }
+    set({ view })
+  },
   setOperatingSystem: (operatingSystem) => set({ operatingSystem }),
   setSettingsSection: (settingsSection) => set({ settingsSection }),
   toggleSidebar: () => set((state) => state.sidebarCompact
@@ -550,13 +566,6 @@ export const useUiStore = create<UiState>((set, get) => ({
       window.localStorage.setItem(SFTP_PANEL_HEIGHT_STORAGE_KEY, String(next))
     }
     set({ sftpPanelHeight: next })
-  },
-  setAccessMode: (mode) => {
-    persistAccessMode(mode)
-    void setWorkspaceApprovalMode(
-      mode === 'standard' ? 'interactive' : 'automatic',
-    ).catch(() => undefined)
-    set({ accessMode: mode })
   },
   setLanguage: (language) => {
     if (typeof window !== 'undefined') window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, language)

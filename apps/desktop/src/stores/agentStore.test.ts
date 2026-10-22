@@ -1,9 +1,14 @@
+import { readFileSync } from 'node:fs'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { MemorySessionRepository } from '@/persistence/MemorySessionRepository'
 import type { UserMessage } from '@/agent/core/types'
 import { decodeRuntimeDependencyManifest } from '@/agent/runtime/runtimeDependencyManifest'
+import { createProductToolRuntime } from '@/agent/runtime/productToolRuntime'
 import { EMPTY_PROJECT_SKILL_INVENTORY } from '@/agent/skills/types'
 import type { SessionRepository } from '@/persistence/types'
+import { getRuntimeSession, getRuntimeBasePrompt } from './runtimeCaches'
+import { buildSystemPrompt } from '@/agent/runtime/productToolRuntime'
+import { getGitBranchPrefix } from './uiStore'
 
 const mocks = vi.hoisted(() => ({
   repository: undefined as SessionRepository | undefined,
@@ -180,6 +185,39 @@ describe('agentStore session activation', () => {
     expect(selectedState.settingsError).toBeNull()
   })
 
+  it('removes previously active privileged tools when canonicalizing a restored session', async () => {
+    const { useAgentStore } = await import('./agentStore')
+    const sourceSessionId = useAgentStore.getState().activeSessionId
+    if (!sourceSessionId) throw new Error('missing active session')
+    const source = await repository.loadSession(sourceSessionId)
+    const current = source.session.runtimeManifest
+    if (!current) throw new Error('missing current Runtime manifest')
+    const privileged = createProductToolRuntime([
+      'workspace:read', 'workspace:execute', 'subagent:explore', 'subagent:review',
+    ])
+    const names = ['bash', 'browser', 'computer', 'web_search', 'web_fetch', 'ssh', 'ssh_hosts',
+      'explore_subagent', 'inspect_subagent', 'examine_subagent', 'review_subagent']
+    const legacy = await repository.createSession({
+      systemPrompt: source.session.systemPrompt,
+      modelProvider: source.session.modelProvider, modelId: source.session.modelId,
+      reasoning: source.session.reasoning,
+      activeToolNames: [...source.session.activeToolNames, ...names],
+      providerConfig: source.session.providerConfig ?? undefined,
+      runtimeManifest: {
+        ...current,
+        tools: [...current.tools, ...privileged.tools.filter((tool) => names.includes(tool.name)).map((tool) => ({
+          name: tool.name, version: tool.runtimeVersion, recoveryPolicy: tool.recoveryPolicy ?? 'never',
+        }))],
+      },
+    })
+    await expect(useAgentStore.getState().selectSession(legacy.session.id)).resolves.toBe(true)
+    const persisted = await repository.loadSession(legacy.session.id)
+    expect(persisted.session.activeToolNames).toEqual(source.session.activeToolNames)
+    expect(persisted.session.runtimeManifest?.tools.some((tool) => names.includes(tool.name))).toBe(false)
+    await expect(useAgentStore.getState().selectSession(source.session.id)).resolves.toBe(true)
+    await expect(useAgentStore.getState().deleteSession(legacy.session.id)).resolves.toBe(true)
+  })
+
   it('persists a canonical v3 manifest after activating a compatible v2 session', { timeout: 15_000 }, async () => {
     const { useAgentStore } = await import('./agentStore')
     const sourceSessionId = useAgentStore.getState().activeSessionId!
@@ -237,7 +275,7 @@ describe('agentStore session activation', () => {
     const persisted = await repository.loadSession(legacy.session.id)
     expect(persisted.session.runtimeManifest?.hooks).toContainEqual(expect.objectContaining({
       id: 'axiom.desktop.runtime-hooks',
-      version: '9',
+      version: '10',
     }))
     await expect(useAgentStore.getState().deleteSession(sourceSessionId)).resolves.toBe(true)
   })
@@ -481,6 +519,85 @@ describe('agentStore session activation', () => {
     await expect(useAgentStore.getState().deleteSession(runningSessionId)).resolves.toBe(true)
   })
 
+  // 每个会话的 `# 访问模式` 段必须由**它自己**的 accessMode 决定。
+  // 回归：曾用模块级「活动会话模式镜像」，切会话时镜像不更新，于是把一个会话的
+  // 完全访问档写进另一个标准会话的提示词——模型会按「可写工作区外、不再询问」行事。
+  it('builds each session prompt from its own access mode, not the previous session', async () => {
+    // store 必须动态导入：本文件在 beforeAll 中把测试仓储注入 mock，静态导入会
+    // 在仓储就绪前求值模块（同文件其余用例一致）。
+    const { useAgentStore } = await import('./agentStore')
+    const previousActiveSessionId = useAgentStore.getState().activeSessionId
+    const workspace = { path: '/repo/access-mode', name: 'access-mode', gitBranch: null }
+    useAgentStore.setState({
+      authorizedWorkspace: workspace,
+      authorizedWorkspaces: [workspace],
+    })
+
+    await expect(useAgentStore.getState().createNewSession('/repo/access-mode')).resolves.toBe(true)
+    const fullAccessSessionId = useAgentStore.getState().activeSessionId!
+    expect(await useAgentStore.getState().setAccessMode('no-approval')).toBeNull()
+    expect(getRuntimeSession(fullAccessSessionId)?.systemPrompt).toContain('# 访问模式')
+
+    // 在同一 store 生命周期内新建标准会话：它的提示词不得继承上一会话的完全访问段。
+    await expect(useAgentStore.getState().createNewSession('/repo/access-mode')).resolves.toBe(true)
+    const standardSessionId = useAgentStore.getState().activeSessionId!
+    expect(standardSessionId).not.toBe(fullAccessSessionId)
+    expect(getRuntimeSession(standardSessionId)?.systemPrompt).not.toContain('# 访问模式')
+    // basePrompt 镜像（prepare_next_turn 每轮的输入）同样不得泄漏：激活边界的对账
+    // 只替换 live systemPrompt，镜像若带错档位会在下一个 turn 边界把错误段落带回来。
+    expect(getRuntimeBasePrompt(fullAccessSessionId)).toContain('# 访问模式')
+    expect(getRuntimeBasePrompt(standardSessionId)).not.toContain('# 访问模式')
+
+    // 核心不变量：basePrompt 镜像必须能**重算出** live 提示词——prepare_next_turn
+    // 每轮末正是这么做的。任何「只替换 live、不同步镜像」的路径都会让这里失配，
+    // 并在下一个 turn 边界把旧提示词带回来。
+    for (const sessionId of [fullAccessSessionId, standardSessionId]) {
+      const harness = getRuntimeSession(sessionId)!
+      expect(buildSystemPrompt({
+        basePrompt: getRuntimeBasePrompt(sessionId) ?? '',
+        tools: harness.runtimeContext.tools,
+        activeToolNames: Array.from(harness.activeToolNames),
+        gitBranchPrefix: getGitBranchPrefix(),
+      })).toBe(harness.systemPrompt)
+    }
+
+    await expect(useAgentStore.getState().deleteSession(standardSessionId)).resolves.toBe(true)
+    await expect(useAgentStore.getState().selectSession(previousActiveSessionId!)).resolves.toBe(true)
+    await expect(useAgentStore.getState().deleteSession(fullAccessSessionId)).resolves.toBe(true)
+  })
+
+  // 测试页上下文段（T2-2）：发布/清除都要同时更新 live 提示词与 basePrompt 镜像，
+  // 否则下一个 turn 边界会把带/不带该段的旧值带回来——与访问模式镜像同类的
+  // 「只改一半」缺陷。
+  it('publishes the testing context into the live prompt and its mirror, then clears it', async () => {
+    const { setTestingPromptContext, useAgentStore } = await import('./agentStore')
+    const previousActiveSessionId = useAgentStore.getState().activeSessionId
+    const workspace = { path: '/repo/testing-context', name: 'testing-context', gitBranch: null }
+    useAgentStore.setState({ authorizedWorkspace: workspace, authorizedWorkspaces: [workspace] })
+    await expect(useAgentStore.getState().createNewSession('/repo/testing-context')).resolves.toBe(true)
+    const sessionId = useAgentStore.getState().activeSessionId!
+    const harness = getRuntimeSession(sessionId)!
+    expect(harness.systemPrompt).not.toContain('# 测试会话上下文')
+
+    await setTestingPromptContext('# 测试会话上下文\n- tests/a.testspec.json（1 条用例）')
+    expect(harness.systemPrompt).toContain('# 测试会话上下文')
+    expect(getRuntimeBasePrompt(sessionId)).toContain('# 测试会话上下文')
+    // 核心不变量：镜像必须能重算出 live 提示词（prepare_next_turn 每轮末正是这么做的）。
+    expect(buildSystemPrompt({
+      basePrompt: getRuntimeBasePrompt(sessionId) ?? '',
+      tools: harness.runtimeContext.tools,
+      activeToolNames: Array.from(harness.activeToolNames),
+      gitBranchPrefix: getGitBranchPrefix(),
+    })).toBe(harness.systemPrompt)
+
+    await setTestingPromptContext(null)
+    expect(harness.systemPrompt).not.toContain('# 测试会话上下文')
+    expect(getRuntimeBasePrompt(sessionId)).not.toContain('# 测试会话上下文')
+
+    await expect(useAgentStore.getState().selectSession(previousActiveSessionId!)).resolves.toBe(true)
+    await expect(useAgentStore.getState().deleteSession(sessionId)).resolves.toBe(true)
+  })
+
   it('queues a steering message into a running background session and surfaces the count', async () => {
     // 后台运行中的会话不再只能 stop：sendToSession 走 steering（下一个 turn 边界注入），
     // 并把待发送条数写入 sessionQueueCounts（侧栏徽标数据源）。
@@ -601,11 +718,13 @@ describe('agentStore session activation', () => {
       maxTurns: 8,
       maxToolCalls: 24,
       maxTotalTokens: 1_000_000,
+      approvalTimeoutMs: 90_000,
     })).toBe(true)
     expect(useAgentStore.getState().agentLimitsSettings).toMatchObject({
       maxTurns: 8,
       maxToolCalls: 24,
       maxTotalTokens: 1_000_000,
+      approvalTimeoutMs: 90_000,
     })
 
     // demo provider 不支持 reasoning，normalize 会按能力回落为 off。
@@ -743,4 +862,53 @@ describe('agentStore session activation', () => {
     expect(useAgentStore.getState().saveQueueAutoDrain(true)).toBe(true)
   })
 
+})
+
+/**
+ * 三面项目上下文镜像的防回归守卫。
+ *
+ * 这些镜像合成同一个 `# 项目上下文` 提示词段，因此**每个重建提示词的调用点都
+ * 必须齐备传入**：漏传一面等于把那一块从 live 提示词里删掉。接入嵌套索引时已经
+ * 真实发生过——技能重载与访问模式切换两处漏传，用户切一次权限档，整块
+ * `<available_agents>` 索引从提示词里消失且不再出现。改成单一构造点后「齐备」
+ * 由构造保证；本测试防止有人绕过它重新散开调用。
+ */
+describe('项目上下文镜像的调用点齐备性', () => {
+  const source = readFileSync(
+    new URL('./agentStore.ts', import.meta.url),
+    'utf8',
+  )
+
+  it('除 DB 播种路径外，所有 buildSessionBasePrompt 调用都经由唯一构造点', () => {
+    // buildSessionBasePrompt 的直接调用应只剩两处：构造点自身 + DB 播种
+    // （后者无工作区，三面镜像皆空，属预期）。
+    const directCalls = source.match(/(?<!\))buildSessionBasePrompt\(\{/g) ?? []
+    expect(directCalls.length).toBe(2)
+  })
+
+  it('构造点齐备传入四面镜像', () => {
+    const constructorBody = source.slice(
+      source.indexOf('const buildSessionBasePromptFromContext'),
+      source.indexOf('const refreshProjectContext = async'),
+    )
+    expect(constructorBody).toContain('projectContext,')
+    expect(constructorBody).toContain('projectAgents,')
+    expect(constructorBody).toContain('projectDocs,')
+    expect(constructorBody).toContain('testingContext,')
+    expect(constructorBody).toContain('...activeProjectContextSnapshot()')
+    // 第四面（测试页上下文）同样经快照传入：漏传等于把该段从 live 提示词里删掉。
+    expect(source).toContain('testingContext: activeTestingContext,')
+  })
+
+  it('四个生产重建点全部走该构造点', () => {
+    // 技能重载 / 访问模式切换 / 上下文提交 / 会话激活。
+    const callSites = source.match(/buildActiveSessionBasePrompt\(\{/g) ?? []
+    expect(callSites.length).toBe(4)
+  })
+
+  it('agent_end 按触发会话调度项目上下文刷新', () => {
+    expect(source).toContain('projectContextRefreshScheduler.trigger(boundSessionId)')
+    expect(source).toContain('refreshBackgroundProjectContext(sessionId, target)')
+    expect(source).toContain('setRuntimeProjectContext(sessionId, projectSnapshot)')
+  })
 })

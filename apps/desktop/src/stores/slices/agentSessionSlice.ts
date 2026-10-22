@@ -25,7 +25,6 @@ import {
   editUserMessage as editUserMessageAction,
   moveQueuedMessage as moveQueuedMessageAction,
   promoteQueuedMessage as promoteQueuedMessageAction,
-  queueFollowUp as queueFollowUpAction,
   queueNextTurn as queueNextTurnAction,
   queueSteering as queueSteeringAction,
   restoreQueuedMessage as restoreQueuedMessageAction,
@@ -76,7 +75,6 @@ export interface AgentSessionSlice {
   contextCheckpoint: ContextCheckpoint | null
   send: (content: string, images?: ImageContentBlock[]) => Promise<void>
   queueSteering: (content: string, images?: ImageContentBlock[]) => Promise<QueueAcceptance>
-  queueFollowUp: (content: string, images?: ImageContentBlock[]) => Promise<QueueAcceptance>
   queueNextTurn: (content: string, images?: ImageContentBlock[]) => Promise<QueueAcceptance>
   /** 原位改写队列项（保留图片与队列位置）。 */
   editQueuedMessage: (
@@ -138,7 +136,6 @@ export const createAgentSessionSlice = (
   contextCheckpoint: null,
   send: (content, images) => sendAction(set, get, deps, content, images),
   queueSteering: (content, images) => queueSteeringAction(set, get, deps.getSession(), content, images),
-  queueFollowUp: (content, images) => queueFollowUpAction(set, get, deps.getSession(), content, images),
   queueNextTurn: (content, images) => queueNextTurnAction(set, get, deps.getSession(), content, images),
   editQueuedMessage: (messageId, content, images) =>
     editQueuedMessageAction(set, get, deps, messageId, content, images),

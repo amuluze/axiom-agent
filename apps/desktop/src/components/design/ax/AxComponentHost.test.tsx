@@ -10,6 +10,7 @@ import { render, screen } from '@testing-library/react'
 import { fireEvent } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAgentStore } from '@/stores/agentStore'
+import { useUiStore } from '@/stores/uiStore'
 import type { PendingToolApproval } from '@/agent/approval/ApprovalCoordinator'
 import { parseAxDocument, projectAxToPenDocument, serializeAxDocument } from '@/agent/design/axParser'
 import type { AxDocument } from '@/agent/design/axSchema'
@@ -17,6 +18,9 @@ import PenNodeView from '../PenNodeView'
 import type { PenNode } from '@/agent/design/penParser'
 import AxComponentHost from './AxComponentHost'
 import { AX_COMPONENT_REGISTRY, axComponentInventorySummary, validateAxProps } from './registry'
+import { submitFeedback } from '@/platform/feedback'
+
+vi.mock('@/platform/feedback', () => ({ submitFeedback: vi.fn() }))
 import type { PenComponentNode } from '@/agent/design/penParser'
 import { parsePenDocument } from '@/agent/design/penParser'
 
@@ -32,6 +36,14 @@ const buildDoc = (node: unknown) => {
 
 const pendingApproval: PendingToolApproval = AX_COMPONENT_REGISTRY.ApprovalCard!
   .fixtures['pending-command']!.pendingApproval as PendingToolApproval
+
+it('同名项目组件不实例化内置组件，并明确预览边界', () => {
+  const { doc } = buildDoc({ type: 'frame', id: 'p' })
+  doc.projectComponents = [{ summary: { name: 'Sidebar', kind: 'presentational', sourcePath: 'src/Sidebar.tsx', origin: 'project', props: [], fixtures: [] }, statics: [], fixtures: {} }]
+  render(<AxComponentHost node={{ type: 'component', id: 'external', name: 'Sidebar' }} document={doc} themeMode="light" />)
+  expect(screen.getByRole('alert')).toHaveTextContent('src/Sidebar.tsx')
+  expect(document.querySelector('.sidebar__nav')).toBeNull()
+})
 
 const hostFor = (node: Partial<PenComponentNode> & { name: string }) => {
   const { doc } = buildDoc({ type: 'frame', id: 'p', name: '页' })
@@ -58,6 +70,12 @@ describe('组件注册表与宿主', () => {
         unmount()
       }
     }
+  })
+
+  it('组件顶层 variant 进入真实组件 props，预览与生成代码一致', () => {
+    const { unmount } = hostFor({ name: 'Sidebar', fixture: 'default', variant: 'overlay' })
+    expect(document.querySelector('.sidebar--overlay')).not.toBeNull()
+    unmount()
   })
 
   it('注册表缺失该组件时显式报错（含组件名与可用清单）', () => {
@@ -140,6 +158,39 @@ describe('组件注册表与宿主', () => {
 })
 
 describe('注册表契约', () => {
+  it('右上角预览动作不操作真实面板或反馈状态', () => {
+    const original = useUiStore.getState()
+    const action = vi.fn()
+    useUiStore.setState({ toggleTerminalPanel: action, toggleRuntimeRail: action, openRuntimeRailPane: action, openFeedback: action })
+    try {
+      const { unmount } = hostFor({ name: 'WindowActions', fixture: 'default' })
+      for (const button of document.querySelectorAll('button')) fireEvent.click(button)
+      for (const button of document.querySelectorAll('[role="menuitem"]')) fireEvent.click(button)
+      expect(action).not.toHaveBeenCalled()
+      unmount()
+    } finally { useUiStore.setState(original) }
+  })
+
+  it('对话框预览不抢焦点、不提交反馈或保存配置', () => {
+    const focus = document.createElement('textarea')
+    document.body.append(focus)
+    focus.focus()
+    const storage = vi.spyOn(Storage.prototype, 'setItem')
+    for (const name of ['FeedbackDialog', 'SummaryInstructionsDialog', 'BuiltinPromptEditorDialog']) {
+      const { unmount } = hostFor({ name, fixture: 'default' })
+      expect(document.activeElement).toBe(focus)
+      expect(document.querySelector('.ax-component--dialog')).not.toBeNull()
+      const form = document.querySelector('form')
+      if (!form) throw new Error('对话框缺少表单')
+      fireEvent.submit(form)
+      for (const button of document.querySelectorAll('button')) fireEvent.click(button)
+      expect(storage).not.toHaveBeenCalled()
+      expect(submitFeedback).not.toHaveBeenCalled()
+      unmount()
+    }
+    storage.mockRestore()
+    focus.remove()
+  })
   it('每个 store 绑定条目都提供了预览数据构造（否则画布内会读到真实会话态）', () => {
     for (const entry of Object.values(AX_COMPONENT_REGISTRY)) {
       if (entry.kind !== 'store-bound') continue
@@ -308,7 +359,6 @@ describe('多 store 切片接缝（Sidebar/Composer）：零副作用与预览�
       send: storeCalls,
       stop: storeCalls,
       queueSteering: storeCalls,
-      queueFollowUp: storeCalls,
       editUserMessage: storeCalls,
       switchProviderProfile: storeCalls,
       addWorkspace: storeCalls,
@@ -380,5 +430,73 @@ describe('多 store 切片组件的端到端（.ax → 投影 → 真组件）',
     expect(document.querySelector('[data-ax-component="Composer"]')).not.toBeNull()
     expect(document.querySelector('textarea')).not.toBeNull()
     expect(document.querySelector('.design-view__parse-error')).toBeNull()
+  })
+})
+
+describe('slots 插槽接线（1.5）', () => {
+  it('slot 内容按注册表契约注入真实 children（PausedBanner default 插槽）', () => {
+    // 端到端：1.5 稿（decl.slots + 节点 slot）→ 注册表核对 → 投影 → 真组件渲染。
+    const parsed = parseAxDocument(JSON.stringify({
+      ax: '1.5',
+      tokens: {},
+      components: { PausedBanner: { slots: { default: { prop: 'children' } } } },
+      pages: [{
+        id: 'p1', width: 800, height: 600,
+        tree: [{
+          id: 'b1', kind: 'component', name: 'PausedBanner', fixture: 'default',
+          slot: [{ id: 's1', kind: 'text', text: '队列已暂停：2 条消息待发', wrap: 'nowrap' }],
+        }],
+      }],
+    }), { componentInventory: axComponentInventorySummary() })
+    expect(parsed.error).toBeNull()
+    const projection = projectAxToPenDocument(parsed.document as AxDocument, 'a.ax')
+    const page = projection.document.pages[0] as PenNode
+    const node = page.children?.[0] as PenComponentNode
+    render(<PenNodeView node={node} document={projection.document} themeMode="dark" />)
+    expect(document.querySelector('[data-ax-component="PausedBanner"]')).not.toBeNull()
+    expect(document.querySelector('.ax-component-error')).toBeNull()
+    expect(document.querySelector('.design-view__parse-error')).toBeNull()
+    // 插槽内容真的进了组件（不再渲染在「未映射」容器里）。
+    expect(document.querySelector('.session__paused-banner')?.textContent).toContain('队列已暂停：2 条消息待发')
+  })
+
+  it('插槽契约不符：显式错误框（渲染期兜底，不静默丢内容）', () => {
+    // ResultChip 没有 slots 契约——写稿期解析器已 fail-closed；这里直接喂投影节点，
+    // 验证宿主对未经校验路径的兜底仍是显式报错（错误框列出该组件的插槽契约状态）。
+    hostFor({
+      name: 'ResultChip',
+      fixture: 'completed',
+      children: [{ type: 'text', id: 's1', content: '附加说明' } as PenNode],
+    })
+    const box = document.querySelector('.ax-component-error.is-slot')
+    expect(box).not.toBeNull()
+    expect(box?.textContent).toContain('ResultChip')
+  })
+
+  it('具名 prop 形态：slot 内容注入契约声明的 prop（非 children）', () => {
+    // 宿主按 entry.slots 的 prop 字段注入——用临时条目验证通用路径（现网内置组件
+    // 首版只有 PausedBanner 的 children 形态）。
+    const registry = AX_COMPONENT_REGISTRY as Record<string, { slots?: Record<string, { prop: string }> }>
+    registry.SlotProbePanel = {
+      name: 'SlotProbePanel',
+      kind: 'presentational',
+      component: ({ header }: { header?: unknown }) => (
+        <section className="slot-probe">{header as React.ReactNode}</section>
+      ),
+      props: {},
+      fixtures: { default: {} },
+      slots: { default: { prop: 'header' } },
+      sourcePath: 'components/SlotProbePanel.tsx',
+    } as never
+    try {
+      hostFor({
+        name: 'SlotProbePanel',
+        children: [{ type: 'text', id: 's1', content: '头部内容' } as PenNode],
+      })
+      expect(document.querySelector('.ax-component-error')).toBeNull()
+      expect(document.querySelector('.slot-probe')?.textContent).toContain('头部内容')
+    } finally {
+      delete registry.SlotProbePanel
+    }
   })
 })

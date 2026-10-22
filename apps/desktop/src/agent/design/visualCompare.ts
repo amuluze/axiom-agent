@@ -18,8 +18,15 @@ export interface RgbaImage {
 /** 像素级匹配阈值（pixelmatch per-pixel，越小越敏感；上游默认 0.1）。 */
 export const PIXEL_THRESHOLD = 0.1
 
-/** 判定阈值：差异像素占比 ≤ 5% 记 pass（跨引擎字体噪声基线之上的余量）。 */
+/** 判定阈值（跨引擎档）：差异像素占比 ≤ 5% 记 pass（跨引擎字体噪声基线之上的余量）。 */
 export const COMPARE_PASS_RATIO = 0.05
+
+/**
+ * 判定阈值（同引擎档，1.5 起 compare via=preview）：设计侧改走 design:preview 隔离
+ * Chromium 后两侧同引擎，跨引擎字体光栅化噪声消失，阈值收紧到 0.5%——量级到
+ * 布局级差异仍可判，像素级抗锯齿抖动不再触发 warn。
+ */
+export const COMPARE_PASS_RATIO_SAME_ENGINE = 0.005
 
 export interface RgbaDiffBounds {
   x: number
@@ -120,6 +127,6 @@ export const compareRgba = (design: RgbaImage, implementation: RgbaImage): RgbaC
   }
 }
 
-/** advisory 判定：占比 ≤ COMPARE_PASS_RATIO 为 pass，否则 warn（永不 fail）。 */
-export const compareVerdictOf = (ratio: number): 'pass' | 'warn' =>
-  ratio <= COMPARE_PASS_RATIO ? 'pass' : 'warn'
+/** advisory 判定：占比 ≤ passRatio 为 pass，否则 warn（永不 fail；档位由调用方按引擎选）。 */
+export const compareVerdictOf = (ratio: number, passRatio: number = COMPARE_PASS_RATIO): 'pass' | 'warn' =>
+  ratio <= passRatio ? 'pass' : 'warn'

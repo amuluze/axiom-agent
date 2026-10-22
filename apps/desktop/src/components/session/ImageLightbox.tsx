@@ -28,7 +28,12 @@ export const ImageLightbox = () => {
       aria-label={t('app.imageLightbox.aria')}
       aria-modal="true"
       className="image-lightbox"
-      onClick={closeImageLightbox}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) closeImageLightbox()
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') closeImageLightbox()
+      }}
       role="dialog"
     >
       <button
@@ -42,7 +47,6 @@ export const ImageLightbox = () => {
       <img
         alt={imageLightbox.alt}
         className="image-lightbox__image"
-        onClick={(event) => event.stopPropagation()}
         src={imageLightbox.src}
       />
     </div>

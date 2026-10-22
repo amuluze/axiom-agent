@@ -9,7 +9,10 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use sqlx::Row;
 use tauri::AppHandle;
+
+use crate::session_state::SessionRepositoryState;
 
 pub(crate) const MAX_ARTIFACT_BYTES: usize = 8 * 1024 * 1024;
 const HASH_LENGTH: usize = 64;
@@ -18,7 +21,7 @@ const TRASH_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
-enum ArtifactKind {
+pub(crate) enum ArtifactKind {
     Text,
     Json,
     Image,
@@ -62,6 +65,16 @@ pub struct ArtifactMetadata {
     pub(crate) content_hash: String,
     pub(crate) size_bytes: u64,
     pub(crate) created_at: u64,
+}
+
+impl ArtifactMetadata {
+    fn kind_name(&self) -> &'static str {
+        match self.kind {
+            ArtifactKind::Text => "text",
+            ArtifactKind::Json => "json",
+            ArtifactKind::Image => "image",
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -277,6 +290,25 @@ fn write_artifact_at(
     })
 }
 
+/// 图片证据直写（F0-3）：内容为 base64，魔数由 validate_media 权威校验。
+pub(crate) fn write_image_artifact_at(
+    app_data: &Path,
+    content_base64: String,
+    media_type: &str,
+    created_at: u64,
+) -> Result<ArtifactMetadata, String> {
+    write_artifact_at(
+        app_data,
+        WriteArtifactRequest {
+            content: content_base64,
+            encoding: "base64".to_string(),
+            kind: ArtifactKind::Image,
+            media_type: media_type.to_string(),
+            created_at,
+        },
+    )
+}
+
 pub(crate) fn write_text_artifact_at(
     app_data: &Path,
     content: String,
@@ -292,6 +324,82 @@ pub(crate) fn write_text_artifact_at(
             created_at,
         },
     )
+}
+
+pub(crate) fn write_json_artifact_at(
+    app_data: &Path,
+    content: String,
+    created_at: u64,
+) -> Result<ArtifactMetadata, String> {
+    write_artifact_at(
+        app_data,
+        WriteArtifactRequest {
+            content,
+            encoding: "utf8".to_string(),
+            kind: ArtifactKind::Json,
+            media_type: "application/json".to_string(),
+            created_at,
+        },
+    )
+}
+
+pub(crate) async fn register_artifact_metadata(
+    state: &SessionRepositoryState,
+    artifact: &ArtifactMetadata,
+) -> Result<ArtifactMetadata, String> {
+    let size_bytes =
+        i64::try_from(artifact.size_bytes).map_err(|_| "Artifact 大小超出范围".to_string())?;
+    let created_at =
+        i64::try_from(artifact.created_at).map_err(|_| "Artifact 时间超出范围".to_string())?;
+    let mut connection = state.acquire().await?;
+    sqlx::query(
+        "INSERT INTO artifacts
+         (id, kind, media_type, relative_path, content_hash, size_bytes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO NOTHING",
+    )
+    .bind(&artifact.id)
+    .bind(artifact.kind_name())
+    .bind(&artifact.media_type)
+    .bind(&artifact.relative_path)
+    .bind(&artifact.content_hash)
+    .bind(size_bytes)
+    .bind(created_at)
+    .execute(&mut *connection)
+    .await
+    .map_err(|error| format!("无法登记 Artifact 元数据：{error}"))?;
+    let stored = sqlx::query(
+        "SELECT kind, media_type, relative_path, content_hash, size_bytes, created_at
+         FROM artifacts WHERE id = ?",
+    )
+    .bind(&artifact.id)
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(|error| format!("无法校验 Artifact 元数据：{error}"))?;
+    let matches = stored.try_get::<String, _>("kind").ok().as_deref() == Some(artifact.kind_name())
+        && stored.try_get::<String, _>("media_type").ok().as_deref()
+            == Some(artifact.media_type.as_str())
+        && stored.try_get::<String, _>("relative_path").ok().as_deref()
+            == Some(artifact.relative_path.as_str())
+        && stored.try_get::<String, _>("content_hash").ok().as_deref()
+            == Some(artifact.content_hash.as_str())
+        && stored.try_get::<i64, _>("size_bytes").ok() == Some(size_bytes);
+    if !matches {
+        return Err("Artifact 元数据冲突".to_string());
+    }
+    let stored_created_at = stored
+        .try_get::<i64, _>("created_at")
+        .map_err(|error| format!("无法读取 Artifact 创建时间：{error}"))?;
+    Ok(ArtifactMetadata {
+        id: artifact.id.clone(),
+        kind: artifact.kind,
+        media_type: artifact.media_type.clone(),
+        relative_path: artifact.relative_path.clone(),
+        content_hash: artifact.content_hash.clone(),
+        size_bytes: artifact.size_bytes,
+        created_at: u64::try_from(stored_created_at)
+            .map_err(|_| "Artifact 创建时间超出范围".to_string())?,
+    })
 }
 
 fn verify_artifact_reference_at(
@@ -591,12 +699,14 @@ pub(crate) async fn verify_artifact_reference(
 #[tauri::command]
 pub async fn write_artifact(
     app: AppHandle,
+    state: tauri::State<'_, SessionRepositoryState>,
     request: WriteArtifactRequest,
 ) -> Result<ArtifactMetadata, String> {
     let root = axiom_data_root(&app)?;
-    tauri::async_runtime::spawn_blocking(move || write_artifact_at(&root, request))
+    let artifact = tauri::async_runtime::spawn_blocking(move || write_artifact_at(&root, request))
         .await
-        .map_err(|error| format!("Artifact 写入任务失败：{error}"))?
+        .map_err(|error| format!("Artifact 写入任务失败：{error}"))??;
+    register_artifact_metadata(&state, &artifact).await
 }
 
 #[tauri::command]

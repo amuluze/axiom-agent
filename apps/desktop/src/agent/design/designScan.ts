@@ -15,6 +15,7 @@
  * 路径前缀，调用方按前缀归属到页，`.pen` 的诊断没有路径则落在文档级。
  */
 import type { PenDiagnostic, PenDocument, PenNodeUnion } from './penParser'
+import { AX_COMPLETENESS } from './completenessRubric'
 
 /** 单页渲染检查的结果（宿主接缝的产物；无渲染环境时整个检查 skipped）。 */
 export interface DesignScanRenderOutcome {
@@ -40,6 +41,14 @@ export interface DesignScanPageInput {
   nodeCount: number
   /** 非空文本节点数（blank 误报防御的交叉核验信号）。 */
   textNodes: number
+  /** frame 节点数（用于密度 audit「列表/表格样态」判定）。 */
+  frameCount: number
+  /** part 节点数（语义部件实例）。 */
+  partCount: number
+  /** component 节点数（注册表组件 + symbol 实例）。 */
+  componentCount: number
+  /** icon 节点数。 */
+  iconCount: number
   /** 未知节点降级占位框数（含 originalType 摘要）。 */
   unknownNodes: string[]
   /** ref 指向未定义组件的节点 id。 */
@@ -49,6 +58,12 @@ export interface DesignScanPageInput {
 }
 
 export type DesignPageStatus = 'ok' | 'warn' | 'fail'
+
+/**
+ * 渲染检查未完成的结构化原因（不变量 9）：消费方据此区分「本环境根本没验」
+ * 与「验到一半被中断」，而不是读 issue 文案去猜。
+ */
+export type DesignScanRenderReason = 'unavailable' | 'no-size' | 'interrupted'
 
 export interface DesignScanIssue {
   /** 机器可读检查名（render/blank/blankSparse/size/empty/placeholder/refMissing/diagnostic）。 */
@@ -64,8 +79,10 @@ export interface DesignScanPageVerdict {
   name: string
   status: DesignPageStatus
   issues: DesignScanIssue[]
-  /** 渲染检查：skipped（无渲染环境）/ ok / fail。blank 属 warn，落 issues。 */
+  /** 渲染检查：skipped（未渲染，原因见 renderReason）/ ok / fail。blank 属 warn，落 issues。 */
   render: 'skipped' | 'ok' | 'fail'
+  /** `render === 'skipped'` 的结构化原因；其它状态不携带。 */
+  renderReason?: DesignScanRenderReason
   /** 渲染像素尺寸（成功时）。 */
   renderWidth?: number
   renderHeight?: number
@@ -111,6 +128,12 @@ export const extractScanPages = (
     const refMissingIds: string[] = []
     let nodeCount = 0
     let textNodes = 0
+    let frameCount = 0
+    let partCount = 0
+    // symbol 实例在投影里已展开成原语，复用事实由文档级计数带入——否则抽过 symbol 的
+    // 稿仍被判「原语堆」，把已经修好的结构当成待办。
+    let componentCount = doc.symbolInstanceCounts?.[page.id] ?? 0
+    let iconCount = 0
     walkNodes([page], (node) => {
       nodeCount += 1
       if (node.type === 'unknown') {
@@ -121,6 +144,10 @@ export const extractScanPages = (
       if (node.type === 'text' && typeof node.content === 'string' && node.content.trim() !== '') {
         textNodes += 1
       }
+      if (node.type === 'frame') frameCount += 1
+      else if (node.type === 'part') partCount += 1
+      else if (node.type === 'component') componentCount += 1
+      else if (node.type === 'icon') iconCount += 1
     })
     return {
       index: index + 1,
@@ -130,6 +157,10 @@ export const extractScanPages = (
       height: 'height' in page && typeof page.height === 'number' ? page.height : null,
       nodeCount,
       textNodes,
+      frameCount,
+      partCount,
+      componentCount,
+      iconCount,
       unknownNodes,
       refMissingIds,
       diagnostics: [],
@@ -187,6 +218,12 @@ export interface DesignScanOptions {
    * offscreen（视口外独立容器）并行安全。
    */
   renderConcurrency?: number
+  /**
+   * 页 id → 原稿 group/state 标注（来自 .ax AxPage 字段，投影后 PenDocument 不带）。
+   * 密度 audit 判定「关键页缺三态」时读它；缺省视作「无三态标注」——不阻断
+   * 判定，只是「未声明三态」会触发 info 级 warn。
+   */
+  pageMetadata?: Record<string, { group?: string; state?: Record<string, string> }>
 }
 
 export const scanDesignPages = async (
@@ -197,6 +234,8 @@ export const scanDesignPages = async (
 ): Promise<DesignScanReport> => {
   const concurrency = Math.max(1, Math.min(8, options.renderConcurrency ?? 1))
   const requireSize = options.requireSize ?? true
+  const pageMetadata = options.pageMetadata
+  const pageMetaOf = (id: string) => pageMetadata?.[id]
   const outcomes: (DesignScanPageVerdict | undefined)[] = new Array(pages.length).fill(undefined)
 
   if (!renderPage || concurrency === 1) {
@@ -204,7 +243,7 @@ export const scanDesignPages = async (
     // 「onProgress 计数 = 下标」的隐式推导）。
     for (const [index, page] of pages.entries()) {
       options.onActive?.([page.id])
-      const verdict = await scanSinglePage(page, renderPage, requireSize)
+      const verdict = await scanSinglePage(page, renderPage, requireSize, pageMetaOf(page.id))
       outcomes[index] = verdict
       options.onProgress?.({ done: index + 1, total: pages.length, verdict })
     }
@@ -229,7 +268,7 @@ export const scanDesignPages = async (
         const page = pages[index]!
         active.add(page.id)
         options.onActive?.([...active])
-        outcomes[index] = await scanSinglePage(page, renderPage, requireSize)
+        outcomes[index] = await scanSinglePage(page, renderPage, requireSize, pageMetaOf(page.id))
         active.delete(page.id)
         options.onActive?.([...active])
         emitOrdered()
@@ -291,7 +330,68 @@ export const structureIssuesOf = (page: DesignScanPageInput, requireSize: boolea
   return issues
 }
 
-/** 结构问题 + 渲染判定 → 页级判定（两条路径共用）。 */
+/**
+ * 单页的**密度**检查（纯结构，与渲染无关）。
+ *
+ * 三类判定全部以「形态识别」而非「语义推断」：
+ * - `densitySparse`：text 节点数低于阈值 + frame 数达到「列表/表格样态」阈值——
+ *   看似表格却只有 2-3 行，是真实问题（不与 `blank`/`blankSparse` 冲突：后两者
+ *   看渲染像素，本检查看结构）。
+ * - `densityBare`：节点数 < 阈值 + 无 group/state 三态——关键交互页不该这么裸。
+ * - `densityUnconsolidated`：节点数 > 阈值 + `part`/`component` 实例**合计** < 2——结构长成
+ *   「原语堆」，强烈暗示该抽 symbol。
+ *
+ * 阈值取自 `completenessRubric.ts`（与 design skill body `# 完整度清单` 镜像）。
+ */
+export const densityIssuesOf = (
+  page: DesignScanPageInput,
+  pageMeta: { group?: string; state?: Record<string, string> } | undefined,
+): DesignScanIssue[] => {
+  const issues: DesignScanIssue[] = []
+  // 组件/部件子树也算结构：注册表组件的内部文本与行数在结构统计里量不到，组件主导
+  // 的页因此必然落进 sparse/unconsolidated 的形态阈值（正式验收稿的设置分区页就是
+  // 这种形态）。两类判定都以 `part + component` 合计 ≥ 2 作为「页把结构交给了实现
+  // 词汇」的判据——sparse 提示语里的「要么明确改成组织性 frame」到此才算真正实现，
+  // 不再只是一句没落实的建议。
+  const consolidated = page.partCount + page.componentCount
+  if (
+    page.textNodes < AX_COMPLETENESS.densitySparseTextThreshold
+    && page.frameCount >= AX_COMPLETENESS.densitySparseShapeThreshold
+    && consolidated < 2
+  ) {
+    issues.push({
+      check: 'densitySparse',
+      level: 'warning',
+      message: `页面 ${page.textNodes < AX_COMPLETENESS.textNodeFloor
+        ? `仅 ${page.textNodes} 个文本节点`
+        : `文本节点数偏低（${page.textNodes}）`}，但有 ${page.frameCount} 个 frame——列表/表格样态未达「${AX_COMPLETENESS.textNodeFloor} 行」最低密度；要么补行、要么明确改成组织性 frame`,
+    })
+  }
+  if (
+    page.nodeCount < AX_COMPLETENESS.densityBareMinNodes
+    && !pageMeta?.group
+    && (!pageMeta?.state || Object.keys(pageMeta.state).length === 0)
+  ) {
+    issues.push({
+      check: 'densityBare',
+      level: 'info',
+      message: `页面仅 ${page.nodeCount} 个节点且无 group/state 三态——关键交互页建议补空/加载/错误三态`,
+    })
+  }
+  if (
+    page.nodeCount > AX_COMPLETENESS.densityUnconsolidatedMinPrimitives
+    && consolidated < 2
+  ) {
+    issues.push({
+      check: 'densityUnconsolidated',
+      level: 'info',
+      message: `页面 ${page.nodeCount} 个节点但仅 ${page.componentCount} 个 component / ${page.partCount} 个 part 实例——结构看起来该抽 symbol（重复子结构优先用 component 或 part 复用）`,
+    })
+  }
+  return issues
+}
+
+/** 结构问题 + 密度问题 + 渲染判定 → 页级判定（两条路径共用）。 */
 const verdictOf = (
   page: DesignScanPageInput,
   issues: readonly DesignScanIssue[],
@@ -299,6 +399,8 @@ const verdictOf = (
   outcome: DesignScanRenderOutcome | undefined,
   renderWidth?: number,
   renderHeight?: number,
+  pageMeta?: { group?: string; state?: Record<string, string> },
+  renderReason?: DesignScanRenderReason,
 ): DesignScanPageVerdict => {
   const all = [...issues]
   if (outcome?.ok === false) {
@@ -325,6 +427,9 @@ const verdictOf = (
       })
     }
   }
+  // 密度检查（附加建议）排在硬失败之后：面板/报告以 issues[0] 为标题，
+  // 渲染失败与结构错误必须先于密度 warn 露出（密度是收口建议，不是失败原因）。
+  all.push(...densityIssuesOf(page, pageMeta))
   const status: DesignPageStatus = all.some((issue) => issue.level === 'error')
     ? 'fail'
     : all.some((issue) => issue.level === 'warning') ? 'warn' : 'ok'
@@ -335,6 +440,7 @@ const verdictOf = (
     status,
     issues: all,
     render,
+    ...(renderReason !== undefined ? { renderReason } : {}),
     ...(renderWidth !== undefined ? { renderWidth } : {}),
     ...(renderHeight !== undefined ? { renderHeight } : {}),
   }
@@ -362,6 +468,7 @@ export const scanDesignPagesBatch = async (
   options: DesignScanOptions = {},
 ): Promise<DesignScanReport> => {
   const requireSize = options.requireSize ?? true
+  const pageMetadata = options.pageMetadata
   const verdicts = new Map<string, DesignScanPageVerdict>()
   const structureByid = new Map<string, DesignScanIssue[]>()
   const renderable: DesignScanPageInput[] = []
@@ -370,7 +477,7 @@ export const scanDesignPagesBatch = async (
     structureByid.set(page.id, issues)
     const hasSize = page.width !== null && page.height !== null && page.width > 0 && page.height > 0
     if (hasSize) renderable.push(page)
-    else verdicts.set(page.id, verdictOf(page, issues, 'skipped', undefined))
+    else verdicts.set(page.id, verdictOf(page, issues, 'skipped', undefined, undefined, undefined, pageMetadata?.[page.id], 'no-size'))
   }
 
   let done = verdicts.size
@@ -385,7 +492,11 @@ export const scanDesignPagesBatch = async (
     } else {
       render = outcome.ok ? 'ok' : 'fail'
     }
-    const verdict = verdictOf(page, issues, render, outcome, outcome?.width, outcome?.height)
+    const verdict = verdictOf(
+      page, issues, render, outcome, outcome?.width, outcome?.height, pageMetadata?.[page.id],
+      // 未回报 = 扫描被中断，不等于页面有问题（不变量 9：不伪装成通过/失败）。
+      render === 'skipped' ? 'interrupted' : undefined,
+    )
     verdicts.set(page.id, verdict)
     done += 1
     options.onProgress?.({ done, total: pages.length, verdict })
@@ -417,6 +528,7 @@ const scanSinglePage = async (
   page: DesignScanPageInput,
   renderPage: DesignScanRenderPage | undefined,
   requireSize: boolean,
+  pageMeta?: { group?: string; state?: Record<string, string> },
 ): Promise<DesignScanPageVerdict> => {
   const issues = structureIssuesOf(page, requireSize)
   const hasSize = page.width !== null && page.height !== null && page.width > 0 && page.height > 0
@@ -437,5 +549,8 @@ const scanSinglePage = async (
       }
     }
   }
-  return verdictOf(page, issues, render, outcome, outcome?.width, outcome?.height)
+  const renderReason: DesignScanRenderReason | undefined = render !== 'skipped'
+    ? undefined
+    : renderPage === undefined ? 'unavailable' : 'no-size'
+  return verdictOf(page, issues, render, outcome, outcome?.width, outcome?.height, pageMeta, renderReason)
 }

@@ -1,5 +1,5 @@
-use sqlx::SqliteConnection;
 use crate::runtime_manifest::validate_identifier;
+use sqlx::SqliteConnection;
 
 use super::*;
 
@@ -57,7 +57,8 @@ async fn clear_session_locked(
     } else {
         sqlx::query(
             "UPDATE agent_sessions
-             SET title = '新会话', status = 'idle', updated_at = ? WHERE id = ?",
+             SET title = '新会话', status = 'idle', access_mode = 'standard', updated_at = ?
+             WHERE id = ?",
         )
         .bind(request.now)
         .bind(&request.session_id)
@@ -160,27 +161,27 @@ async fn delete_with_successor_locked(
         return Err("只有最后一个空闲 Session 可以原子替换".to_string());
     }
 
-	    let inserted = sqlx::query(
-	        "INSERT INTO agent_sessions
+    let inserted = sqlx::query(
+        "INSERT INTO agent_sessions
 	         (id, title, system_prompt, model_provider, model_id, reasoning_json,
 	          active_tool_names_json, provider_config_json, runtime_manifest_json,
 	          workspace_path, workspace_name,
 	          status, created_at, updated_at)
 	         VALUES (?, '新会话', ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 'idle', ?, ?)",
-	    )
-	    .bind(&request.successor_id)
-	    .bind(&request.system_prompt)
-	    .bind(&request.model_provider)
-	    .bind(&request.model_id)
-	    .bind(&request.reasoning_json)
-	    .bind(&request.active_tool_names_json)
-	    .bind(&request.provider_config_json)
-	    .bind(&request.runtime_manifest_json)
-	    .bind(request.now)
-	    .bind(request.now)
-	    .execute(&mut *connection)
-	    .await
-	    .map_err(|error| format!("无法创建 Successor Session：{error}"))?;
+    )
+    .bind(&request.successor_id)
+    .bind(&request.system_prompt)
+    .bind(&request.model_provider)
+    .bind(&request.model_id)
+    .bind(&request.reasoning_json)
+    .bind(&request.active_tool_names_json)
+    .bind(&request.provider_config_json)
+    .bind(&request.runtime_manifest_json)
+    .bind(request.now)
+    .bind(request.now)
+    .execute(&mut *connection)
+    .await
+    .map_err(|error| format!("无法创建 Successor Session：{error}"))?;
     if inserted.rows_affected() != 1 {
         return Err("无法创建 Successor Session".to_string());
     }

@@ -11,6 +11,7 @@ import type { BranchSummarySource } from '@/agent/session/branch'
 import type { ProviderProfile, ProviderSecretMigration } from '@/agent/transport/provider'
 import type { AgentSessionJournalEntry } from '@/agent/runtime/mutationJournal'
 import type { RuntimeDependencyManifest } from '@/agent/runtime/runtimeDependencyManifest'
+import type { AccessMode } from '@/agent/approval/ApprovalCoordinator'
 
 export type AgentLifecycleEvent = Exclude<AgentEvent, AgentMutationEvent>
 
@@ -40,6 +41,7 @@ export interface StoredAgentSession {
   providerConfig: ProviderProfile | null
   runtimeManifest: RuntimeDependencyManifest | null
   status: 'idle' | 'running'
+  accessMode?: AccessMode
   createdAt: number
   updatedAt: number
   messageCount: number
@@ -75,6 +77,8 @@ export interface SessionInitialization {
   sessions: StoredAgentSession[]
   active: SessionSnapshot
   recoveredRuns: number
+  /** 启动恢复摘要（已完成/已失败/状态未知 + 受影响会话）；无恢复时全零。 */
+  recoverySummary: RecoverySummary
   artifactIntegrityWarning?: string
 }
 
@@ -85,9 +89,48 @@ export interface ProviderProfilePersistenceMigration {
   secretMigration?: ProviderSecretMigration
 }
 
-export interface RuntimeRecoveryResult {
+/** 恢复摘要：区分中断 run 的处置，并给出可能已落地的工具调用与受影响会话。 */
+export interface RecoverySummary {
   recoveredRuns: number
+  /** 已收到 Provider response（成果会被结算）的中断 run。 */
+  completedRuns: number
+  /** 最后一次持久化信号为工具失败的中断 run。 */
+  failedRuns: number
+  /** 在途、无持久化结果可判定的中断 run。 */
+  unknownRuns: number
+  /** 被中断、可能从未执行的工具调用。 */
+  interruptedToolExecutions: number
+  /** 已执行（完成或失败）但结果未保存、可能已产生落地副作用的工具调用。 */
+  possiblyExecutedToolExecutions: number
+  /** 受影响会话（含中断 run）的 id。 */
+  recoveredSessions: string[]
 }
+
+export const EMPTY_RECOVERY_SUMMARY: RecoverySummary = {
+  recoveredRuns: 0,
+  completedRuns: 0,
+  failedRuns: 0,
+  unknownRuns: 0,
+  interruptedToolExecutions: 0,
+  possiblyExecutedToolExecutions: 0,
+  recoveredSessions: [],
+}
+
+export const mergeRecoverySummaries = (
+  base: RecoverySummary,
+  next: RecoverySummary,
+): RecoverySummary => ({
+  recoveredRuns: base.recoveredRuns + next.recoveredRuns,
+  completedRuns: base.completedRuns + next.completedRuns,
+  failedRuns: base.failedRuns + next.failedRuns,
+  unknownRuns: base.unknownRuns + next.unknownRuns,
+  interruptedToolExecutions: base.interruptedToolExecutions + next.interruptedToolExecutions,
+  possiblyExecutedToolExecutions:
+    base.possiblyExecutedToolExecutions + next.possiblyExecutedToolExecutions,
+  recoveredSessions: [...new Set([...base.recoveredSessions, ...next.recoveredSessions])].sort(),
+})
+
+export type RuntimeRecoveryResult = RecoverySummary
 
 export interface StorageStats {
   sessionCount: number
@@ -116,6 +159,7 @@ export interface SessionRepository {
   loadSession(sessionId: string): Promise<SessionSnapshot>
   listSessions(): Promise<StoredAgentSession[]>
   updateSessionModel(sessionId: string, defaults: SessionDefaults): Promise<void>
+  updateSessionAccessMode(sessionId: string, mode: AccessMode): Promise<void>
   commitMutationBatch(
     sessionId: string,
     batch: AgentMutationBatch,

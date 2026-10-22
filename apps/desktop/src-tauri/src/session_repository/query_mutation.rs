@@ -1,9 +1,9 @@
+use crate::runtime_manifest::validate_identifier;
 use serde_json::Value;
 use sqlx::{Connection, SqliteConnection};
-use crate::runtime_manifest::validate_identifier;
 
-use super::*;
 use super::db_io::*;
+use super::*;
 
 pub(super) async fn load_session_snapshot(
     connection: &mut SqliteConnection,

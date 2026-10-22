@@ -51,8 +51,26 @@ const SUBAGENT_KINDS: readonly BuiltinSubAgentOverrideKind[] = ['explore', 'insp
 const OVERRIDE_LANGUAGES: readonly PromptOverrideLanguage[] = ['zh-CN', 'en']
 
 /** 空串覆写无意义（等价回落默认），解析期一律丢弃。 */
+/**
+ * 单条覆写的正文上限（UTF-16 code unit）。
+ *
+ * 覆写只改模型可见文本，范围/预算/只读工具集仍由运行时强制，**不构成安全边界
+ * 变化**；但清单层的 32 KiB 预算只约束 `<available_skills>` 的元数据，正文本身
+ * 原先无上限——一次误粘贴可以把任意长内容塞进每一次工具调用与后续每一轮上下文。
+ * 上限取内置正文最大者的数倍量级（内置正文本身在 1–4 KiB 量级）。
+ */
+export const MAX_BUILTIN_OVERRIDE_TEXT = 16 * 1024
+
 const parseOverrideText = (value: unknown): string | undefined =>
-  typeof value === 'string' && value.length > 0 ? value : undefined
+  typeof value === 'string' && value.length > 0 && value.length <= MAX_BUILTIN_OVERRIDE_TEXT
+    ? value
+    : undefined
+
+/**
+ * 覆写文本是否可保存（供设置页即时反馈）。空串是「移除覆写」的约定，返回 true。
+ */
+export const isValidOverrideText = (value: string): boolean =>
+  value.length === 0 || value.length <= MAX_BUILTIN_OVERRIDE_TEXT
 
 const parseSkillEntry = (
   value: unknown,
@@ -150,11 +168,27 @@ export const applySkillOverrideEntry = (
 ): BuiltinPromptOverridesState => {
   const skills = { ...state.skills }
   const existing: Partial<Record<PromptOverrideLanguage, BuiltinSkillOverrideEntry>> = { ...skills[name] }
-  const fields: BuiltinSkillOverrideEntry = { ...existing[language], ...entry }
-  delete fields.description
-  delete fields.body
-  if (entry.description !== undefined) fields.description = entry.description
-  if (entry.body !== undefined) fields.body = entry.body
+  const fields: BuiltinSkillOverrideEntry = { ...existing[language] }
+  // 保存侧把关：超限正文直接跳过写入（isValidOverrideText 供设置页提前提示）——
+  // 清空文本是「移除覆写」的约定，不能与「超限被拒」共用同一条路径，否则用户
+  // 粘贴超长正文会静默变成「清空该字段覆写」。
+  // 三种语义必须分开：空 entry = 恢复该语言默认（清全部字段，既有约定）；
+  // 空串 = 只清该字段；超长 = 拒绝写入且**不动原值**——超限与「清空」若共用
+  // 同一条路径，粘贴超长正文会静默变成「清空该字段覆写」，比拒绝更糟。
+  if (Object.keys(entry).length === 0) {
+    delete existing[language]
+    skills[name] = existing
+    if (Object.keys(existing).length === 0) delete skills[name]
+    return pruneEmpty({ version: 1, skills, subagents: { ...state.subagents } })
+  }
+  if (entry.description !== undefined) {
+    if (entry.description === '') delete fields.description
+    else if (isValidOverrideText(entry.description)) fields.description = entry.description
+  }
+  if (entry.body !== undefined) {
+    if (entry.body === '') delete fields.body
+    else if (isValidOverrideText(entry.body)) fields.body = entry.body
+  }
   if (fields.description === undefined && fields.body === undefined) delete existing[language]
   else existing[language] = fields
   if (Object.keys(existing).length === 0) delete skills[name]
@@ -178,8 +212,10 @@ export const applySubAgentOverrideEntry = (
 ): BuiltinPromptOverridesState => {
   const subagents = { ...state.subagents }
   const existing = { ...subagents[kind] }
-  if (entry.prompt !== undefined) existing[language] = { prompt: entry.prompt }
-  else delete existing[language]
+  // 空串 = 移除该语言覆写；超长 = 拒绝写入且不动原值（与 applySkillOverrideEntry 同口径）。
+  // 与技能版同口径：空 entry 清整条、空串清该字段、超长拒绝且不动原值。
+  if (Object.keys(entry).length === 0 || entry.prompt === '') delete existing[language]
+  else if (isValidOverrideText(entry.prompt!)) existing[language] = { prompt: entry.prompt }
   if (Object.keys(existing).length === 0) delete subagents[kind]
   else subagents[kind] = existing
   return pruneEmpty({ version: 1, skills: { ...state.skills }, subagents })

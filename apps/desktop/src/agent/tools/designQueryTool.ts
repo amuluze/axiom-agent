@@ -1,33 +1,61 @@
-import type { AgentTool, AgentToolResult } from '../core/types'
+import type { AgentTool, AgentToolResult, JsonValue } from '../core/types'
 import type { AgentEnvironment } from '@/agent/environment/AgentEnvironment'
 import { desktopAgentEnvironment } from '@/agent/environment/agentEnvironmentHost'
 import { parseAxDocument } from '@/agent/design/axParser'
 import {
   designComponentInventory,
+  designComponentDetail,
   type DesignComponentSummary,
 } from '@/agent/design/componentInventoryHost'
+import { loadProjectComponentCatalog, type ProjectComponentCatalog } from '@/agent/design/projectComponentCatalog'
 import {
   DEFAULT_IMAGE_MAX_BYTES,
   DEFAULT_SCAN_THUMBNAIL_BYTES,
-  MAX_IMAGE_MAX_BYTES,
-  executeAxCodeMode,
-  executeAxCompareMode,
-  executeAxNodeMode,
-  executeAxPageMode,
-  executeAxReconcileMode,
-  executeAxRenderMode,
-  executeAxSummaryMode,
-  executeComponentMode,
-  executePenMode,
-  executeScan,
   isAxFile,
-  isDesignFile,
-  type AxModeContext,
-} from '@/agent/design/designQueryModes'
+  MAX_IMAGE_MAX_BYTES,
+} from '@/agent/design/designQueryLimits'
+import type { AxModeContext } from '@/agent/design/designQueryContext'
 import { hasOnlyKeys, isJsonObject, isSafeRelativePath, optionalInteger } from './workspaceToolUtils'
 
 const DEFAULT_MAX_BYTES = 16384
 const MAX_MAX_BYTES = 65536
+
+const FILE_INPUT: JsonValue = {
+  type: 'string',
+  description: 'Workspace-relative design path (e.g. .pen/axiom.ax).',
+}
+const PAGE_INPUT: JsonValue = {
+  anyOf: [
+    { type: 'string' },
+    { type: 'integer', minimum: 1 },
+  ],
+  description: 'Page name or 1-based page index.',
+}
+const MAX_BYTES_INPUT: JsonValue = {
+  type: 'integer',
+  minimum: 1,
+  maximum: MAX_MAX_BYTES,
+  description: `Output byte budget, default ${DEFAULT_MAX_BYTES}.`,
+}
+const IMAGE_MAX_BYTES_INPUT: JsonValue = {
+  type: 'integer',
+  minimum: 1024,
+  maximum: MAX_IMAGE_MAX_BYTES,
+  description: `PNG budget (default ${DEFAULT_IMAGE_MAX_BYTES}) or per-scan thumbnail budget (default ${DEFAULT_SCAN_THUMBNAIL_BYTES}).`,
+}
+const modeSchema = (
+  mode: string,
+  properties: Record<string, JsonValue>,
+  required: string[],
+): Record<string, JsonValue> => ({
+  type: 'object',
+  properties: {
+    mode: { type: 'string', enum: [mode] },
+    ...properties,
+  },
+  required: ['mode', ...required],
+  additionalProperties: false,
+})
 
 /** base64 → UTF-8 文本（agent 层不依赖 platform/base64，浏览器/Node 双环境） */
 const decodeBase64ToText = (base64: string): string => {
@@ -49,24 +77,29 @@ export const createDesignQueryTool = (
 ): AgentTool => ({
   name: 'design_query',
   label: 'design_query',
-  promptSnippet: '查询设计稿（.ax/.pen）的页面与子树；.ax 另返回「已解析的规格 + 组件清单」，无需整读文件。',
+  promptSnippet: '查询设计稿（.ax）的页面与子树；.ax 另返回「已解析的规格 + 组件清单」，无需整读文件。',
   promptGuidelines: [
-    'file 为授权工作区相对路径（.ax 或 .pen）；page 传页名或 1 起始序号，nodeId 精确定位子树。',
+    '工作区授权不能解除凭据或 Axiom 数据保护；隐私目录只开放经原生确认的项目子目录，拒绝后不要通过改名或其他工具绕过。',
+    'file 为授权工作区相对路径（仅 .ax）；page 传页名或 1 起始序号，nodeId 精确定位子树。',
     '不传 page/nodeId 时返回摘要（页清单 + 组件清单 + token 清单）——先看摘要再按页/子树取细节。',
     '.ax 的返回已解析：token 给出明暗两档字面值、组件给出真实源码路径与 props 契约；直接据此写实现，不必猜。',
     '写 component 节点前先用 mode=component 查该组件的详单（props 契约 + statics + fixture 数据形状）：json 型 props 的结构化 $mock 照 fixture 形状写，缺隐式前提（如 assistant 消息的 toolCalls）会在渲染期抛错。',
     '.ax 的组件节点会与组件注册表核对：组件不在注册表、props 键/必填/值型与契约不符都会在读取时报错（写稿当场暴露，不必等画布渲染红框）；按报错列出的可用项自修。',
     'mode=render 返回该页的 PNG（作为图像内容块）：写完设计稿后用它自查「画出来的和想要的是否一致」。',
     '当前模型不支持图片输入时，render/scan 会降级为文字说明（不产图片内容块，render 也不再光栅化）——这是模型能力所限，不是环境没有渲染能力。',
+    '项目组件通过目录的 preview.url 与已启动的 design:preview 本机服务在独立浏览器中运行；回读核对文件与目录 SHA、pageId、主题和尺寸。服务缺失、源码过期、运行失败均返回具体原因。',
     'render 返回 available:false 只说明该次渲染失败（reason 给出解析/挂载/光栅化/预算的具体原因），不代表环境无渲染能力——按 reason 修复（如超预算调大 imageMaxBytes）后重试即可；不要把一次失败当成环境永久不可用而跳过视觉自查。',
     'mode=scan 逐页扫描整份稿（结构检查 + 逐页离屏渲染 + 空白检测），返回逐页判定与问题清单——多页改动或整稿完成后跑一遍，按 fail/warn 页的 issues 修复后重扫直到全绿。可选 tokensCss 传实现样式表路径（如 apps/desktop/src/styles/tokens.css），报告附带 token ↔ CSS 变量的一致性清单（建议性）。',
-    'mode=code 返回该页的 TSX 骨架：组件节点是恒等映射（props 已校验），原语映射到 CSS 变量；unresolved 列出需要人工接线的部分，据此再补数据与交互。',
+    'mode=code 按项目组件框架返回 TSX 或 Vue script setup 骨架：组件合并 fixture 属性，原语映射到 CSS 变量，根容器默认响应式；unresolved 列出带类型的回调/数据绑定和 store/插槽接线点，生成后运行项目类型检查。',
     'mode=reconcile 做「设计 ↔ 实现」结构对账（advisory）：传 implementation（实现文件或目录，workspace 相对）后双向 diff——missingInImplementation 是稿有实无（漏实现，按报告的页名补实现或改稿），extraInImplementation 是实有稿无（可据此反向把实现新用的组件补进设计稿）；实现落地后跑一遍验证还原完整度。报告 fileCapReached=true 时结论只覆盖已扫文件集：把 implementation 收窄到未覆盖的子目录分批重跑，不要据被截断的报告直接判定组件漏实现。',
-    'mode=compare 做「设计页 ↔ 实现路由」的像素对拍（advisory）：先用 bash 起 dev server，再传 page + url，工具内部按设计页尺寸截屏并输出差异占比与 bounds。设计侧 WKWebView、实现侧隔离 Chromium 有字体光栅化基线噪声（文本页常见 1-3% 微差）——warn 时按 bounds 定位差异区域核对，再决定改稿还是改实现，不要追求 0% 差异。',
+    'mode=compare 做「设计页 ↔ 实现路由」的像素对拍（advisory）：先用 bash 起 dev server，再传 page + url，工具内部按设计页尺寸截屏并输出差异占比与 bounds。设计侧 WKWebView、实现侧隔离 Chromium 有字体光栅化基线噪声（文本页常见 1-3% 微差）——warn 时按 bounds 定位差异区域核对，再决定改稿还是改实现，不要追求 0% 差异。项目目录已配置 preview.url 时可传 via=preview 走同引擎档（设计侧改经 design:preview 隔离 Chromium 渲染，阈值收紧到 0.5%）；服务未配置自动回落跨引擎档并在结果注明 engine 档位。',
+    'component 节点要写 slot 内容前，先用 mode=component 确认详单的 slots 段（插槽名 → 注入 prop）：节点 slot 内容归属 default 插槽，decl 未声明 slots 契约时解析直接报错；写稿时在 components.<名>.slots 里声明 { default: { prop: children } } 形态的契约。',
     'mode=scan 的 blank 判定有误报防御：页面树有文本节点时近乎空白降为 info（稀疏文本页常见形态，不影响全绿门禁）；收到 info 用 mode=render 单页渲染确认即可，不要当成待修复问题。',
+    '稿内有 symbols（文档内局部组件，1.4）时 summary 的 symbols 段给出契约/body 规模/实例数，页条目列出使用的 symbol 名；nodeId 可直接寻址 symbol body 子树。重复结构（表格行/导航项/卡片）优先抽 symbol 再实例化，实例 props 全必填且只接受 string 文案。',
     '按子树操作，不要用 read 整读设计稿；写坏 JSON 时再次调用本工具按 parse error 自修。',
+    '工作区没有 .axiom/design/components.json 时，返回的组件清单来自 Axiom 宿主注册表（sourcePath 指向 Axiom 自身源码）：不得把其中组件写进本项目稿件与 codegen，此时只用 symbol / part / 原语。',
   ],
-  runtimeVersion: '9',
+  runtimeVersion: '24',
   recoveryPolicy: 'idempotent',
   idempotencyKey: (input) => {
     if (!isJsonObject(input)) return 'design_query:invalid'
@@ -80,78 +113,80 @@ export const createDesignQueryTool = (
     const implementation = Array.isArray(input.implementation)
       ? input.implementation.filter((item): item is string => typeof item === 'string').sort().join('|')
       : typeof input.implementation === 'string' ? input.implementation : ''
-    // compare 的 url/waitMs 同理进 key；条件追加保证既有 key 形状不变（回放兼容）。
+    // compare 的 url/waitMs/via 同理进 key；条件追加保证既有 key 形状不变（回放兼容）。
     const url = typeof input.url === 'string' ? input.url : ''
     const waitMs = typeof input.waitMs === 'number' ? String(input.waitMs) : ''
+    const via = typeof input.via === 'string' ? input.via : ''
     return `design_query:${file}:${mode}:${page}:${nodeId}:${component}:${implementation}`
-      + `${url !== '' ? `:${url}` : ''}${waitMs !== '' ? `:${waitMs}` : ''}`
+      + `${url !== '' ? `:${url}` : ''}${waitMs !== '' ? `:${waitMs}` : ''}${via !== '' ? `:${via}` : ''}`
   },
   description:
-    'Query a design document (.ax or .pen, workspace-relative) without reading the whole file. '
-    + 'For .ax: summary returns pages plus the component inventory (name → real source path, props contract) and token list; '
-    + 'page/node return the authored tree with tokens resolved to light/dark literals and the components used by that page; '
+    'Query a design document (.ax, workspace-relative) without reading the whole file. '
+    + 'For .ax: summary returns pages plus the component inventory (name → real source path, props contract), the token list, and (1.4+) the document\'s local symbols (name → props contract, body size, instance count; pages list the symbols they use); '
+    + 'page/node return the authored tree with tokens resolved to light/dark literals and the components used by that page; node ids can also address symbol body subtrees; '
     + 'mode=component returns one component\'s full contract (props, statics, fixture data shapes) so structured $mock values can be authored without reading source; '
     + 'component nodes are cross-checked against the component registry at read time (unknown component/props/type mismatches fail here, not at canvas render). '
     + 'mode=render emits the page as a PNG image block for visual self-check; when the active model does not accept image input, render and scan degrade to text-only results (no image blocks, no rasterization) — that is a model-capability limit, not a missing renderer; '
     + 'mode=scan verifies every page renders (structure checks + offscreen render + blank detection, per-page verdicts and issue list; optional tokensCss adds a token ↔ CSS variable parity report); '
-    + 'mode=code emits a TSX skeleton for the page (component nodes map 1:1, primitives map to CSS variables; unresolved items are listed); '
+    + 'mode=code emits a TSX or Vue script setup skeleton for the page (component nodes merge fixture props, primitives map to CSS variables, page roots are responsive; typed bindings and unresolved items require implementation wiring and project typechecking); '
     + 'mode=reconcile cross-checks the design against implementation source files/directories (implementation argument): components in the .ax missing from the implementation are leaks, registry components used in code but absent from the .ax are design-out-of-sync leads (advisory); '
-    + 'mode=compare pixel-diffs a design page against an implementation route (page + url, advisory): renders the design page, captures the route via the browser capability at the page\'s viewport, and reports the mismatch ratio with a bounding box (cross-engine font rasterization adds baseline noise; magnitude and bounds are the signal). '
-    + 'For .pen: the resolved JSON subtree (legacy import format). Output is capped by the byte budget and truncation is always explicit. '
+    + 'mode=compare pixel-diffs a design page against an implementation route (page + url, advisory): renders the design page, captures the route via the browser capability at the page\'s viewport, and reports the mismatch ratio with a bounding box (cross-engine font rasterization adds baseline noise; magnitude and bounds are the signal; via=\'preview\' renders the design side through the design:preview isolated Chromium for a same-engine comparison with a tighter 0.5% threshold, falling back to the cross-engine tier when the preview service is not configured). '
+    + 'Legacy .pen files must first be migrated with design_import. Output truncation is always explicit. '
     + 'Parse failures return the parser diagnostics so the model can repair malformed JSON.',
   inputSchema: {
     type: 'object',
-    properties: {
-      file: {
-        type: 'string',
-        description: 'Workspace-relative design path (e.g. .pen/axiom.ax or .pen/axiom.pen). Optional only for mode=component.',
-      },
-      mode: {
-        type: 'string',
-        description: 'Optional for .ax: summary (pages + component inventory), page (fully resolved page spec), node, component (one component\'s contract detail), render (the page as a PNG image block for visual self-check), code (generated TSX skeleton), reconcile (design ↔ implementation structural cross-check; requires implementation), compare (pixel-level design ↔ implementation-route visual diff; requires page + url; needs the browser capability), or scan (per-page render verification: structure checks + offscreen render + blank detection with per-page verdicts). Inferred when omitted.',
-      },
-      implementation: {
-        description: 'Implementation roots for mode=reconcile: a workspace-relative .ts/.tsx file, a directory (recursively collecting .ts/.tsx, skipping node_modules/dist etc.), or an array of either.',
-      },
-      url: {
-        type: 'string',
-        description: 'mode=compare 的实现路由 URL（http/https，含 localhost，至多 2048 字符）——dev server 起好后传页面路由，工具内部经浏览器能力按设计页尺寸截屏对拍。',
-      },
-      waitMs: {
-        type: 'number',
-        description: 'mode=compare 截屏前的等待毫秒数（1-15000，默认 800）——异步数据/动画页面酌情调大。',
-      },
-      component: {
-        type: 'string',
-        description: 'Component registry name for mode=component (see the inventory in summary).',
-      },
-      tokensCss: {
-        type: 'string',
-        description: 'Workspace-relative implementation stylesheet for mode=scan (e.g. apps/desktop/src/styles/tokens.css); adds an advisory token ↔ CSS variable parity report.',
-      },
-      imageMaxBytes: {
-        type: 'number',
-        description: `PNG budget for mode render (default ${DEFAULT_IMAGE_MAX_BYTES}) or per-thumbnail budget for mode scan (default ${DEFAULT_SCAN_THUMBNAIL_BYTES}); range 1024-${MAX_IMAGE_MAX_BYTES}.`,
-      },
-      page: {
-        description: 'Page name or 1-based page index. Omit with nodeId to list pages.',
-      },
-      nodeId: {
-        type: 'string',
-        description: 'Node id to locate a subtree (searched across pages and reusable components).',
-      },
-      maxBytes: {
-        type: 'number',
-        description: `Output byte budget (1-${MAX_MAX_BYTES}), default ${DEFAULT_MAX_BYTES}.`,
-      },
-    },
-    required: [],
-    additionalProperties: false,
+    anyOf: [
+      modeSchema('summary', { file: FILE_INPUT, maxBytes: MAX_BYTES_INPUT }, ['file']),
+      modeSchema('page', { file: FILE_INPUT, page: PAGE_INPUT, maxBytes: MAX_BYTES_INPUT }, ['file', 'page']),
+      modeSchema('node', {
+        file: FILE_INPUT,
+        nodeId: { type: 'string', minLength: 1, description: 'Node id to locate across page and symbol trees.' },
+        maxBytes: MAX_BYTES_INPUT,
+      }, ['file', 'nodeId']),
+      modeSchema('component', {
+        file: FILE_INPUT,
+        component: { type: 'string', minLength: 1, description: 'Component registry name.' },
+        maxBytes: MAX_BYTES_INPUT,
+      }, ['component']),
+      modeSchema('render', {
+        file: FILE_INPUT,
+        page: PAGE_INPUT,
+        imageMaxBytes: IMAGE_MAX_BYTES_INPUT,
+        maxBytes: MAX_BYTES_INPUT,
+      }, ['file', 'page']),
+      modeSchema('code', { file: FILE_INPUT, page: PAGE_INPUT, maxBytes: MAX_BYTES_INPUT }, ['file', 'page']),
+      modeSchema('scan', {
+        file: FILE_INPUT,
+        page: PAGE_INPUT,
+        tokensCss: { type: 'string', description: 'Optional implementation token stylesheet.' },
+        imageMaxBytes: IMAGE_MAX_BYTES_INPUT,
+        maxBytes: MAX_BYTES_INPUT,
+      }, ['file']),
+      modeSchema('reconcile', {
+        file: FILE_INPUT,
+        implementation: {
+          anyOf: [
+            { type: 'string', minLength: 1 },
+            { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 } },
+          ],
+          description: 'Implementation file or directory roots to compare.',
+        },
+        maxBytes: MAX_BYTES_INPUT,
+      }, ['file', 'implementation']),
+      modeSchema('compare', {
+        file: FILE_INPUT,
+        page: PAGE_INPUT,
+        url: { type: 'string', minLength: 1, maxLength: 2048, description: 'Implementation route URL.' },
+        waitMs: { type: 'integer', minimum: 1, maximum: 15000 },
+        via: { type: 'string', enum: ['preview'] },
+        maxBytes: MAX_BYTES_INPUT,
+      }, ['file', 'page', 'url']),
+    ],
   },
   validate: (input) => {
     if (!isJsonObject(input)
-      || !hasOnlyKeys(input, ['file', 'page', 'nodeId', 'maxBytes', 'mode', 'imageMaxBytes', 'component', 'tokensCss', 'implementation', 'url', 'waitMs'])) {
-      return { ok: false, error: 'Arguments must be an object with only file, page, nodeId, maxBytes, mode, imageMaxBytes, component, tokensCss, implementation, url, and waitMs.' }
+      || !hasOnlyKeys(input, ['file', 'page', 'nodeId', 'maxBytes', 'mode', 'imageMaxBytes', 'component', 'tokensCss', 'implementation', 'url', 'waitMs', 'via'])) {
+      return { ok: false, error: 'Arguments must be an object with only file, page, nodeId, maxBytes, mode, imageMaxBytes, component, tokensCss, implementation, url, waitMs, and via.' }
     }
     if (input.mode !== undefined
       && input.mode !== 'summary' && input.mode !== 'page'
@@ -230,6 +265,14 @@ export const createDesignQueryTool = (
         return { ok: false, error: 'waitMs must be an integer between 1 and 15000.' }
       }
     }
+    if (input.via !== undefined) {
+      if (input.mode !== 'compare') {
+        return { ok: false, error: 'via is only valid with mode=compare.' }
+      }
+      if (input.via !== 'preview') {
+        return { ok: false, error: "via must be 'preview' (render the design side through the design:preview isolated Chromium for same-engine comparison)." }
+      }
+    }
     if (input.mode === 'compare') {
       if (typeof input.url !== 'string' || !input.url.trim()) {
         return { ok: false, error: 'mode=compare requires url (the implementation route to capture).' }
@@ -242,7 +285,7 @@ export const createDesignQueryTool = (
       }
       if (input.nodeId !== undefined || input.imageMaxBytes !== undefined || input.tokensCss !== undefined
         || input.implementation !== undefined || input.component !== undefined) {
-        return { ok: false, error: 'mode=compare takes only file, page, url, waitMs (and optionally maxBytes).' }
+        return { ok: false, error: 'mode=compare takes only file, page, url, waitMs, via (and optionally maxBytes).' }
       }
       if (!optionalInteger(input.maxBytes, 1, MAX_MAX_BYTES)) {
         return { ok: false, error: `maxBytes must be an integer between 1 and ${MAX_MAX_BYTES}.` }
@@ -259,8 +302,8 @@ export const createDesignQueryTool = (
       }
       return { ok: true, value: input }
     }
-    if (typeof input.file !== 'string' || !isDesignFile(input.file) || !isSafeRelativePath(input.file, false)) {
-      return { ok: false, error: 'file must be a workspace-relative path ending in .ax or .pen.' }
+    if (typeof input.file !== 'string' || !isAxFile(input.file) || !isSafeRelativePath(input.file, false)) {
+      return { ok: false, error: 'file must be a workspace-relative path ending in .ax; use design_import to migrate .pen.' }
     }
     if ((input.mode === 'render' || input.mode === 'code') && input.page === undefined) {
       return { ok: false, error: 'mode render/code requires a page (name or 1-based index).' }
@@ -286,21 +329,38 @@ export const createDesignQueryTool = (
   execute: async (input, context): Promise<AgentToolResult> => {
     if (!isJsonObject(input)) throw new Error('Invalid design_query arguments.')
     if (context.signal.aborted) throw new DOMException('Aborted', 'AbortError')
-    const inventory = options.componentInventory?.() ?? designComponentInventory()
+    // 工具在默认会话里始终注册，但重实现（模式执行器 + .ax 解析）只在模型真的查
+    // 设计稿时才需要：按需动态导入，避免把整条设计查询/扫描链路塞进启动主包。
+    const reads = await import('@/agent/design/designQueryAxReads')
+    const reconcile = await import('@/agent/design/designQueryReconcile')
+    const component = await import('@/agent/design/designQueryComponent')
+    const visual = await import('@/agent/design/designQueryVisual')
+    let projectCatalog: ProjectComponentCatalog | null
+    try {
+      projectCatalog = environment.workspace ? await loadProjectComponentCatalog(environment.workspace) : null
+    } catch (error) {
+      return { content: `design_query: 项目组件目录加载失败：${error instanceof Error ? error.message : String(error)}`, details: { catalogValid: false } }
+    }
+    const inventory = projectCatalog ? projectCatalog.components.map((entry) => entry.summary) : options.componentInventory?.() ?? designComponentInventory()
+    const componentDetail = projectCatalog
+      ? (name: string) => projectCatalog.components.find((entry) => entry.summary.name === name) ?? null
+      : designComponentDetail
     const maxBytesForInput = typeof input.maxBytes === 'number' ? input.maxBytes : DEFAULT_MAX_BYTES
 
     // ── component：单组件契约详单（与具体稿件无关，file 可省）────────────────
     // 写 component 节点前查一次：props 契约 + statics + fixture 数据形状——
     // json 型 props 的结构化 $mock 照 fixture 形状写，不必读组件源码反推隐式前提。
     if (input.mode === 'component') {
-      return executeComponentMode(
+      return component.executeComponentMode(
         typeof input.component === 'string' ? input.component : '',
         inventory,
         maxBytesForInput,
+        componentDetail,
       )
     }
 
     if (typeof input.file !== 'string') throw new Error('Invalid design_query arguments.')
+    if (!isAxFile(input.file)) throw new Error('design_query only accepts .ax documents; use design_import first.')
     const document = await environment.design.readDocument(input.file)
     const source = decodeBase64ToText(document.contentBase64)
 
@@ -316,8 +376,9 @@ export const createDesignQueryTool = (
           tokensCss = { file: input.tokensCss, error: error instanceof Error ? error.message : String(error) }
         }
       }
-      return executeScan(source, {
+      return visual.executeScan(source, {
         file: input.file,
+        workspacePath: document.workspacePath,
         page: typeof input.page === 'number'
           ? input.page
           : typeof input.page === 'string' ? input.page : undefined,
@@ -326,6 +387,8 @@ export const createDesignQueryTool = (
         modelAcceptsImage: context.modelAcceptsImage,
       }, document.sha256, {
         componentInventory: inventory,
+        projectComponents: projectCatalog?.components,
+        projectPreview: projectCatalog?.preview,
         ...(tokensCss !== undefined ? { tokensCss } : {}),
       })
     }
@@ -347,11 +410,16 @@ export const createDesignQueryTool = (
       }
       const modeContext: AxModeContext = {
         file: input.file,
+        workspacePath: document.workspacePath,
         sha256: document.sha256,
         source,
         axDoc: parsed.document,
         diagnostics: parsed.diagnostics,
         inventory,
+        componentInventorySource: projectCatalog ? 'project' : 'host',
+        componentDetail,
+        projectComponents: projectCatalog?.components,
+        projectPreview: projectCatalog?.preview,
         maxBytes: maxBytesForInput,
         modelAcceptsImage: context.modelAcceptsImage,
       }
@@ -365,39 +433,32 @@ export const createDesignQueryTool = (
         : input.page !== undefined ? 'page'
         : 'summary'
 
-      if (mode === 'summary') return executeAxSummaryMode(modeContext)
+      if (mode === 'summary') return reads.executeAxSummaryMode(modeContext)
       if (mode === 'render') {
-        return executeAxRenderMode(modeContext, input.page as string | number, typeof input.imageMaxBytes === 'number' ? input.imageMaxBytes : undefined)
+        return visual.executeAxRenderMode(modeContext, input.page as string | number, typeof input.imageMaxBytes === 'number' ? input.imageMaxBytes : undefined)
       }
-      if (mode === 'code') return executeAxCodeMode(modeContext, input.page as string | number)
+      if (mode === 'code') return reads.executeAxCodeMode(modeContext, input.page as string | number)
       if (mode === 'reconcile') {
         const roots = Array.isArray(input.implementation)
           ? input.implementation.filter((item): item is string => typeof item === 'string')
           : typeof input.implementation === 'string' ? [input.implementation] : []
-        return executeAxReconcileMode(modeContext, environment, roots)
+        return reconcile.executeAxReconcileMode(modeContext, environment, roots)
       }
       if (mode === 'compare') {
-        return executeAxCompareMode(modeContext, environment, {
+        return visual.executeAxCompareMode(modeContext, {
           page: input.page as string | number,
           url: typeof input.url === 'string' ? input.url : '',
           ...(typeof input.waitMs === 'number' ? { waitMs: input.waitMs } : {}),
+          ...(input.via === 'preview' ? { via: 'preview' } : {}),
         })
       }
       if (mode === 'node') {
-        return executeAxNodeMode(modeContext, typeof input.nodeId === 'string' ? input.nodeId : '')
+        return reads.executeAxNodeMode(modeContext, typeof input.nodeId === 'string' ? input.nodeId : '')
       }
-      return executeAxPageMode(modeContext, input.page as string | number)
+      return reads.executeAxPageMode(modeContext, input.page as string | number)
     }
 
-    // ── `.pen`（导入源）：解析后的子树 JSON（legacy 读取口径） ─────────────────
-    return executePenMode(
-      { file: input.file, sha256: document.sha256, source },
-      {
-        page: typeof input.page === 'number' || typeof input.page === 'string' ? input.page : undefined,
-        nodeId: typeof input.nodeId === 'string' ? input.nodeId : undefined,
-        maxBytes: typeof input.maxBytes === 'number' ? input.maxBytes : undefined,
-      },
-    )
+    throw new Error('design_query only accepts .ax; migrate legacy documents with design_import.')
   },
 })
 

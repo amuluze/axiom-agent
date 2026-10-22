@@ -1,10 +1,11 @@
-import type { AgentCapability } from '@/config/runtimePolicy'
+import type { AgentCapability, TestAutomationPolicy } from '@/config/runtimePolicy'
 import type { AgentTool } from '@/agent/core/types'
 import { createToolRegistry } from '@/agent/tools/createToolRegistry'
 import type { DesignComponentSummary } from '@/agent/design/componentInventoryHost'
 import { createDiscoverAgentToolsTool } from '@/agent/tools/discoverAgentToolsTool'
 import type { AgentEnvironment } from '@/agent/environment/AgentEnvironment'
 import { desktopAgentEnvironment } from '@/agent/environment/agentEnvironmentHost'
+import { scopeAgentEnvironment } from '@/agent/environment/scopeAgentEnvironment'
 
 export interface ProductToolRuntime {
   discoveryToolName: string
@@ -87,14 +88,21 @@ export const buildSystemPrompt = ({
 // 二者字面相同但语义独立——主 Agent 集随能力动态加入激活集，子代理集是子上下文唯一可用工具。
 const ALWAYS_ACTIVE_READ_TOOLS = ['read', 'ls', 'grep', 'find'] as const
 
+export interface ProductToolRuntimeOptions {
+  designComponentInventory?: () => DesignComponentSummary[]
+  /** H1-5 发布档策略，原样透传给工具注册表（缺省即 fail-closed 的开发档）。 */
+  testAutomation?: TestAutomationPolicy
+}
+
 export const createProductToolRuntime = (
   capabilities: AgentCapability[],
   environment: AgentEnvironment = desktopAgentEnvironment,
-  options: { designComponentInventory?: () => DesignComponentSummary[] } = {},
+  options: ProductToolRuntimeOptions = {},
 ): ProductToolRuntime => {
   const productTools = createToolRegistry({
     capabilities,
-    environment,
+    environment: scopeAgentEnvironment(environment, capabilities),
+    ...(options.testAutomation ? { testAutomation: options.testAutomation } : {}),
     ...(options.designComponentInventory
       ? { designComponentInventory: options.designComponentInventory }
       : {}),

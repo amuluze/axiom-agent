@@ -98,8 +98,14 @@ mod tests {
     fn suggested_name_strips_paths_and_controls() {
         assert_eq!(sanitize_suggested_name("axiom.png"), "axiom.png");
         assert_eq!(sanitize_suggested_name("../../etc/passwd"), "passwd");
-        assert_eq!(sanitize_suggested_name("dir\\nested\\登录页.png"), "登录页.png");
-        assert_eq!(sanitize_suggested_name("bad\u{0}name\u{7f}.png"), "badname.png");
+        assert_eq!(
+            sanitize_suggested_name("dir\\nested\\登录页.png"),
+            "登录页.png"
+        );
+        assert_eq!(
+            sanitize_suggested_name("bad\u{0}name\u{7f}.png"),
+            "badname.png"
+        );
     }
 
     #[test]

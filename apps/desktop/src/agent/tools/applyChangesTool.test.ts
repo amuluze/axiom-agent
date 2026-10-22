@@ -161,7 +161,8 @@ describe('applyChangesTool execute path', () => {
     const result = await callWithFake(environment, input)
     const applyChangesMock = environment.workspace.applyChanges as ReturnType<typeof vi.fn>
     expect(applyChangesMock).toHaveBeenCalledTimes(1)
-    const [request, lease] = applyChangesMock.mock.calls[0]
+    const [request, lease, scope] = applyChangesMock.mock.calls[0]
+    expect(scope).toEqual({ sessionId: 'session-test', runId: 'run-test', toolCallId: 'tool-call-test' })
     expect(lease).toBe(ZERO_LEASE)
     expect(request.operations).toHaveLength(2)
     expect(request.requestId).toMatch(/^workspace-change-/)
@@ -228,6 +229,21 @@ describe('applyChangesTool execute path', () => {
     const result = await callWithFake(environment, input)
     expect(result.content).toContain('Recoverable trash id: recovery-xyz')
     expect(result.details).toMatchObject({ recoveryId: 'recovery-xyz' })
+  })
+
+  it('reports committed changes and pending design history without making them a failed transaction', async () => {
+    const environment = createFakeAgentEnvironment({
+      applyChanges: async (request) => ({
+        ...buildSuccessResult(request),
+        historyWarning: 'workspace changes committed; design history transfer pending: disk unavailable',
+      }),
+    })
+    const result = await callWithFake(environment, {
+      operations: [{ type: 'move', from: 'draft.ax', to: 'published.ax' }],
+    })
+    expect(result.content).toContain('Applied 1 workspace changes atomically.')
+    expect(result.content).toContain('Design history warning: workspace changes committed')
+    expect(result.details).toMatchObject({ historyWarning: expect.stringContaining('pending') })
   })
 
   it('flags completionAfterAbort when the signal aborts after the environment resolves', async () => {

@@ -5,6 +5,7 @@
 //! 与网络关键字交叉验证（TS 侧 bashTool 的 `network` 声明经 workspace_approval 传入，
 //! Rust 权威分类，不信任前端自报）。
 
+use crate::bash_policy_generated::NETWORK_KEYWORDS;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -20,96 +21,23 @@ pub(crate) enum CommandTier {
     SandboxSafe,
     /// 需要出站网络——**仍在沙箱内**执行（网络启用的 profile：写仍限工作区、
     /// 凭据仍 deny），与 SandboxSafe 同为单层卡片审批（tier 由 Rust 权威分类并
-    /// 绑定审批租约）。沙箱不可用时回退常规用户权限执行（该分级从不依赖沙箱
-    /// 作为先决条件）。
+    /// 绑定审批租约）。沙箱不可用时拒绝执行。
     NetworkRequired,
+    /// **无沙箱**：对齐 ChatGPT Full Access（`danger-full-access`）语义。
+    ///
+    /// 关键约束：本档**不由 `classify_command` 产生**，只能由审批层在会话
+    /// 「完全访问」模式下赋予，并随审批租约绑定——受陷渲染进程无法自行请求该档
+    /// （租约绑定 tier，消费时按签发值执行）。执行时不经 seatbelt/bwrap，以宿主
+    /// 用户权限直跑：全盘可读写、凭据可读、网络无限制。沙箱不可用时也不 fail-closed
+    /// （本档本就不需要沙箱）。
+    Unrestricted,
 }
 
-/// 网络关键字列表。必须与 TS 侧 bashTool.ts 逐字一致（`bash-policy-audit` 强制）。
+/// 网络关键字列表由 `contracts/bash-policy.json` 生成（TS/Rust 共用同一份契约，
+/// `generate:bash-policy:check` 在 `npm run check` 中强制）。
 /// 定位是"减速带"而非安全边界：解释器内联网络调用（`python3 -c "import socket..."`）
 /// 与脚本包装可绕过，真正的网络阻断在 OS 沙箱层（`deny network*`），漏报 fail-closed。
-/// 关键词用前缀/整词形式（如 `"npx "`、`"http://"`、`"ftp://"`），避免裸 `"http"`/`"ftp"`
-/// 误匹配 httpHandler、ftp_server.py 等普通字符串。包管理器用 install/add 级粒度：
-/// `yarn test` / `pnpm build` 是纯本地命令，不得误升级为 NetworkRequired。
-pub(crate) const NETWORK_KEYWORDS: &[&str] = &[
-    "curl",
-    "wget",
-    "nc ",
-    "ncat",
-    "netcat",
-    "/usr/bin/nc",
-    "ssh",
-    "scp",
-    "rsync",
-    "npm install",
-    "npm i ",
-    "npm ci",
-    "npm publish",
-    "npx ",
-    "yarn add",
-    "yarn install",
-    "yarn upgrade",
-    "yarn publish",
-    "pnpm add",
-    "pnpm install",
-    "pnpm update",
-    "pnpm publish",
-    "pip install",
-    "pip3 install",
-    "uv pip",
-    "cargo add",
-    "cargo update",
-    "cargo publish",
-    "cargo install",
-    "go get ",
-    "go install",
-    "go mod download",
-    "go mod tidy",
-    "git clone",
-    "git fetch",
-    "git pull",
-    "git push",
-    "git ls-remote",
-    "git submodule update",
-    "gem install",
-    "bundle install",
-    "dotnet restore",
-    "brew install",
-    "docker",
-    "telnet",
-    "socat",
-    "http://",
-    "https://",
-    "ftp://",
-];
-
-/// 需要读取 VCS 身份凭据（SSH 私钥 / git 文件型凭据）才能正常工作的网络命令。
-/// 这些命令命中 NETWORK_KEYWORDS 后分级为 NetworkRequired，但在沙箱内执行时
-/// 必须额外放行 `~/.ssh` 与 `~/.config/git/credentials` 的读取，否则 `git push`
-/// 等合法工作流会因无法认证而失败。该放行由 Rust 根据命令字符串权威判定，
-/// 不依赖前端自报；审批文案同步提示用户。
-/// （仅沙箱路径消费；Windows 无沙箱后端，保留编译维持跨平台类型检查。）
-#[cfg_attr(target_os = "windows", allow(dead_code))]
-pub(crate) const VCS_CREDENTIAL_KEYWORDS: &[&str] = &[
-    "git clone",
-    "git fetch",
-    "git pull",
-    "git push",
-    "git ls-remote",
-    "git submodule update",
-];
-
-/// 判定命令是否需要读取 VCS 凭据。注意：此函数只关心命令字面量是否含 git 网络
-/// 关键字；实际安全分级仍由 `classify_command` 负责。
-#[cfg_attr(target_os = "windows", allow(dead_code))]
-pub(crate) fn command_requires_vcs_credentials(command: &str) -> bool {
-    VCS_CREDENTIAL_KEYWORDS
-        .iter()
-        .any(|keyword| command.contains(keyword))
-}
-
 /// 声明式分类：模型声明 `network` + Rust 关键字交叉验证。
-/// Phase A 中调用方固定传 `declared_network = false`（TS 侧尚无该字段）；
 /// 模型声明为真、或命令含网络关键字，一律升级为 NetworkRequired（fail-safe）。
 pub(crate) fn classify_command(command: &str, declared_network: bool) -> CommandTier {
     let has_network_keyword = NETWORK_KEYWORDS
@@ -119,6 +47,33 @@ pub(crate) fn classify_command(command: &str, declared_network: bool) -> Command
         (true, _) | (false, true) => CommandTier::NetworkRequired,
         (false, false) => CommandTier::SandboxSafe,
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SandboxPrivileges {
+    pub(crate) vcs_credentials: bool,
+    pub(crate) container_control: bool,
+}
+
+pub(crate) fn command_network_policy(
+    tier: CommandTier,
+    available: bool,
+) -> Result<NetworkPolicy, String> {
+    let policy = match tier {
+        CommandTier::SandboxSafe => NetworkPolicy::LoopbackOnly,
+        CommandTier::NetworkRequired => NetworkPolicy::OutboundEnabled,
+        // 无沙箱档不适用网络策略：进程直跑，网络由宿主用户权限决定。走到这里
+        // 说明调用方漏了分支（执行路径必须先按 tier 分流），fail-closed 拒绝。
+        CommandTier::Unrestricted => {
+            return Err("unrestricted tier bypasses the sandbox and has no network policy".into())
+        }
+    };
+    if !available {
+        return Err(sandbox_unavailable_error(&format!(
+            "policy {policy:?} requires sandboxing"
+        )));
+    }
+    Ok(policy)
 }
 
 /// 沙箱可用性探测：不止检查文件存在，而是**功能性探测**——用最小包装实际跑一次
@@ -150,10 +105,15 @@ pub(crate) fn sandbox_available() -> bool {
             // AppArmor 关闭）都会以非零退出暴露。
             std::process::Command::new(sandbox_program())
                 .args([
-                    "--ro-bind", "/", "/",
-                    "--dev", "/dev",
-                    "--proc", "/proc",
-                    "--tmpfs", "/tmp",
+                    "--ro-bind",
+                    "/",
+                    "/",
+                    "--dev",
+                    "/dev",
+                    "--proc",
+                    "/proc",
+                    "--tmpfs",
+                    "/tmp",
                     "--unshare-net",
                     "--",
                     "/usr/bin/true",
@@ -193,32 +153,24 @@ pub(crate) fn sandbox_program() -> &'static str {
 }
 
 /// 沙箱不可用时的 fail-closed 错误文案（lease 签发前置检查与执行路径共用）。
-/// 文案必须给出可行动的替代路径——声明 `network: true` 走 NetworkRequired 分级
-/// （该分级从不以沙箱为先决条件，沙箱不可用时回退常规用户权限执行），
-/// 否则模型会陷入「每条命令都被拒绝且无出路」的死锁。
 pub(crate) fn sandbox_unavailable_error(context: &str) -> String {
     #[cfg(target_os = "macos")]
     {
-        format!("OS sandbox (sandbox-exec) is unavailable; {context}")
+        format!("OS sandbox (sandbox-exec) is unavailable; {context}. 命令未执行；请检查系统沙箱支持，启用网络不能绕过沙箱要求")
     }
     #[cfg(target_os = "linux")]
     {
         format!(
             "OS sandbox (bubblewrap) is unavailable — install the `bubblewrap` package and \
              ensure unprivileged user namespaces are enabled (see docs/linux-support.md); \
-             {context}. Workaround: re-run the command with `network: true` to use the \
-             fallback execution path"
+             {context}. 命令未执行；启用网络不能绕过沙箱要求"
         )
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        // Windows（及其它平台）：尚无 OS 沙箱实现（Restricted token / AppContainer
-        // 方案见 docs/windows-support.md）。文案与 Linux 同一结构：给出 network: true
-        // 回退出路，避免「每条命令都被拒绝且无出路」的死锁。
         format!(
             "OS sandbox is not yet available on this platform (see docs/windows-support.md); \
-             {context}. Workaround: re-run the command with `network: true` to use the \
-             fallback execution path"
+             {context}. 命令未执行；该平台暂不支持 Agent 命令执行"
         )
     }
 }
@@ -310,18 +262,17 @@ impl SandboxDenialCapture {
         // 头行读取线程：读出一行（Blocking）后把 BufReader 交还主线程。
         let (ready_tx, ready_rx) =
             std::sync::mpsc::channel::<std::io::BufReader<std::process::ChildStdout>>();
-        let ready_handle =
-            std::thread::spawn(move || {
-                use std::io::BufRead;
-                let mut reader = std::io::BufReader::new(stdout);
-                let mut first = String::new();
-                match reader.read_line(&mut first) {
-                    Ok(0) | Err(_) => {} // EOF / 失败：不交还，主线程看门狗超时
-                    Ok(_) => {
-                        let _ = ready_tx.send(reader);
-                    }
+        let ready_handle = std::thread::spawn(move || {
+            use std::io::BufRead;
+            let mut reader = std::io::BufReader::new(stdout);
+            let mut first = String::new();
+            match reader.read_line(&mut first) {
+                Ok(0) | Err(_) => {} // EOF / 失败：不交还，主线程看门狗超时
+                Ok(_) => {
+                    let _ = ready_tx.send(reader);
                 }
-            });
+            }
+        });
         let reader = match ready_rx.recv_timeout(std::time::Duration::from_millis(600)) {
             Ok(reader) => reader,
             Err(_) => {
@@ -486,7 +437,7 @@ pub(crate) fn generate_sandbox_profile(
     sandbox_dir: &Path,
     request_id: &str,
     network: NetworkPolicy,
-    allow_vcs_credentials: bool,
+    privileges: SandboxPrivileges,
 ) -> Result<SandboxProfile, String> {
     let _ = validate_profile_path(workspace_root, "workspace root")?;
     let _ = validate_profile_path(home, "home")?;
@@ -552,6 +503,36 @@ pub(crate) fn generate_sandbox_profile(
     profile.push_str("(allow file-read* (subpath \"/private/var/tmp\"))\n");
 
     profile.push_str(";; 凭据载体显式 deny（§5，黑名单；防御深度含 ssh/aws/gnupg）\n");
+    let private_scope = workspace_sensitive_scope(home, workspace_root)?;
+    validate_privileged_paths(home, privileges)?;
+    for entry in protected_paths(home) {
+        validate_profile_path(&entry.path, "protected deny path")?;
+        profile.push_str(&format!(
+            "(deny file-read* ({} \"{}\"))\n",
+            if entry.literal { "literal" } else { "subpath" },
+            entry.path.display()
+        ));
+    }
+    for dir in extra_deny_dirs_from_env(home, workspace_root) {
+        validate_profile_path(&dir, "extra deny dir")?;
+        profile.push_str(&format!(
+            "(deny file-read* (subpath \"{}\"))\n",
+            dir.display()
+        ));
+    }
+    if private_scope.is_some() {
+        profile.push_str("(allow file-read* (subpath (param \"WORKSPACE\")))\n");
+        for entry in protected_paths(home).into_iter().filter(|entry| {
+            entry.source != ProtectedSource::Private || !path_inside(workspace_root, &entry.path)
+        }) {
+            profile.push_str(&format!(
+                "(deny file-read* ({} \"{}\"))\n",
+                if entry.literal { "literal" } else { "subpath" },
+                entry.path.display()
+            ));
+        }
+    }
+
     for credential in SENSITIVE_READ_CREDENTIAL_FILES {
         profile.push_str(&format!(
             "(deny file-read* (literal (string-append (param \"HOME\") \"/{credential}\")))\n"
@@ -562,26 +543,7 @@ pub(crate) fn generate_sandbox_profile(
             "(deny file-read* (subpath (string-append (param \"HOME\") \"/{credential}\")))\n"
         ));
     }
-
-    profile.push_str(
-        ";; 敏感个人目录 deny（默认拒绝文档/桌面/下载等；工作区位于其内时由调用侧跳过）\n",
-    );
-    for dir in sensitive_read_deny_dirs(home, workspace_root)
-        .into_iter()
-        .chain(extra_deny_dirs_from_env(home, workspace_root))
-    {
-        // canonicalize 解析 symlink 后的具体路径不再经过入口处的字符白名单，
-        // 进入 profile 文本前必须逐个校验（路径以插值形态嵌入 subpath 规则）。
-        if validate_profile_path(&dir, "sensitive deny dir").is_err() {
-            continue;
-        }
-        profile.push_str(&format!("(deny file-read* (subpath \"{}\"))\n", dir.display()));
-    }
-
-    // VCS 认证命令（git push/pull/fetch/clone 等）需要读取 SSH 私钥或 git 文件型
-    // 凭据才能正常工作。在 NetworkRequired 档位内精确放行这两个路径，覆盖上方
-    // 的凭据 deny；其余凭据目录（aws/gnupg/npmrc/cargo）仍保持拒绝。
-    if allow_vcs_credentials {
+    if privileges.vcs_credentials {
         profile.push_str(
             ";; VCS 认证命令：精确放行 SSH 私钥与 git 文件型凭据（覆盖上方 deny）\n\
              (allow file-read* (subpath (string-append (param \"HOME\") \"/.ssh\")))\n\
@@ -593,10 +555,10 @@ pub(crate) fn generate_sandbox_profile(
         ";; 网络：默认全拒绝（覆盖 AF_INET 与 AF_UNIX socket——冒烟实证），\n\
          ;; 再按档位放行（last-match-wins，allow 在 deny 之后）。AF_UNIX 默认保持拒绝：\n\
          ;; unix socket 可直连宿主守护进程（ssh-agent、Docker daemon——后者等价于\n\
-         ;; 以宿主权限执行任意操作），只两处定点放行：系统解析器（mDNSResponder）与容器引擎 daemon socket（仅网络档，见下方 OutboundEnabled 分支）。\n\
+         ;; 以宿主权限执行任意操作），只两处定点放行：系统解析器（mDNSResponder）与容器引擎 daemon socket（需显式授权，见 container_control 分支）。\n\
          (deny network*)\n",
     );
-    let container_socket_rules = if matches!(network, NetworkPolicy::OutboundEnabled) {
+    let container_socket_rules = if privileges.container_control {
         container_engine_profile_rules(home)
     } else {
         String::new()
@@ -629,6 +591,30 @@ pub(crate) fn generate_sandbox_profile(
         }
     }
     profile.push_str(&container_socket_rules);
+    for entry in protected_paths(home).into_iter().filter(|entry| {
+        (entry.source == ProtectedSource::Vcs && privileges.vcs_credentials)
+            || (entry.source == ProtectedSource::Container && privileges.container_control)
+    }) {
+        profile.push_str(&format!(
+            "(allow file-read* ({} \"{}\"))\n",
+            if entry.literal { "literal" } else { "subpath" },
+            entry.path.display()
+        ));
+        if entry.source == ProtectedSource::Container {
+            profile.push_str(&format!(
+                "(allow file-write* (subpath \"{}\"))\n",
+                entry.path.display()
+            ));
+        }
+    }
+    for dir in extra_deny_dirs_from_env(home, workspace_root) {
+        let canonical = canonical_policy_path(&dir);
+        validate_profile_path(&canonical, "extra deny target")?;
+        profile.push_str(&format!(
+            "(deny file-read* (subpath \"{}\"))\n",
+            canonical.display()
+        ));
+    }
     profile.push('\n');
 
     profile.push_str(
@@ -674,7 +660,7 @@ pub(crate) fn generate_sandbox_profile(
     // "unbound variable: limit"），依赖 execute_command 的进程组回收 + wall-clock
     // timeout（terminate_remaining_process_group）作为主兜底（docs/os-sandbox-plan.md §3.1）。
 
-    append_write_boundary_hardening(&mut profile, workspace_root, home);
+    append_write_boundary_hardening(&mut profile, workspace_root, home, privileges);
     // 兼容放行必须压在硬化规则之后：last-match-wins 语义下，末尾的
     // `(deny mach-lookup (xpc-service-name-prefix ""))` 会覆盖先前的同名 allow。
     append_chromium_compat_allowances(&mut profile, chromium_compat_allowed());
@@ -719,14 +705,17 @@ pub(crate) fn generate_sandbox_profile(
 /// `(deny default)` 也不覆盖 system-fcntl（codex 原注释：even deny-default needs
 /// this explicit deny）。
 #[cfg_attr(all(not(target_os = "macos"), not(test)), allow(dead_code))]
-fn append_write_boundary_hardening(profile: &mut String, workspace_root: &Path, home: &Path) {
+fn append_write_boundary_hardening(
+    profile: &mut String,
+    workspace_root: &Path,
+    home: &Path,
+    privileges: SandboxPrivileges,
+) {
     profile.push_str(
         ";; 写边界硬化（读取 deny 与写入 allow 之间的缝隙封堵；规则压在全部 allow 之后）\n",
     );
     profile.push_str("(deny mach-lookup (xpc-service-name-prefix \"\"))\n");
-    profile.push_str(
-        ";; ③ 写根锚点：沙箱内命令不得 unlink 工作区/临时目录根本身。\n",
-    );
+    profile.push_str(";; ③ 写根锚点：沙箱内命令不得 unlink 工作区/临时目录根本身。\n");
     profile.push_str(
         "(deny file-write-unlink (require-all (literal (param \"WORKSPACE\")) (vnode-type DIRECTORY)))\n",
     );
@@ -742,7 +731,7 @@ fn append_write_boundary_hardening(profile: &mut String, workspace_root: &Path, 
         ";; ①② 工作区内的读取 deny 路径同步收紧写入面：子树整体写 deny + 祖先链\n\
          ;; unlink deny（读取 deny 被 rename 逃逸的封堵，见函数头注释）。\n",
     );
-    for protected in protected_read_deny_paths(home, workspace_root) {
+    for protected in protected_read_deny_paths(home, workspace_root, privileges) {
         match &protected.form {
             ProtectedPathForm::SubpathParam(param_path) => {
                 profile.push_str(&format!(
@@ -877,13 +866,17 @@ impl ProtectedReadPath {
 /// 全部读取 deny 路径（凭据子路径/凭据文件/敏感目录/额外 deny 目录）。
 /// 只返回位于可写工作区内的条目——工作区外的路径本就不可写，无需写保护。
 #[cfg_attr(all(not(target_os = "macos"), not(test)), allow(dead_code))]
-fn protected_read_deny_paths(home: &Path, workspace_root: &Path) -> Vec<ProtectedReadPath> {
+fn protected_read_deny_paths(
+    home: &Path,
+    workspace_root: &Path,
+    privileges: SandboxPrivileges,
+) -> Vec<ProtectedReadPath> {
     // 敏感目录在 sensitive_read_deny_dirs 内部做 canonical 化，包含比较必须用
     // 同一坐标系：home 与工作区都 canonical 化（/tmp 符号链接形态的路径会让
     // starts_with 失配，规则静默漏发）。
     let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
-    let workspace_root = std::fs::canonicalize(workspace_root)
-        .unwrap_or_else(|_| workspace_root.to_path_buf());
+    let workspace_root =
+        std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
     let mut paths = Vec::new();
     let mut push_if_inside = |form: ProtectedPathForm, concrete: PathBuf| {
         if concrete.starts_with(workspace_root.as_path()) {
@@ -891,25 +884,33 @@ fn protected_read_deny_paths(home: &Path, workspace_root: &Path) -> Vec<Protecte
         }
     };
     for sub in SENSITIVE_READ_CREDENTIAL_SUBPATHS {
+        if privileges.container_control && *sub == ".docker" {
+            continue;
+        }
         push_if_inside(
-            ProtectedPathForm::SubpathParam((*sub).to_string()),
+            ProtectedPathForm::SubpathParam((*sub).into()),
             home.join(sub),
         );
     }
     for file in SENSITIVE_READ_CREDENTIAL_FILES {
         push_if_inside(
-            ProtectedPathForm::LiteralParam((*file).to_string()),
+            ProtectedPathForm::LiteralParam((*file).into()),
             home.join(file),
         );
     }
-    for dir in sensitive_read_deny_dirs(&home, &workspace_root)
-        .into_iter()
-        .chain(extra_deny_dirs_from_env(&home, &workspace_root))
-    {
-        if validate_profile_path(&dir, "protected deny dir").is_err() {
+    for entry in protected_paths(home.as_path()) {
+        if privileges.container_control && entry.source == ProtectedSource::Container {
             continue;
         }
+        if validate_profile_path(&entry.path, "protected deny path").is_err() {
+            continue;
+        }
+        push_if_inside(ProtectedPathForm::Concrete(entry.path.clone()), entry.path);
+    }
+    for dir in extra_deny_dirs_from_env(&home, &workspace_root) {
+        let canonical = canonical_policy_path(&dir);
         push_if_inside(ProtectedPathForm::Concrete(dir.clone()), dir);
+        push_if_inside(ProtectedPathForm::Concrete(canonical.clone()), canonical);
     }
     paths
 }
@@ -940,13 +941,14 @@ pub(crate) struct BwrapSandboxSpec<'a> {
     pub(crate) tmpdir: &'a Path,
     pub(crate) network: NetworkPolicy,
     pub(crate) allow_vcs_credentials: bool,
+    pub(crate) allow_container_control: bool,
     /// 宿主 `/var/run` 是否为符号链接（merged-usr 布局：遮蔽 `/run` 已覆盖，
     /// 对符号链接路径挂 tmpfs 会失败，必须跳过）。
     pub(crate) var_run_is_symlink: bool,
     /// `/etc/resolv.conf` 的 canonical 目标位于被遮蔽的 `/run` 内时（systemd-resolved
     /// 的 `stub-resolv.conf`），需要把该文件重绑回沙箱，否则 DNS 全挂。
     pub(crate) resolv_conf_rebind: Option<&'a Path>,
-    /// 容器引擎 daemon socket（仅网络档定点重绑；见 `container_sockets_for_command`）。
+    /// 容器引擎 daemon socket（显式权限控制；见 `container_sockets_for_command`）。
     pub(crate) container_sockets: &'a [PathBuf],
 }
 
@@ -957,7 +959,7 @@ pub(crate) fn generate_bwrap_args(spec: &BwrapSandboxSpec) -> Vec<std::ffi::OsSt
     // bwrap 语法约定：`--dev/--tmpfs <path>` 单路径，`--ro-bind/--bind <src> <dst>`
     // 成对路径（同路径自绑即「以指定模式重新暴露」）。遮蔽类挂载必须在 root 绑
     // 之后（bwrap 按参数顺序应用，后挂者覆盖先挂者——等价 seatbelt 的
-    // last-match-wins），网络档的定点重绑必须在遮蔽之后。
+    // last-match-wins），显式授权的定点重绑必须在遮蔽之后。
     let mut args: Vec<std::ffi::OsString> = Vec::new();
     macro_rules! one {
         ($argument:expr, $path:expr) => {
@@ -998,8 +1000,8 @@ pub(crate) fn generate_bwrap_args(spec: &BwrapSandboxSpec) -> Vec<std::ffi::OsSt
         pair!("--ro-bind", target, target);
     }
 
-    // 敏感目录 deny（`sensitive_read_deny_dirs` 已含「工作区位于其内时跳过」豁免；
-    // 与 seatbelt 同一单一事实源）。仅遮蔽实际存在的路径——bwrap 对不存在路径挂
+    // 敏感目录 deny 与 seatbelt 同源，包含工作区也不跳过。
+    // 仅遮蔽实际存在的路径——bwrap 对不存在路径挂
     // tmpfs 会失败，而遮蔽不存在的路径本就无意义。环境扩展 deny 同 seatbelt 生效。
     let deny_dirs = sensitive_read_deny_dirs(spec.home, spec.workspace_root)
         .into_iter()
@@ -1010,52 +1012,64 @@ pub(crate) fn generate_bwrap_args(spec: &BwrapSandboxSpec) -> Vec<std::ffi::OsSt
         }
     }
 
+    if workspace_sensitive_scope(spec.home, spec.workspace_root).is_ok_and(|scope| scope.is_some())
+    {
+        pair!("--bind", spec.workspace_root, spec.workspace_root);
+    }
     // 凭据载体 deny。VCS 认证命令例外 = 跳过遮蔽 ~/.ssh 与 ~/.config/git/credentials
     //（seatbelt 的 deny-后-allow 在 bwrap 里等价于「按原始内容重新挂载」；.ssh 用
-    // 只读重绑——git 认证只读私钥，不需要可写）。网络档另豁免 ~/.docker（docker
-    // CLI 状态目录，与 seatbelt 网络档的 read+write 放行同语义：根本不遮蔽）。
-    let vcs = spec.allow_vcs_credentials;
-    let network_enabled = matches!(spec.network, NetworkPolicy::OutboundEnabled);
-    for subpath in SENSITIVE_READ_CREDENTIAL_SUBPATHS {
-        let path = spec.home.join(subpath);
-        if vcs && *subpath == ".ssh" && path.symlink_metadata().is_ok() {
-            pair!("--ro-bind", &path, &path);
+    // 只读重绑——git 认证只读私钥，不需要可写）。显式容器授权另豁免 ~/.docker（docker
+    // CLI 状态目录，与 seatbelt 容器授权的 read+write 放行同语义：根本不遮蔽）。
+    let privileges = SandboxPrivileges {
+        vcs_credentials: spec.allow_vcs_credentials,
+        container_control: spec.allow_container_control,
+    };
+    let privileges_safe = validate_privileged_paths(spec.home, privileges).is_ok();
+    let permitted = |source| {
+        privileges_safe
+            && ((source == ProtectedSource::Vcs && privileges.vcs_credentials)
+                || (source == ProtectedSource::Container && privileges.container_control))
+    };
+    for entry in protected_paths(spec.home).into_iter().filter(|entry| {
+        entry.source != ProtectedSource::Private || !path_inside(spec.workspace_root, &entry.path)
+    }) {
+        if entry.path.symlink_metadata().is_err() {
             continue;
         }
-        if network_enabled && *subpath == ".docker" {
-            continue;
-        }
-        if path.symlink_metadata().is_ok() {
-            one!("--tmpfs", &path);
-        }
-    }
-    for file in SENSITIVE_READ_CREDENTIAL_FILES {
-        let path = spec.home.join(file);
-        if vcs && *file == ".config/git/credentials" && path.symlink_metadata().is_ok() {
-            pair!("--ro-bind", &path, &path);
-            continue;
-        }
-        if path.symlink_metadata().is_ok() {
-            // 文件型遮蔽：/dev/null 只读绑定为空文件（tmpfs 只能挂目录）。
-            pair!("--ro-bind", Path::new("/dev/null"), &path);
+        if permitted(entry.source) {
+            pair!(
+                if entry.source == ProtectedSource::Container {
+                    "--bind"
+                } else {
+                    "--ro-bind"
+                },
+                &entry.path,
+                &entry.path
+            );
+        } else if entry.literal {
+            pair!("--ro-bind", Path::new("/dev/null"), &entry.path);
+        } else {
+            one!("--tmpfs", &entry.path);
         }
     }
 
-    // 网络档位。
-    match spec.network {
-        NetworkPolicy::LoopbackOnly => {
-            // 新网络命名空间只 up lo：dev server bind/回环连接全通过，外发全断
-            //（比 seatbelt 的 localhost 规则更严且更简单）。
-            args.push(std::ffi::OsString::from("--unshare-net"));
+    for path in extra_deny_dirs_from_env(spec.home, spec.workspace_root) {
+        for path in [path.clone(), canonical_policy_path(&path)] {
+            if path.symlink_metadata().is_ok() {
+                one!("--tmpfs", &path);
+            }
         }
-        NetworkPolicy::OutboundEnabled => {
-            // 共享宿主网络命名空间（IP 网络全放行）；AF_UNIX 已由 /run 遮蔽兜底，
-            // 容器引擎 daemon socket 定点重绑（仅实际存在的；等价宿主权限操作面，
-            // 与 seatbelt 一样只在出网档放行）。
-            for socket in spec.container_sockets {
-                if socket.symlink_metadata().is_ok() {
-                    pair!("--bind", socket, socket);
-                }
+    }
+
+    if spec.network == NetworkPolicy::LoopbackOnly {
+        args.push(std::ffi::OsString::from("--unshare-net"));
+    }
+    for socket in spec.container_sockets {
+        if socket.symlink_metadata().is_ok() {
+            if spec.allow_container_control && privileges_safe {
+                pair!("--bind", socket, socket);
+            } else {
+                pair!("--ro-bind", Path::new("/dev/null"), socket);
             }
         }
     }
@@ -1066,7 +1080,7 @@ pub(crate) fn generate_bwrap_args(spec: &BwrapSandboxSpec) -> Vec<std::ffi::OsSt
 
 /// 执行路径的容器引擎 socket 清单（`DOCKER_HOST`/`CONTAINER_HOST` 的 `unix://` 声明 +
 /// `AXIOM_SANDBOX_EXTRA_ALLOW_SOCKETS` + 常见引擎默认路径；仅实际存在的条目）。
-/// `container_engine_profile_rules`（seatbelt 网络档）与 bwrap 网络档共用同一清单，
+/// `container_engine_profile_rules`（seatbelt 容器授权）与 bwrap 共用同一清单，
 /// 保证两后端的容器放行面一致。（仅沙箱路径消费；Windows 保留编译。）
 #[cfg_attr(target_os = "windows", allow(dead_code))]
 pub(crate) fn container_sockets_for_command(home: &Path) -> Vec<PathBuf> {
@@ -1091,12 +1105,11 @@ pub(crate) fn resolv_conf_rebind_path() -> Option<PathBuf> {
 /// 纳入默认 deny 名单。定位是纵深防御的第二道闸——第一道闸仍是逐次审批对话框展示的
 /// 命令串。对齐 codex 的哲学：**不 deny 个人文档类目录**（Documents/Desktop/Downloads
 /// 等是合法工作素材，读它们经逐次审批授权即可），只 deny「泄露即失守」的凭据与通讯
-/// 数据面。工作区位于某目录内部时该目录会被跳过（否则用户把工作区放在其内会导致
-/// 沙箱内读取全部失败）；想收紧的用户可用 `AXIOM_SANDBOX_EXTRA_DENY_DIRS` 加回。
+/// 数据面。工作区授权不解除凭据和应用数据保护；隐私目录只允许原生确认后的项目子根。
 #[cfg(target_os = "macos")]
 const SENSITIVE_READ_DENY_SUBPATHS: &[&str] = &[
     // Axiom 自身数据根（axiom.db、授权注册表、Provider 密钥）——沙箱内命令可读会
-    // 泄露全部会话历史与工作区授权面；工作区位于其内时由下方跳过逻辑豁免。
+    // 泄露全部会话历史与工作区授权面，工作区授权不得豁免。
     ".axiom",
     // 通讯与隐私数据面：泄露伤害大、编程场景几乎无正当读取需求。
     "Library/Keychains",
@@ -1138,15 +1151,14 @@ const SENSITIVE_READ_DENY_SUBPATHS: &[&str] = &[
 ];
 
 /// 计算默认敏感目录 deny 列表（绝对路径）。home 与 workspace_root 均 canonical 化后比较；
-/// 工作区位于敏感目录内部 → 跳过该目录（工作区读取必须保留，last-match-wins 语义）。
-fn sensitive_read_deny_dirs(home: &Path, workspace_root: &Path) -> Vec<PathBuf> {
-    let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
-    SENSITIVE_READ_DENY_SUBPATHS
-        .iter()
-        .filter_map(|sub| {
-            let dir = home.join(sub);
-            if workspace_root.starts_with(&dir) { None } else { Some(dir) }
+/// 所有父目录仍拒绝，经过授权的隐私子根由单独的窄范围规则开放。
+fn sensitive_read_deny_dirs(home: &Path, _workspace_root: &Path) -> Vec<PathBuf> {
+    protected_paths(home)
+        .into_iter()
+        .filter(|entry| {
+            entry.source == ProtectedSource::Private || entry.source == ProtectedSource::Critical
         })
+        .map(|entry| entry.path)
         .collect()
 }
 
@@ -1155,8 +1167,11 @@ fn sensitive_read_deny_dirs(home: &Path, workspace_root: &Path) -> Vec<PathBuf> 
 ///
 /// 覆盖各主流工具链的凭据根：git SSH（.ssh）、云 CLI（.aws/.azure/.kube/.config/gcloud）、
 /// 容器注册表（.docker）、代码托管（.config/gh）、以及其它 Agent 的配置根
-/// （.config/opencode/.codex/.claude）——它们与 Axiom 同级，内含 API Key/token，
-/// 沙箱内命令或 read 工具读取它们即跨 Agent 凭据泄露。
+/// （.config/opencode/.local/share/opencode/.codex/.claude/.config/github-copilot/.gemini
+/// ——同一工具的不同安装位成对声明）——内含 API Key/token，沙箱内命令或 read 工具
+/// 读取它们即跨 Agent 凭据泄露。浏览器凭据库（Cookies/Login Data/logins.json，
+/// 泄露即全部站点会话失守）按 macOS Application Support 布局与 Linux 点目录布局
+/// 成对声明，异平台条目在对应 HOME 下不存在、自然失配。
 const SENSITIVE_READ_CREDENTIAL_SUBPATHS: &[&str] = &[
     ".ssh",
     ".aws",
@@ -1167,8 +1182,21 @@ const SENSITIVE_READ_CREDENTIAL_SUBPATHS: &[&str] = &[
     ".config/gh",
     ".config/gcloud",
     ".config/opencode",
+    ".local/share/opencode",
     ".codex",
     ".claude",
+    ".config/github-copilot",
+    ".gemini",
+    "Library/Application Support/Google/Chrome",
+    "Library/Application Support/Chromium",
+    "Library/Application Support/BraveSoftware",
+    "Library/Application Support/Arc",
+    "Library/Application Support/Microsoft Edge",
+    "Library/Application Support/Firefox",
+    "Library/Containers/com.apple.Safari",
+    ".mozilla",
+    ".config/google-chrome",
+    ".config/chromium",
 ];
 /// 凭据载体（HOME 相对）：精确文件形态（literal deny，不 deny 同名目录内容）。
 /// `.git-credentials` 是 `credential.helper=store` 的默认落盘文件（纯文本 token），
@@ -1179,6 +1207,9 @@ const SENSITIVE_READ_CREDENTIAL_FILES: &[&str] = &[
     ".git-credentials",
     ".cargo/credentials",
     ".config/git/credentials",
+    // Zed 的 assistant/OpenAI 兼容 Key 就写在 settings.json 里（文件级 deny，
+    // 不扩到整个 .config/zed——编辑器主题/键位等普通配置仍可读）
+    ".config/zed/settings.json",
 ];
 
 /// 容器引擎（Docker daemon）unix socket 候选：HOME 相对（OrbStack / Docker Desktop /
@@ -1255,25 +1286,18 @@ fn declared_container_sockets(
     declared
 }
 
-/// 网络档专属的容器引擎放行段：daemon socket + docker CLI 自身必需的两处读取
+/// 显式授权的容器引擎放行段：daemon socket + docker CLI 自身必需的两处读取
 /// （registry 凭据与 CLI 插件目录）。无可用 socket 时返回空串——没装引擎/没启动引擎的
 /// 机器上 profile 与改动前完全一致。（仅 seatbelt 路径消费；Windows/Linux 保留编译。）
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn container_engine_profile_rules(home: &Path) -> String {
-    // socket 清单与 bwrap 网络档共用同一来源（container_sockets_for_command），
+    // socket 清单与 bwrap 共用同一来源（container_sockets_for_command），
     // 保证两个沙箱后端的容器放行面一致。
     let sockets = container_sockets_for_command(home);
-    // docker CLI 状态目录（config.json / contexts / buildx / cli-plugins / trust …）：
-    // 只要装了 CLI（目录存在）或引擎 socket 在，就在本档放行——`docker login`、
-    // `docker context ls` 不依赖 daemon，没跑引擎时同样需要。
-    let has_cli_state = home.join(".docker").exists();
-    if sockets.is_empty() && !has_cli_state {
-        return String::new();
-    }
     let mut rules = String::new();
     if !sockets.is_empty() {
         rules.push_str(
-            ";; 容器引擎 daemon socket（仅网络档放行）：dockerd 等价宿主权限操作面，\n\
+            ";; 容器引擎 daemon socket（显式授权）：dockerd 等价宿主权限操作面，\n\
              ;; 故默认档保持 AF_UNIX 全拒；此处只列实际存在的 socket。\n",
         );
         for socket in &sockets {
@@ -1296,37 +1320,262 @@ fn container_engine_profile_rules(home: &Path) -> String {
     rules
 }
 
-/// read 工具绝对路径分支的单路径敏感读取判定，与沙箱敏感 deny 共用同一集合
-/// （`SENSITIVE_READ_DENY_SUBPATHS` + 凭据载体）：读取面免审批后（对齐 codex
-/// 的全盘读语义），read 不得成为绕过沙箱凭据保护的旁路。
-///
-/// `canonical` 必须已 canonicalize——判定按解析后的真实位置进行，调用方经
-/// symlink 置换指向 deny 目标同样会被拒绝。`workspace_roots`（授权工作区根，
-/// canonical）豁免优先于 deny：路径位于任一工作区内直接放行，镜像沙箱
-/// 「工作区位于 deny 目录内时跳过该目录」的语义，且按单路径判定比按目录
-/// 整体跳过更精确。`AXIOM_SANDBOX_EXTRA_DENY_DIRS` 仅作用于沙箱 profile，
-/// 不参与本判定。
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ProtectedSource {
+    Private,
+    Critical,
+    Credential,
+    Vcs,
+    Container,
+}
+
+#[derive(Clone)]
+struct SensitivePath {
+    path: PathBuf,
+    literal: bool,
+    source: ProtectedSource,
+}
+
+pub(crate) fn policy_home() -> Result<PathBuf, String> {
+    let home = std::env::var_os("HOME");
+    #[cfg(target_os = "windows")]
+    let home = home.or_else(|| std::env::var_os("USERPROFILE"));
+    home.map(PathBuf::from)
+        .ok_or_else(|| "HOME environment variable is unavailable for security policy".into())
+}
+
+fn canonical_policy_path(path: &Path) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+    let mut suffix = Vec::new();
+    let mut current = path;
+    while let (Some(parent), Some(name)) = (current.parent(), current.file_name()) {
+        suffix.push(name.to_os_string());
+        if let Ok(mut canonical) = std::fs::canonicalize(parent) {
+            for name in suffix.iter().rev() {
+                canonical.push(name);
+            }
+            return canonical;
+        }
+        current = parent;
+    }
+    path.to_path_buf()
+}
+
+fn path_inside(path: &Path, root: &Path) -> bool {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        let mut components = path.components();
+        root.components().all(|expected| {
+            components.next().is_some_and(|actual| {
+                actual
+                    .as_os_str()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&expected.as_os_str().to_string_lossy())
+            })
+        })
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        path.starts_with(root)
+    }
+}
+
+fn private_scopable(sub: &str) -> bool {
+    matches!(
+        sub,
+        "Library/Mail"
+            | "Library/Messages"
+            | "Library/Safari"
+            | "Library/Cookies"
+            | "Library/Calendars"
+            | "Library/Contacts"
+            | ".Trash"
+            | ".local/share/Trash"
+    )
+}
+
+fn protected_paths(home: &Path) -> Vec<SensitivePath> {
+    let home = canonical_policy_path(home);
+    let mut entries = Vec::new();
+    let mut push = |sub: &str, literal: bool, source: ProtectedSource| {
+        let original = home.join(sub);
+        let canonical = canonical_policy_path(&original);
+        entries.push(SensitivePath {
+            path: original.clone(),
+            literal,
+            source,
+        });
+        if canonical != original {
+            entries.push(SensitivePath {
+                path: canonical,
+                literal,
+                source,
+            });
+        }
+    };
+    for sub in SENSITIVE_READ_DENY_SUBPATHS {
+        push(
+            sub,
+            false,
+            if private_scopable(sub) {
+                ProtectedSource::Private
+            } else {
+                ProtectedSource::Critical
+            },
+        );
+    }
+    for sub in SENSITIVE_READ_CREDENTIAL_SUBPATHS {
+        push(
+            sub,
+            false,
+            match *sub {
+                ".ssh" => ProtectedSource::Vcs,
+                ".docker" => ProtectedSource::Container,
+                _ => ProtectedSource::Credential,
+            },
+        );
+    }
+    for file in SENSITIVE_READ_CREDENTIAL_FILES {
+        push(
+            file,
+            true,
+            if *file == ".config/git/credentials" {
+                ProtectedSource::Vcs
+            } else {
+                ProtectedSource::Credential
+            },
+        );
+    }
+    entries
+}
+
+pub(crate) fn workspace_sensitive_scope(
+    home: &Path,
+    workspace: &Path,
+) -> Result<Option<PathBuf>, String> {
+    let workspace = canonical_policy_path(workspace);
+    if extra_deny_dirs_from_env(home, &workspace)
+        .iter()
+        .any(|path| {
+            path_inside(&workspace, path) || path_inside(&workspace, &canonical_policy_path(path))
+        })
+    {
+        return Err(
+            "该工作区位于额外拒绝目录中；请重新选择工作区或调整明确配置的保护范围。".into(),
+        );
+    }
+    let mut scope: Option<PathBuf> = None;
+    for entry in protected_paths(home) {
+        if !path_inside(&workspace, &entry.path) {
+            continue;
+        }
+        if entry.source != ProtectedSource::Private || path_inside(&entry.path, &workspace) {
+            return Err("该目录是凭据、应用数据或隐私保护根，不能作为工作区授权；请选择保护范围外的项目目录，或隐私目录中的独立项目子目录。".into());
+        }
+        if scope
+            .as_ref()
+            .is_none_or(|current| entry.path.components().count() > current.components().count())
+        {
+            scope = Some(entry.path);
+        }
+    }
+    Ok(scope)
+}
+
+#[derive(Clone)]
+pub(crate) struct SensitivePathPolicy {
+    entries: Vec<SensitivePath>,
+    workspace_roots: Vec<PathBuf>,
+}
+
+impl SensitivePathPolicy {
+    pub(crate) fn new(home: &Path, workspace_roots: &[PathBuf]) -> Self {
+        let mut entries = protected_paths(home);
+        for path in extra_deny_dirs_from_env(home, Path::new("/")) {
+            let canonical = canonical_policy_path(&path);
+            entries.push(SensitivePath {
+                path,
+                literal: false,
+                source: ProtectedSource::Critical,
+            });
+            entries.push(SensitivePath {
+                path: canonical,
+                literal: false,
+                source: ProtectedSource::Critical,
+            });
+        }
+        Self {
+            entries,
+            workspace_roots: workspace_roots
+                .iter()
+                .filter(|root| workspace_sensitive_scope(home, root).is_ok())
+                .cloned()
+                .collect(),
+        }
+    }
+
+    pub(crate) fn read_denied(&self, path: &Path) -> bool {
+        let canonical = canonical_policy_path(path);
+        self.entries.iter().any(|entry| {
+            let denied = if entry.literal {
+                path_inside(&canonical, &entry.path) && path_inside(&entry.path, &canonical)
+            } else {
+                path_inside(&canonical, &entry.path)
+            };
+            denied
+                && !(entry.source == ProtectedSource::Private
+                    && self.workspace_roots.iter().any(|root| {
+                        path_inside(root, &entry.path)
+                            && !path_inside(&entry.path, root)
+                            && path_inside(&canonical, root)
+                    }))
+        })
+    }
+
+    pub(crate) fn mutation_denied(&self, path: &Path) -> bool {
+        let canonical = canonical_policy_path(path);
+        self.read_denied(&canonical)
+            || self
+                .entries
+                .iter()
+                .any(|entry| path_inside(&entry.path, &canonical))
+    }
+}
+
 pub(crate) fn sensitive_read_denied(
     home: &Path,
     canonical: &Path,
     workspace_roots: &[PathBuf],
 ) -> bool {
-    if workspace_roots.iter().any(|root| canonical.starts_with(root)) {
-        return false;
+    SensitivePathPolicy::new(home, workspace_roots).read_denied(canonical)
+}
+
+pub(crate) fn validate_privileged_paths(
+    home: &Path,
+    privileges: SandboxPrivileges,
+) -> Result<(), String> {
+    let entries = SensitivePathPolicy::new(home, &[]).entries;
+    let permitted = |source| {
+        (source == ProtectedSource::Vcs && privileges.vcs_credentials)
+            || (source == ProtectedSource::Container && privileges.container_control)
+    };
+    for allowed in entries.iter().filter(|entry| permitted(entry.source)) {
+        if entries.iter().any(|denied| {
+            !permitted(denied.source)
+                && (path_inside(&allowed.path, &denied.path)
+                    || path_inside(&denied.path, &allowed.path))
+        }) {
+            return Err("显式凭据或容器权限指向其他受保护目录，已拒绝生成沙箱策略。".into());
+        }
     }
-    let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
-    SENSITIVE_READ_DENY_SUBPATHS
-        .iter()
-        .chain(SENSITIVE_READ_CREDENTIAL_SUBPATHS.iter())
-        .any(|sub| canonical.starts_with(home.join(sub)))
-        || SENSITIVE_READ_CREDENTIAL_FILES
-            .iter()
-            .any(|file| canonical == home.join(file))
+    Ok(())
 }
 
 /// 解析 `AXIOM_SANDBOX_EXTRA_DENY_DIRS`（冒号分隔的 HOME 相对目录）。纯函数便于单测：
 /// 非法路径（绝对/含特殊字符）静默跳过——单个怪路径不应让整个沙箱命令失败。
-fn parse_extra_deny_dirs(raw: &str, home: &Path, workspace_root: &Path) -> Vec<PathBuf> {
+fn parse_extra_deny_dirs(raw: &str, home: &Path, _workspace_root: &Path) -> Vec<PathBuf> {
     let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
     raw.split(':')
         .map(str::trim)
@@ -1336,7 +1585,6 @@ fn parse_extra_deny_dirs(raw: &str, home: &Path, workspace_root: &Path) -> Vec<P
             if validate_profile_path(&dir, "extra deny dir").is_err() {
                 return None;
             }
-            if workspace_root.starts_with(&dir) { return None; }
             Some(dir)
         })
         .collect()
@@ -1354,6 +1602,21 @@ fn extra_deny_dirs_from_env(home: &Path, workspace_root: &Path) -> Vec<PathBuf> 
 mod tests {
     use super::*;
 
+    #[test]
+    fn command_network_policy_requires_sandbox_for_every_tier() {
+        for tier in [CommandTier::SandboxSafe, CommandTier::NetworkRequired] {
+            let error = command_network_policy(tier, false).unwrap_err();
+            assert!(!error.contains("network: true"));
+        }
+        assert_eq!(
+            command_network_policy(CommandTier::SandboxSafe, true).unwrap(),
+            NetworkPolicy::LoopbackOnly
+        );
+        assert_eq!(
+            command_network_policy(CommandTier::NetworkRequired, true).unwrap(),
+            NetworkPolicy::OutboundEnabled
+        );
+    }
 
     fn classify(command: &str) -> CommandTier {
         classify_command(command, false)
@@ -1419,6 +1682,107 @@ mod tests {
                 classify(command),
                 CommandTier::NetworkRequired,
                 "command: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn network_keyword_probes_cover_every_declared_keyword() {
+        // 覆盖清单：新增 NETWORK_KEYWORDS 条目而未补探针时本用例失败。
+        // 探针与常量分开维护，避免「用常量生成探针」的自证循环。
+        const PROBES: &[(&str, &str)] = &[
+            ("curl", "curl https://example.com"),
+            ("wget", "wget https://example.com/file"),
+            ("nc ", "nc -l 1234"),
+            ("ncat", "ncat host 80"),
+            ("netcat", "netcat host 80"),
+            ("/usr/bin/nc", "/usr/bin/nc host 80"),
+            ("ssh", "ssh user@host"),
+            ("scp", "scp a.txt host:/tmp/"),
+            ("rsync", "rsync -avz ./ host:/srv/"),
+            ("npm install", "npm install"),
+            ("npm i ", "npm i lodash"),
+            ("npm ci", "npm ci"),
+            ("npm publish", "npm publish"),
+            ("npx ", "npx create-react-app app"),
+            ("yarn add", "yarn add lodash"),
+            ("yarn install", "yarn install"),
+            ("yarn upgrade", "yarn upgrade"),
+            ("yarn publish", "yarn publish"),
+            ("pnpm add", "pnpm add pkg"),
+            ("pnpm install", "pnpm install"),
+            ("pnpm update", "pnpm update"),
+            ("pnpm publish", "pnpm publish"),
+            ("pip install", "pip install requests"),
+            ("pip3 install", "pip3 install requests"),
+            ("uv pip", "uv pip install requests"),
+            ("cargo add", "cargo add tokio"),
+            ("cargo update", "cargo update"),
+            ("cargo publish", "cargo publish"),
+            ("cargo install", "cargo install ripgrep"),
+            ("go get ", "go get example.com/pkg"),
+            ("go install", "go install example.com/cmd@latest"),
+            ("go mod download", "go mod download"),
+            ("go mod tidy", "go mod tidy"),
+            ("git clone", "git clone https://example.com/x.git"),
+            ("git fetch", "git fetch origin"),
+            ("git pull", "git pull"),
+            ("git push", "git push origin main"),
+            ("git ls-remote", "git ls-remote origin"),
+            ("git submodule update", "git submodule update --init"),
+            ("gem install", "gem install rails"),
+            ("bundle install", "bundle install"),
+            ("dotnet restore", "dotnet restore"),
+            ("brew install", "brew install node"),
+            ("docker", "docker pull node"),
+            ("telnet", "telnet host 80"),
+            ("socat", "socat - TCP:host:80"),
+            ("http://", "http://example.com/file"),
+            ("https://", "https://example.com/file"),
+            ("ftp://", "ftp://example.com/file"),
+        ];
+        assert_eq!(
+            PROBES.len(),
+            NETWORK_KEYWORDS.len(),
+            "network keyword probe list must cover the constant exactly (add a probe for every new keyword)",
+        );
+        for keyword in NETWORK_KEYWORDS {
+            let probe = PROBES.iter().find(|(candidate, _)| candidate == keyword);
+            assert!(probe.is_some(), "missing network keyword probe: {keyword}");
+            assert!(
+                probe.is_some_and(|(_, command)| command.contains(keyword)),
+                "probe does not contain its keyword: {keyword}",
+            );
+        }
+        for (keyword, command) in PROBES {
+            assert!(
+                command.contains(keyword),
+                "probe for {keyword} must contain the keyword: {command}",
+            );
+            assert_eq!(
+                classify(command),
+                CommandTier::NetworkRequired,
+                "network keyword must classify as NetworkRequired: {command}",
+            );
+        }
+    }
+
+    #[test]
+    fn network_keyword_classification_handles_wrappers_and_command_separators() {
+        for command in [
+            "env curl https://example.com",
+            "/usr/bin/curl https://example.com",
+            "command curl https://example.com",
+            "bash -c 'curl https://example.com'",
+            "echo hi; curl https://example.com",
+            "echo hi\ncurl https://example.com",
+            "if true; then wget https://example.com; fi",
+            "FOO=1 docker pull node",
+        ] {
+            assert_eq!(
+                classify(command),
+                CommandTier::NetworkRequired,
+                "wrapped/separated network command must be detected: {command}",
             );
         }
     }
@@ -1497,7 +1861,10 @@ mod tests {
         assert_eq!(duplicate.operation, "file-read-metadata");
 
         // 非 deny 消息（Sandbox apply 等启动日志）不应误解析出条目
-        assert!(parse_denial_line("kernel: (Sandbox) Sandbox apply: mdworker_shared[71081] <bytes>").is_none());
+        assert!(parse_denial_line(
+            "kernel: (Sandbox) Sandbox apply: mdworker_shared[71081] <bytes>"
+        )
+        .is_none());
         // 空行 / 无关行
         assert!(parse_denial_line("").is_none());
         assert!(parse_denial_line("Filtering the log data using \"sender\"").is_none());
@@ -1541,7 +1908,7 @@ mod tests {
             &dir.path().join("sandbox"),
             "denial-e2e",
             NetworkPolicy::LoopbackOnly,
-            false,
+            SandboxPrivileges::default(),
         )
         .unwrap();
         let capture = SandboxDenialCapture::start().expect("log stream 应可启动");
@@ -1605,7 +1972,7 @@ mod tests {
             &sandbox_dir,
             "test-1",
             NetworkPolicy::LoopbackOnly,
-            false,
+            SandboxPrivileges::default(),
         )
         .unwrap();
         let text = std::fs::read_to_string(&profile.path).unwrap();
@@ -1637,9 +2004,8 @@ mod tests {
         // exec 改为无条件放行：不再有按目录推导的 EXEC_N 参数。
         assert!(!text.contains("EXEC_"));
         // 非 VCS 凭据命令不应对 .ssh 放行。
-        assert!(!text.contains(
-            "(allow file-read* (subpath (string-append (param \"HOME\") \"/.ssh\")))"
-        ));
+        assert!(!text
+            .contains("(allow file-read* (subpath (string-append (param \"HOME\") \"/.ssh\")))"));
         assert!(profile.path.starts_with(&sandbox_dir));
     }
 
@@ -1671,7 +2037,9 @@ mod tests {
     // -------------------------------------------------------------------------
 
     fn bwrap_args_strings(args: &[std::ffi::OsString]) -> Vec<String> {
-        args.iter().map(|a| a.to_string_lossy().into_owned()).collect()
+        args.iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
     }
 
     /// 断言参数序列中存在相邻的 (flag, 路径…) 片段（成对路径按相邻匹配）。
@@ -1718,6 +2086,7 @@ mod tests {
             tmpdir,
             network,
             allow_vcs_credentials: allow_vcs,
+            allow_container_control: false,
             // merged-usr 布局形态（主流发行版）：/var/run → /run 符号链接。
             var_run_is_symlink: true,
             resolv_conf_rebind: None,
@@ -1759,7 +2128,13 @@ mod tests {
         assert!(root_bind < run_mask, "遮蔽必须在 root 绑之后：{rendered:?}");
 
         // 真实目录布局（var_run_is_symlink=false）：补充遮蔽 /var/run。
-        let mut spec = bwrap_spec(&workspace, &home, &tmpdir, NetworkPolicy::LoopbackOnly, false);
+        let mut spec = bwrap_spec(
+            &workspace,
+            &home,
+            &tmpdir,
+            NetworkPolicy::LoopbackOnly,
+            false,
+        );
         spec.var_run_is_symlink = false;
         let rendered = bwrap_args_strings(&generate_bwrap_args(&spec));
         assert_has_arg(&rendered, &["--tmpfs", "/var/run"]);
@@ -1776,7 +2151,13 @@ mod tests {
 
         // systemd-resolved 布局：/etc/resolv.conf 的 canonical 目标按只读重绑回沙箱。
         let run_target = PathBuf::from("/run/systemd/resolve/stub-resolv.conf");
-        let mut spec = bwrap_spec(&workspace, &home, &tmpdir, NetworkPolicy::OutboundEnabled, false);
+        let mut spec = bwrap_spec(
+            &workspace,
+            &home,
+            &tmpdir,
+            NetworkPolicy::OutboundEnabled,
+            false,
+        );
         spec.resolv_conf_rebind = Some(&run_target);
         let target_text = run_target.to_string_lossy().into_owned();
         let rendered = bwrap_args_strings(&generate_bwrap_args(&spec));
@@ -1784,7 +2165,7 @@ mod tests {
     }
 
     #[test]
-    fn bwrap_args_mask_sensitive_paths_with_workspace_exemption() {
+    fn bwrap_args_keep_critical_paths_masked_inside_workspace() {
         let dir = tempfile::tempdir().unwrap();
         let (workspace, tmpdir, home) = bwrap_spec_paths(&dir);
         // 凭据载体与敏感目录实际创建，触发遮蔽；断言以平台常量为单一事实源
@@ -1811,8 +2192,6 @@ mod tests {
         assert_has_arg(&rendered, &["--tmpfs", &axiom]);
         assert_has_arg(&rendered, &["--ro-bind", "/dev/null", &npmrc]);
 
-        // 工作区位于敏感目录内：该目录被豁免（与 seatbelt 同一跳过逻辑），
-        // 其余敏感目录仍遮蔽。
         let inner_workspace = home.join(".axiom/proj");
         std::fs::create_dir_all(&inner_workspace).unwrap();
         let inner_workspace = std::fs::canonicalize(inner_workspace).unwrap();
@@ -1823,7 +2202,7 @@ mod tests {
             NetworkPolicy::LoopbackOnly,
             false,
         )));
-        assert_not_has_arg(&rendered, &["--tmpfs", &axiom]);
+        assert_has_arg(&rendered, &["--tmpfs", &axiom]);
         assert_has_arg(&rendered, &["--tmpfs", &ssh]);
     }
 
@@ -1874,37 +2253,32 @@ mod tests {
         let docker = home.join(".docker").to_string_lossy().into_owned();
         let socket_text = socket.to_string_lossy().into_owned();
 
-        // 网络档：~/.docker（docker CLI 状态目录）不遮蔽；实际存在的容器 socket
-        // 定点重绑，不存在的跳过。
-        let spec = BwrapSandboxSpec {
-            workspace_root: &workspace,
-            home: &home,
-            tmpdir: &tmpdir,
-            network: NetworkPolicy::OutboundEnabled,
-            allow_vcs_credentials: false,
-            var_run_is_symlink: true,
-            resolv_conf_rebind: None,
-            container_sockets: &sockets,
-        };
-        let rendered = bwrap_args_strings(&generate_bwrap_args(&spec));
-        assert_not_has_arg(&rendered, &["--tmpfs", &docker]);
-        assert_has_arg(&rendered, &["--bind", &socket_text, &socket_text]);
-        assert!(!rendered.iter().any(|arg| arg.contains("missing.sock")));
-
-        // 默认档：~/.docker 照常遮蔽，容器 socket 一律不重绑（AF_UNIX 全拒）。
-        let spec = BwrapSandboxSpec {
-            workspace_root: &workspace,
-            home: &home,
-            tmpdir: &tmpdir,
-            network: NetworkPolicy::LoopbackOnly,
-            allow_vcs_credentials: false,
-            var_run_is_symlink: true,
-            resolv_conf_rebind: None,
-            container_sockets: &sockets,
-        };
-        let rendered = bwrap_args_strings(&generate_bwrap_args(&spec));
-        assert_has_arg(&rendered, &["--tmpfs", &docker]);
-        assert_not_has_arg(&rendered, &["--bind", &socket_text, &socket_text]);
+        for network in [NetworkPolicy::LoopbackOnly, NetworkPolicy::OutboundEnabled] {
+            for allow_container_control in [false, true] {
+                let spec = BwrapSandboxSpec {
+                    workspace_root: &workspace,
+                    home: &home,
+                    tmpdir: &tmpdir,
+                    network,
+                    allow_vcs_credentials: false,
+                    allow_container_control,
+                    var_run_is_symlink: true,
+                    resolv_conf_rebind: None,
+                    container_sockets: &sockets,
+                };
+                let rendered = bwrap_args_strings(&generate_bwrap_args(&spec));
+                if allow_container_control {
+                    assert_not_has_arg(&rendered, &["--tmpfs", &docker]);
+                    assert_has_arg(&rendered, &["--bind", &docker, &docker]);
+                    assert_has_arg(&rendered, &["--bind", &socket_text, &socket_text]);
+                } else {
+                    assert_has_arg(&rendered, &["--tmpfs", &docker]);
+                    assert_not_has_arg(&rendered, &["--bind", &socket_text, &socket_text]);
+                    assert_has_arg(&rendered, &["--ro-bind", "/dev/null", &socket_text]);
+                }
+                assert!(!rendered.iter().any(|arg| arg.contains("missing.sock")));
+            }
+        }
     }
 
     /// 只装了 docker CLI（无引擎 socket）时：仍需放行状态目录（login / context 不依赖 daemon），
@@ -1927,7 +2301,10 @@ mod tests {
             &dir.path().join("sandbox-cli"),
             "test-container-cli",
             NetworkPolicy::OutboundEnabled,
-            false,
+            SandboxPrivileges {
+                vcs_credentials: false,
+                container_control: true,
+            },
         )
         .unwrap();
         let text = std::fs::read_to_string(&profile.path).unwrap();
@@ -1939,7 +2316,7 @@ mod tests {
         assert!(!text.contains(&home.join(".orbstack/run/docker.sock").display().to_string()));
     }
 
-    /// 容器引擎 socket 只在网络档放行，且只列实际存在的 socket（默认档保持 AF_UNIX 全拒）。
+    /// 容器引擎 socket 只在显式授权时放行，且只列实际存在的 socket。
     #[test]
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn container_engine_socket_rules_are_network_tier_only_and_require_presence() {
@@ -1963,7 +2340,10 @@ mod tests {
             &dir.path().join("sandbox-net"),
             "test-container-net",
             NetworkPolicy::OutboundEnabled,
-            false,
+            SandboxPrivileges {
+                vcs_credentials: false,
+                container_control: true,
+            },
         )
         .unwrap();
         let network_text = std::fs::read_to_string(&network_profile.path).unwrap();
@@ -1991,7 +2371,7 @@ mod tests {
             &dir.path().join("sandbox-default"),
             "test-container-default",
             NetworkPolicy::LoopbackOnly,
-            false,
+            SandboxPrivileges::default(),
         )
         .unwrap();
         let default_text = std::fs::read_to_string(&default_profile.path).unwrap();
@@ -2007,9 +2387,43 @@ mod tests {
         ));
     }
 
-    /// 网络档（network: true 声明命令）：IP 网络放行 + TLS/DNS mach 白名单，
-    /// 但 AF_UNIX 仅定点放行系统解析器（mDNSResponder，域名解析硬依赖）与容器引擎
-    /// daemon socket；写边界与凭据 deny 与默认档一致。
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn profile_privileges_are_independent_of_network_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        let home = dir.path().join("home");
+        let tmpdir = dir.path().join("tmp");
+        for path in [&workspace, &home, &tmpdir] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        for network in [NetworkPolicy::LoopbackOnly, NetworkPolicy::OutboundEnabled] {
+            for vcs_credentials in [false, true] {
+                for container_control in [false, true] {
+                    let profile = generate_sandbox_profile(
+                        &workspace,
+                        &home,
+                        &tmpdir,
+                        &dir.path().join("profiles"),
+                        &format!("matrix-{network:?}-{vcs_credentials}-{container_control}"),
+                        network,
+                        SandboxPrivileges {
+                            vcs_credentials,
+                            container_control,
+                        },
+                    )
+                    .unwrap();
+                    let text = std::fs::read_to_string(profile.path).unwrap();
+                    assert_eq!(text.contains("(allow file-read* (subpath (string-append (param \"HOME\") \"/.ssh\")))"), vcs_credentials);
+                    assert_eq!(text.contains("(allow file-read* (subpath (string-append (param \"HOME\") \"/.docker\")))"), container_control);
+                    assert_eq!(text.contains("(allow file-write* (subpath (string-append (param \"HOME\") \"/.docker\")))"), container_control);
+                    assert!(text.contains(
+                        "(deny file-read* (subpath (string-append (param \"HOME\") \"/.aws\")))"
+                    ));
+                }
+            }
+        }
+    }
     #[test]
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn network_policy_profile_enables_network_with_same_write_boundary() {
@@ -2025,7 +2439,7 @@ mod tests {
             &dir.path().join("sandbox"),
             "test-net",
             NetworkPolicy::OutboundEnabled,
-            false,
+            SandboxPrivileges::default(),
         )
         .unwrap();
         let text = std::fs::read_to_string(&profile.path).unwrap();
@@ -2041,14 +2455,20 @@ mod tests {
         ] {
             assert!(text.contains(rule), "网络档应含规则: {rule}");
         }
-        for service in ["com.apple.trustd", "com.apple.ocspd", "com.apple.SecurityServer"] {
+        for service in [
+            "com.apple.trustd",
+            "com.apple.ocspd",
+            "com.apple.SecurityServer",
+        ] {
             assert!(text.contains(service), "网络档应放行 TLS 服务: {service}");
         }
         // 写边界不变：只有工作区 + 临时目录可写
         assert!(!text.contains("(allow file-write* (regex #\"^/\"))"));
         assert!(text.contains("(allow file-write* (subpath (param \"WORKSPACE\")))"));
         // 凭据 deny 不变
-        assert!(text.contains("(deny file-read* (subpath (string-append (param \"HOME\") \"/.ssh\")))"));
+        assert!(
+            text.contains("(deny file-read* (subpath (string-append (param \"HOME\") \"/.ssh\")))")
+        );
     }
 
     /// VCS 认证命令（git push/pull/fetch/clone 等）需要读取 SSH 私钥与 git 文件型凭据。
@@ -2087,7 +2507,10 @@ mod tests {
             &dir.path().join("sandbox"),
             "vcs-creds",
             NetworkPolicy::OutboundEnabled,
-            true,
+            SandboxPrivileges {
+                vcs_credentials: true,
+                container_control: false,
+            },
         )
         .unwrap();
         let text = std::fs::read_to_string(&profile.path).unwrap();
@@ -2177,7 +2600,7 @@ mod tests {
             &dir.path().join("sandbox"),
             "smoke",
             NetworkPolicy::LoopbackOnly,
-            false,
+            SandboxPrivileges::default(),
         )
         .unwrap();
         let run_in_profile = |program: &str, args: &[&str]| {
@@ -2274,7 +2697,7 @@ mod tests {
             &dir.path().join("sandbox"),
             "smoke-net",
             NetworkPolicy::OutboundEnabled,
-            false,
+            SandboxPrivileges::default(),
         )
         .unwrap();
         let run = |program: &str, args: &[&str]| {
@@ -2309,7 +2732,9 @@ mod tests {
         // 回环 TCP 连接（IP 放行）：无人监听端口应得 ConnectionRefused 而非 EPERM
         let loop_probe = run(
             "/usr/bin/python3",
-            &["-c", "\
+            &[
+                "-c",
+                "\
 import socket
 s = socket.socket(); s.settimeout(2)
 try:
@@ -2318,7 +2743,8 @@ except ConnectionRefusedError:
     print('LOOP-REFUSED')
 except PermissionError:
     print('LOOP-EPERM')
-"],
+",
+            ],
         );
         let text = String::from_utf8_lossy(&loop_probe.stdout);
         assert!(
@@ -2346,7 +2772,7 @@ except PermissionError:
             &dir.path().join("sandbox"),
             "hardening-ws",
             NetworkPolicy::LoopbackOnly,
-            false,
+            SandboxPrivileges::default(),
         )
         .unwrap();
         let text = std::fs::read_to_string(&profile.path).unwrap();
@@ -2368,12 +2794,10 @@ except PermissionError:
             assert!(text.contains(anchor), "应含写根锚点 deny: {anchor}");
         }
         // workspace == HOME：三种形态的写保护全部出现
-        assert!(text.contains(
-            "(deny file-write* (subpath (string-append (param \"HOME\") \"/.ssh\")))"
-        ));
-        assert!(text.contains(
-            "(deny file-write* (literal (string-append (param \"HOME\") \"/.npmrc\")))"
-        ));
+        assert!(text
+            .contains("(deny file-write* (subpath (string-append (param \"HOME\") \"/.ssh\")))"));
+        assert!(text
+            .contains("(deny file-write* (literal (string-append (param \"HOME\") \"/.npmrc\")))"));
         let home_canonical = std::fs::canonicalize(&home).unwrap();
         assert!(
             text.contains(&format!(
@@ -2411,7 +2835,7 @@ except PermissionError:
             &dir.path().join("sandbox"),
             "hardening-ancestor",
             NetworkPolicy::LoopbackOnly,
-            false,
+            SandboxPrivileges::default(),
         );
         std::env::remove_var("AXIOM_SANDBOX_EXTRA_DENY_DIRS");
         let text = std::fs::read_to_string(&profile.unwrap().path).unwrap();
@@ -2438,9 +2862,8 @@ except PermissionError:
             workspace.display()
         )));
         // 工作区外的凭据路径不产生写保护（workspace != HOME）
-        assert!(!text.contains(
-            "(deny file-write* (subpath (string-append (param \"HOME\") \"/.ssh\")))"
-        ));
+        assert!(!text
+            .contains("(deny file-write* (subpath (string-append (param \"HOME\") \"/.ssh\")))"));
     }
 
     /// 端到端回归（workspace == HOME 形态，最尖锐的硬化场景）：读取 deny 的凭据
@@ -2471,7 +2894,7 @@ except PermissionError:
             &dir.path().join("sandbox"),
             "hardening-e2e",
             NetworkPolicy::LoopbackOnly,
-            false,
+            SandboxPrivileges::default(),
         )
         .unwrap();
         let run = |shell: &str| {
@@ -2544,7 +2967,7 @@ except PermissionError:
             &dir.path().join("sandbox"),
             "t",
             NetworkPolicy::LoopbackOnly,
-            false,
+            SandboxPrivileges::default(),
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("workspace root"));
@@ -2561,7 +2984,7 @@ except PermissionError:
             &dir.path().join("sandbox"),
             "t",
             NetworkPolicy::LoopbackOnly,
-            false,
+            SandboxPrivileges::default(),
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("home"));
@@ -2585,7 +3008,12 @@ except PermissionError:
             .collect();
         assert_eq!(deny, expected, "敏感目录 deny 名单与常量不一致");
         // 个人文档类目录不再默认 deny（对齐 codex：只 deny 凭据与通讯隐私）
-        for sub in ["Documents", "Desktop", "Downloads", "Library/Application Support"] {
+        for sub in [
+            "Documents",
+            "Desktop",
+            "Downloads",
+            "Library/Application Support",
+        ] {
             assert!(
                 !deny.contains(&home_canonical.join(sub)),
                 "个人目录不应再被默认 deny: {sub}",
@@ -2597,24 +3025,19 @@ except PermissionError:
     // 该用例只在 macOS/Linux 上有意义。
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
-    fn skips_sensitive_dir_that_contains_the_workspace() {
+    fn retains_sensitive_dir_that_contains_the_workspace() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
-        // 取名单首项作为工作区所在敏感目录（macOS 为 .axiom，Linux 亦然；跳过
-        // 逻辑对条目无差别），第二项验证「其余目录仍保留」。
         let containing = SENSITIVE_READ_DENY_SUBPATHS[0];
         let remaining = SENSITIVE_READ_DENY_SUBPATHS[1];
         std::fs::create_dir_all(home.join(containing)).unwrap();
-        // 工作区在仍被 deny 的敏感目录内：该目录必须被跳过，否则沙箱内工作区
-        // 读取全失败。生产环境 workspace_root 是 canonical 的（validate_request），
-        // 这里同样 canonical 化。
         let workspace = home.join(containing).join("proj");
         std::fs::create_dir_all(&workspace).unwrap();
         let workspace = std::fs::canonicalize(&workspace).unwrap();
         let deny = sensitive_read_deny_dirs(&home, &workspace);
         assert!(
-            !deny.iter().any(|p| p.ends_with(containing)),
-            "工作区所在敏感目录必须被跳过: {containing}",
+            deny.iter().any(|p| p.ends_with(containing)),
+            "工作区所在敏感目录不得被跳过: {containing}",
         );
         // 其余目录仍保留
         assert!(
@@ -2637,15 +3060,37 @@ except PermissionError:
             ".config/gh",
             ".config/gcloud",
             ".config/opencode",
+            ".local/share/opencode",
             ".codex",
             ".claude",
+            ".config/github-copilot",
+            ".gemini",
+            ".mozilla/firefox/abcd1234.default",
+            ".config/google-chrome/Default",
+            ".config/chromium/Default",
             ".axiom",
             ".cargo",
             ".config/git",
+            ".config/zed",
             // 平台敏感目录（SENSITIVE_READ_DENY_SUBPATHS 按 OS 取名单）：
             // macOS 为 Library/*，Linux 为 XDG Trash/keyrings。
             #[cfg(target_os = "macos")]
             "Library/Mail",
+            // 浏览器凭据库（macOS Application Support / 容器化 Safari 布局）
+            #[cfg(target_os = "macos")]
+            "Library/Application Support/Google/Chrome/Default",
+            #[cfg(target_os = "macos")]
+            "Library/Application Support/Chromium/Default",
+            #[cfg(target_os = "macos")]
+            "Library/Application Support/BraveSoftware/Brave-Browser/Default",
+            #[cfg(target_os = "macos")]
+            "Library/Application Support/Arc/User Data/Default",
+            #[cfg(target_os = "macos")]
+            "Library/Application Support/Microsoft Edge/Default",
+            #[cfg(target_os = "macos")]
+            "Library/Application Support/Firefox/Profiles/abcd1234.default",
+            #[cfg(target_os = "macos")]
+            "Library/Containers/com.apple.Safari/Data/Library/Cookies",
             #[cfg(target_os = "linux")]
             ".local/share/Trash",
             #[cfg(target_os = "linux")]
@@ -2659,6 +3104,7 @@ except PermissionError:
             ".git-credentials",
             ".cargo/credentials",
             ".config/git/credentials",
+            ".config/zed/settings.json",
         ] {
             std::fs::write(home.join(file), "token").unwrap();
         }
@@ -2674,11 +3120,38 @@ except PermissionError:
             home_canonical.join(".config/gh/hosts.yml"),
             home_canonical.join(".config/gcloud/credentials.db"),
             home_canonical.join(".config/opencode/auth.json"),
+            home_canonical.join(".local/share/opencode/auth.json"),
             home_canonical.join(".codex/auth.json"),
             home_canonical.join(".claude/.credentials.json"),
+            home_canonical.join(".config/github-copilot/hosts.json"),
+            home_canonical.join(".gemini/oauth_creds.json"),
+            home_canonical.join(".config/zed/settings.json"),
+            // Linux 浏览器凭据库
+            home_canonical.join(".mozilla/firefox/abcd1234.default/logins.json"),
+            home_canonical.join(".config/google-chrome/Default/Login Data"),
+            home_canonical.join(".config/chromium/Default/Cookies"),
             home_canonical.join(".axiom/axiom.db"),
             #[cfg(target_os = "macos")]
             home_canonical.join("Library/Mail"),
+            // macOS 浏览器凭据库（Login Data / Cookies / 容器化 Safari 数据面）
+            #[cfg(target_os = "macos")]
+            home_canonical.join("Library/Application Support/Google/Chrome/Default/Login Data"),
+            #[cfg(target_os = "macos")]
+            home_canonical.join("Library/Application Support/Chromium/Default/Cookies"),
+            #[cfg(target_os = "macos")]
+            home_canonical
+                .join("Library/Application Support/BraveSoftware/Brave-Browser/Default/Login Data"),
+            #[cfg(target_os = "macos")]
+            home_canonical.join("Library/Application Support/Arc/User Data/Default/Cookies"),
+            #[cfg(target_os = "macos")]
+            home_canonical.join("Library/Application Support/Microsoft Edge/Default/Login Data"),
+            #[cfg(target_os = "macos")]
+            home_canonical
+                .join("Library/Application Support/Firefox/Profiles/abcd1234.default/logins.json"),
+            #[cfg(target_os = "macos")]
+            home_canonical.join(
+                "Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies",
+            ),
             #[cfg(target_os = "linux")]
             home_canonical.join(".local/share/Trash/files/note.txt"),
             #[cfg(target_os = "linux")]
@@ -2701,6 +3174,18 @@ except PermissionError:
             &home_canonical.join("Documents/notes.md"),
             &[],
         ));
+        // 编辑器/工具的普通配置不是凭据库：VS Code 用户设置、Zed 键位主题可读
+        #[cfg(target_os = "macos")]
+        assert!(!sensitive_read_denied(
+            &home,
+            &home_canonical.join("Library/Application Support/Code/User/settings.json"),
+            &[],
+        ));
+        assert!(!sensitive_read_denied(
+            &home,
+            &home_canonical.join(".config/zed/keymap.json"),
+            &[],
+        ));
         // ~/.gitconfig 不 deny：git 在沙箱内需读全局配置（user.name/email 等），
         // 其执行面（hooksPath/credential.helper 等）已由 git_config.rs 中和。
         assert!(!sensitive_read_denied(
@@ -2711,18 +3196,181 @@ except PermissionError:
     }
 
     #[test]
-    fn read_deny_helper_exempts_authorized_workspace_paths() {
+    fn credential_path_probes_cover_every_declared_location() {
+        // 覆盖清单：新增凭据位而未补探针时本用例失败。探针与常量分开维护，
+        // 避免「用常量生成探针」的自证循环。
+        const DIR_PROBES: &[(&str, &str)] = &[
+            (".ssh", "id_ed25519"),
+            (".aws", "credentials"),
+            (".azure", "accessTokens.json"),
+            (".gnupg", "pubring.kbx"),
+            (".docker", "config.json"),
+            (".kube", "config"),
+            (".config/gh", "hosts.yml"),
+            (".config/gcloud", "credentials.db"),
+            (".config/opencode", "auth.json"),
+            (".local/share/opencode", "auth.json"),
+            (".codex", "auth.json"),
+            (".claude", ".credentials.json"),
+            (".config/github-copilot", "hosts.json"),
+            (".gemini", "oauth_creds.json"),
+            (
+                "Library/Application Support/Google/Chrome",
+                "Default/Login Data",
+            ),
+            ("Library/Application Support/Chromium", "Default/Cookies"),
+            (
+                "Library/Application Support/BraveSoftware",
+                "Brave-Browser/Default/Login Data",
+            ),
+            (
+                "Library/Application Support/Arc",
+                "User Data/Default/Cookies",
+            ),
+            (
+                "Library/Application Support/Microsoft Edge",
+                "Default/Login Data",
+            ),
+            (
+                "Library/Application Support/Firefox",
+                "Profiles/abcd.default/logins.json",
+            ),
+            (
+                "Library/Containers/com.apple.Safari",
+                "Data/Library/Cookies/Cookies.binarycookies",
+            ),
+            (".mozilla", "firefox/abcd.default/logins.json"),
+            (".config/google-chrome", "Default/Login Data"),
+            (".config/chromium", "Default/Cookies"),
+        ];
+        const FILE_PROBES: &[&str] = &[
+            ".npmrc",
+            ".netrc",
+            ".git-credentials",
+            ".cargo/credentials",
+            ".config/git/credentials",
+            ".config/zed/settings.json",
+        ];
+        assert_eq!(
+            DIR_PROBES.len(),
+            SENSITIVE_READ_CREDENTIAL_SUBPATHS.len(),
+            "credential directory probe list must cover the constant exactly",
+        );
+        for sub in SENSITIVE_READ_CREDENTIAL_SUBPATHS {
+            assert!(
+                DIR_PROBES.iter().any(|(candidate, _)| candidate == sub),
+                "missing credential directory probe: {sub}",
+            );
+        }
+        assert_eq!(
+            FILE_PROBES.len(),
+            SENSITIVE_READ_CREDENTIAL_FILES.len(),
+            "credential file probe list must cover the constant exactly",
+        );
+        for file in SENSITIVE_READ_CREDENTIAL_FILES {
+            assert!(
+                FILE_PROBES.contains(file),
+                "missing credential file probe: {file}",
+            );
+        }
+
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
-        // 工作区落在 deny 目录（.axiom）内：其内容经 workspace 豁免可读；
-        // 未授权时（空 roots）同一路径仍 deny。
+        std::fs::create_dir_all(&home).unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let policy = SensitivePathPolicy::new(&home, &[std::fs::canonicalize(&workspace).unwrap()]);
+        for (sub, child) in DIR_PROBES {
+            let parent = home.join(sub);
+            std::fs::create_dir_all(&parent).unwrap();
+            let probe = parent.join(child);
+            if let Some(grandparent) = probe.parent() {
+                std::fs::create_dir_all(grandparent).unwrap();
+            }
+            std::fs::write(&probe, "credential").unwrap();
+            assert!(
+                policy.read_denied(&probe),
+                "credential must be denied: {}",
+                probe.display()
+            );
+            assert!(
+                policy.mutation_denied(&probe),
+                "credential mutation must be denied: {}",
+                probe.display(),
+            );
+        }
+        for file in FILE_PROBES {
+            let probe = home.join(file);
+            if let Some(parent) = probe.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&probe, "credential").unwrap();
+            assert!(
+                policy.read_denied(&probe),
+                "credential file must be denied: {}",
+                probe.display()
+            );
+            assert!(
+                policy.mutation_denied(&probe),
+                "credential file mutation must be denied: {}",
+                probe.display(),
+            );
+        }
+
+        // 近似但不命中的路径必须放行：凭据清单按路径组件匹配，不能退化成前缀子串。
+        for relative in [
+            ".ssh-config",
+            "id_ed25519",
+            ".awsomething",
+            ".config/ghost",
+            ".config/github-copilot-extra",
+            ".dockerfile",
+            ".codexfoo",
+            ".gemini-notes",
+            ".mozilla-notes",
+            "Documents/notes.md",
+            ".gitconfig",
+            ".config/zed/keymap.json",
+            "src/.env",
+        ] {
+            let probe = home.join(relative);
+            if let Some(parent) = probe.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&probe, "ordinary").unwrap();
+            assert!(
+                !policy.read_denied(&probe),
+                "non-credential path must remain readable: {}",
+                probe.display(),
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            let leak = workspace.join("leak");
+            std::os::unix::fs::symlink(home.join(".ssh/id_ed25519"), &leak).unwrap();
+            assert!(
+                policy.read_denied(&leak),
+                "workspace symlink to a credential must be denied",
+            );
+            assert!(
+                policy.mutation_denied(&leak),
+                "workspace symlink to a credential must not be mutable",
+            );
+        }
+    }
+
+    #[test]
+    fn read_deny_helper_never_exempts_critical_workspace_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
         let workspace = home.join(".axiom/workspaces/demo");
         std::fs::create_dir_all(&workspace).unwrap();
         std::fs::write(workspace.join("notes.md"), "hello").unwrap();
         let workspace = std::fs::canonicalize(&workspace).unwrap();
         let file = workspace.join("notes.md");
         assert!(sensitive_read_denied(&home, &file, &[]));
-        assert!(!sensitive_read_denied(&home, &file, &[workspace]));
+        assert!(sensitive_read_denied(&home, &file, &[workspace]));
     }
 
     #[cfg(unix)]
@@ -2741,19 +3389,22 @@ except PermissionError:
 
     #[test]
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn parses_extra_deny_dirs_and_skips_invalid_or_workspace_containing() {
+    fn parses_extra_deny_dirs_and_preserves_workspace_containing() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
         let workspace = home.join("dev/ws");
         std::fs::create_dir_all(&workspace).unwrap();
         let workspace = std::fs::canonicalize(&workspace).unwrap();
-        let parsed = parse_extra_deny_dirs("Notes: Library/Developer :dev/ws:bad;path", &home, &workspace);
+        let parsed = parse_extra_deny_dirs(
+            "Notes: Library/Developer :dev/ws:bad;path",
+            &home,
+            &workspace,
+        );
         // Notes 与 Library/Developer 生效（trim 后）
         assert!(parsed.iter().any(|p| p.ends_with("Notes")));
         assert!(parsed.iter().any(|p| p.ends_with("Library/Developer")));
-        // 工作区所在目录被跳过
-        assert!(!parsed.iter().any(|p| p.ends_with("dev/ws")));
+        assert!(parsed.iter().any(|p| p.ends_with("dev/ws")));
         // 含特殊字符（分号）的路径被 validate_profile_path 拒绝
         assert!(!parsed.iter().any(|p| p.ends_with("bad;path")));
     }
@@ -2775,7 +3426,7 @@ except PermissionError:
             &dir.path().join("sandbox"),
             "test-deny",
             NetworkPolicy::LoopbackOnly,
-            false,
+            SandboxPrivileges::default(),
         )
         .unwrap();
         let text = std::fs::read_to_string(&profile.path).unwrap();
@@ -2788,7 +3439,15 @@ except PermissionError:
             "profile 应含 .axiom deny",
         );
         // 凭据子路径（含其它 Agent 配置根）以 (param "HOME") 拼接形式出现在 profile
-        for sub in [".ssh", ".aws", ".kube", ".docker", ".config/gh", ".codex", ".claude"] {
+        for sub in [
+            ".ssh",
+            ".aws",
+            ".kube",
+            ".docker",
+            ".config/gh",
+            ".codex",
+            ".claude",
+        ] {
             assert!(
                 text.contains(&format!(
                     "(deny file-read* (subpath (string-append (param \"HOME\") \"/{sub}\")))"
@@ -2797,7 +3456,12 @@ except PermissionError:
             );
         }
         // 凭据精确文件（literal deny）以 (param "HOME") 拼接形式出现在 profile
-        for file in [".npmrc", ".netrc", ".git-credentials", ".config/git/credentials"] {
+        for file in [
+            ".npmrc",
+            ".netrc",
+            ".git-credentials",
+            ".config/git/credentials",
+        ] {
             assert!(
                 text.contains(&format!(
                     "(deny file-read* (literal (string-append (param \"HOME\") \"/{file}\")))"
@@ -2813,5 +3477,300 @@ except PermissionError:
             )),
             "profile 不应再 deny Documents",
         );
+    }
+    #[test]
+    fn protected_roots_cannot_be_granted_even_under_a_broad_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let home = std::fs::canonicalize(home).unwrap();
+        let policy = SensitivePathPolicy::new(&home, std::slice::from_ref(&home));
+        for sub in SENSITIVE_READ_CREDENTIAL_SUBPATHS
+            .iter()
+            .chain(SENSITIVE_READ_CREDENTIAL_FILES)
+        {
+            let path = home.join(sub);
+            assert!(
+                workspace_sensitive_scope(&home, &path).is_err(),
+                "{}",
+                path.display()
+            );
+            assert!(policy.read_denied(&path));
+            assert!(policy.mutation_denied(&path));
+        }
+        for sub in SENSITIVE_READ_DENY_SUBPATHS {
+            assert!(workspace_sensitive_scope(&home, &home.join(sub)).is_err());
+        }
+        assert!(policy.read_denied(&home.join(".axiom/axiom.db")));
+        assert!(policy.mutation_denied(&home.join(".config")));
+        assert!(!policy.read_denied(&home.join("src/main.rs")));
+        assert!(!policy.mutation_denied(&home.join("src/main.rs")));
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        assert!(policy.read_denied(&home.join(".SSH/key")));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn private_grant_opens_only_a_strict_project_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let sub = SENSITIVE_READ_DENY_SUBPATHS
+            .iter()
+            .find(|sub| private_scopable(sub))
+            .unwrap();
+        let boundary = home.join(sub);
+        let workspace = boundary.join("project");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let boundary = std::fs::canonicalize(boundary).unwrap();
+        let workspace = std::fs::canonicalize(workspace).unwrap();
+        assert_eq!(
+            workspace_sensitive_scope(&home, &workspace).unwrap(),
+            Some(boundary.clone())
+        );
+        let policy = SensitivePathPolicy::new(&home, std::slice::from_ref(&workspace));
+        assert!(!policy.read_denied(&workspace.join("main.rs")));
+        assert!(!policy.mutation_denied(&workspace.join("main.rs")));
+        assert!(policy.read_denied(&boundary.join("sibling/private.txt")));
+        assert!(policy.read_denied(&boundary));
+        let broad = SensitivePathPolicy::new(&home, &[std::fs::canonicalize(&home).unwrap()]);
+        assert!(broad.read_denied(&workspace.join("main.rs")));
+        let args = bwrap_args_strings(&generate_bwrap_args(&bwrap_spec(
+            &workspace,
+            &home,
+            dir.path(),
+            NetworkPolicy::LoopbackOnly,
+            false,
+        )));
+        let parent_mask = args
+            .windows(2)
+            .position(|pair| pair == ["--tmpfs", &boundary.display().to_string()])
+            .unwrap();
+        let child_bind = args
+            .windows(3)
+            .rposition(|triple| {
+                triple
+                    == [
+                        "--bind",
+                        &workspace.display().to_string(),
+                        &workspace.display().to_string(),
+                    ]
+            })
+            .unwrap();
+        assert!(parent_mask < child_bind);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn protected_alias_targets_cannot_be_read_moved_or_privileged() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(root.join("cache/keys")).unwrap();
+        std::fs::write(root.join("cache/keys/id_ed25519"), "stub").unwrap();
+        std::os::unix::fs::symlink(root.join("cache/keys"), home.join(".ssh")).unwrap();
+        let root = std::fs::canonicalize(root).unwrap();
+        let policy = SensitivePathPolicy::new(&home, std::slice::from_ref(&root));
+        assert!(policy.read_denied(&root.join("cache/keys/id_ed25519")));
+        assert!(policy.read_denied(&home.join(".ssh/id_ed25519")));
+        assert!(policy.mutation_denied(&root.join("cache")));
+        assert!(workspace_sensitive_scope(&home, &root.join("cache/keys")).is_err());
+        std::fs::create_dir_all(home.join(".axiom")).unwrap();
+        std::os::unix::fs::symlink(home.join(".axiom"), home.join(".docker")).unwrap();
+        assert!(validate_privileged_paths(
+            &home,
+            SandboxPrivileges {
+                vcs_credentials: false,
+                container_control: true
+            }
+        )
+        .is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_private_scope_allows_project_and_rejects_siblings_and_aliases() {
+        assert!(sandbox_available());
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let workspace = home.join("Library/Mail/project");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("main.txt"), "project-ok").unwrap();
+        std::fs::write(home.join("Library/Mail/private.txt"), "private-stub").unwrap();
+        std::fs::create_dir_all(workspace.join("credentials")).unwrap();
+        std::fs::write(workspace.join("credentials/key.txt"), "credential-stub").unwrap();
+        std::os::unix::fs::symlink(workspace.join("credentials"), home.join(".ssh")).unwrap();
+        std::fs::create_dir_all(workspace.join("browser-state")).unwrap();
+        std::fs::write(workspace.join("browser-state/private.txt"), "browser-stub").unwrap();
+        std::os::unix::fs::symlink(workspace.join("browser-state"), home.join("Library/Safari"))
+            .unwrap();
+        let home = std::fs::canonicalize(home).unwrap();
+        let workspace = std::fs::canonicalize(workspace).unwrap();
+        let policy = SensitivePathPolicy::new(&home, std::slice::from_ref(&workspace));
+        assert!(policy.read_denied(&workspace.join("browser-state/private.txt")));
+        let profile = generate_sandbox_profile(
+            &workspace,
+            &home,
+            dir.path(),
+            &dir.path().join("sandbox"),
+            "private-scope",
+            NetworkPolicy::LoopbackOnly,
+            SandboxPrivileges::default(),
+        )
+        .unwrap();
+        let run = |program: &str, args: &[&std::ffi::OsStr]| {
+            std::process::Command::new("/usr/bin/sandbox-exec")
+                .arg("-D")
+                .arg(format!("WORKSPACE={}", workspace.display()))
+                .arg("-D")
+                .arg(format!("HOME={}", home.display()))
+                .arg("-D")
+                .arg(format!("TMPDIR={}", dir.path().display()))
+                .arg("-f")
+                .arg(&profile.path)
+                .arg(program)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let main = run("/bin/cat", &[workspace.join("main.txt").as_os_str()]);
+        assert!(
+            main.status.success(),
+            "{}",
+            String::from_utf8_lossy(&main.stderr)
+        );
+        assert_eq!(main.stdout, b"project-ok");
+        for path in [
+            home.join("Library/Mail/private.txt"),
+            workspace.join("credentials/key.txt"),
+            workspace.join("browser-state/private.txt"),
+        ] {
+            let denied = run("/bin/cat", &[path.as_os_str()]);
+            assert!(!denied.status.success());
+            assert!(denied.stdout.is_empty());
+        }
+        let moved = run(
+            "/bin/mv",
+            &[
+                workspace.join("credentials").as_os_str(),
+                workspace.join("exposed").as_os_str(),
+            ],
+        );
+        assert!(!moved.status.success());
+        assert!(workspace.join("credentials/key.txt").exists());
+        let written = run("/usr/bin/touch", &[workspace.join("new.txt").as_os_str()]);
+        assert!(
+            written.status.success(),
+            "{}",
+            String::from_utf8_lossy(&written.stderr)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_broad_workspace_blocks_protected_read_write_and_ancestor_rename() {
+        assert!(sandbox_available());
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join(".config/git")).unwrap();
+        std::fs::create_dir_all(home.join(".axiom")).unwrap();
+        std::fs::write(home.join(".config/git/credentials"), "credential-stub").unwrap();
+        std::fs::write(home.join(".axiom/axiom.db"), "database-stub").unwrap();
+        let home = std::fs::canonicalize(home).unwrap();
+        let profile = generate_sandbox_profile(
+            &home,
+            &home,
+            dir.path(),
+            &dir.path().join("sandbox"),
+            "broad-scope",
+            NetworkPolicy::LoopbackOnly,
+            SandboxPrivileges::default(),
+        )
+        .unwrap();
+        let run = |program: &str, args: &[&std::ffi::OsStr]| {
+            std::process::Command::new("/usr/bin/sandbox-exec")
+                .arg("-D")
+                .arg(format!("WORKSPACE={}", home.display()))
+                .arg("-D")
+                .arg(format!("HOME={}", home.display()))
+                .arg("-D")
+                .arg(format!("TMPDIR={}", dir.path().display()))
+                .arg("-f")
+                .arg(&profile.path)
+                .arg(program)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        for path in [
+            home.join(".config/git/credentials"),
+            home.join(".axiom/axiom.db"),
+        ] {
+            let read = run("/bin/cat", &[path.as_os_str()]);
+            assert!(!read.status.success());
+            assert!(read.stdout.is_empty());
+            assert!(!run("/usr/bin/touch", &[path.as_os_str()]).status.success());
+        }
+        assert!(!run(
+            "/bin/mv",
+            &[
+                home.join(".config").as_os_str(),
+                home.join("exposed").as_os_str()
+            ]
+        )
+        .status
+        .success());
+        assert!(run("/usr/bin/touch", &[home.join("main.txt").as_os_str()])
+            .status
+            .success());
+    }
+}
+
+#[cfg(test)]
+mod generated_path_policy_tests {
+    use super::*;
+
+    /// 确定性生成路径的防守测试：凭据根下的任意后缀都必须被读/写拒绝，
+    /// 工作区普通路径不得被误伤；保护路径的祖先改名必须拒绝。
+    #[test]
+    fn generated_paths_keep_credential_deny_and_workspace_allow() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = std::fs::canonicalize(directory.path()).unwrap();
+        let policy = SensitivePathPolicy::new(&home, &[]);
+        let mut state = 0x5eed_1234_u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            state
+        };
+        for _ in 0..256 {
+            let suffix = format!("f{}.txt", next() % 997);
+            let safe = home.join("src").join(&suffix);
+            assert!(
+                !policy.read_denied(&safe),
+                "普通工作区路径被误伤: {}",
+                safe.display()
+            );
+            assert!(
+                !policy.mutation_denied(&safe),
+                "普通工作区路径被误伤: {}",
+                safe.display()
+            );
+            for protected in [".ssh", ".aws", ".gnupg", ".docker", ".kube", ".config/gh"] {
+                let path = home.join(protected).join(&suffix);
+                assert!(
+                    policy.read_denied(&path),
+                    "凭据路径未被读拒绝: {}",
+                    path.display()
+                );
+                assert!(
+                    policy.mutation_denied(&path),
+                    "凭据路径未被写拒绝: {}",
+                    path.display()
+                );
+            }
+        }
+        assert!(policy.mutation_denied(&home), "保护路径的祖先改名必须拒绝");
     }
 }

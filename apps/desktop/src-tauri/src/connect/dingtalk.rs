@@ -9,7 +9,7 @@
 //!    （oauth2/accessToken + robot/oToMessages/batchSend 或 groupMessages/send）。
 
 use super::{
-    cached_rest_token, cache_rest_token, now_ms, reset_inbound_watermark, set_status,
+    cache_rest_token, cached_rest_token, now_ms, reset_inbound_watermark, set_status,
     sleep_backoff, ConnectInner, ConnectPlatform, ConnectStatusKind, InboundChatMessage,
     ReplyContext,
 };
@@ -41,7 +41,9 @@ fn http_client() -> &'static reqwest::Client {
 }
 
 /// 项目内 reqwest 未启用 json feature：统一走字符串 body + 手动反序列化。
-async fn read_json<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T, String> {
+async fn read_json<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+) -> Result<T, String> {
     let text = response
         .text()
         .await
@@ -61,7 +63,9 @@ struct OpenResponse {
     ticket: String,
 }
 
-async fn open_connection(creds: &DingtalkCreds) -> Result<Result<(String, String), String>, String> {
+async fn open_connection(
+    creds: &DingtalkCreds,
+) -> Result<Result<(String, String), String>, String> {
     let body = serde_json::to_string(&serde_json::json!({
         "clientId": creds.client_id,
         "clientSecret": creds.client_secret,
@@ -83,7 +87,9 @@ async fn open_connection(creds: &DingtalkCreds) -> Result<Result<(String, String
         .map_err(|error| format!("钉钉 Stream 接入失败: {error}"))?;
     let status = response.status();
     if status.as_u16() == 401 || status.as_u16() == 403 {
-        return Ok(Err("钉钉 Stream 鉴权失败（请检查 Client ID / Client Secret）".into()));
+        return Ok(Err(
+            "钉钉 Stream 鉴权失败（请检查 Client ID / Client Secret）".into(),
+        ));
     }
     let payload: OpenResponse = read_json(response).await?;
     if payload.endpoint.is_empty() || payload.ticket.is_empty() {
@@ -185,10 +191,20 @@ fn parse_bot_message(data: &str) -> Option<BotMessage> {
  * 连接主循环
  * ------------------------------------------------------------------ */
 
-pub(crate) async fn run_dingtalk(app: AppHandle, state: Arc<Mutex<ConnectInner>>, creds: DingtalkCreds) {
+pub(crate) async fn run_dingtalk(
+    app: AppHandle,
+    state: Arc<Mutex<ConnectInner>>,
+    creds: DingtalkCreds,
+) {
     let mut attempt: u32 = 0;
     loop {
-        set_status(&app, &state, ConnectPlatform::Dingtalk, ConnectStatusKind::Connecting, None);
+        set_status(
+            &app,
+            &state,
+            ConnectPlatform::Dingtalk,
+            ConnectStatusKind::Connecting,
+            None,
+        );
         match run_dingtalk_once(&app, &state, &creds).await {
             Ok(()) => return,
             Err(error) => {
@@ -214,7 +230,13 @@ async fn run_dingtalk_once(
     let (endpoint, ticket) = match open_connection(creds).await? {
         Ok(values) => values,
         Err(fatal) => {
-            set_status(app, state, ConnectPlatform::Dingtalk, ConnectStatusKind::Error, Some(fatal));
+            set_status(
+                app,
+                state,
+                ConnectPlatform::Dingtalk,
+                ConnectStatusKind::Error,
+                Some(fatal),
+            );
             return Ok(());
         }
     };
@@ -223,7 +245,13 @@ async fn run_dingtalk_once(
             .await
             .map_err(|error| format!("钉钉 WebSocket 连接失败: {error}"))?;
     reset_inbound_watermark(state, ConnectPlatform::Dingtalk);
-    set_status(app, state, ConnectPlatform::Dingtalk, ConnectStatusKind::Connected, None);
+    set_status(
+        app,
+        state,
+        ConnectPlatform::Dingtalk,
+        ConnectStatusKind::Connected,
+        None,
+    );
     // 协议层保活：服务端有应用层 ping，这里再兜一层 WS ping，防中间设备空闲断连。
     let mut ws_ping = tokio::time::interval(Duration::from_secs(45));
     ws_ping.tick().await;
@@ -264,7 +292,11 @@ async fn run_dingtalk_once(
         }
         if let Some(bot_message) = parse_bot_message(&frame.data) {
             if !bot_message.text.is_empty() && !bot_message.sender_staff_id.is_empty() {
-                let chat_type = if bot_message.conversation_type == "2" { "group" } else { "p2p" };
+                let chat_type = if bot_message.conversation_type == "2" {
+                    "group"
+                } else {
+                    "p2p"
+                };
                 let inbound = InboundChatMessage {
                     platform: ConnectPlatform::Dingtalk,
                     chat_id: bot_message.conversation_id.clone(),
@@ -294,7 +326,9 @@ async fn run_dingtalk_once(
                         let creds = creds_for_reply.clone();
                         let context = context.clone();
                         async move {
-                            send_reply(&app, state, creds, &context, &text).await.map(|_| ())
+                            send_reply(&app, state, creds, &context, &text)
+                                .await
+                                .map(|_| ())
                         }
                     }
                 };
@@ -400,8 +434,8 @@ fn markdown_title(text: &str) -> String {
 }
 
 async fn post_json(url: &str, body: &Value, token: Option<&str>) -> Result<(), String> {
-    let encoded = serde_json::to_string(body)
-        .map_err(|error| format!("编码钉钉消息失败: {error}"))?;
+    let encoded =
+        serde_json::to_string(body).map_err(|error| format!("编码钉钉消息失败: {error}"))?;
     let mut request = http_client()
         .post(url)
         .header(CONTENT_TYPE, "application/json")
@@ -416,10 +450,7 @@ async fn post_json(url: &str, body: &Value, token: Option<&str>) -> Result<(), S
         .map_err(|error| format!("钉钉消息发送失败: {error}"))?;
     let status = response.status();
     // 钉钉 webhook / 企业 API 失败时返回非 2xx，body 为错误说明。
-    let body_text = response
-        .text()
-        .await
-        .unwrap_or_default();
+    let body_text = response.text().await.unwrap_or_default();
     if !status.is_success() {
         return Err(format!("钉钉消息发送失败（HTTP {status}）: {body_text}"));
     }
@@ -548,7 +579,10 @@ mod tests {
 
     #[test]
     fn markdown_title_takes_first_non_empty_line() {
-        assert_eq!(markdown_title("\n# 标题很长的啊".to_string().as_str()), "# 标题很长的啊");
+        assert_eq!(
+            markdown_title("\n# 标题很长的啊".to_string().as_str()),
+            "# 标题很长的啊"
+        );
         assert_eq!(markdown_title(""), "Axiom");
     }
 }

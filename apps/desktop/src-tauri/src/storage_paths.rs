@@ -24,7 +24,6 @@ const DATA_LEGACY_ENTRIES: &[&str] = &[
     "artifacts",
     "workspace-changes",
     "provider-secret-migrations",
-    "computer",
 ];
 
 #[cfg_attr(not(unix), allow(unused_variables))]
@@ -106,7 +105,10 @@ pub(crate) fn ensure_data_root_at(home: &Path) -> Result<PathBuf, String> {
     match fs::symlink_metadata(&root) {
         Ok(metadata) => {
             if !metadata.is_dir() {
-                return Err(format!("数据根 {} 不是目录（拒绝符号链接或文件）", root.display()));
+                return Err(format!(
+                    "数据根 {} 不是目录（拒绝符号链接或文件）",
+                    root.display()
+                ));
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -165,14 +167,23 @@ fn migrate_database_bundle(legacy: &Path, root: &Path) -> Result<Vec<String>, St
             let rollback = rollback_renames(&moved);
             return Err(format!(
                 "迁移 SQLite 数据库条目 {name} 失败：{error}{}",
-                rollback.err().map(|e| format!("（{e}）")).unwrap_or_default()
+                rollback
+                    .err()
+                    .map(|e| format!("（{e}）"))
+                    .unwrap_or_default()
             ));
         }
         moved.push((from, to));
     }
-    Ok(moved.into_iter().map(|(_, to)| {
-        to.file_name().unwrap_or_default().to_string_lossy().into_owned()
-    }).collect())
+    Ok(moved
+        .into_iter()
+        .map(|(_, to)| {
+            to.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect())
 }
 
 /// 把旧 Tauri app data 目录中的 Axiom 数据条目迁移到数据根。
@@ -239,8 +250,14 @@ mod tests {
             }
         }
         let migrated = migrate_legacy_entries_at(&legacy, &root).unwrap();
-        assert_eq!(migrated.len(), DATABASE_LEGACY_ENTRIES.len() + DATA_LEGACY_ENTRIES.len());
-        for name in DATABASE_LEGACY_ENTRIES.iter().chain(DATA_LEGACY_ENTRIES.iter()) {
+        assert_eq!(
+            migrated.len(),
+            DATABASE_LEGACY_ENTRIES.len() + DATA_LEGACY_ENTRIES.len()
+        );
+        for name in DATABASE_LEGACY_ENTRIES
+            .iter()
+            .chain(DATA_LEGACY_ENTRIES.iter())
+        {
             assert!(entry_exists(&root.join(name)), "新位置缺少 {name}");
             assert!(!entry_exists(&legacy.join(name)), "旧位置残留 {name}");
         }
@@ -254,13 +271,19 @@ mod tests {
         fs::create_dir_all(&legacy).unwrap();
         fs::create_dir_all(&root).unwrap();
         touch(&legacy.join("axiom.db"));
-        assert!(!migrate_legacy_entries_at(&legacy, &root).unwrap().is_empty());
-        // 第二次：旧位置已空 → no-op
-        assert!(migrate_legacy_entries_at(&legacy, &root).unwrap().is_empty());
-        // 旧根整个不存在 → no-op
-        assert!(migrate_legacy_entries_at(&dir.path().join("missing"), &root)
+        assert!(!migrate_legacy_entries_at(&legacy, &root)
             .unwrap()
             .is_empty());
+        // 第二次：旧位置已空 → no-op
+        assert!(migrate_legacy_entries_at(&legacy, &root)
+            .unwrap()
+            .is_empty());
+        // 旧根整个不存在 → no-op
+        assert!(
+            migrate_legacy_entries_at(&dir.path().join("missing"), &root)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

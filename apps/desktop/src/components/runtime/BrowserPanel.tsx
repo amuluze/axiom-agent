@@ -152,7 +152,7 @@ export const BrowserPanel = () => {
   /** 导航进行中（地址栏 spinner）：URL 刷新或 5s 超时清除。 */
   const [navigating, setNavigating] = useState<boolean>(false)
   const liveInFlightRef = useRef(false)
-  const liveBoxRef = useRef<HTMLDivElement | null>(null)
+  const liveBoxRef = useRef<HTMLButtonElement | null>(null)
   const urlInputRef = useRef<HTMLInputElement | null>(null)
   const consoleListRef = useRef<HTMLDivElement | null>(null)
   const wheelPendingRef = useRef<{ x: number; y: number; timer: number | undefined }>({ x: 0, y: 0, timer: undefined })
@@ -536,7 +536,7 @@ export const BrowserPanel = () => {
     }
   }
 
-  const onLiveClick = (event: ReactMouseEvent<HTMLDivElement>): void => {
+  const onLiveClick = (event: ReactMouseEvent<HTMLButtonElement>): void => {
     if (!activeTabId || event.defaultPrevented) return
     const point = pagePointFromEvent(event, event.currentTarget)
     if (!point) return
@@ -587,7 +587,7 @@ export const BrowserPanel = () => {
     }
   }, [renderLive, activeFrame, activeTabId])
 
-  const onLiveKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+  const onLiveKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>): void => {
     if (!activeTabId) return
     // 带功能修饰键的组合留给系统/应用快捷键，不注入页面。
     if (event.ctrlKey || event.metaKey || event.altKey) return
@@ -764,7 +764,7 @@ export const BrowserPanel = () => {
               autoComplete="off"
             />
             {navigating && !editingUrl && (
-              <span className="rail__browser-url-spinner" aria-label={t('app.browserPanel.address.loadingAria')}>
+              <span className="rail__browser-url-spinner" aria-label={t('app.browserPanel.address.loadingAria')} role="status">
                 <RotateCw size={11} />
               </span>
             )}
@@ -863,11 +863,10 @@ export const BrowserPanel = () => {
             aria-label={t('app.browserPanel.liveView.aria')}
             style={stageHeightPx !== null ? { height: `${stageHeightPx}px` } : undefined}
           >
-            <div
+            <button
               ref={liveBoxRef}
               className="rail__browser-livebox"
-              role="button"
-              tabIndex={0}
+              type="button"
               aria-label={t('app.browserPanel.liveView.liveboxAria')}
               title={t('app.browserPanel.liveView.liveboxTitle')}
               style={{ aspectRatio: `${activeFrame.width} / ${activeFrame.height}` }}
@@ -875,7 +874,7 @@ export const BrowserPanel = () => {
               onKeyDown={onLiveKeyDown}
             >
               <img src={activeFrame.src} alt={t('app.browserPanel.liveView.altActive')} draggable={false} />
-            </div>
+            </button>
             <figcaption>
               <span className="rail__browser-preview-live">{t('app.browserPanel.liveView.label')}</span>
               {activeFrame.width}×{activeFrame.height}

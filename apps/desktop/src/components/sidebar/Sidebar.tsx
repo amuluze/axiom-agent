@@ -9,20 +9,22 @@ import {
 } from '@/stores/uiStore'
 import { useDesignAgentPreview, useDesignConnectPreview, useDesignUiPreview } from '@/components/design/ax/previewContext'
 import { DingtalkIcon, FeishuIcon, getPlatformLabel, WeixinIcon } from '@/components/connect/ConnectIcons'
+import { confirmDialog } from '@/components/dialogService'
 import type { ConnectPlatform } from '@/platform/connect'
 import {
   Archive,
   CircleArrowDown,
   CirclePlus,
+  FileText,
   Folder,
   FolderOpen,
   FolderPlus,
+  FlaskConical,
   MessageSquarePlus,
   PanelLeft,
   PenTool,
   SendHorizontal,
   Settings,
-  Sparkles,
   Square,
   Trash2,
 } from 'lucide-react'
@@ -30,9 +32,19 @@ import type { StoredAgentSession } from '@/persistence/types'
 import { useT, type TFunction } from '@/i18n'
 import { displaySessionTitle } from '@/i18n/sessionTitle'
 
-// 设计助手侧栏懒加载：设计视图专用，Composer/消息流的 chunk 不进主包。
+// 助手侧栏懒加载：设计/文档/测试视图专用，Composer/消息流的 chunk 不进主包。
 const DesignAssistantPanel = lazy(async () => {
   const module = await import('@/components/design/DesignAssistantPanel')
+  return { default: module.default }
+})
+
+const DocsAssistantPanel = lazy(async () => {
+  const module = await import('@/components/docs/DocsAssistantPanel')
+  return { default: module.default }
+})
+
+const TestingAssistantPanel = lazy(async () => {
+  const module = await import('@/components/testing/TestingAssistantPanel')
   return { default: module.default }
 })
 
@@ -274,7 +286,22 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
     setter(next)
   }
 
-  // 设计视图整页独占：侧栏切成设计助手（设计稿 XjPQ 的侧栏覆写形态）。
+  // 设计/文档/测试视图整页独占：侧栏切成对应助手面板（设计稿 XjPQ 的侧栏
+  // 覆写形态推广到 docs-* / tsCases-* 页组——Nav / 工作区 / 任务列表 / 底栏让位，
+  // 仅保留 Title Bar）。
+  const assistantPanel = view === 'design' ? (
+    <Suspense fallback={null}>
+      <DesignAssistantPanel />
+    </Suspense>
+  ) : view === 'docs' ? (
+    <Suspense fallback={null}>
+      <DocsAssistantPanel />
+    </Suspense>
+  ) : view === 'testing' ? (
+    <Suspense fallback={null}>
+      <TestingAssistantPanel />
+    </Suspense>
+  ) : null
   const designMode = view === 'design'
   const sidebarClass = variant === 'overlay' ? 'sidebar sidebar--overlay' : 'sidebar'
   const titlebarClass = variant === 'overlay'
@@ -320,9 +347,8 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
   }
 
   const resizer = variant === 'default' && (
-    <div
+    <hr
       className="sidebar__resizer"
-      role="separator"
       aria-orientation="vertical"
       aria-label={t('app.sidebar.resizerAria')}
       aria-valuemin={MIN_SIDEBAR_WIDTH}
@@ -367,12 +393,10 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
           </button>
         </div>
       </div>
-      {designMode ? (
-        // 设计页侧栏（.pen 设计稿 XjPQ 覆写）：Nav / 工作区 / 任务列表 / 底栏
-        // 全部让位给设计助手面板，仅保留 Title Bar（红绿灯区 + 收起按钮）。
-        <Suspense fallback={null}>
-          <DesignAssistantPanel />
-        </Suspense>
+      {assistantPanel ? (
+        // 助手页侧栏（.pen 设计稿 XjPQ / docs-* / tsCases-* 覆写）：Nav / 工作区 /
+        // 任务列表 / 底栏全部让位给助手面板，仅保留 Title Bar（红绿灯区 + 收起按钮）。
+        assistantPanel
       ) : (
         <>
       <div className="sidebar__nav">
@@ -397,16 +421,14 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
         </button>
         <button
           type="button"
-          className="sidebar__nav-item"
-          title={t('app.sidebar.skillsTitle')}
+          className={`sidebar__nav-item ${view === 'docs' ? 'sidebar__nav-item--active' : ''}`}
           onClick={() => {
-            setSettingsSection('skills')
-            setView('settings')
+            setView('docs')
             closeSidebarOverlay()
           }}
         >
-          <Sparkles size={15} className="sidebar__nav-item-icon" />
-          <span>{t('app.sidebar.skills')}</span>
+          <FileText size={15} className="sidebar__nav-item-icon" />
+          <span>{t('app.sidebar.docs')}</span>
         </button>
         <button
           type="button"
@@ -418,6 +440,17 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
         >
           <PenTool size={15} className="sidebar__nav-item-icon" />
           <span>{t('app.sidebar.design')}</span>
+        </button>
+        <button
+          type="button"
+          className={`sidebar__nav-item ${view === 'testing' ? 'sidebar__nav-item--active' : ''}`}
+          onClick={() => {
+            setView('testing')
+            closeSidebarOverlay()
+          }}
+        >
+          <FlaskConical size={15} className="sidebar__nav-item-icon" />
+          <span>{t('app.sidebar.testing')}</span>
         </button>
       </div>
       <div className="sidebar__workspace-header">
@@ -443,25 +476,6 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
             <section className="sidebar__workspace-group" key={group.key}>
               <div
                 className={`sidebar__project-row ${authorizedWorkspace?.path === group.path ? 'sidebar__project-row--active' : ''}`}
-                role="button"
-                tabIndex={group.path ? 0 : -1}
-                onClick={() => {
-                  if (!group.path) return
-                  // 展开/收起控制扩展到整行：点击行内任意位置（操作按钮除外）
-                  // 都切换会话列表显隐，同时保留原有的激活工作目录行为。
-                  toggleKey(setCollapsedWorkspaces, collapsedWorkspaces, group.key)
-                  void activateWorkspace(group.path)
-                }}
-                onKeyDown={(event) => {
-                  if (!group.path) return
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault()
-                    toggleKey(setCollapsedWorkspaces, collapsedWorkspaces, group.key)
-                    void activateWorkspace(group.path)
-                  }
-                }}
-                aria-disabled={!group.path}
-                aria-label={group.path ? t('app.sidebar.toggleWorkspaceAria', { name: group.name }) : group.name}
               >
                 {group.path ? (
                   <button
@@ -469,19 +483,31 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
                     className="sidebar__project-folder-toggle"
                     aria-label={collapsed ? t('app.sidebar.expandWorkspaceAria', { name: group.name }) : t('app.sidebar.collapseWorkspaceAria', { name: group.name })}
                     title={collapsed ? t('app.sidebar.expandWorkspaceTitle') : t('app.sidebar.collapseWorkspaceTitle')}
-                    onClick={(event) => {
-                      event.stopPropagation()
+                    onClick={() => {
                       toggleKey(setCollapsedWorkspaces, collapsedWorkspaces, group.key)
                     }}
-                    onKeyDown={(event) => event.stopPropagation()}
                   >
                     {collapsed ? <Folder size={15} /> : <FolderOpen size={15} />}
                   </button>
                 ) : (
                   <Folder size={15} />
                 )}
-                <span className="sidebar__project-name">{group.name}</span>
-                {group.gitBranch && <span className="sidebar__project-branch">{group.gitBranch}</span>}
+                <button
+                  type="button"
+                  className="sidebar__project-activate"
+                  aria-disabled={!group.path}
+                  aria-label={group.path ? t('app.sidebar.toggleWorkspaceAria', { name: group.name }) : group.name}
+                  tabIndex={group.path ? 0 : -1}
+                  onClick={() => {
+                    if (!group.path) return
+                    // 展开/收起控制扩展到名称区域，同时保留激活工作目录行为。
+                    toggleKey(setCollapsedWorkspaces, collapsedWorkspaces, group.key)
+                    void activateWorkspace(group.path)
+                  }}
+                >
+                  <span className="sidebar__project-name">{group.name}</span>
+                  {group.gitBranch && <span className="sidebar__project-branch">{group.gitBranch}</span>}
+                </button>
                 {/* 授权态点已移除：未授权工作区整组隐藏，绿点恒亮不携带信息。
                     现在仅在该工作目录下有运行中会话时亮起，提示后台活动。 */}
                 {group.path && hasRunningSessions && (
@@ -491,10 +517,7 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
                   />
                 )}
                 {group.path && group.authorized && (
-                  <span
-                    className="sidebar__project-actions"
-                    onClick={(event) => event.stopPropagation()}
-                  >
+                  <span className="sidebar__project-actions">
                     <button
                       type="button"
                       aria-label={t('app.sidebar.newSessionIn', { name: group.name })}
@@ -521,11 +544,13 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
                         // 预览态（画布评审）不弹原生 confirm：撤销动作本身已是 no-op，
                         // 原生对话框是不经 store 的真副作用，必须一并挡住。
                         if (agentPreview) return
-                        const confirmed = window.confirm(
-                          t('app.sidebar.removeWorkspaceConfirm', { name: group.name }),
-                        )
-                        if (!confirmed) return
-                        void revokeWorkspace(group.path)
+                        const path = group.path
+                        void confirmDialog({
+                          message: t('app.sidebar.removeWorkspaceConfirm', { name: group.name }),
+                          danger: true,
+                        }).then((confirmed) => {
+                          if (confirmed) void revokeWorkspace(path)
+                        })
                       }}
                     >
                       <Trash2 size={13} />
@@ -547,6 +572,11 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
                           onClick={() => { void selectTask(stored.id) }}
                         >
                           {stored.status === 'running' && <span className="sidebar__task-running" title={t('app.sidebar.taskRunningTitle')} />}
+                          {stored.accessMode === 'no-approval' && (
+                            <span className="sidebar__task-full-access" title={t('app.sidebar.taskFullAccessTitle')}>
+                              {t('app.sidebar.taskFullAccess')}
+                            </span>
+                          )}
                           {(sessionQueueCounts[stored.id] ?? 0) > 0 && (
                             <span
                               className="sidebar__task-queued"
@@ -617,9 +647,9 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
                             className="sidebar__task-quick-send"
                             onSubmit={(event) => { void submitQuickSend(event, stored.id) }}
                           >
-                            <input
+                            {/* biome-ignore lint/a11y/noAutofocus: 用户刚打开行内快捷发送 */}
+                            <input autoFocus
                               aria-label={t('app.sidebar.quickSendInputAria', { title: displaySessionTitle(t, stored.title) })}
-                              autoFocus
                               onChange={(event) => setQuickSendDraft(event.target.value)}
                               onKeyDown={(event) => {
                                 if (event.key === 'Escape') {
@@ -702,8 +732,14 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
 
   if (variant === 'overlay') {
     return (
-      <div className="sidebar__overlay" role="presentation" onClick={toggleSidebar}>
-        <div onClick={(event) => event.stopPropagation()}>{inner}</div>
+      <div className="sidebar__overlay">
+        <button
+          type="button"
+          className="sidebar__overlay-backdrop"
+          aria-label={t('app.sidebar.collapse')}
+          onClick={toggleSidebar}
+        />
+        <div className="sidebar__overlay-panel">{inner}</div>
       </div>
     )
   }

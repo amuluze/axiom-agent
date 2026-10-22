@@ -6,15 +6,9 @@
  * 「页面留在原位、逐片点亮」的光栅扫描。本模块只做几何决策（排序/可见判定/
  * 平移目标），采集与 React 状态在 DesignCanvas 的扫掠编排器里。
  */
-/** 页摆位形状（与 DesignCanvas.PagePlacement 结构一致，本地声明避免循环依赖）。 */
-export interface PagePlacement {
-  page: { id: string }
-  x: number
-  y: number
-  width: number
-  height: number
-  hasHeight: boolean
-}
+import type { PagePlacement } from './designPageGrouping'
+
+export type { PagePlacement }
 
 export interface ScreenRect {
   x: number
@@ -104,6 +98,51 @@ export const panTargetFor = (
  */
 export const rectsIntersect = (a: ScreenRect, b: ScreenRect): boolean =>
   a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+
+/**
+ * 不能原位采集、必须走 staging 挂载回退的页 id 集合。
+ *
+ * 两条成因：**装不进视口的巨页**（截图放不下）与**与其它页相交的页**（原位截图会
+ * 拍到覆盖其上的另一页内容，像素统计失真）。正确性优先于并行度。
+ *
+ * 入参是**画布坐标**的页摆位（placements 直出）。相机只有 uniform scale + translate，
+ * 不改变相交关系与相对尺寸，因此画布坐标 × scale 的判定与屏幕坐标判定等价——
+ * 这正是这里不读 DOM 的理由：原实现在两两比较的循环体里每次都调
+ * `getBoundingClientRect`，把「读矩形」放大成 2N² 次强制同步布局，65 页的稿光
+ * 这一段就足以让「开始扫描」肉眼卡顿。纯比较本身不是瓶颈（实测 500 页两两比较
+ * 约 1ms），不值得为它引入空间索引。
+ */
+export const stagingPageIds = (
+  placements: readonly { id: string; x: number; y: number; width: number; height: number }[],
+  scale: number,
+  viewport: ViewportBox,
+  inset = 2,
+): Set<string> => {
+  const result = new Set<string>()
+  const screen = placements.map((item) => ({
+    id: item.id,
+    x: item.x * scale,
+    y: item.y * scale,
+    width: item.width * scale,
+    height: item.height * scale,
+  }))
+  for (const item of screen) {
+    if (!fitsViewport(item, viewport, inset)) result.add(item.id)
+  }
+  for (let i = 0; i < screen.length; i += 1) {
+    const left = screen[i]
+    if (!left) continue
+    for (let j = i + 1; j < screen.length; j += 1) {
+      const right = screen[j]
+      if (!right) continue
+      if (rectsIntersect(left, right)) {
+        result.add(left.id)
+        result.add(right.id)
+      }
+    }
+  }
+  return result
+}
 
 
 

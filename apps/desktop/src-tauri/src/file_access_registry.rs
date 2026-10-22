@@ -61,9 +61,8 @@ pub(crate) fn registry_read(file: &Path) -> Result<HashSet<PathBuf>, String> {
     }
     let raw = fs::read_to_string(file)
         .map_err(|error| format!("failed to read authorized files registry: {error}"))?;
-    let document: RegistryDocument = serde_json::from_str(&raw).map_err(|error| {
-        format!("authorized files registry is corrupted: {error}")
-    })?;
+    let document: RegistryDocument = serde_json::from_str(&raw)
+        .map_err(|error| format!("authorized files registry is corrupted: {error}"))?;
     if document.schema_version != REGISTRY_SCHEMA_VERSION {
         return Err(format!(
             "authorized files registry schema version {} is not supported (expected {REGISTRY_SCHEMA_VERSION})",
@@ -139,15 +138,22 @@ pub(crate) fn registry_remove(file: &Path, path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// 同一进程内并行测试必须拿到互不相同的目录：仅用纳秒时间戳在并发下仍可能撞名，
+    /// 撞名会让两个测试互相覆盖注册表，产生与代码无关的间歇失败。
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn temporary_directory() -> PathBuf {
+        let unique = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "axiom-file-registry-{}-{}",
+            "axiom-file-registry-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            unique
         ));
         std::fs::create_dir_all(&path).unwrap();
         std::fs::canonicalize(path).unwrap()

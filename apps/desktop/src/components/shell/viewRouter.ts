@@ -9,8 +9,8 @@ export const resolveAutoView = (
   if (providerSetupRequired) return 'settings'
   // 用户启动的独立窗口（设置）不进自动视图切换：设置页挂载期间
   // 会话消息变更不应把视图拽回会话页。
-  // 设计视图与设置同为用户启动的独立窗口：会话消息变更不拽回会话页。
-  if (currentView === 'settings' || currentView === 'design') return currentView
+  // 独立功能视图由用户显式打开，会话消息变更不拽回会话页。
+  if (currentView === 'settings' || currentView === 'design' || currentView === 'docs' || currentView === 'testing') return currentView
   if (hasMessages) return 'session'
   return 'new-task'
 }
@@ -56,6 +56,9 @@ export interface ViewRenderResult {
   session: boolean
   /** True when the active content is DesignView (design canvas inside the shell). */
   design: boolean
+  /** True when the active content is DocsView (SDD document browser inside the shell). */
+  docs: boolean
+  testing: boolean
 }
 
 export const resolveViewRender = (view: AppView): ViewRenderResult => ({
@@ -63,4 +66,6 @@ export const resolveViewRender = (view: AppView): ViewRenderResult => ({
   shell: view !== 'settings',
   session: view === 'session',
   design: view === 'design',
+  docs: view === 'docs',
+  testing: view === 'testing',
 })

@@ -16,6 +16,7 @@ import { resolveViewRender } from '@/components/shell/viewRouter'
 import { NewTaskView } from '@/components/new-task/NewTaskView'
 import { SummaryInstructionsDialog } from '@/components/SummaryInstructionsDialog'
 import { FeedbackDialog } from '@/components/feedback/FeedbackDialog'
+import { DialogHost } from '@/components/DialogHost'
 import { ImageLightbox } from '@/components/session/ImageLightbox'
 import { useT } from '@/i18n'
 import type { SummaryInstructionOptions } from '@/agent/context/summaryInstructions'
@@ -33,6 +34,16 @@ const SettingsView = lazy(async () => {
 const DesignView = lazy(async () => {
   const module = await import('@/components/design/DesignView')
   return { default: module.default }
+})
+
+const TestingView = lazy(async () => {
+  const module = await import('@/components/testing/TestingView')
+  return { default: module.TestingView }
+})
+
+const DocsView = lazy(async () => {
+  const module = await import('@/components/docs/DocsView')
+  return { default: module.DocsView }
 })
 
 const TerminalPanel = lazy(async () => {
@@ -146,7 +157,7 @@ export const App = () => {
       window.removeEventListener('focus', refresh)
     }
   }, [])
-  const { settingsScreen, shell, session, design } = resolveViewRender(view)
+  const { settingsScreen, shell, session, design, docs, testing } = resolveViewRender(view)
 
   const submitSummaryInstructions = (options: SummaryInstructionOptions): void => {
     const request = summaryRequest
@@ -168,6 +179,14 @@ export const App = () => {
             <Suspense fallback={null}>
               <DesignView />
             </Suspense>
+          ) : shell && docs ? (
+            <Suspense fallback={null}>
+              <DocsView />
+            </Suspense>
+          ) : shell && testing ? (
+            <Suspense fallback={null}>
+              <TestingView />
+            </Suspense>
           ) : shell && session ? (
             <Suspense fallback={null}>
               <SessionView />
@@ -185,6 +204,7 @@ export const App = () => {
         onSubmit={submitSummaryInstructions}
       />
       {feedbackRequest && <FeedbackDialog request={feedbackRequest} />}
+      <DialogHost />
     </>
   )
 }

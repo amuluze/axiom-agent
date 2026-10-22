@@ -180,6 +180,7 @@ export interface SubAgentRuntimeBinding {
   resolveModelAuth?: ResolveModelAuth
   /** 父工作区 environment：SubAgentRuntime 基于它构造 scope 收窄的只读环境。 */
   environment: AgentEnvironment
+  parentActiveToolNames: readonly string[]
   /** 父授权工作区根目录绝对路径（相对路径的解析根）；用于注入子 prompt 与 scope 快速校验诊断。 */
   workspacePath?: string
   observation?: SubAgentObservationSink

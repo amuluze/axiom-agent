@@ -28,11 +28,12 @@ export const createReadTool = (
   label: 'read',
   promptSnippet: '读取文件内容（文本或图片）。',
   promptGuidelines: [
+    '工作区授权不能解除凭据或 Axiom 数据保护；隐私目录只开放经原生确认的项目子目录，拒绝后不要通过改名或其他工具绕过。',
     '查看文件时优先用 read，而非 cat / sed / head。',
     '大文件用 offset 和 limit 分页读取，不要靠猜。',
     '读取结果末尾附带完整文件 SHA-256，用于编辑冲突检测；回显内容时请保留该值。',
   ],
-  runtimeVersion: '7',
+  runtimeVersion: '8',
   recoveryPolicy: 'idempotent',
   idempotencyKey: (input) => {
     if (!isJsonObject(input)) return 'read:invalid'
@@ -48,7 +49,7 @@ export const createReadTool = (
     properties: {
       path: {
         type: 'string',
-        description: 'File path. Relative paths are resolved inside the authorized workspace; absolute paths outside it require the user to confirm the native authorization prompt.',
+        description: 'File path. Relative paths are resolved inside the authorized workspace; absolute paths are read without approval, subject to the same sensitive-path protection.',
       },
       offset: {
         type: 'number',

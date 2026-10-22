@@ -55,6 +55,7 @@ import type {
   StorageStats,
   StoredAgentSession,
 } from './types'
+import type { AccessMode } from '@/agent/approval/ApprovalCoordinator'
 
 interface SessionRow {
   id: string
@@ -69,6 +70,7 @@ interface SessionRow {
   workspace_path: string | null
   workspace_name: string | null
   status: string
+  access_mode: string
   created_at: number
   updated_at: number
   message_count: number
@@ -324,6 +326,7 @@ const toStoredSession = async (row: SessionRow): Promise<StoredAgentSession> => 
   providerConfig: await decodeProviderProfileJson(row.provider_config_json),
   runtimeManifest: decodeRuntimeManifest(row.runtime_manifest_json),
   status: row.status === 'running' ? 'running' : 'idle',
+  accessMode: row.access_mode === 'no-approval' ? 'no-approval' : 'standard',
   createdAt: row.created_at,
   updatedAt: row.updated_at,
   messageCount: row.message_count,
@@ -444,6 +447,7 @@ export class SqliteSessionRepository implements SessionRepository {
       sessions,
       active,
       recoveredRuns: recovered.recoveredRuns,
+      recoverySummary: recovered,
       ...(artifactIntegrityWarning ? { artifactIntegrityWarning } : {}),
     }
   }
@@ -605,6 +609,11 @@ export class SqliteSessionRepository implements SessionRepository {
       runtimeManifestJson: defaults.runtimeManifest ? JSON.stringify(defaults.runtimeManifest) : null,
       now: Date.now(),
     })
+  }
+
+  async updateSessionAccessMode(sessionId: string, mode: AccessMode): Promise<void> {
+    const result = await this.database.execute('updateSessionAccessMode', [mode, Date.now(), sessionId])
+    if (result.rowsAffected !== 1) throw new Error('会话不存在或已被删除')
   }
 
   async commitMutationBatch(
@@ -805,6 +814,8 @@ export class SqliteSessionRepository implements SessionRepository {
                   : { detailsJson: JSON.stringify(pendingToolCompletion.value.event.result.details) }),
                 isError: pendingToolCompletion.value.event.isError,
                 approvalState: pendingToolCompletion.value.event.approvalState,
+                approvalSource: pendingToolCompletion.value.event.approvalSource
+                  ?? (pendingToolCompletion.value.event.approvalState === 'approved' ? 'interactive' : 'not_required'),
                 endedAt: pendingToolCompletion.value.endedAt,
               },
             }

@@ -10,17 +10,17 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-mod commands;
-mod db_io;
-mod query_mutation;
-mod lifecycle;
-mod run;
-mod messages;
-mod checkpoint;
-mod recovery;
-mod turn;
 mod branch;
+mod checkpoint;
+mod commands;
 mod config_journal;
+mod db_io;
+mod lifecycle;
+mod messages;
+mod query_mutation;
+mod recovery;
+mod run;
+mod turn;
 
 // Re-export all Tauri commands at the module root so lib.rs's
 // `use session_repository::{...}` keeps working unchanged.
@@ -30,25 +30,25 @@ pub use commands::*;
 // type impls below can call them, and (b) the `mod tests` white-box tests,
 // which do `use super::*`, retain access to the same helpers as before.
 #[allow(unused_imports)]
-use db_io::*;
-#[allow(unused_imports)]
-use query_mutation::*;
-#[allow(unused_imports)]
-use lifecycle::*;
-#[allow(unused_imports)]
-use run::*;
-#[allow(unused_imports)]
-use messages::*;
+use branch::*;
 #[allow(unused_imports)]
 use checkpoint::*;
 #[allow(unused_imports)]
+use config_journal::*;
+#[allow(unused_imports)]
+use db_io::*;
+#[allow(unused_imports)]
+use lifecycle::*;
+#[allow(unused_imports)]
+use messages::*;
+#[allow(unused_imports)]
+use query_mutation::*;
+#[allow(unused_imports)]
 use recovery::*;
 #[allow(unused_imports)]
+use run::*;
+#[allow(unused_imports)]
 use turn::*;
-#[allow(unused_imports)]
-use branch::*;
-#[allow(unused_imports)]
-use config_journal::*;
 
 const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 const MAX_BRANCH_REQUEST_BYTES: usize = 32 * 1024 * 1024;
@@ -57,6 +57,8 @@ const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_CHECKPOINT_SUMMARY_BYTES: usize = 256 * 1024;
 const MAX_READ_PROGRESS_ENTRIES: usize = 32;
 const MAX_TOOL_LEDGER_ENTRIES: usize = 64;
+const MAX_LOADED_SKILL_ENTRIES: usize = 16;
+const MAX_SDD_REVIEW_ENTRIES: usize = 8;
 const CHECKPOINT_MESSAGE_ID_BATCH_SIZE: usize = 500;
 const RECOVERY_RUN_ID_BATCH_SIZE: usize = 500;
 const MAX_TURN_MUTATION_BATCHES: usize = 100;
@@ -108,10 +110,16 @@ impl SessionRepositoryQuery {
             Self::PageCount => "PRAGMA page_count",
             Self::PageSize => "PRAGMA page_size",
             Self::UnreferencedArtifacts => {
+                // R1-4：自动清理路径必须与手动 `gc_artifacts` 命令同一权威引用集——测试运行的
+                // 计划快照（test_runs.plan_content_hash）与步骤证据（test_step_runs.evidence_content_hash）
+                // 同样是报告的一部分，漏掉会在下一步清理里把被引用的 artifact 移入回收区并删行，
+                // 留下「test_runs 指向已消失的 artifact」的悬空引用（H1-4 故障窗口实测到）。
                 "SELECT a.id, a.content_hash, a.size_bytes
                  FROM artifacts a
                  WHERE NOT EXISTS (SELECT 1 FROM agent_messages m WHERE m.artifact_id = a.id)
-                   AND NOT EXISTS (SELECT 1 FROM tool_executions t WHERE t.artifact_id = a.id)"
+                   AND NOT EXISTS (SELECT 1 FROM tool_executions t WHERE t.artifact_id = a.id)
+                   AND NOT EXISTS (SELECT 1 FROM test_runs r WHERE r.plan_content_hash = a.content_hash)
+                   AND NOT EXISTS (SELECT 1 FROM test_step_runs s WHERE s.evidence_content_hash = a.content_hash)"
             }
             Self::Artifacts => "SELECT id, content_hash, size_bytes FROM artifacts",
         }
@@ -163,6 +171,7 @@ pub enum SessionRepositoryMutation {
     RenameSessionIfTitle,
     ArchiveSession,
     RestoreSession,
+    UpdateSessionAccessMode,
     ClearWorkspaceForPath,
 }
 
@@ -184,10 +193,14 @@ impl SessionRepositoryMutation {
                 "UPDATE agent_sessions SET title = ?, updated_at = ? WHERE id = ? AND title = ?"
             }
             Self::ArchiveSession => {
-                "UPDATE agent_sessions SET archived_at = ?, updated_at = ? WHERE id = ?"
+                "UPDATE agent_sessions
+                 SET archived_at = ?, access_mode = 'standard', updated_at = ? WHERE id = ?"
             }
             Self::RestoreSession => {
                 "UPDATE agent_sessions SET archived_at = NULL, updated_at = ? WHERE id = ?"
+            }
+            Self::UpdateSessionAccessMode => {
+                "UPDATE agent_sessions SET access_mode = ?, updated_at = ? WHERE id = ?"
             }
             Self::ClearWorkspaceForPath => {
                 "UPDATE agent_sessions SET workspace_path = NULL, workspace_name = NULL, updated_at = ? WHERE workspace_path = ?"
@@ -197,7 +210,7 @@ impl SessionRepositoryMutation {
 
     fn parameter_count(self) -> usize {
         match self {
-            Self::RenameSession => 3,
+            Self::RenameSession | Self::UpdateSessionAccessMode => 3,
             Self::RenameSessionIfTitle => 4,
             Self::CreateSession => 12,
             Self::ArchiveSession => 3,
@@ -214,6 +227,7 @@ const ALL_MUTATIONS: &[SessionRepositoryMutation] = &[
     SessionRepositoryMutation::RenameSessionIfTitle,
     SessionRepositoryMutation::ArchiveSession,
     SessionRepositoryMutation::RestoreSession,
+    SessionRepositoryMutation::UpdateSessionAccessMode,
     SessionRepositoryMutation::ClearWorkspaceForPath,
 ];
 
@@ -374,6 +388,7 @@ type CompletedToolRecord = (
     String,
     Option<i64>,
     Option<String>,
+    String,
 );
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -451,6 +466,7 @@ struct SessionToolExecutionCompletion {
     details_json: Option<String>,
     is_error: bool,
     approval_state: String,
+    approval_source: String,
     ended_at: i64,
 }
 
@@ -469,17 +485,19 @@ struct SessionMessageArtifact {
 /// 单文件确定性读取游标（nextOffset 为 null 表示已读完整）。与 TS 侧
 /// ReadProgressCursor 一一对应；read_progress 用 BTreeMap 保证序列化确定性，
 /// 因为 save_checkpoint 幂等比对按 facts_json 字符串精确比较。
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SessionReadProgressCursor {
+    #[specta(type = Option<specta_typescript::Number>)]
     next_offset: Option<i64>,
+    #[specta(type = specta_typescript::Number)]
     total_lines: i64,
     truncated: bool,
     sha256: String,
 }
 
-/// 确定性执行账本条目的 Rust 镜像（id = toolCallId；status ∈ {done, pending}）。
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+/// 确定性执行账本条目的 Rust 镜像（id = toolCallId）。
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SessionToolLedgerEntry {
     id: String,
@@ -489,7 +507,21 @@ struct SessionToolLedgerEntry {
     status: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SessionLoadedSkillEntry {
+    name: String,
+    source: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SessionSddReviewEntry {
+    reviewer: String,
+    verdict: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SessionCheckpointFacts {
     read_files: Vec<String>,
@@ -500,9 +532,15 @@ struct SessionCheckpointFacts {
     /// 旧 checkpoint 无此字段；反序列化缺失时默认为空（向后兼容）。
     #[serde(default)]
     tool_ledger: Vec<SessionToolLedgerEntry>,
+    /// 旧 checkpoint 无此字段；反序列化缺失时默认为空（向后兼容）。
+    #[serde(default)]
+    loaded_skills: Vec<SessionLoadedSkillEntry>,
+    /// 旧 checkpoint 无此字段；反序列化缺失时默认为空（向后兼容）。
+    #[serde(default)]
+    sdd_reviews: Vec<SessionSddReviewEntry>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveSessionCheckpointRequest {
     id: String,
@@ -511,15 +549,21 @@ pub struct SaveSessionCheckpointRequest {
     summary: String,
     summary_hash: String,
     reason: String,
+    #[specta(type = specta_typescript::Number)]
     tokens_before: f64,
+    #[specta(type = specta_typescript::Number)]
     estimated_tokens_after: f64,
+    #[specta(type = specta_typescript::Number)]
     request_bytes_before: f64,
+    #[specta(type = specta_typescript::Number)]
     request_bytes_after: f64,
     model_provider: String,
     model_id: String,
+    #[specta(type = specta_typescript::Number)]
     prompt_version: i64,
     excluded_message_ids: Vec<String>,
     facts: SessionCheckpointFacts,
+    #[specta(type = specta_typescript::Number)]
     created_at: f64,
 }
 
@@ -528,10 +572,22 @@ struct PersistedCheckpointMessage {
     value: Value,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoverSessionRepositoryResult {
     recovered_runs: u64,
+    /// 已收到 Provider response（成果会由恢复结算）的中断 run 数。
+    completed_runs: u64,
+    /// 最后一次持久化信号为工具失败的中断 run 数。
+    failed_runs: u64,
+    /// 在途、无持久化结果可判定的中断 run 数。
+    unknown_runs: u64,
+    /// 被中断、可能从未执行的工具调用数。
+    interrupted_tool_executions: u64,
+    /// 已执行（完成或失败）但结果未保存、可能已产生落地副作用的工具调用数。
+    possibly_executed_tool_executions: u64,
+    /// 受影响会话（含中断 run）的 id，按字典序。
+    recovered_sessions: Vec<String>,
 }
 
 struct InterruptedToolCandidate {
@@ -602,13 +658,14 @@ mod tests;
 // `use super::*` continues to resolve them (in the original single-file layout
 // these `use`s lived at the top of the same file the tests inherited from).
 #[cfg(test)]
-pub(crate) use sqlx::sqlite::SqliteConnection;
+pub(crate) use crate::artifacts::MAX_ARTIFACT_BYTES;
 #[cfg(test)]
-pub(crate) use sqlx::{Connection, Executor};
+pub(crate) use crate::session_schema::{
+    create_options, migrate, migrate_to, DATABASE_VERSION, MIGRATIONS,
+};
 #[cfg(test)]
 pub(crate) use sha2::{Digest, Sha256};
 #[cfg(test)]
-pub(crate) use crate::artifacts::MAX_ARTIFACT_BYTES;
+pub(crate) use sqlx::sqlite::SqliteConnection;
 #[cfg(test)]
-pub(crate) use crate::session_schema::{create_options, migrate, migrate_to, DATABASE_VERSION, MIGRATIONS};
-
+pub(crate) use sqlx::{Connection, Executor};

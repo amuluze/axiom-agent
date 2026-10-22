@@ -1,0 +1,728 @@
+/* 文档视图（侧栏「文档」入口 → AppView 'docs'；侧栏此时为文档助手会话列）。
+   形态按 .pen 设计稿 docs-view / docs-edit / docs-empty 三页：顶部标签栏
+   （已打开文档 + 同步状态 + 编辑/重新扫描 或 保存⌘S/放弃），主区 Markdown 正文
+   或源码编辑面，右侧 280px 文档目录树。markdown 渲染复用 message-markdown 的
+   prose 排版，便于给文档页加 GFM 表格/代码高亮时只改 messageContent 一处。 */
+
+.docs-view {
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-main);
+  color: var(--text-primary);
+}
+
+.docs-view__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── 顶部标签栏 ─────────────────────────────────────────────── */
+
+.docs-view__topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+  min-height: 34px;
+}
+
+.docs-view__tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.docs-view__tab {
+  flex: none;
+  max-width: 240px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.docs-view__tab:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.docs-view__tab.is-active {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.docs-view__topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.docs-view__sync {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.docs-view__unsaved {
+  font-size: 11px;
+  color: var(--warn-text);
+  white-space: nowrap;
+}
+
+.docs-view__topbar-primary,
+.docs-view__topbar-secondary,
+.docs-view__save {
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.docs-view__topbar-primary {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.docs-view__topbar-primary:hover:not(:disabled) {
+  color: var(--text-primary);
+  filter: brightness(1.05);
+}
+
+.docs-view__topbar-primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.docs-view__topbar-secondary {
+  background: var(--bg-card);
+  color: var(--text-secondary);
+}
+
+.docs-view__topbar-secondary:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.docs-view__save {
+  background: var(--accent);
+  color: var(--text-inverse);
+  font-weight: 600;
+}
+
+.docs-view__save:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.docs-view__save:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── 主区（正文/编辑面）与右侧目录树 ───────────────────────── */
+
+.docs-view__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+.docs-view__content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-main);
+  overflow: hidden;
+}
+
+.docs-view__divider {
+  flex: none;
+  width: 1px;
+  background: var(--border-subtle);
+}
+
+.docs-view__tree {
+  flex: 0 0 280px;
+  min-width: 220px;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border-subtle);
+  background: var(--bg-sidebar);
+}
+
+.docs-view__tree-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.docs-view__tree-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+}
+
+.docs-view__tree-workspace {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.docs-view__tree-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.docs-view__tree-refresh:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.docs-view__tree-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 0 6px;
+}
+
+.docs-view__tree-hint {
+  padding: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.docs-view__group {
+  display: flex;
+  flex-direction: column;
+}
+
+.docs-view__group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.docs-view__group-header:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.docs-view__chevron {
+  flex: none;
+  transition: transform 0.12s ease;
+  color: var(--text-tertiary);
+}
+
+.docs-view__chevron.is-open {
+  transform: rotate(90deg);
+}
+
+.docs-view__group-label {
+  flex: none;
+}
+
+/* 组头的路径标注（设计稿 dvd-ga-hp：mono 弱化，如 .specs/domain）。 */
+.docs-view__group-path {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-tertiary);
+  min-width: 0;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.docs-view__group-count {
+  margin-left: auto;
+  flex: none;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-weight: 600;
+}
+
+.docs-view__group-items {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 4px 0 24px;
+}
+
+.docs-view__group-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.docs-view__group-note--error {
+  color: var(--warn-text);
+}
+
+/* 诊断的定位路径：mono + 进一步弱化，长路径单行省略（完整值在 title 里）。 */
+.docs-view__group-note-path {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.docs-view__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: left;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.docs-view__item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.docs-view__item.is-active {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.docs-view__item.is-archived {
+  opacity: 0.7;
+}
+
+.docs-view__item.is-archived.is-active {
+  opacity: 1;
+}
+
+.docs-view__item-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--text-tertiary);
+}
+
+.docs-view__item.is-active .docs-view__item-icon {
+  color: var(--accent);
+}
+
+/* 标签按容器宽换行（设计稿 dti-label wrap:"width"）：嵌套 AGENTS.md 的长路径
+   折行展示而非截断——路径本身就是条目的身份。 */
+.docs-view__item-label {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.docs-view__item-badge {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+/* ── 文档头与正文 ───────────────────────────────────────────── */
+
+.docs-view__placeholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+
+.docs-view__doc-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.docs-view__doc-header--edit {
+  gap: 8px;
+}
+
+.docs-view__doc-path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.docs-view__doc-header--edit .docs-view__doc-path {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  flex: none;
+}
+
+/* 编辑态模式标注（设计稿 dvx-hd-b：accent 文字）。 */
+.docs-view__edit-mode {
+  flex: none;
+  font-size: 11px;
+  color: var(--accent-text);
+  white-space: nowrap;
+}
+
+.docs-view__doc-lines {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.docs-view__doc-error {
+  font-size: 12px;
+  color: var(--warn-text);
+}
+
+.docs-view__doc-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 24px 32px;
+  line-height: 1.6;
+  font-size: 13px;
+}
+
+.docs-view__doc-body .message-markdown,
+.docs-view__doc-body .message-content {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+
+.docs-view__doc-body h1,
+.docs-view__doc-body h2,
+.docs-view__doc-body h3,
+.docs-view__doc-body h4 {
+  margin: 1.2em 0 0.5em;
+  color: var(--text-primary);
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+/* 宿主生成的阅读提示（超长行占位等）：与正文视觉区分，不能被当成文档内容。 */
+.docs-view__doc-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.docs-view__doc-body h1 { font-size: 1.4em; padding-bottom: 0.2em; border-bottom: 1px solid var(--border-subtle); }
+.docs-view__doc-body h2 { font-size: 1.2em; padding-bottom: 0.15em; border-bottom: 1px solid var(--border-subtle); }
+.docs-view__doc-body h3 { font-size: 1.1em; }
+.docs-view__doc-body h4 { font-size: 1em; }
+
+.docs-view__doc-body p {
+  margin: 0 0 0.8em;
+}
+
+.docs-view__doc-body code {
+  font-family: var(--font-mono);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 0.92em;
+}
+
+.docs-view__doc-body pre {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.docs-view__doc-body pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: 1em;
+}
+
+.docs-view__doc-body a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.docs-view__doc-body a:hover {
+  text-decoration: underline;
+}
+
+.docs-view__doc-body ul,
+.docs-view__doc-body ol {
+  margin: 0 0 0.8em;
+  padding-left: 1.5em;
+}
+
+.docs-view__doc-body li {
+  margin: 0.2em 0;
+}
+
+.docs-view__doc-body blockquote {
+  margin: 0 0 0.8em;
+  padding: 0.2em 0.8em;
+  border-left: 3px solid var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+.docs-view__doc-body hr {
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  margin: 1.2em 0;
+}
+
+.docs-view__table-wrap {
+  overflow-x: auto;
+  margin: 0 0 0.8em;
+}
+
+.docs-view__doc-body table {
+  border-collapse: collapse;
+  font-size: 12px;
+  min-width: 100%;
+}
+
+.docs-view__doc-body th,
+.docs-view__doc-body td {
+  border: 1px solid var(--border-subtle);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.docs-view__doc-body th {
+  background: var(--bg-card);
+  font-weight: 600;
+}
+
+.docs-view__doc-actions {
+  display: flex;
+  justify-content: center;
+  padding: 12px 0 24px;
+}
+
+.docs-view__doc-actions button {
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.docs-view__doc-actions button:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+/* ── 编辑态源码编辑面（docs-edit 设计稿 dvx-ed：卡片底 + mono 行文） ── */
+
+.docs-view__editor {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+  padding: 14px 16px;
+  tab-size: 2;
+}
+
+/* ── 空态（docs-empty 设计稿：居中卡片 + 示例指令，无直接写通道）。 ── */
+
+.docs-view--empty {
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+.docs-view__empty-card {
+  max-width: 480px;
+  padding: 24px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-card);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.docs-view__empty-card h2 {
+  margin: 0;
+  font-size: 16px;
+  color: var(--text-primary);
+}
+
+.docs-view__empty-card p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
+/* 「可以这样说：」示例指令（设计稿 dve-hint：弱化标签 + 输入框样式的 mono 指令）。 */
+.docs-view__empty-hint {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+}
+
+.docs-view__empty-hint-label {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.docs-view__empty-hint-box {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: var(--bg-hover);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.docs-view__empty-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.docs-view__empty-primary,
+.docs-view__empty-secondary {
+  border-radius: 6px;
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.docs-view__empty-primary {
+  background: var(--accent);
+  color: var(--text-inverse);
+  border: 1px solid var(--accent);
+  font-weight: 600;
+}
+
+.docs-view__empty-primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.docs-view__empty-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.docs-view__empty-secondary {
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+}
+
+.docs-view__empty-secondary:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.docs-view__spin {
+  animation: docs-view-spin 1.2s linear infinite;
+}
+
+@keyframes docs-view-spin {
+  to { transform: rotate(360deg); }
+}

@@ -1,6 +1,6 @@
+use crate::runtime_manifest::validate_identifier;
 use sqlx::{QueryBuilder, Sqlite, SqliteConnection};
 use std::collections::HashSet;
-use crate::runtime_manifest::validate_identifier;
 
 use super::*;
 

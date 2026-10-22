@@ -10,7 +10,7 @@
 //! - errcode -14 = 登录过期（停止并提示重扫）；ret -2 = 突发节流（fail-fast）。
 
 use super::{
-    now_ms, process_inbound, reset_inbound_watermark, replace_config, set_status, sleep_backoff,
+    now_ms, process_inbound, replace_config, reset_inbound_watermark, set_status, sleep_backoff,
     update_login_session, ConnectEventPayload, ConnectInner, ConnectPlatform, ConnectStatusKind,
     InboundChatMessage, ReplyContext, StoredBinding, CONNECT_EVENT,
 };
@@ -40,7 +40,9 @@ fn http_client() -> &'static reqwest::Client {
 }
 
 /// 项目内 reqwest 未启用 json feature：统一走字符串 body + 手动反序列化。
-async fn read_json<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T, String> {
+async fn read_json<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+) -> Result<T, String> {
     let text = response
         .text()
         .await
@@ -56,16 +58,17 @@ pub(crate) enum WechatLoginStatus {
     Scanned,
     Confirmed,
     Expired,
-    Failed { message: String },
+    Failed {
+        message: String,
+    },
 }
 
-fn authed_request(
-    builder: reqwest::RequestBuilder,
-    token: &str,
-) -> reqwest::RequestBuilder {
+fn authed_request(builder: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {
     // X-WECHAT-UIN：每次请求随机生成（base64(十进制随机 uint32)）。
     let bytes = super::random_bytes(4);
-    let uin = ((bytes[0] as u32) << 24) | ((bytes[1] as u32) << 16) | ((bytes[2] as u32) << 8)
+    let uin = ((bytes[0] as u32) << 24)
+        | ((bytes[1] as u32) << 16)
+        | ((bytes[2] as u32) << 8)
         | bytes[3] as u32;
     let uin = base64::engine::general_purpose::STANDARD.encode(uin.to_string());
     builder
@@ -135,7 +138,9 @@ pub(crate) async fn run_wechat_login(
     }
     .await
     {
-        Ok(payload) if !payload.qrcode.is_empty() && !payload.qrcode_img_content.is_empty() => payload,
+        Ok(payload) if !payload.qrcode.is_empty() && !payload.qrcode_img_content.is_empty() => {
+            payload
+        }
         Ok(_) => return fail("微信登录二维码响应无效".into()),
         Err(error) => return fail(error),
     };
@@ -190,9 +195,11 @@ pub(crate) async fn run_wechat_login(
                     }
                     // token 只进本地密钥库（axiom.db secrets 表）；扫码用户自动绑定为控制器（cc-connect 同语义）。
                     let secret_state: tauri::State<'_, crate::secrets::SecretState> = app.state();
-                    if let Err(error) =
-                        crate::secrets::save_connect_secret(&secret_state, "connect.weixin.bot-token", &payload.bot_token)
-                    {
+                    if let Err(error) = crate::secrets::save_connect_secret(
+                        &secret_state,
+                        "connect.weixin.bot-token",
+                        &payload.bot_token,
+                    ) {
                         return fail(error);
                     }
                     let user_id = if payload.ilink_user_id.is_empty() {
@@ -202,34 +209,39 @@ pub(crate) async fn run_wechat_login(
                     };
                     let app_for_config = app.clone();
                     let state_for_config = Arc::clone(&state);
-                    let bind_result = replace_config(&app_for_config, &state_for_config, |config| {
-                        let exists = config.bindings.iter().any(|binding| {
-                            binding.platform == ConnectPlatform::Weixin && binding.user_id == user_id
-                        });
-                        if !exists {
-                            config.bindings.push(StoredBinding {
-                                platform: ConnectPlatform::Weixin,
-                                chat_id: user_id.clone(),
-                                chat_type: "p2p".into(),
-                                user_id: user_id.clone(),
-                                user_name: "微信扫码用户".into(),
-                                paired_at: now_ms(),
+                    let bind_result =
+                        replace_config(&app_for_config, &state_for_config, |config| {
+                            let exists = config.bindings.iter().any(|binding| {
+                                binding.platform == ConnectPlatform::Weixin
+                                    && binding.user_id == user_id
                             });
-                        }
-                    });
+                            if !exists {
+                                config.bindings.push(StoredBinding {
+                                    platform: ConnectPlatform::Weixin,
+                                    chat_id: user_id.clone(),
+                                    chat_type: "p2p".into(),
+                                    user_id: user_id.clone(),
+                                    user_name: "微信扫码用户".into(),
+                                    paired_at: now_ms(),
+                                });
+                            }
+                        });
                     if let Err(error) = bind_result {
                         return fail(error);
                     }
                     update_login_session(&state, &login_id, |session| {
                         session.status = WechatLoginStatus::Confirmed;
                     });
-                    let _ = app.emit(CONNECT_EVENT, ConnectEventPayload::Paired {
-                        platform: ConnectPlatform::Weixin,
-                        chat_id: user_id.clone(),
-                        chat_type: "p2p".into(),
-                        user_id,
-                        user_name: "微信扫码用户".into(),
-                    });
+                    let _ = app.emit(
+                        CONNECT_EVENT,
+                        ConnectEventPayload::Paired {
+                            platform: ConnectPlatform::Weixin,
+                            chat_id: user_id.clone(),
+                            chat_type: "p2p".into(),
+                            user_id,
+                            user_name: "微信扫码用户".into(),
+                        },
+                    );
                     return;
                 }
                 _ => {} // wait / 空：继续轮询
@@ -395,11 +407,19 @@ pub(crate) async fn run_weixin(app: AppHandle, state: Arc<Mutex<ConnectInner>>, 
         }
     }
     reset_inbound_watermark(&state, ConnectPlatform::Weixin);
-    set_status(&app, &state, ConnectPlatform::Weixin, ConnectStatusKind::Connected, None);
+    set_status(
+        &app,
+        &state,
+        ConnectPlatform::Weixin,
+        ConnectStatusKind::Connected,
+        None,
+    );
     loop {
         let encoded = serde_json::to_string(&GetUpdatesRequest {
             get_updates_buf: cursor.clone(),
-            base_info: BaseInfo { channel_version: CHANNEL_VERSION.to_string() },
+            base_info: BaseInfo {
+                channel_version: CHANNEL_VERSION.to_string(),
+            },
         })
         .map_err(|error| format!("编码微信长轮询请求失败: {error}"))
         .unwrap_or_default();
@@ -542,7 +562,11 @@ pub(crate) async fn send_reply(
     token: &str,
     text: &str,
 ) -> Result<(), String> {
-    let ReplyContext::Weixin { to_user_id, context_token } = context else {
+    let ReplyContext::Weixin {
+        to_user_id,
+        context_token,
+    } = context
+    else {
         return Err("回复上下文与平台不匹配".into());
     };
     if context_token.is_empty() {
@@ -554,7 +578,9 @@ pub(crate) async fn send_reply(
         let mut chunks = Vec::new();
         let mut current = String::new();
         for line in text.split_inclusive('\n') {
-            if current.chars().count() + line.chars().count() > REPLY_CHUNK_CHARS && !current.is_empty() {
+            if current.chars().count() + line.chars().count() > REPLY_CHUNK_CHARS
+                && !current.is_empty()
+            {
                 chunks.push(std::mem::take(&mut current));
             }
             current.push_str(line);
@@ -578,7 +604,9 @@ pub(crate) async fn send_reply(
                 }],
                 context_token: context_token.clone(),
             },
-            base_info: BaseInfo { channel_version: CHANNEL_VERSION.to_string() },
+            base_info: BaseInfo {
+                channel_version: CHANNEL_VERSION.to_string(),
+            },
         };
         let encoded = serde_json::to_string(&request)
             .map_err(|error| format!("编码微信消息失败: {error}"))?;
@@ -619,7 +647,9 @@ mod tests {
         let rows = encode_qr_rows("https://example.com/login?ticket=abc").unwrap();
         assert!(!rows.is_empty());
         assert!(rows.iter().all(|row| row.len() == rows.len()));
-        assert!(rows.iter().all(|row| row.chars().all(|c| c == '0' || c == '1')));
+        assert!(rows
+            .iter()
+            .all(|row| row.chars().all(|c| c == '0' || c == '1')));
     }
 
     #[test]
@@ -651,10 +681,15 @@ mod tests {
                 client_id: "axiom-01".into(),
                 message_type: 2,
                 message_state: 2,
-                item_list: vec![OutboundItem { item_type: 1, text_item: TextItem { text: "hi".into() } }],
+                item_list: vec![OutboundItem {
+                    item_type: 1,
+                    text_item: TextItem { text: "hi".into() },
+                }],
                 context_token: "ctx".into(),
             },
-            base_info: BaseInfo { channel_version: CHANNEL_VERSION.into() },
+            base_info: BaseInfo {
+                channel_version: CHANNEL_VERSION.into(),
+            },
         };
         let encoded = serde_json::to_value(&request).unwrap();
         assert_eq!(encoded["msg"]["message_type"], 2);

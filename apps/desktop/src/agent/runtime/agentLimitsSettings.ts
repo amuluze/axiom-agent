@@ -1,4 +1,9 @@
 import { DEFAULT_AGENT_LIMITS } from '@/agent/core/types'
+import {
+  DEFAULT_APPROVAL_TIMEOUT_MS,
+  MAX_APPROVAL_TIMEOUT_MS,
+  MIN_APPROVAL_TIMEOUT_MS,
+} from '@/agent/approval/ApprovalCoordinator'
 
 /**
  * 用户可配置的运行时预算子集。
@@ -12,6 +17,8 @@ export interface AgentLimitsSettings {
   maxToolCalls: number
   /** 单次 run 的计费 token 软预算（output + 非缓存 input），触发阈值提醒，不硬停。 */
   maxTotalTokens: number
+  /** 审批卡片等待用户响应的上限（毫秒）；超时自动拒绝，默认 2 分钟。 */
+  approvalTimeoutMs: number
 }
 
 export const DEFAULT_AGENT_LIMITS_SETTINGS: AgentLimitsSettings = {
@@ -19,6 +26,7 @@ export const DEFAULT_AGENT_LIMITS_SETTINGS: AgentLimitsSettings = {
   maxToolCalls: DEFAULT_AGENT_LIMITS.maxToolCalls,
   // DEFAULT_AGENT_LIMITS.maxTotalTokens 类型上是可选的；当前默认恒有值，`??` 仅兜底。
   maxTotalTokens: DEFAULT_AGENT_LIMITS.maxTotalTokens ?? 2_000_000,
+  approvalTimeoutMs: DEFAULT_APPROVAL_TIMEOUT_MS,
 }
 
 export const MAX_TURNS_LIMIT = 128
@@ -58,6 +66,12 @@ export const normalizeAgentLimitsSettings = (value: unknown): AgentLimitsSetting
       DEFAULT_AGENT_LIMITS_SETTINGS.maxTotalTokens,
       MIN_TOTAL_TOKENS_LIMIT,
       MAX_TOTAL_TOKENS_LIMIT,
+    ),
+    approvalTimeoutMs: boundedInteger(
+      candidate.approvalTimeoutMs,
+      DEFAULT_AGENT_LIMITS_SETTINGS.approvalTimeoutMs,
+      MIN_APPROVAL_TIMEOUT_MS,
+      MAX_APPROVAL_TIMEOUT_MS,
     ),
   }
 }

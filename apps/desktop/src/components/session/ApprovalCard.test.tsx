@@ -10,6 +10,10 @@ const mocks = vi.hoisted(() => ({
     presentation: {
       title: string
       description: string
+      titleKey?: string
+      titleParams?: Record<string, string | number>
+      descriptionKey?: string
+      descriptionParams?: Record<string, string | number>
       category?: 'workspace-write' | 'workspace-command'
       path?: string
       preview?: string
@@ -41,6 +45,26 @@ describe('ApprovalCard', () => {
     expect(html).toBe('')
   })
 
+  it('prefers localized presentation keys over the English fallback', () => {
+    mocks.pendingApproval = {
+      toolCallId: 'tc-localized',
+      toolName: 'write',
+      presentation: {
+        title: 'Create src/a.ts?',
+        description: 'Axiom will create a new text file; existing paths are refused.',
+        titleKey: 'app.approval.write.title',
+        titleParams: { path: 'src/a.ts' },
+        descriptionKey: 'app.approval.write.description',
+        category: 'workspace-write',
+        path: 'src/a.ts',
+      },
+    }
+    const html = renderToStaticMarkup(createElement(ApprovalCard))
+    expect(html).toContain('新建 src/a.ts？')
+    expect(html).toContain('Axiom 将创建新的文本文件')
+    expect(html).not.toContain('Create src/a.ts?')
+  })
+
   it('renders the approval card with title, tool tag and scope note', () => {
     mocks.pendingApproval = {
       toolCallId: 'tc-1',
@@ -55,7 +79,7 @@ describe('ApprovalCard', () => {
     expect(html).toContain('需要批准')
     expect(html).toContain('bash')
     expect(html).toContain('Axiom will execute npm test.')
-    expect(html).toContain('本次批准仅对当前命令有效')
+    expect(html).toContain('仅对本次命令有效')
   })
 
   it('renders both 拒绝 and 允许一次 buttons', () => {

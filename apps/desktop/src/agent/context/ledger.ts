@@ -1,7 +1,9 @@
 import type {
   ContextCheckpoint,
   ContextCheckpointFacts,
+  LoadedSkillEntry,
   ReadProgressCursor,
+  SddReviewEntry,
   ToolLedgerEntry,
   ToolLedgerStatus,
 } from './types'
@@ -21,6 +23,10 @@ import { utf8ByteLength } from './budget'
  * 均确定性截断，避免请求膨胀。
  */
 
+/** SDD 阶段账本有界性：Skill 与审查子代理都是闭集小规模，仍设上限防止工具名异常膨胀。 */
+export const MAX_LOADED_SKILL_ENTRIES = 16
+export const MAX_SDD_REVIEW_ENTRIES = 8
+
 export const MAX_READ_PROGRESS_ENTRIES = 32
 export const MAX_TOOL_LEDGER_ENTRIES = 64
 export const MAX_LEDGER_BLOCK_BYTES = 8 * 1024
@@ -35,9 +41,14 @@ const detailsObject = (message: ModelMessage): Record<string, JsonValue> | undef
     : undefined
 
 /** 规范化后的 facts：工作账本字段恒为必选，消费方无需再判可选。 */
-export type NormalizedCheckpointFacts = Omit<ContextCheckpointFacts, 'readProgress' | 'toolLedger'> & {
+export type NormalizedCheckpointFacts = Omit<
+  ContextCheckpointFacts,
+  'readProgress' | 'toolLedger' | 'loadedSkills' | 'sddReviews'
+> & {
   readProgress: Record<string, ReadProgressCursor>
   toolLedger: ToolLedgerEntry[]
+  loadedSkills: LoadedSkillEntry[]
+  sddReviews: SddReviewEntry[]
 }
 
 /**
@@ -48,6 +59,8 @@ export const normalizeFacts = (facts: ContextCheckpointFacts): NormalizedCheckpo
   modifiedFiles: facts.modifiedFiles ?? [],
   readProgress: facts.readProgress ?? {},
   toolLedger: facts.toolLedger ?? [],
+  loadedSkills: facts.loadedSkills ?? [],
+  sddReviews: facts.sddReviews ?? [],
 })
 
 const readCursorFromDetails = (details: Record<string, JsonValue>): ReadProgressCursor | undefined => {
@@ -134,6 +147,56 @@ export const mergeToolLedger = (
   return [...previousKept, ...byId.values()].slice(-MAX_TOOL_LEDGER_ENTRIES)
 }
 
+const SKILL_TOOL_NAME = 'load_skill'
+const REVIEW_TOOL_NAMES = new Set([
+  'explore_subagent',
+  'inspect_subagent',
+  'examine_subagent',
+  'review_subagent',
+])
+
+/**
+ * 合并 SDD 阶段账本：已加载 Skill 与审查结论，均从**工具结果 details** 确定性
+ * 提取，不解析模型自由文本、不采信模型自述的阶段。
+ * - `load_skill` 的 details.name/source → 已加载 Skill（同名后见覆盖并移到末尾，
+ *   与工具账本同口径）；
+ * - `*_subagent` 的 details.verdict → 该审查器的最新结论（pass/fail/unknown）。
+ * `unknown` 必须保留：partial 收口或结论格式漂移时它是真实状态，抹掉会让模型
+ * 误以为该阶段已被审查通过。
+ */
+export const mergeSkillPhases = (
+  previous: LoadedSkillEntry[] | undefined,
+  previousReviews: SddReviewEntry[] | undefined,
+  messages: ModelMessage[],
+): { loadedSkills: LoadedSkillEntry[]; sddReviews: SddReviewEntry[] } => {
+  const skills = new Map<string, LoadedSkillEntry>()
+  for (const entry of previous ?? []) skills.set(entry.name, entry)
+  const reviews = new Map<string, SddReviewEntry>()
+  for (const entry of previousReviews ?? []) reviews.set(entry.reviewer, entry)
+  for (const message of messages) {
+    if (message.role !== 'tool' || message.isError) continue
+    const details = detailsObject(message)
+    if (!details) continue
+    if (message.toolName === SKILL_TOOL_NAME) {
+      const name = details.name
+      const source = details.source
+      if (typeof name !== 'string' || name.length === 0) continue
+      const entry: LoadedSkillEntry = { name, source: typeof source === 'string' ? source : 'unknown' }
+      skills.delete(entry.name)
+      skills.set(entry.name, entry)
+      continue
+    }
+    if (!REVIEW_TOOL_NAMES.has(message.toolName)) continue
+    const verdict = details.verdict
+    if (verdict !== 'pass' && verdict !== 'fail' && verdict !== 'unknown') continue
+    reviews.set(message.toolName, { reviewer: message.toolName, verdict })
+  }
+  return {
+    loadedSkills: [...skills.values()].slice(-MAX_LOADED_SKILL_ENTRIES),
+    sddReviews: [...reviews.values()].slice(-MAX_SDD_REVIEW_ENTRIES),
+  }
+}
+
 const serializeEntry = (entry: ToolLedgerEntry): string =>
   JSON.stringify({ id: entry.id, tool: entry.tool, path: entry.path, status: entry.status })
 
@@ -155,16 +218,46 @@ const truncateBytes = (value: string, maxBytes: number): string => {
 }
 
 /**
+ * SDD 阶段块：已加载 Skill + 审查结论（均由工具结果确定性推导）。
+ * 只陈述事实，**不替模型判定阶段**——阶段是编排判断，把「已加载 plan 但 examine
+ * 未过」这种解释硬编码进账本，等于把模型应该做的判断固化成代码里的猜测。
+ * 未通过的审查单列 note：那是压缩后最容易丢失、也最该被看见的一条。
+ */
+const formatSddPhaseBlock = (
+  loadedSkills: LoadedSkillEntry[],
+  sddReviews: SddReviewEntry[],
+): string => {
+  if (loadedSkills.length === 0 && sddReviews.length === 0) return ''
+  const sections: string[] = []
+  if (loadedSkills.length > 0) {
+    sections.push(`<sdd-skills>\n${loadedSkills.map((entry) => JSON.stringify(entry)).join('\n')}\n</sdd-skills>`)
+  }
+  if (sddReviews.length > 0) {
+    sections.push(`<sdd-reviews>\n${sddReviews.map((entry) => JSON.stringify(entry)).join('\n')}\n</sdd-reviews>`)
+    if (sddReviews.some((entry) => entry.verdict !== 'pass')) {
+      sections.push(
+        '<sdd-phase-note>上述审查存在非 pass 结论（fail 或 unknown）。unknown 表示审查中途收口或'
+          + '结论格式漂移，尚未真正通过——继续推进前应按 Skill 退出条件自查或重新委派，'
+          + '不要把 unknown 当作通过。</sdd-phase-note>',
+      )
+    }
+  }
+  return sections.join('\n')
+}
+
+/**
  * 渲染确定性账本块。空账本返回 ''。硬预算 8 KiB：先丢 toolLedger 最旧条目、
  * 再丢 readProgress 字典序尾部，直至不超过上限。
  */
 export const formatLedgerBlock = (facts: ContextCheckpointFacts): string => {
-  const { readProgress, toolLedger } = normalizeFacts(facts)
+  const { readProgress, toolLedger, loadedSkills, sddReviews } = normalizeFacts(facts)
   const readEntries = Object.entries(readProgress)
   const toolEntries = toolLedger
-  if (readEntries.length === 0 && toolEntries.length === 0) return ''
+  const phaseBlock = formatSddPhaseBlock(loadedSkills, sddReviews)
+  if (readEntries.length === 0 && toolEntries.length === 0 && phaseBlock === '') return ''
   const render = (reads: Array<[string, ReadProgressCursor]>, tools: ToolLedgerEntry[]): string => {
     const sections: string[] = []
+    if (phaseBlock) sections.push(phaseBlock)
     if (reads.length > 0) {
       sections.push(`<read-progress>\n${reads.map(([path, cursor]) => serializeCursor(path, cursor)).join('\n')}\n</read-progress>`)
     }

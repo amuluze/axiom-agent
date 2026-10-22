@@ -10,12 +10,15 @@ import './styles/composer.css'
 import './styles/session.css'
 import './styles/approval.css'
 import './styles/feedback.css'
+import './styles/dialog.css'
 import './styles/settings.css'
 import './styles/design.css'
 import './styles/rail.css'
 import './styles/ssh.css'
 import './styles/terminal.css'
 import './styles/connect.css'
+import './styles/testing.css'
+import './styles/docs.css'
 import { runRuntimeFaultAutomation } from './platform/runtimeFaultAutomation'
 import { setDesignComponentDetailProvider, setDesignComponentInventoryProvider } from '@/agent/design/componentInventoryHost'
 import { axComponentDetailOf, axComponentInventorySummary } from '@/components/design/ax/registry'
@@ -25,6 +28,8 @@ import { WorkspaceRecoveryGate } from './components/WorkspaceRecoveryGate'
 import { initConnectService } from './stores/services/connectService'
 import { initBrowserPanelService } from './stores/services/browserPanelService'
 import { initUpdaterService } from './stores/services/updaterService'
+import { browserCommand } from '@/platform/browserSession'
+import { setDesignBrowserCommandProvider } from '@/agent/design/designBrowserHost'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
@@ -51,6 +56,7 @@ configureScanRenderConcurrency()
 // 视觉对拍（`design_query` mode=compare）的 PNG 解码：设计渲染与实现截图都经
 // 此解到 RGBA 再做像素对拍。
 setPngDecodeProvider(decodePngToRgbaHost)
+setDesignBrowserCommandProvider(browserCommand)
 
 // 连接服务：订阅聊天平台事件并路由到 agentStore（浏览器 dev 模式为空操作）。
 initConnectService()

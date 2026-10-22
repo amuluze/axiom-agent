@@ -11,7 +11,6 @@ import {
   activeToolsForContext,
   normalizeAgentContextTools,
   validateActiveToolNames,
-  validateToolRegistry,
 } from '@/agent/core/deferredTools'
 import {
   runAgentLoop,
@@ -25,8 +24,9 @@ import {
   snapshotAgentMessages,
   snapshotAgentTools,
 } from '@/agent/core/snapshots'
-import { applyStreamingEvent } from '@/agent/core/streamingDraft'
+import { StreamingDraftState } from './streamingDraftState'
 import { impliesMessageNotPersisted } from '@/agent/core/persistenceBarrier'
+import { runtimeToolsSnapshot, sameRuntimeValue } from '@/agent/core/messageValidation'
 import { ContextWindowManager } from '@/agent/context/ContextWindowManager'
 import { createContextPolicy } from '@/agent/context/types'
 import type { ContextBudgetUsage, ContextCheckpoint, ContextPolicy } from '@/agent/context/types'
@@ -35,6 +35,18 @@ import type { AfterCompactionHook, BeforeCompactionHook } from './summaryHooks'
 import { isOverflowAssistant } from '@/agent/context/budget'
 import { MessageQueue } from './messageQueue'
 import { SessionJournal } from './sessionJournal'
+import {
+  isSafeAutoRetryFailure,
+  resolveAutoRetryOptions,
+  waitForRetryDelay,
+} from './autoRetry'
+import { resolveRuntimeUpdate, snapshotRuntimeUpdate } from './sessionRuntimeUpdates'
+import type { AgentRuntimeUpdate } from './sessionRuntimeUpdates'
+import { assembleMutationBatch, type AssembledMutationBatch } from './sessionMutationBatch'
+import { QueueOrderState } from './sessionQueueOrdering'
+export type { AgentRuntimeUpdate } from './sessionRuntimeUpdates'
+import type { AgentAutoRetryOptions, ResolvedAutoRetryOptions } from './autoRetry'
+export type { AgentAutoRetryOptions } from './autoRetry'
 import type { QueueDeliveryMode } from './queueSettings'
 import {
   acceptedQueueMessage,
@@ -42,7 +54,6 @@ import {
   type QueueAcceptance,
   type QueueMoveTarget,
   type QueueMutationResult,
-  type QueuePlacement,
 } from './queueContracts'
 import type { AgentEnvironment } from '@/agent/environment/AgentEnvironment'
 import {
@@ -117,6 +128,10 @@ export type RuntimeFaultCheckpoint =
   | 'agent_end_before_settled'
   | 'intent_fsynced'
   | 'profile_committed'
+  | 'test_step_action_applied'
+  | 'test_api_response_received'
+  | 'test_evidence_written'
+  | 'test_step_awaiting_approval'
 
 export interface AgentSessionOptions {
   sessionId?: string
@@ -182,14 +197,6 @@ export interface AgentSessionOptions {
   onRuntimeCheckpoint?: (checkpoint: RuntimeFaultCheckpoint) => void | Promise<void>
 }
 
-export interface AgentAutoRetryOptions {
-  enabled?: boolean
-  /** Number of automatic retries after the original failed request. */
-  maxRetries?: number
-  baseDelayMs?: number
-  maxDelayMs?: number
-}
-
 type AgentEventListener = (event: AgentEvent, signal: AbortSignal) => void | Promise<void>
 
 export interface QueuedMessageSnapshot {
@@ -223,76 +230,10 @@ export interface AgentAbortSettlement {
   errors: string[]
 }
 
-export interface AgentRuntimeUpdate {
-  systemPrompt?: string
-  model?: ModelRef
-  reasoning?: ModelReasoning | null
-  tools?: AgentTool[]
-  activeToolNames?: string[]
-  transport?: ModelTransport
-}
-
 interface ActiveRun {
   controller: AbortController
   promise: Promise<unknown>
 }
-
-interface ResolvedAutoRetryOptions {
-  enabled: boolean
-  maxRetries: number
-  baseDelayMs: number
-  maxDelayMs: number
-}
-
-const DEFAULT_AUTO_RETRY: ResolvedAutoRetryOptions = {
-  enabled: true,
-  maxRetries: 2,
-  baseDelayMs: 500,
-  maxDelayMs: 30_000,
-}
-
-const resolveAutoRetryOptions = (options?: AgentAutoRetryOptions): ResolvedAutoRetryOptions => {
-  const resolved = { ...DEFAULT_AUTO_RETRY, ...options }
-  if (!Number.isInteger(resolved.maxRetries) || resolved.maxRetries < 0) {
-    throw new Error('autoRetry.maxRetries 必须是非负整数')
-  }
-  if (!Number.isFinite(resolved.baseDelayMs) || resolved.baseDelayMs < 0) {
-    throw new Error('autoRetry.baseDelayMs 必须是非负数')
-  }
-  if (!Number.isFinite(resolved.maxDelayMs) || resolved.maxDelayMs < resolved.baseDelayMs) {
-    throw new Error('autoRetry.maxDelayMs 不能小于 baseDelayMs')
-  }
-  return resolved
-}
-
-const waitForRetryDelay = (delayMs: number, signal: AbortSignal): Promise<void> => {
-  if (signal.aborted) return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
-  if (delayMs === 0) return Promise.resolve()
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      signal.removeEventListener('abort', abort)
-      resolve()
-    }, delayMs)
-    const abort = (): void => {
-      clearTimeout(timeout)
-      signal.removeEventListener('abort', abort)
-      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
-    }
-    signal.addEventListener('abort', abort, { once: true })
-  })
-}
-
-const isSafeAutoRetryFailure = (message: AgentMessage | undefined): message is AssistantMessage =>
-  message?.role === 'assistant'
-  && message.stopReason === 'error'
-  && message.providerError?.retryable === true
-  // rate_limit 不再触发前端二次自动重试：Rust model_http 已对 429 退避重试最多 5 次，
-  // 幸存 429 应直接呈现给用户，避免再向已限流的 provider 追加请求。
-  && message.providerError?.kind !== 'rate_limit'
-  && message.excludeFromModelContext === true
-  && message.toolCalls.length === 0
-  && message.content.length === 0
-  && !message.contentBlocks?.some((block) => block.type === 'thinking')
 
 /** 队列项的图片块投影：共享块对象，只读消费（回填输入框时按需再克隆）。 */
 const queuedMessageImages = (message: AgentMessage): ImageContentBlock[] =>
@@ -340,13 +281,9 @@ export class AgentSession {
   private activeRun?: ActiveRun
   private acceptingQueuedMessages = false
   private readonly drainedQueueKinds = new Map<string, QueuedMessageKind>()
-  private readonly queuedMessageOrder = new Map<string, number>()
-  private nextQueuedMessageOrder = 0
+  private readonly queueOrder = new QueueOrderState()
   private recoveredQueuedMessages: QueuedMessageSnapshot[] = []
-  private currentStreamingMessage?: AgentMessage
-  /** currentStreamingMessage 各 contentBlock 的 contentIndex 升序列表（流式重放阴影）。 */
-  private streamingContentIndexes: number[] = []
-  private activeToolCallIds = new Set<string>()
+  private readonly streaming = new StreamingDraftState()
   private lastErrorMessage?: string
   private lastSavePoint?: AgentSavePoint
   private lastRunResult?: AgentLoopResult
@@ -356,13 +293,7 @@ export class AgentSession {
     source: RuntimeUpdateSource
     journalEntryId?: string
   }> = []
-  private pendingMutationBatch?: {
-    id: string
-    appendedCount: number
-    runtimeCount: number
-    journalEntryIds: string[]
-    update: AgentLoopTurnUpdate
-  }
+  private pendingMutationBatch?: AssembledMutationBatch
   private pendingIdleMutationBatch?: AgentMutationBatch
   private pendingIdleMutationApply?: () => void | Promise<void>
   private idleMutationCommitInFlight = false
@@ -374,8 +305,6 @@ export class AgentSession {
   private autoDrainEnabled = true
   /** 手动放行待注入的队列项 id：命中 steering 队首时放行一次，消费/换条后失效。 */
   private immediateDispatchId?: string
-  /** 中点插值触及 double 精度极限的标记：下一次跨队列移动前先整型重排。 */
-  private orderPrecisionDegraded = false
 
   constructor(options: AgentSessionOptions) {
     this.id = options.sessionId ?? createId('session')
@@ -470,13 +399,11 @@ export class AgentSession {
   }
 
   get streamingMessage(): AgentMessage | undefined {
-    return this.currentStreamingMessage
-      ? snapshotAgentMessage(this.currentStreamingMessage)
-      : undefined
+    return this.streaming.messageSnapshot()
   }
 
   get pendingToolCalls(): ReadonlySet<string> {
-    return new Set(this.activeToolCallIds)
+    return this.streaming.pendingToolCalls()
   }
 
   get errorMessage(): string | undefined {
@@ -508,7 +435,7 @@ export class AgentSession {
   }
 
   get queuedMessages(): QueuedMessageSnapshot[] {
-    return this.sortQueuedMessages([
+    return this.queueOrder.sort([
       ...this.steeringQueue.snapshot().map((message) => this.queueSnapshot(message, 'steering')),
       ...this.followUpQueue.snapshot().map((message) => this.queueSnapshot(message, 'follow-up')),
       ...this.nextTurnQueue.snapshot().map((message) => this.queueSnapshot(message, 'next-turn')),
@@ -516,7 +443,7 @@ export class AgentSession {
   }
 
   get recoveredMessages(): QueuedMessageSnapshot[] {
-    return this.sortQueuedMessages(this.recoveredQueuedMessages.map((message) => ({ ...message })))
+    return this.queueOrder.sort(this.recoveredQueuedMessages.map((message) => ({ ...message })))
   }
 
   get messages(): AgentMessage[] {
@@ -561,7 +488,7 @@ export class AgentSession {
   ): Promise<void> {
     if (this.activeRun) throw new Error('Agent 运行期间请使用 prepareNextTurn 更新 Runtime')
     const previous = snapshotAgentContext(this.context)
-    const { context, activeToolNames } = this.resolveRuntimeUpdate(previous, update)
+    const { context, activeToolNames } = resolveRuntimeUpdate(previous, update)
     const events = this.createRuntimeMutationEvents(previous, context, source)
     const apply = async (): Promise<void> => {
       this.baseActiveToolNames = activeToolNames
@@ -645,9 +572,9 @@ export class AgentSession {
     if (!this.acceptingQueuedMessages) throw new Error('Agent 结算已关闭，不能再调度 Runtime 更新')
     let projected = snapshotAgentContext(this.context)
     for (const pending of this.pendingRuntimeUpdates) {
-      projected = this.resolveRuntimeUpdate(projected, pending.update).context
+      projected = resolveRuntimeUpdate(projected, pending.update).context
     }
-    const resolved = this.resolveRuntimeUpdate(projected, update)
+    const resolved = resolveRuntimeUpdate(projected, update)
     if (this.mutationJournal && (update.tools !== undefined || update.transport !== undefined)) {
       throw new Error('运行中的动态 Tool registry/Transport 更新无法安全序列化到 durable journal')
     }
@@ -669,7 +596,7 @@ export class AgentSession {
     await this.sessionJournal.write(async () => {
       if (journalEntry) await this.mutationJournal?.append(journalEntry)
       this.pendingRuntimeUpdates.push({
-        update: this.snapshotRuntimeUpdate(update),
+        update: snapshotRuntimeUpdate(update),
         source: 'scheduled',
         ...(journalEntry ? { journalEntryId: journalEntry.id } : {}),
       })
@@ -765,9 +692,7 @@ export class AgentSession {
 
     const controller = new AbortController()
     this.acceptingQueuedMessages = true
-    this.currentStreamingMessage = undefined
-    this.streamingContentIndexes = []
-    this.activeToolCallIds = new Set()
+    this.streaming.reset()
     this.lastErrorMessage = undefined
     this.lastRunResult = undefined
     const promise = Promise.resolve()
@@ -797,9 +722,7 @@ export class AgentSession {
         try {
           await this.recoverActiveQueuedMessages()
         } finally {
-          this.currentStreamingMessage = undefined
-          this.streamingContentIndexes = []
-          this.activeToolCallIds = new Set()
+          this.streaming.reset()
           this.activeRun = undefined
         }
       })
@@ -982,7 +905,7 @@ export class AgentSession {
       messageId,
       location.kind,
       edited,
-      this.orderOf(messageId),
+      this.queueOrder.orderOf(messageId),
     )
   }
 
@@ -998,13 +921,13 @@ export class AgentSession {
     if (!location) return { updated: false, reason: 'unknown-message' }
     const current = location.queue.find(messageId)
     if (!current) return { updated: false, reason: 'unknown-message' }
-    let order = this.resolveQueueOrder(messageId, target.placement)
+    let order = this.queueOrder.resolve(messageId, target.placement, this.queuedMessages)
     if (order === undefined) return { updated: false, reason: 'unknown-message' }
-    if (this.orderPrecisionDegraded) {
+    if (this.queueOrder.precisionDegraded) {
       // 中点插值已无法在既有 order 之间表达新位置（double 精度耗尽）：先整型重排
       // 全部队列项腾出空间，再重算目标位置——顺序语义与用户意图保持一致。
       await this.reindexQueueOrders()
-      order = this.resolveQueueOrder(messageId, target.placement)
+      order = this.queueOrder.resolve(messageId, target.placement, this.queuedMessages)
       if (order === undefined) return { updated: false, reason: 'unknown-message' }
     }
     return this.rewriteQueuedMessage(messageId, target.kind, current, order)
@@ -1023,6 +946,7 @@ export class AgentSession {
   /** reindex 内核：必须已在 sessionJournal.write 内调用（write 串行链不可重入）。 */
   private async reindexQueueOrdersLocked(): Promise<void> {
     const ordered = this.queuedMessages.slice()
+    const reindex = this.queueOrder.reindexPlan(ordered)
     const rewrites: Array<{ id: string; kind: QueuedMessageKind; message: AgentMessage }> = []
     for (const snapshot of ordered) {
       const location = this.queuedMessageLocation(snapshot.id)
@@ -1056,7 +980,7 @@ export class AgentSession {
     rewrites.forEach(({ id, message }, index) => {
       const entry = entries[index]
       if (entry) this.queueJournalEntryIds.set(id, entry.id)
-      this.recordQueuedMessage(message, index)
+      this.recordQueuedMessage(message, reindex.get(id))
     })
     // 按新显示序重建各队列数组：drain 顺序（数组头）必须与显示序一致。
     for (const kind of QUEUE_KINDS) {
@@ -1067,7 +991,7 @@ export class AgentSession {
       queue.clear()
       for (const message of queueItems) queue.enqueue(message)
     }
-    this.orderPrecisionDegraded = false
+    this.queueOrder.clearPrecisionDegraded()
   }
 
   /** 提升为引导：移到 steering 队首（下一个 turn 边界注入，不中断当前 turn）。 */
@@ -1147,7 +1071,7 @@ export class AgentSession {
     if (!this.autoDrainEnabled) {
       return []
     }
-    const messages = this.sortQueuedMessages([
+    const messages = this.queueOrder.sort([
       ...this.steeringQueue.snapshot().map((message) => this.queueSnapshot(message, 'steering')),
       ...this.followUpQueue.snapshot().map((message) => this.queueSnapshot(message, 'follow-up')),
     ])
@@ -1221,17 +1145,14 @@ export class AgentSession {
       messages: [],
       activeToolNames: this.baseActiveToolNames,
     })
-    this.currentStreamingMessage = undefined
-    this.streamingContentIndexes = []
-    this.activeToolCallIds = new Set()
+    this.streaming.reset()
     this.lastErrorMessage = undefined
     this.contextWindowManager.reset()
     this.steeringQueue.clear()
     this.followUpQueue.clear()
     this.nextTurnQueue.clear()
     this.drainedQueueKinds.clear()
-    this.queuedMessageOrder.clear()
-    this.nextQueuedMessageOrder = 0
+    this.queueOrder.reset()
     this.recoveredQueuedMessages = []
     this.lastSavePoint = undefined
     this.lastRunResult = undefined
@@ -1242,7 +1163,6 @@ export class AgentSession {
     this.pendingIdleMutationApply = undefined
     this.queueJournalEntryIds.clear()
     this.immediateDispatchId = undefined
-    this.orderPrecisionDegraded = false
     this.sessionJournal.reset()
   }
 
@@ -1510,6 +1430,7 @@ export class AgentSession {
       providerLifecycle: this.providerLifecycle,
       resolveModelAuth: this.resolveModelAuth,
       environment: this.subAgentEnvironment,
+      parentActiveToolNames: activeToolsForContext(this.context).map((tool) => tool.name),
       observation: this.subAgentObservation,
       ...(this.subAgentWorkspacePath ? { workspacePath: this.subAgentWorkspacePath } : {}),
       parentRunLedger: runLedger,
@@ -1547,31 +1468,18 @@ export class AgentSession {
       this.lastErrorMessage = undefined
     } else if (observedEvent.type === 'agent_end') {
       this.acceptingQueuedMessages = false
-      this.currentStreamingMessage = undefined
-      this.streamingContentIndexes = []
+      this.streaming.clearMessage()
       this.lastErrorMessage = observedEvent.errorMessage
     } else if (observedEvent.type === 'message_start') {
-      this.currentStreamingMessage = snapshotAgentMessage(observedEvent.message)
-      this.streamingContentIndexes = []
+      this.streaming.start(observedEvent.message)
     } else if (observedEvent.type === 'message_update') {
-      if (this.currentStreamingMessage?.role === 'assistant') {
-        const replayed = applyStreamingEvent(
-          this.currentStreamingMessage,
-          this.streamingContentIndexes,
-          observedEvent.assistantMessageEvent,
-        )
-        this.currentStreamingMessage = replayed.message
-        this.streamingContentIndexes = replayed.contentIndexes
-      }
+      this.streaming.apply(observedEvent.assistantMessageEvent)
     } else if (observedEvent.type === 'message_end') {
-      this.currentStreamingMessage = undefined
-      this.streamingContentIndexes = []
+      this.streaming.clearMessage()
     } else if (observedEvent.type === 'tool_execution_start') {
-      this.activeToolCallIds = new Set(this.activeToolCallIds).add(observedEvent.toolCallId)
+      this.streaming.beginToolCall(observedEvent.toolCallId)
     } else if (observedEvent.type === 'tool_execution_end') {
-      const pending = new Set(this.activeToolCallIds)
-      pending.delete(observedEvent.toolCallId)
-      this.activeToolCallIds = pending
+      this.streaming.endToolCall(observedEvent.toolCallId)
     } else if (observedEvent.type === 'turn_end' && observedEvent.message.stopReason === 'error') {
       this.lastErrorMessage = observedEvent.message.errorMessage
     }
@@ -1622,12 +1530,12 @@ export class AgentSession {
       // 持久化校验以「Session message 与 queue journal 消费事实不匹配」拒绝，
       // 并连带 save point 边界补偿失败，形成每次重试必败的死循环。
       // 例外：消息已随 journal 回退重新入队（restoredToQueue）时必须保留
-      // queueJournalEntryIds 与 queuedMessageOrder——下一次 drain 要用同一 entry 重新
+      // queueJournalEntryIds 与 queueOrder——下一次 drain 要用同一 entry 重新
       // markConsuming。
       if (completedQueueMessageId && !restoredToQueue) {
         if (consumedJournalEntryId) this.queueJournalEntryIds.delete(completedQueueMessageId)
         this.drainedQueueKinds.delete(completedQueueMessageId)
-        this.queuedMessageOrder.delete(completedQueueMessageId)
+        this.queueOrder.delete(completedQueueMessageId)
       }
     }
   }
@@ -1637,47 +1545,6 @@ export class AgentSession {
     const signal = new AbortController().signal
     for (const listener of this.listeners) {
       await listener(snapshotAgentEvent(observedEvent), signal)
-    }
-  }
-
-  private resolveRuntimeUpdate(
-    current: AgentContext,
-    update: AgentRuntimeUpdate,
-  ): { context: AgentContext; activeToolNames: string[] } {
-    const tools = update.tools ? snapshotAgentTools(update.tools) : current.tools
-    const activeToolNames = update.activeToolNames?.slice()
-      ?? (update.tools ? tools.map((tool) => tool.name) : current.activeToolNames?.slice()
-        ?? tools.map((tool) => tool.name))
-    validateToolRegistry(tools)
-    validateActiveToolNames(activeToolNames, tools)
-    return {
-      context: normalizeAgentContextTools({
-        ...current,
-        systemPrompt: update.systemPrompt ?? current.systemPrompt,
-        model: update.model ? structuredClone(update.model) : current.model,
-        reasoning: update.reasoning === null
-          ? undefined
-          : update.reasoning
-            ? structuredClone(update.reasoning)
-            : current.reasoning,
-        messages: current.messages,
-        tools,
-        activeToolNames,
-      }),
-      activeToolNames,
-    }
-  }
-
-  private snapshotRuntimeUpdate(update: AgentRuntimeUpdate): AgentRuntimeUpdate {
-    return {
-      ...(update.systemPrompt !== undefined ? { systemPrompt: update.systemPrompt } : {}),
-      ...(update.model ? { model: structuredClone(update.model) } : {}),
-      ...(update.reasoning === null
-        ? { reasoning: null }
-        : update.reasoning ? { reasoning: structuredClone(update.reasoning) } : {}),
-      ...(update.tools ? { tools: snapshotAgentTools(update.tools) } : {}),
-      ...(update.activeToolNames ? { activeToolNames: update.activeToolNames.slice() } : {}),
-      ...(update.transport ? { transport: update.transport } : {}),
     }
   }
 
@@ -1693,35 +1560,16 @@ export class AgentSession {
         journalEntryIds: this.pendingMutationBatch.journalEntryIds.slice(),
       }
     }
-    if (this.pendingAppendedMessages.length === 0 && this.pendingRuntimeUpdates.length === 0) {
-      return undefined
-    }
-    const appendMessages = snapshotAgentMessages(
-      this.pendingAppendedMessages.map(({ message }) => message),
-    )
-    const runtimeUpdates = this.pendingRuntimeUpdates.map(({ update, source }) => ({
-      ...this.snapshotRuntimeUpdate(update),
-      source,
-    }))
-    const update: AgentLoopTurnUpdate = {
-      ...(appendMessages.length ? { appendMessages } : {}),
-      ...(runtimeUpdates.length ? { runtimeUpdates } : {}),
-    }
-    const journalEntryIds = [
-      ...this.pendingAppendedMessages.flatMap(({ journalEntryId }) => journalEntryId ? [journalEntryId] : []),
-      ...this.pendingRuntimeUpdates.flatMap(({ journalEntryId }) => journalEntryId ? [journalEntryId] : []),
-    ]
-    this.pendingMutationBatch = {
-      id: journalEntryIds[0] ? `mutation:${journalEntryIds[0]}` : createId('mutation'),
-      appendedCount: appendMessages.length,
-      runtimeCount: runtimeUpdates.length,
-      journalEntryIds,
-      update,
-    }
+    const assembled = assembleMutationBatch({
+      appendedMessages: this.pendingAppendedMessages,
+      runtimeUpdates: this.pendingRuntimeUpdates,
+    })
+    if (!assembled) return undefined
+    this.pendingMutationBatch = assembled
     return {
-      id: this.pendingMutationBatch.id,
-      update: structuredClone(update),
-      journalEntryIds: journalEntryIds.slice(),
+      id: assembled.id,
+      update: structuredClone(assembled.update),
+      journalEntryIds: assembled.journalEntryIds.slice(),
     }
   }
 
@@ -1770,7 +1618,7 @@ export class AgentSession {
         source,
       })
     }
-    if (JSON.stringify(previous.model) !== JSON.stringify(current.model)) {
+    if (!sameRuntimeValue(previous.model, current.model)) {
       events.push({
         type: 'runtime_model_update',
         previous: previous.model,
@@ -1778,7 +1626,7 @@ export class AgentSession {
         source,
       })
     }
-    if (JSON.stringify(previous.reasoning ?? null) !== JSON.stringify(current.reasoning ?? null)) {
+    if (!sameRuntimeValue(previous.reasoning ?? null, current.reasoning ?? null)) {
       events.push({
         type: 'runtime_reasoning_update',
         previous: previous.reasoning ?? null,
@@ -1786,13 +1634,9 @@ export class AgentSession {
         source,
       })
     }
-    const tools = (context: AgentContext) => ({
-      toolNames: context.tools.map((tool) => tool.name),
-      activeToolNames: context.activeToolNames?.slice() ?? context.tools.map((tool) => tool.name),
-    })
-    const previousTools = tools(previous)
-    const currentTools = tools(current)
-    if (JSON.stringify(previousTools) !== JSON.stringify(currentTools)) {
+    const previousTools = runtimeToolsSnapshot(previous)
+    const currentTools = runtimeToolsSnapshot(current)
+    if (!sameRuntimeValue(previousTools, currentTools)) {
       events.push({
         type: 'runtime_tools_update',
         previous: previousTools,
@@ -1926,39 +1770,6 @@ export class AgentSession {
     return undefined
   }
 
-  private orderOf(messageId: string): number {
-    return this.queuedMessageOrder.get(messageId) ?? Number.MAX_SAFE_INTEGER
-  }
-
-  /**
-   * 以「显示序」为坐标系解析目标 order：显示序即三队列按 order 归并的顺序，用户看到的
-   * 就是这个顺序。相邻项之间取中点（首次/末次则取 ±1），因此一次移动只重写一条 entry。
-   */
-  private resolveQueueOrder(messageId: string, placement: QueuePlacement): number | undefined {
-    const others = this.queuedMessages.filter((message) => message.id !== messageId)
-    if (placement.position === 'top') {
-      return others.length === 0 ? this.orderOf(messageId) : this.orderOf(others[0].id) - 1
-    }
-    if (placement.position === 'bottom') {
-      return others.length === 0
-        ? this.orderOf(messageId)
-        : this.orderOf(others[others.length - 1].id) + 1
-    }
-    const anchorIndex = others.findIndex((message) => message.id === placement.anchorId)
-    if (anchorIndex < 0) return undefined
-    const index = placement.position === 'above' ? anchorIndex : anchorIndex + 1
-    const previous = others[index - 1]
-    const next = others[index]
-    if (!previous) return this.orderOf(next.id) - 1
-    if (!next) return this.orderOf(previous.id) + 1
-    const mid = (this.orderOf(previous.id) + this.orderOf(next.id)) / 2
-    // 中点不再严格介于两邻之间 = float 精度耗尽：标记待整型重排（moveQueuedMessage 消费）。
-    if (!(mid > this.orderOf(previous.id) && mid < this.orderOf(next.id))) {
-      this.orderPrecisionDegraded = true
-    }
-    return mid
-  }
-
   /** 重写队列项内容（保留 id 与 createdAt），空文本且无图片时返回 undefined。 */
   private applyQueuedMessageContent(
     message: AgentMessage,
@@ -2041,20 +1852,12 @@ export class AgentSession {
     excludedId: string,
   ): number {
     return queue.snapshot()
-      .filter((message) => message.id !== excludedId && this.orderOf(message.id) < order)
+      .filter((message) => message.id !== excludedId && this.queueOrder.orderOf(message.id) < order)
       .length
   }
 
   private recordQueuedMessage(message: AgentMessage, order?: number): void {
-    const resolvedOrder = order ?? this.nextQueuedMessageOrder
-    this.queuedMessageOrder.set(message.id, resolvedOrder)
-    this.nextQueuedMessageOrder = Math.max(this.nextQueuedMessageOrder, resolvedOrder + 1)
-  }
-
-  private sortQueuedMessages(messages: QueuedMessageSnapshot[]): QueuedMessageSnapshot[] {
-    return messages.sort((left, right) =>
-      (this.queuedMessageOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER)
-      - (this.queuedMessageOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER))
+    this.queueOrder.record(message.id, order)
   }
 
   private async drainQueue(
@@ -2149,7 +1952,7 @@ export class AgentSession {
       for (const message of messages) {
         this.queueJournalEntryIds.delete(message.id)
         this.drainedQueueKinds.delete(message.id)
-        this.queuedMessageOrder.delete(message.id)
+        this.queueOrder.delete(message.id)
       }
     })
   }
@@ -2172,7 +1975,7 @@ export class AgentSession {
     for (const messageId of messageIds) {
       this.queueJournalEntryIds.delete(messageId)
       this.drainedQueueKinds.delete(messageId)
-      this.queuedMessageOrder.delete(messageId)
+      this.queueOrder.delete(messageId)
     }
   }
 
@@ -2219,7 +2022,7 @@ export class AgentSession {
           ? { activeToolNames: entry.update.activeToolNames.slice() }
           : {}),
       }
-      projected = this.resolveRuntimeUpdate(projected, update).context
+      projected = resolveRuntimeUpdate(projected, update).context
       this.pendingRuntimeUpdates.push({ update, source: 'scheduled', journalEntryId: entry.id })
     }
   }

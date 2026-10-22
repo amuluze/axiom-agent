@@ -1,7 +1,7 @@
+use crate::runtime_manifest::validate_identifier;
 use serde_json::Value;
 use sqlx::{Row, SqliteConnection};
 use std::collections::HashSet;
-use crate::runtime_manifest::validate_identifier;
 
 use super::*;
 
@@ -210,34 +210,34 @@ async fn create_branch_locked(
         }
     }
 
-	    sqlx::query(
-	        "INSERT INTO agent_sessions
+    sqlx::query(
+        "INSERT INTO agent_sessions
 	         (id, title, system_prompt, model_provider, model_id, status, created_at, updated_at,
 	          parent_session_id, forked_from_message_id, branch_kind, retried_message_id,
 	          reasoning_json, active_tool_names_json, provider_config_json, runtime_manifest_json,
 	          workspace_path, workspace_name)
 	         VALUES (?, ?, ?, ?, ?, 'creating', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-	    )
-	    .bind(&request.id)
-	    .bind(&request.title)
-	    .bind(&request.system_prompt)
-	    .bind(&request.model_provider)
-	    .bind(&request.model_id)
-	    .bind(request.created_at)
-	    .bind(request.created_at)
-	    .bind(&request.source_session_id)
-	    .bind(&request.through_message_id)
-	    .bind(&request.kind)
-	    .bind(&request.retried_message_id)
-	    .bind(&request.reasoning_json)
-	    .bind(&request.active_tool_names_json)
-	    .bind(&request.provider_config_json)
-	    .bind(&request.runtime_manifest_json)
-	    .bind(&request.workspace_path)
-	    .bind(&request.workspace_name)
-	    .execute(&mut *connection)
-	    .await
-	    .map_err(|error| format!("无法创建 Session 分支：{error}"))?;
+    )
+    .bind(&request.id)
+    .bind(&request.title)
+    .bind(&request.system_prompt)
+    .bind(&request.model_provider)
+    .bind(&request.model_id)
+    .bind(request.created_at)
+    .bind(request.created_at)
+    .bind(&request.source_session_id)
+    .bind(&request.through_message_id)
+    .bind(&request.kind)
+    .bind(&request.retried_message_id)
+    .bind(&request.reasoning_json)
+    .bind(&request.active_tool_names_json)
+    .bind(&request.provider_config_json)
+    .bind(&request.runtime_manifest_json)
+    .bind(&request.workspace_path)
+    .bind(&request.workspace_name)
+    .execute(&mut *connection)
+    .await
+    .map_err(|error| format!("无法创建 Session 分支：{error}"))?;
 
     for (index, message) in request.messages.iter().enumerate() {
         sqlx::query(

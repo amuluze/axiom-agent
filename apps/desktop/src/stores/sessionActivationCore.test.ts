@@ -56,6 +56,7 @@ const baseUsage = (): ContextBudgetUsage => ({
 })
 
 const baseProjection = (): AgentCoreProjection => ({
+  accessMode: 'standard',
   provider: baseProvider(),
   providerProfiles: [],
   providerHasKey: false,

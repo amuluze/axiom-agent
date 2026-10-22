@@ -658,7 +658,7 @@ describe('BrowserPanel', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: '清空 console 输出' }))
     })
-    expect(screen.getByText('暂无输出（从连接该 tab 起累积）')).toBeTruthy()
+    expect(screen.getByText('暂无输出')).toBeTruthy()
   })
 
 
@@ -807,7 +807,7 @@ describe('BrowserPanel', () => {
         at: Date.now(),
       })
     })
-    expect(screen.getByText(/快照已截断/)).toBeTruthy()
+    expect(screen.getByText(/已截断/)).toBeTruthy()
   })
 
   it('closes the console drawer when the page text drawer opens', async () => {

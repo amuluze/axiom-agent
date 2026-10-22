@@ -1,0 +1,19 @@
+feature:
+  id: e2e-app-shell
+  title: 应用壳启动契约
+  summary: WebView 在桌面宿主（真为 Rust，e2e 为 Node 假宿主）下完成启动：
+    运行时信息、Provider 就绪、工作区空态——任一环失败都会让后续旅程失去意义。
+business_rules:
+  - id: CE-E2E-SHELL-001
+    title: 启动路径必须走到 ready（而不是 fallback 或初始化失败分支）
+  - id: CE-E2E-SHELL-002
+    title: 运行时信息来自宿主并写入 html[data-os]
+  - id: CE-E2E-SHELL-003
+    title: 无授权工作区时侧栏给出添加入口而非空白
+groups:
+  - id: boot
+    title: 启动
+    cases: [shell-boots-with-scripted-provider, runtime-info-binds-os]
+  - id: workspace-entry
+    title: 工作区入口
+    cases: [workspace-empty-state]

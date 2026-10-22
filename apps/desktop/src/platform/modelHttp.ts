@@ -7,6 +7,7 @@ import type {
   ModelProbeResult,
 } from '@/agent/transport/modelHttpContract'
 import { isTauriRuntime } from './environment'
+import { publishSendManifest } from './sendManifest'
 
 export type {
   ModelHttpRequest,
@@ -22,6 +23,8 @@ interface ModelStreamPayload {
   chunk?: number[]
   done: boolean
   error?: string
+  retryCount?: number
+  credentialScan?: 'passed' | 'blocked'
 }
 
 class AsyncPayloadQueue {
@@ -65,6 +68,8 @@ export async function* modelHttpByteStream(
 
   const queue = new AsyncPayloadQueue()
   let terminalSeen = false
+  let retryCount = 0
+  let credentialScan: 'pending' | 'passed' | 'blocked' = 'pending'
   let unlisten: UnlistenFn | undefined
   const abort = () => {
     void cancelModelHttp(request.requestId).catch(() => false)
@@ -83,6 +88,8 @@ export async function* modelHttpByteStream(
     })
     signal.addEventListener('abort', abort, { once: true })
 
+    publishSendManifest(request, { retryCount, credentialScan })
+
     void invoke('stream_model_http', { request }).catch((error: unknown) => {
       if (!terminalSeen) {
         queue.push({
@@ -95,6 +102,11 @@ export async function* modelHttpByteStream(
 
     while (!terminalSeen) {
       const payload = await queue.next()
+      if (payload.retryCount !== undefined) retryCount = payload.retryCount
+      if (payload.credentialScan !== undefined) credentialScan = payload.credentialScan
+      if (payload.retryCount !== undefined || payload.credentialScan !== undefined) {
+        publishSendManifest(request, { retryCount, credentialScan })
+      }
       if (payload.error) {
         terminalSeen = true
         if (signal.aborted) throw new DOMException('Aborted', 'AbortError')

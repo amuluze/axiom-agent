@@ -68,7 +68,7 @@ describe('ApprovalCoordinator', () => {
     }))
     expect(listener.mock.calls.at(-1)?.[0]).not.toHaveProperty('input')
     await expect(coordinator.respond('call-1', 'approved')).resolves.toBe(true)
-    await expect(result).resolves.toEqual({ decision: 'approved' })
+    await expect(result).resolves.toEqual({ decision: 'approved', approvalSource: 'interactive' })
     expect(listener).toHaveBeenLastCalledWith(null)
   })
 
@@ -92,12 +92,42 @@ describe('ApprovalCoordinator', () => {
     await expect(coordinator.respond('call-1', 'approved')).resolves.toBe(true)
 
     expect(issueLease).toHaveBeenCalledWith(context)
-    await expect(result).resolves.toEqual({ decision: 'approved', approvalLease: 'native-lease' })
+    await expect(result).resolves.toEqual({
+      decision: 'approved',
+      approvalLease: 'native-lease',
+      approvalSource: 'interactive',
+    })
   })
 
   it('returns false when responding to an unknown toolCallId', async () => {
     const coordinator = new ApprovalCoordinator()
     await expect(coordinator.respond('absent', 'approved')).resolves.toBe(false)
+  })
+
+  // 权限降级按会话撤回：不得连带拒绝其它会话的合法审批。
+  it('cancels only the target session approvals', async () => {
+    const coordinator = new ApprovalCoordinator()
+    const mine = coordinator.request(createContext(new AbortController().signal, { toolCallId: 'call-1' }))
+    const other = coordinator.request(createContext(new AbortController().signal, {
+      sessionId: 'session-2',
+      toolCallId: 'call-2',
+    }))
+
+    expect(coordinator.cancelForSession('session-1', '访问模式已变更')).toBe(1)
+
+    await expect(mine).resolves.toEqual({ decision: 'denied', reason: '访问模式已变更' })
+    await expect(coordinator.respond('call-1', 'approved')).resolves.toBe(false)
+    // 另一会话的卡片仍在，且仍可批准。
+    expect(coordinator.getPendingForSession('session-2')?.toolCallId).toBe('call-2')
+    await expect(coordinator.respond('call-2', 'approved')).resolves.toBe(true)
+    await expect(other).resolves.toEqual({ decision: 'approved', approvalSource: 'interactive' })
+  })
+
+  it('reports zero cancellations for a session without pending approvals', () => {
+    const coordinator = new ApprovalCoordinator()
+    coordinator.request(createContext(new AbortController().signal))
+    expect(coordinator.cancelForSession('session-2', '访问模式已变更')).toBe(0)
+    expect(coordinator.pendingApprovalSessionIds()).toEqual(['session-1'])
   })
 
   it('denies with the supplied reason when cancel() runs', async () => {
@@ -130,13 +160,13 @@ describe('ApprovalCoordinator', () => {
       toolCallId: 'call-old',
     }))
     await coordinator.respond('call-old', 'approved')
-    await expect(first).resolves.toEqual({ decision: 'approved' })
+    await expect(first).resolves.toEqual({ decision: 'approved', approvalSource: 'interactive' })
     expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({
       sessionId: 'session-new',
       toolCallId: 'call-new',
     }))
     await coordinator.respond('call-new', 'approved')
-    await expect(second).resolves.toEqual({ decision: 'approved' })
+    await expect(second).resolves.toEqual({ decision: 'approved', approvalSource: 'interactive' })
     expect(listener).toHaveBeenLastCalledWith(null)
   })
 
@@ -163,12 +193,12 @@ describe('ApprovalCoordinator', () => {
     expect(coordinator.getPendingForSession('session-absent')).toBeNull()
 
     await coordinator.respond('call-a', 'approved')
-    await expect(sessionA).resolves.toEqual({ decision: 'approved' })
+    await expect(sessionA).resolves.toEqual({ decision: 'approved', approvalSource: 'interactive' })
     expect(coordinator.getPendingForSession('session-a')).toBeNull()
     expect(coordinator.getPendingForSession('session-b')).toMatchObject({ toolCallId: 'call-b' })
 
     await coordinator.respond('call-b', 'approved')
-    await expect(sessionB).resolves.toEqual({ decision: 'approved' })
+    await expect(sessionB).resolves.toEqual({ decision: 'approved', approvalSource: 'interactive' })
     expect(coordinator.getPendingForSession('session-b')).toBeNull()
   })
 
@@ -212,7 +242,7 @@ describe('ApprovalCoordinator', () => {
     listener.mockClear()
 
     await coordinator.respond('call-active', 'approved')
-    await expect(active).resolves.toEqual({ decision: 'approved' })
+    await expect(active).resolves.toEqual({ decision: 'approved', approvalSource: 'interactive' })
 
     // 非队首结算也要通知：否则已展示的审批卡片残留已结算的 stale 视图。
     expect(listener).toHaveBeenCalled()
@@ -294,7 +324,11 @@ describe('buildAccessModeBeforeToolCall', () => {
     const coordinator = new ApprovalCoordinator()
     const hook = buildAccessModeBeforeToolCall(coordinator, buildEvaluator('approved', 'lease-x'))
     const result = await hook(createContext(new AbortController().signal))
-    expect(result).toEqual({ decision: 'approved', approvalLease: 'lease-x' })
+    expect(result).toEqual({
+      decision: 'approved',
+      approvalLease: 'lease-x',
+      approvalSource: 'automatic',
+    })
   })
 
   it('forwards the pending decision to the coordinator and resolves on respond', async () => {
@@ -305,7 +339,7 @@ describe('buildAccessModeBeforeToolCall', () => {
     }))
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     await coordinator.respond('call-pending', 'approved')
-    await expect(promise).resolves.toEqual({ decision: 'approved' })
+    await expect(promise).resolves.toEqual({ decision: 'approved', approvalSource: 'interactive' })
   })
 
   it('omits the audit note callback when the evaluator returns without one', async () => {
@@ -317,7 +351,7 @@ describe('buildAccessModeBeforeToolCall', () => {
       (note) => auditNotes.push(note),
     )
     const result = await hook(createContext(new AbortController().signal))
-    expect(result).toEqual({ decision: 'approved' })
+    expect(result).toEqual({ decision: 'approved', approvalSource: 'automatic' })
     expect(auditNotes).toEqual([])
   })
 })
@@ -348,17 +382,19 @@ describe('buildAccessModeBeforeToolCall access-mode matrix', () => {
         ...(category ? { category } : {}),
       },
     }))
+    let result: { decision: 'approved' | 'denied'; approvalLease?: string }
     if (mode === 'standard') {
       await new Promise<void>((resolve) => setTimeout(resolve, 0))
       await coordinator.respond(toolCallId, 'approved')
-    }
-    const result = await promise
-    if (mode === 'standard') {
+      result = await promise
       expect(interactiveLeaseIssuer).toHaveBeenCalledOnce()
       expect(automaticLeaseIssuer).not.toHaveBeenCalled()
     } else {
-      expect(interactiveLeaseIssuer).not.toHaveBeenCalled()
+      // 完全访问：自动租约直接放行,不经协调器卡片
+      result = await promise
       expect(automaticLeaseIssuer).toHaveBeenCalledOnce()
+      expect(interactiveLeaseIssuer).not.toHaveBeenCalled()
+      expect(coordinator.pendingViews()).toEqual([])
     }
     return { result, auditNotes }
   }
@@ -381,27 +417,33 @@ describe('buildAccessModeBeforeToolCall access-mode matrix', () => {
     expect(auditNotes).toEqual([])
   })
 
-  it('no-approval + workspace-write: auto-approves with audit note', async () => {
+  it('no-approval + workspace-write: 自动租约直接放行并留审计备注', async () => {
     const { result, auditNotes } = await runWithMode('no-approval', 'workspace-write')
     expect(result).toMatchObject({ decision: 'approved', approvalLease: 'lease-automatic' })
     expect(auditNotes).toEqual(['免审批放行 write'])
   })
 
-  it('no-approval + workspace-command: auto-approves with audit note', async () => {
+  it('no-approval + workspace-command: 自动租约直接放行并留审计备注', async () => {
     const { result, auditNotes } = await runWithMode('no-approval', 'workspace-command')
     expect(result).toMatchObject({ decision: 'approved', approvalLease: 'lease-automatic' })
     expect(auditNotes).toEqual(['免审批放行 bash'])
   })
 
-  it('evaluator owns the lease-fail fallback and returns pending without an audit note', async () => {
+  it('自动租约被 Rust 拒绝时回落逐次卡片', async () => {
     const coordinator = new ApprovalCoordinator(vi.fn(async () => 'lease-interactive'))
     const auditNotes: string[] = []
+    const fallbackReasons: string[] = []
     const evaluator: AccessModeEvaluator = (context) => evaluateAccessModeToolCall(
       context,
       'no-approval',
       vi.fn(async () => { throw new Error('automatic lease unavailable') }),
     )
-    const hook = buildAccessModeBeforeToolCall(coordinator, evaluator, (note) => auditNotes.push(note))
+    const hook = buildAccessModeBeforeToolCall(
+      coordinator,
+      evaluator,
+      (note) => auditNotes.push(note),
+      (reason) => fallbackReasons.push(reason),
+    )
     const promise = hook(createContext(new AbortController().signal, {
       toolCallId: 'tc-fallback',
       toolName: 'write',
@@ -410,8 +452,28 @@ describe('buildAccessModeBeforeToolCall access-mode matrix', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     await coordinator.respond('tc-fallback', 'approved')
     const result = await promise
-    expect(result).toEqual({ decision: 'approved', approvalLease: 'lease-interactive' })
+    expect(result).toEqual({
+      decision: 'approved',
+      approvalLease: 'lease-interactive',
+      approvalSource: 'interactive',
+    })
     expect(auditNotes).toEqual([])
+    expect(fallbackReasons).toEqual(['automatic lease unavailable'])
+  })
+
+  it.each(['write', 'edit', 'apply_changes', 'restore_trash', 'bash', 'ssh', 'computer', 'browser'])('完全访问先尝试自动租约（Rust 权威裁决）：%s', async (toolName) => {
+    const issue = vi.fn(async () => 'automatic')
+    await expect(evaluateAccessModeToolCall(createContext(new AbortController().signal, { toolName }), 'no-approval', issue)).resolves.toMatchObject({ decision: 'approved', approvalLease: 'automatic' })
+    expect(issue).toHaveBeenCalledOnce()
+  })
+
+  it.each(['standard', 'no-approval'] as const)('只读工具无需租约或审批队列：%s', async (mode) => {
+    const issue = vi.fn(async () => 'unused')
+    const coordinator = new ApprovalCoordinator(issue)
+    const hook = buildAccessModeBeforeToolCall(coordinator, (context) => evaluateAccessModeToolCall(context, mode, issue))
+    await expect(hook(createContext(new AbortController().signal, { toolName: 'read', requiresApproval: false }))).resolves.toEqual({ decision: 'approved' })
+    expect(coordinator.pendingViews()).toEqual([])
+    expect(issue).not.toHaveBeenCalled()
   })
 
   it('auto-denies a pending request when the approval timeout elapses', async () => {
@@ -428,6 +490,32 @@ describe('buildAccessModeBeforeToolCall access-mode matrix', () => {
         reason: '审批等待超时，已自动拒绝',
       })
       expect(listener).toHaveBeenLastCalledWith(null)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('re-reads a function timeout source per request so settings changes apply', async () => {
+    vi.useFakeTimers()
+    try {
+      let timeoutMs = 1_000
+      const coordinator = new ApprovalCoordinator(undefined, () => timeoutMs)
+      const first = coordinator.request(createContext(new AbortController().signal))
+      await vi.advanceTimersByTimeAsync(1_000)
+      await expect(first).resolves.toEqual({
+        decision: 'denied',
+        reason: '审批等待超时，已自动拒绝',
+      })
+
+      timeoutMs = 2_000
+      const second = coordinator.request(createContext(new AbortController().signal))
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(coordinator.pendingViews()).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(1_000)
+      await expect(second).resolves.toEqual({
+        decision: 'denied',
+        reason: '审批等待超时，已自动拒绝',
+      })
     } finally {
       vi.useRealTimers()
     }

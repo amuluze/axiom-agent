@@ -6,12 +6,14 @@ import { acceptedQueueMessage, rejectedQueueMessage } from '@/agent/runtime/queu
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   Composer,
+} from './Composer'
+import {
   deliverQueuedContent,
   isComposerAvailable,
   isComposerHistoryKey,
   isComposerSendKey,
   recentWorkspaceEntries,
-} from './Composer'
+} from './composerModel'
 
 const COMPOSER_HISTORY_KEY = 'axiom.composer.history.v1'
 
@@ -41,8 +43,7 @@ const mocks = vi.hoisted(() => ({
   messageEditRequest: null as { sessionId: string; messageId: string; content: string; images?: Array<{ type: 'image'; source: { type: 'base64'; mediaType: string; data: string } }> } | null,
   setMessageEditRequest: vi.fn(),
   queueSteering: vi.fn(async () => acceptedQueueMessage('queued-1')),
-  queueFollowUp: vi.fn(async () => acceptedQueueMessage('queued-2')),
-  authorizeFile: vi.fn(async () => true),
+  authorizeFile: vi.fn(async () => null as { path: string; name: string; sizeBytes: number; isDirectory: boolean } | null),
   authorizeDirectory: vi.fn(async () => true),
   providerReady: true,
   providerSetupRequired: false,
@@ -81,11 +82,13 @@ vi.mock('@/stores/agentStore', async (importOriginal) => {
     editUserMessage: mocks.editUserMessage,
     activeSessionId: mocks.activeSessionId,
     queueSteering: mocks.queueSteering,
-    queueFollowUp: mocks.queueFollowUp,
     authorizeFile: mocks.authorizeFile,
     authorizeDirectory: mocks.authorizeDirectory,
     contextUsage: mocks.contextUsage,
     contextCheckpoint: mocks.contextCheckpoint,
+    accessMode: mocks.accessMode,
+    accessModeChanging: false,
+    setAccessMode: mocks.setAccessMode,
   } as StoreState)
   // deliverInput 的发送分支经 getState() 复核可用性，mock 必须同形提供。
   const useAgentStore = ((selector: (state: StoreState) => unknown): unknown =>
@@ -104,8 +107,6 @@ vi.mock('@/stores/uiStore', async (importOriginal) => {
     ...original,
     useUiStore: <T,>(selector: (state: UiState) => T): T => selector({
       ...original.useUiStore.getState(),
-      accessMode: mocks.accessMode,
-      setAccessMode: mocks.setAccessMode,
       recentWorkspacePaths: mocks.recentWorkspacePaths,
       messageEditRequest: mocks.messageEditRequest,
       setMessageEditRequest: mocks.setMessageEditRequest,
@@ -114,6 +115,8 @@ vi.mock('@/stores/uiStore', async (importOriginal) => {
 })
 
 beforeEach(() => {
+  mocks.authorizeFile.mockClear()
+  mocks.authorizeFile.mockResolvedValue(null)
   mocks.authorizedWorkspace = { path: '/repo', name: 'repo', gitBranch: 'main' }
   mocks.authorizedWorkspaces = [mocks.authorizedWorkspace]
   mocks.authorizedFiles = []
@@ -125,7 +128,6 @@ beforeEach(() => {
   mocks.activeSessionId = 'session-1'
   mocks.messageEditRequest = null
   mocks.queueSteering.mockClear()
-  mocks.queueFollowUp.mockClear()
   window.localStorage.clear()
   mocks.providerReady = true
   mocks.providerSetupRequired = false
@@ -142,21 +144,68 @@ beforeEach(() => {
 })
 
 describe('Composer', () => {
-  it('renders an empty composer with the standard placeholder on desktop', () => {
+  it('renders an empty composer with the design placeholder', () => {
     const html = renderToStaticMarkup(createElement(Composer))
     expect(html).toContain('composer')
-    expect(html).toContain('给 Axiom 一项任务')
+    expect(html).toContain('向 Axiom 提问，输入 @ 添加文件或目录、/ 使用技能、# 关联会话')
   })
 
-  it('falls back to the new-task placeholder on the new-task variant', () => {
+  it('renders the same design placeholder on the new-task variant', () => {
     const html = renderToStaticMarkup(createElement(Composer, { variant: 'new-task' }))
-    expect(html).toContain('@ 添加文件或目录、/ 使用技能、# 关联会话')
+    expect(html).toContain('向 Axiom 提问，输入 @ 添加文件或目录、/ 使用技能、# 关联会话')
   })
 
-  it('reflects the no-approval access mode in the access-mode label colour', () => {
+  it('renders the full-access mode with the warning data-mode attribute and persistent banner', () => {
     mocks.accessMode = 'no-approval'
     const html = renderToStaticMarkup(createElement(Composer))
     expect(html).toContain('data-mode="no-approval"')
+    expect(html).not.toContain('data-mode="standard"')
+    expect(html).toContain('composer__full-access-banner')
+    expect(html).toContain('完全访问已开启')
+    expect(html).toContain('切回标准模式')
+  })
+
+  it('renders the attach button next to the access picker', () => {
+    const html = renderToStaticMarkup(createElement(Composer))
+    expect(html).toContain('composer__attach-button')
+    expect(html).toContain('添加截图附件')
+  })
+
+  it('hides the attach button together with the access picker (design sidebar)', () => {
+    const html = renderToStaticMarkup(createElement(Composer, { showAccessPicker: false }))
+    expect(html).not.toContain('composer__attach-button')
+  })
+
+  it('appends a reference token when the attach button picks a file', async () => {
+    mocks.authorizeFile.mockResolvedValueOnce({
+      path: '/Users/amu/报告 final.pdf',
+      name: '报告 final.pdf',
+      sizeBytes: 12,
+      isDirectory: false,
+    })
+    render(createElement(Composer))
+    fireEvent.click(screen.getByLabelText('添加截图附件'))
+    await waitFor(() => {
+      const textarea = screen.getByLabelText('发送给 Axiom') as HTMLTextAreaElement
+      // 标签含空白：退回结构化 token，路径编码进 id，模型可按绝对路径读取。
+      expect(textarea.value).toContain('@[报告 final.pdf](/Users/amu/')
+    })
+  })
+
+  it('keeps a separator space before the appended reference token', async () => {
+    mocks.authorizeFile.mockResolvedValueOnce({
+      path: '/tmp/notes.md',
+      name: 'notes.md',
+      sizeBytes: 4,
+      isDirectory: false,
+    })
+    render(createElement(Composer))
+    const textarea = screen.getByLabelText('发送给 Axiom') as HTMLTextAreaElement
+    fireEvent.change(textarea, { target: { value: '帮我看看这份文档' } })
+    fireEvent.click(screen.getByLabelText('添加截图附件'))
+    await waitFor(() => {
+      expect(textarea.value).toBe('帮我看看这份文档  @notes.md  ')
+    })
   })
 
   it('hides the access-mode picker when showAccessPicker is false (design sidebar)', () => {

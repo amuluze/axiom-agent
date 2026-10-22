@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
+  densityIssuesOf,
   extractScanPages,
   scanDesignDocument,
   scanDesignPages,
@@ -29,6 +30,23 @@ const okRender = (width = 800, height = 600, topColorFraction = 0.4): DesignScan
   })
 
 describe('extractScanPages（提取）', () => {
+  it('symbol 实例计入 component 数（展开成原语后复用仍可见）', () => {
+    const doc = {
+      fileName: 'x.ax',
+      version: '1.4',
+      pages: [{ type: 'frame', id: 'p', name: '页', width: 1180, height: 780, children: [{ type: 'frame', id: 'a', children: [] }] }],
+      components: {},
+      variables: {},
+      modeVariables: { light: {}, dark: {} },
+      diagnostics: [],
+      symbolInstanceCounts: { p: 4 },
+    } as unknown as PenDocument
+    expect(extractScanPages(doc).pages[0]?.componentCount).toBe(4)
+    // 无该字段（`.pen` 投影、无 symbol 的稿）保持原口径：只数注册表 component 节点。
+    const withoutSymbols = { ...doc, symbolInstanceCounts: undefined } as unknown as PenDocument
+    expect(extractScanPages(withoutSymbols).pages[0]?.componentCount).toBe(0)
+  })
+
   it('提取页尺寸/名称/节点数，未知节点与缺失 ref 分别记账', () => {
     const source = JSON.stringify({
       version: '2.17',
@@ -104,6 +122,10 @@ describe('scanDesignPages（判定）', () => {
     height: 780,
     nodeCount: 5,
     textNodes: 0,
+    frameCount: 0,
+    partCount: 0,
+    componentCount: 0,
+    iconCount: 0,
     unknownNodes: [],
     refMissingIds: [],
     diagnostics: [],
@@ -149,7 +171,8 @@ describe('scanDesignPages（判定）', () => {
     const report = await scanDesignPages([page({})], [], failing)
     expect(report.pages[0]!.status).toBe('fail')
     expect(report.pages[0]!.render).toBe('fail')
-    expect(report.pages[0]!.issues[0]!.message).toContain('光栅化失败')
+    const renderIssue = report.pages[0]!.issues.find((item) => item.check === 'render')
+    expect(renderIssue?.message).toContain('光栅化失败')
 
     const throwing: DesignScanRenderPage = async () => {
       throw new Error('boom')
@@ -162,6 +185,8 @@ describe('scanDesignPages（判定）', () => {
     const report = await scanDesignPages([page({})], [], undefined)
     expect(report.rendered).toBe(false)
     expect(report.pages[0]!.render).toBe('skipped')
+    // 结构化原因：这是「本环境没验」，不是「验了没事」（不变量 9）。
+    expect(report.pages[0]!.renderReason).toBe('unavailable')
     expect(report.pages[0]!.status).toBe('ok')
   })
 
@@ -170,6 +195,7 @@ describe('scanDesignPages（判定）', () => {
     const axReport = await scanDesignPages(sizeless, [], okRender(), { requireSize: true })
     expect(axReport.pages[0]!.status).toBe('fail')
     expect(axReport.pages[0]!.render).toBe('skipped')
+    expect(axReport.pages[0]!.renderReason).toBe('no-size')
 
     const penReport = await scanDesignPages(sizeless, [], okRender(), { requireSize: false })
     expect(penReport.pages[0]!.status).toBe('warn')
@@ -302,6 +328,10 @@ describe('scanDesignPagesBatch（画布原位扫描引擎）', () => {
     height: 120,
     nodeCount: 2,
     textNodes: 0,
+    frameCount: 0,
+    partCount: 0,
+    componentCount: 0,
+    iconCount: 0,
     unknownNodes: [],
     refMissingIds: [],
     diagnostics: [],
@@ -330,6 +360,7 @@ describe('scanDesignPagesBatch（画布原位扫描引擎）', () => {
     })
     const b = report.pages.find((page) => page.id === 'b')!
     expect(b.render).toBe('skipped')
+    expect(b.renderReason).toBe('interrupted')
     expect(b.status).toBe('warn')
     expect(b.issues.some((issue) => issue.message.includes('渲染检查未完成'))).toBe(true)
   })
@@ -353,5 +384,96 @@ describe('scanDesignPagesBatch（画布原位扫描引擎）', () => {
       { requireSize: true },
     )
     expect(seen).toEqual(['sized'])
+  })
+})
+
+describe('densityIssuesOf（密度检查）', () => {
+  const densePage = (overrides: Partial<DesignScanPageInput> = {}): DesignScanPageInput => ({
+    index: 1,
+    id: 'p',
+    name: '页',
+    width: 800,
+    height: 600,
+    nodeCount: 30,
+    textNodes: 12,
+    frameCount: 6,
+    partCount: 0,
+    componentCount: 0,
+    iconCount: 0,
+    unknownNodes: [],
+    refMissingIds: [],
+    diagnostics: [],
+    ...overrides,
+  })
+
+  it('densitySparse：text 节点 < 8 且 frame ≥ 5 → warn', () => {
+    const issues = densityIssuesOf(densePage({ textNodes: 3, frameCount: 5 }), undefined)
+    const sparse = issues.find((item) => item.check === 'densitySparse')
+    expect(sparse?.level).toBe('warning')
+    expect(sparse?.message).toMatch(/列表\/表格样态未达/)
+  })
+
+  it('densitySparse：text ≥ 8 不报（高密度合规）', () => {
+    const issues = densityIssuesOf(densePage({ textNodes: 10, frameCount: 6 }), undefined)
+    expect(issues.find((item) => item.check === 'densitySparse')).toBeUndefined()
+  })
+
+  it('densityBare：节点少且无三态 → info（建议补 group/state）', () => {
+    const issues = densityIssuesOf(densePage({ nodeCount: 5, textNodes: 1, frameCount: 0 }), undefined)
+    const bare = issues.find((item) => item.check === 'densityBare')
+    expect(bare?.level).toBe('info')
+    expect(bare?.message).toMatch(/三态/)
+  })
+
+  it('densityBare：有 group 标注则不报（key 页面已声明多状态）', () => {
+    const issues = densityIssuesOf(densePage({ nodeCount: 5 }), { group: 'session' })
+    expect(issues.find((item) => item.check === 'densityBare')).toBeUndefined()
+  })
+
+  it('densityUnconsolidated：节点 > 30 且 component 实例 < 2 → info（建议抽 symbol）', () => {
+    const issues = densityIssuesOf(densePage({ nodeCount: 50, textNodes: 12, componentCount: 1 }), undefined)
+    const unconsolidated = issues.find((item) => item.check === 'densityUnconsolidated')
+    expect(unconsolidated?.level).toBe('info')
+    expect(unconsolidated?.message).toMatch(/symbol/)
+  })
+
+  it('densityUnconsolidated：节点 ≤ 30 不报（小页面无需提示）', () => {
+    const issues = densityIssuesOf(densePage({ nodeCount: 25, componentCount: 0 }), undefined)
+    expect(issues.find((item) => item.check === 'densityUnconsolidated')).toBeUndefined()
+  })
+
+  it('sparse + unconsolidated 可共存：list 形态 + 多原语 + 节点足量', () => {
+    // densityBare 与 densityUnconsolidated 互斥：前者要求 nodeCount<10，后者要求 >30。
+    // 单页同时触发两个密度 warn 即可——sparse 看 text/frame 形态，不受节点数限制。
+    const issues = densityIssuesOf(densePage({ nodeCount: 50, textNodes: 2, frameCount: 6, componentCount: 0 }), undefined)
+    const checks = issues.map((item) => item.check).sort()
+    expect(checks).toEqual(['densitySparse', 'densityUnconsolidated'])
+  })
+
+  it('sparse + bare 可共存：list 形态 + 节点稀少 + 无三态（提示原语不足 + 缺三态）', () => {
+    // nodeCount<10 + frameCount>=5 + 无 group/state：sparse 与 bare 同时触发。
+    const issues = densityIssuesOf(densePage({ nodeCount: 8, textNodes: 2, frameCount: 6, componentCount: 0 }), undefined)
+    const checks = issues.map((item) => item.check).sort()
+    expect(checks).toEqual(['densityBare', 'densitySparse'])
+  })
+
+  it('densityUnconsolidated：part 与 component 合计 ≥ 2 不报（实现词汇已承担结构）', () => {
+    const issues = densityIssuesOf(densePage({ nodeCount: 50, textNodes: 12, componentCount: 0, partCount: 3 }), undefined)
+    expect(issues.find((item) => item.check === 'densityUnconsolidated')).toBeUndefined()
+  })
+
+  it('densityUnconsolidated：合计 1 仍报（1 个实例撑不起整页结构）', () => {
+    const issues = densityIssuesOf(densePage({ nodeCount: 50, textNodes: 12, componentCount: 0, partCount: 1 }), undefined)
+    expect(issues.find((item) => item.check === 'densityUnconsolidated')).toBeDefined()
+  })
+
+  it('densitySparse：组件主导页不报（正文在组件内部，结构统计量不到）', () => {
+    const issues = densityIssuesOf(densePage({ nodeCount: 9, textNodes: 2, frameCount: 5, componentCount: 2 }), undefined)
+    expect(issues.find((item) => item.check === 'densitySparse')).toBeUndefined()
+  })
+
+  it('densitySparse：无组件/部件的同类形态仍报（真实问题不被豁免）', () => {
+    const issues = densityIssuesOf(densePage({ nodeCount: 9, textNodes: 2, frameCount: 5 }), undefined)
+    expect(issues.find((item) => item.check === 'densitySparse')).toBeDefined()
   })
 })

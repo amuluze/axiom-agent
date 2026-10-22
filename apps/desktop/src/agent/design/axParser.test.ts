@@ -8,11 +8,12 @@ import { describe, expect, it } from 'vitest'
 import {
   absoluteOriginOf,
   anchorPlacementOf,
+  expandSymbolInstances,
   parseAxDocument,
   projectAxToPenDocument,
   serializeAxDocument,
 } from './axParser'
-import { AX_FORMAT_VERSION } from './axSchema'
+import { AX_FORMAT_VERSION, AX_PAGE_KEYS, AX_SYMBOL_ID_SEP } from './axSchema'
 import type { AxDocument } from './axSchema'
 import type { DesignComponentSummary } from './componentInventoryHost'
 import type { PenNode } from './penParser'
@@ -307,6 +308,28 @@ describe('幂等序列化', () => {
     expect(first.indexOf('"id"')).toBeLessThan(first.indexOf('"kind"'))
     expect(first.indexOf('"children"')).toBeGreaterThan(first.indexOf('"gap"'))
   })
+
+  it('页字段顺序恒等于 AX_PAGE_KEYS（顺序即字节契约，调整序列化实现须同步改这里）', () => {
+    const parsed = parseAxDocument(doc({
+      pages: [{
+        id: 'p1',
+        name: '顺序守卫',
+        layout: 'vertical',
+        gap: 8,
+        padding: [12],
+        group: 'session',
+        state: { run: 'running' },
+        width: 1180,
+        height: 780,
+        background: '$bg-main',
+        tree: [{ id: 'n1', kind: 'text', text: { $mock: 'x' }, wrap: 'nowrap' }],
+      }],
+    }))
+    expect(parsed.error).toBeNull()
+    const page = JSON.parse(serializeAxDocument(parsed.document as AxDocument)).pages[0]
+    // 全部页字段都在（漏字段会让写盘稿丢 layout/gap/padding），且顺序与白名单逐字一致。
+    expect(Object.keys(page)).toEqual([...AX_PAGE_KEYS])
+  })
 })
 
 describe('画布投影（P0：primitive 渲染，component/part 占位）', () => {
@@ -479,7 +502,7 @@ describe('节点 shadow（1.3 外阴影）', () => {
 
   it('合法 shadow 通过校验；1.2 旧稿经单跳迁移加载为当前版本', () => {
     const migrated = parseAxDocument(shadowDoc([shadowNode]))
-    expect(migrated.document?.ax).toBe('1.3')
+    expect(migrated.document?.ax).toBe(AX_FORMAT_VERSION)
     expect(migrated.document?.pages[0]?.tree[0]?.shadow).toEqual({
       color: '$shadow-color', offsetX: 0, offsetY: 4, blur: 12,
     })
@@ -522,6 +545,238 @@ describe('节点 shadow（1.3 外阴影）', () => {
     expect((nodes[0] as PenNode).shadow).toEqual({ color: '$shadow-color', x: 0, y: 4, blur: 12 })
   })
 })
+
+describe('symbols（1.4 文档内局部组件）', () => {
+  /** 两参数表格行 symbol + 一页含两实例的基线稿（ax 1.3 → 迁移到当前版本）。 */
+  const symbolDoc = (overrides: Record<string, unknown> = {}): string => JSON.stringify({
+    ax: '1.3',
+    tokens: { 'text-md': { $type: 'dimension', $value: '13px' } },
+    components: {},
+    symbols: {
+      TableRow: {
+        props: { c1: 'string', c2: 'string' },
+        body: [{
+          id: 'row', kind: 'frame', layout: 'horizontal', gap: 8, children: [
+            { id: 'cell-a', kind: 'text', text: { $param: 'c1' }, wrap: 'nowrap', fontSize: '$text-md' },
+            { id: 'cell-b', kind: 'text', text: { $param: 'c2' }, wrap: 'nowrap', fontSize: '$text-md' },
+          ],
+        }],
+      },
+    },
+    pages: [{
+      id: 'p1', width: 400, height: 300, tree: [
+        { id: 'r1', kind: 'component', name: 'TableRow', props: { c1: '订单 A', c2: '已支付' } },
+        { id: 'r2', kind: 'component', name: 'TableRow', props: { c1: { $mock: '订单 B' }, c2: { $bind: 'rows[1].status' } } },
+      ],
+    }],
+    ...overrides,
+  })
+  const errorsWithPathsOf = (source: string): { level: string; path?: string; message: string }[] =>
+    parseAxDocument(source).diagnostics.filter((item) => item.level === 'error')
+
+  it('合法 symbol 与实例通过校验；1.3 旧稿经单跳迁移加载为当前版本', () => {
+    const result = parseAxDocument(symbolDoc())
+    expect(result.document).not.toBeNull()
+    expect(result.document?.ax).toBe(AX_FORMAT_VERSION)
+    expect(Object.keys(result.document?.symbols ?? {})).toEqual(['TableRow'])
+    expect(errorsWithPathsOf(symbolDoc())).toEqual([])
+  })
+
+  it('def 形状错误：未知键 / body 非数组 / body 空 / props 非字符串映射', () => {
+    expect(errorsWithPathsOf(symbolDoc({ symbols: { Bad: { props: {}, body: [], extra: 1 } } }))
+      .some((item) => item.path === 'symbols.Bad' && item.message.includes('extra'))).toBe(true)
+    expect(errorsWithPathsOf(symbolDoc({ symbols: { Bad: { props: {} } } }))
+      .some((item) => item.path === 'symbols.Bad.body' && item.message.includes('非空'))).toBe(true)
+    expect(errorsWithPathsOf(symbolDoc({ symbols: { Bad: { props: {}, body: {} } } }))
+      .some((item) => item.path === 'symbols.Bad.body')).toBe(true)
+    expect(errorsWithPathsOf(symbolDoc({ symbols: { Bad: { props: { a: 1 }, body: [{ id: 'x', kind: 'rect', width: 1, height: 1 }] } } }))
+      .some((item) => item.path === 'symbols.Bad.props.a')).toBe(true)
+  })
+
+  it('body 内 component / overlay 报错（v1 无嵌套、无锚点语义）', () => {
+    const withComponent = symbolDoc({
+      symbols: { Bad: { props: {}, body: [{ id: 'b1', kind: 'component', name: 'TableRow' }] } },
+    })
+    expect(errorsWithPathsOf(withComponent)
+      .some((item) => item.path === 'symbols.Bad.body[0]' && item.message.includes('不允许 component'))).toBe(true)
+    const withOverlay = symbolDoc({
+      symbols: { Bad: { props: {}, body: [{ id: 'b1', kind: 'overlay', anchor: 'center', children: [{ id: 'b2', kind: 'rect', width: 1, height: 1 }] }] } },
+    })
+    expect(errorsWithPathsOf(withOverlay)
+      .some((item) => item.path === 'symbols.Bad.body[0]' && item.message.includes('不允许 overlay'))).toBe(true)
+  })
+
+  it('参数 ↔ 契约双向核对：引用未声明 / 声明未引用 / 非 string 类型', () => {
+    const undeclared = symbolDoc({
+      symbols: { Bad: { props: {}, body: [{ id: 't1', kind: 'text', text: { $param: 'ghost' }, wrap: 'nowrap' }] } },
+    })
+    expect(errorsWithPathsOf(undeclared)
+      .some((item) => item.path === 'symbols.Bad.body' && item.message.includes('ghost'))).toBe(true)
+    const unused = symbolDoc({
+      symbols: { Bad: { props: { used: 'string', dangling: 'string' }, body: [{ id: 't1', kind: 'text', text: { $param: 'used' }, wrap: 'nowrap' }] } },
+    })
+    expect(errorsWithPathsOf(unused)
+      .some((item) => item.path === 'symbols.Bad.props.dangling' && item.message.includes('未引用'))).toBe(true)
+    const nonString = symbolDoc({
+      symbols: { Bad: { props: { n: 'number' }, body: [{ id: 't1', kind: 'text', text: { $param: 'n' }, wrap: 'nowrap' }] } },
+    })
+    expect(errorsWithPathsOf(nonString)
+      .some((item) => item.path === 'symbols.Bad.props.n' && item.message.includes('string'))).toBe(true)
+  })
+
+  it('页树文案位出现 {$param} 即报错；props 值同样拒绝', () => {
+    const inText = symbolDoc({
+      symbols: {},
+      pages: [{ id: 'p1', tree: [{ id: 't1', kind: 'text', text: { $param: 'x' }, wrap: 'nowrap' }] }],
+    })
+    expect(errorsWithPathsOf(inText)
+      .some((item) => item.path === 'pages[0].tree[0].text' && item.message.includes('symbol body'))).toBe(true)
+    const inProps = symbolDoc({
+      pages: [{ id: 'p1', tree: [{ id: 'r1', kind: 'component', name: 'TableRow', props: { c1: { $param: 'c2' }, c2: 'x' } }] }],
+    })
+    expect(errorsWithPathsOf(inProps)
+      .some((item) => item.path === 'pages[0].tree[0].props.c1' && item.message.includes('props 值'))).toBe(true)
+  })
+
+  it('实例校验：未声明参数 / 缺必填 / 非 string 值 / variant·fixture·slot 拒绝', () => {
+    const undeclaredProp = symbolDoc({
+      pages: [{ id: 'p1', tree: [{ id: 'r1', kind: 'component', name: 'TableRow', props: { c1: 'a', c2: 'b', c3: 'c' } }] }],
+    })
+    expect(errorsWithPathsOf(undeclaredProp)
+      .some((item) => item.path === 'pages[0].tree[0].props.c3' && item.message.includes('没有参数'))).toBe(true)
+    const missingRequired = symbolDoc({
+      pages: [{ id: 'p1', tree: [{ id: 'r1', kind: 'component', name: 'TableRow', props: { c1: 'a' } }] }],
+    })
+    expect(errorsWithPathsOf(missingRequired)
+      .some((item) => item.path === 'pages[0].tree[0].props.c2' && item.message.includes('必填'))).toBe(true)
+    const nonStringValue = symbolDoc({
+      pages: [{ id: 'p1', tree: [{ id: 'r1', kind: 'component', name: 'TableRow', props: { c1: 42, c2: 'b' } }] }],
+    })
+    expect(errorsWithPathsOf(nonStringValue)
+      .some((item) => item.path === 'pages[0].tree[0].props.c1' && item.message.includes('string'))).toBe(true)
+    for (const field of ['variant', 'fixture'] as const) {
+      const bad = symbolDoc({
+        pages: [{ id: 'p1', tree: [{ id: 'r1', kind: 'component', name: 'TableRow', props: { c1: 'a', c2: 'b' }, [field]: 'x' }] }],
+      })
+      expect(errorsWithPathsOf(bad)
+        .some((item) => item.path === `pages[0].tree[0].${field}`)).toBe(true)
+    }
+    const withSlot = symbolDoc({
+      pages: [{ id: 'p1', tree: [{ id: 'r1', kind: 'component', name: 'TableRow', props: { c1: 'a', c2: 'b' }, slot: [] }] }],
+    })
+    expect(errorsWithPathsOf(withSlot)
+      .some((item) => item.path === 'pages[0].tree[0].slot' && item.message.includes('slot'))).toBe(true)
+  })
+
+  it('重名核对：与 components 声明 / 注册表冲突即 fail-closed', () => {
+    const withDecl = symbolDoc({
+      components: { TableRow: { props: {} } },
+    })
+    expect(errorsWithPathsOf(withDecl)
+      .some((item) => item.path === 'symbols.TableRow' && item.message.includes('重名'))).toBe(true)
+    const inventory: DesignComponentSummary[] = [{
+      name: 'TableRow', kind: 'presentational', sourcePath: 'components/x.tsx', props: [], fixtures: [],
+    }]
+    const parsed = parseAxDocument(symbolDoc(), { componentInventory: inventory })
+    expect(parsed.document).toBeNull()
+    expect(parsed.diagnostics.some((item) => item.level === 'error' && item.path === 'symbols.TableRow' && item.message.includes('注册表'))).toBe(true)
+  })
+
+  it('body id 核对：symbol 内重复 / 含保留分隔符 / 与页树或其它 symbol 重复', () => {
+    // 兄弟级重复：validateNodes 的同级去重先拦（路径落到第二个节点）。
+    const dupSibling = symbolDoc({
+      symbols: { Bad: { props: {}, body: [
+        { id: 't1', kind: 'rect', width: 1, height: 1 },
+        { id: 't1', kind: 'rect', width: 1, height: 1 },
+      ] } },
+    })
+    expect(errorsWithPathsOf(dupSibling)
+      .some((item) => item.path === 'symbols.Bad.body[1]' && item.message.includes('重复'))).toBe(true)
+    // 跨层重复：checkSymbolBodyIds 的 body 全树核对兜住（同级查不到）。
+    const dupNested = symbolDoc({
+      symbols: { Bad: { props: {}, body: [
+        { id: 'wrap', kind: 'frame', children: [{ id: 't1', kind: 'rect', width: 1, height: 1 }] },
+        { id: 't1', kind: 'rect', width: 1, height: 1 },
+      ] } },
+    })
+    expect(errorsWithPathsOf(dupNested)
+      .some((item) => item.path === 'symbols.Bad.body' && item.message.includes('重复'))).toBe(true)
+    const reserved = symbolDoc({
+      symbols: { Bad: { props: {}, body: [{ id: `x${AX_SYMBOL_ID_SEP}y`, kind: 'rect', width: 1, height: 1 }] } },
+    })
+    expect(errorsWithPathsOf(reserved)
+      .some((item) => item.path === 'symbols.Bad.body' && item.message.includes(AX_SYMBOL_ID_SEP))).toBe(true)
+    const pageCollision = symbolDoc({
+      symbols: { TableRow: { props: { c1: 'string', c2: 'string' }, body: [
+        { id: 'row', kind: 'frame', layout: 'horizontal', children: [
+          { id: 'r1', kind: 'text', text: { $param: 'c1' }, wrap: 'nowrap' },
+          { id: 'cell-b', kind: 'text', text: { $param: 'c2' }, wrap: 'nowrap' },
+        ] },
+      ] } },
+    })
+    expect(errorsWithPathsOf(pageCollision)
+      .some((item) => item.path === 'symbols.TableRow.body' && item.message.includes('页树'))).toBe(true)
+    const crossSymbol = symbolDoc({
+      symbols: {
+        TableRow: { props: { c1: 'string', c2: 'string' }, body: [
+          { id: 'row', kind: 'frame', layout: 'horizontal', children: [
+            { id: 'cell-a', kind: 'text', text: { $param: 'c1' }, wrap: 'nowrap' },
+            { id: 'cell-b', kind: 'text', text: { $param: 'c2' }, wrap: 'nowrap' },
+          ] },
+        ] },
+        Other: { props: {}, body: [{ id: 'cell-a', kind: 'rect', width: 1, height: 1 }] },
+      },
+    })
+    expect(errorsWithPathsOf(crossSymbol)
+      .some((item) => item.path === 'symbols.Other.body' && item.message.includes('TableRow'))).toBe(true)
+  })
+
+  it('幂等序列化：含 symbols 的稿字节等值；无 symbols 的存量稿不落键', () => {
+    const parsed = parseAxDocument(symbolDoc())
+    expect(parsed.document).not.toBeNull()
+    const once = serializeAxDocument(parsed.document!)
+    expect(serializeAxDocument(parseAxDocument(once).document!)).toBe(once)
+    expect(once).toContain('"symbols"')
+    // 键序：props 在 body 之前（diff 友好）。
+    expect(once.indexOf('"props"')).toBeLessThan(once.indexOf('"body"'))
+    const legacy = parseAxDocument(doc())
+    expect(serializeAxDocument(legacy.document!)).not.toContain('"symbols"')
+  })
+
+  it('投影展开：参数替换（字面量/$mock/$bind 直通）、id 派生、多实例不冲突', () => {
+    const parsed = parseAxDocument(symbolDoc())
+    expect(parsed.document).not.toBeNull()
+    const axDoc = parsed.document!
+    const expanded = expandSymbolInstances(axDoc.pages[0]!.tree, axDoc.symbols ?? {})
+    // 两实例 × 各自两个文本节点。
+    expect(expanded).toHaveLength(2)
+    expect(expanded[0]).toMatchObject({ id: `r1${AX_SYMBOL_ID_SEP}row`, kind: 'frame' })
+    const cellsOf = (frameIndex: number) => (expanded[frameIndex]!.children ?? []).map((child) => child.id)
+    expect(cellsOf(0)).toEqual([`r1${AX_SYMBOL_ID_SEP}cell-a`, `r1${AX_SYMBOL_ID_SEP}cell-b`])
+    expect(cellsOf(1)).toEqual([`r2${AX_SYMBOL_ID_SEP}cell-a`, `r2${AX_SYMBOL_ID_SEP}cell-b`])
+    // 字面量与 $mock 解包为字符串；$bind 直通（画布渲染成 {数据源} 占位）。
+    expect((expanded[0]!.children ?? [])[0]).toMatchObject({ text: '订单 A' })
+    expect((expanded[1]!.children ?? [])[0]).toMatchObject({ text: '订单 B' })
+    expect((expanded[1]!.children ?? [])[1]).toMatchObject({ text: { $bind: 'rows[1].status' } })
+    // 投影后的页树只有原语：实例不再以 component 节点出现。
+    const projected = projectAxToPenDocument(axDoc, 'symbol.ax')
+    const page = projected.document.pages[0] as unknown as { children: { type: string; id: string }[] }
+    expect(page.children.map((child) => child.type)).toEqual(['frame', 'frame'])
+    expect(projected.document.pages.every((node) => JSON.stringify(node).includes('"component"') === false)).toBe(true)
+  })
+
+  it('投影展开不共享 def 节点对象（实例间互不影响）', () => {
+    const parsed = parseAxDocument(symbolDoc())
+    const axDoc = parsed.document!
+    const symbols = axDoc.symbols ?? {}
+    const first = expandSymbolInstances(axDoc.pages[0]!.tree.slice(0, 1), symbols)[0]!
+    first.id = 'mutated'
+    const second = expandSymbolInstances(axDoc.pages[0]!.tree.slice(0, 1), symbols)[0]!
+    expect(second.id).not.toBe('mutated')
+    expect(symbols.TableRow?.body[0]?.id).toBe('row')
+  })
+})
+
 
 describe('注册表核对（componentInventory 注入时）', () => {
   /** 与渲染侧注册表同形的摘要桩（fixtureProps 是 presentational 的 props 打底表）。 */
@@ -642,5 +897,124 @@ describe('注册表核对（componentInventory 注入时）', () => {
     ))
     expect(result.document).not.toBeNull()
     expect(result.diagnostics.filter((item) => item.level === 'error')).toHaveLength(0)
+  })
+})
+
+describe('slots 具名插槽契约（1.5）', () => {
+  it('1.4 → 1.5 迁移只改版本号（1.4 稿逐字节合法）', () => {
+    const parsed = parseAxDocument(doc({ ax: '1.4' }))
+    expect(parsed.error).toBeNull()
+    expect(parsed.document?.ax).toBe(AX_FORMAT_VERSION)
+    expect(parsed.diagnostics).toHaveLength(0)
+  })
+
+  it('节点 slot 内容需要 decl.slots 的 default 契约（fail-closed）', () => {
+    // 未声明 slots：解析报错并指向声明路径。
+    const missing = errorsOf(doc({
+      pages: [{
+        id: 'p1', width: 400, height: 300,
+        tree: [{
+          id: 'c1', kind: 'component', name: 'ApprovalCard',
+          slot: [{ id: 's1', kind: 'text', text: '附加说明', wrap: 'nowrap' }],
+        }],
+      }],
+    }))
+    expect(missing.some((message) => message.includes('default') && message.includes('插槽'))).toBe(true)
+    // 声明 default 契约后通过。
+    const ok = parseAxDocument(doc({
+      components: {
+        ApprovalCard: {
+          props: { command: 'string', danger: 'boolean' },
+          slots: { default: { prop: 'children' } },
+        },
+      },
+      pages: [{
+        id: 'p1', width: 400, height: 300,
+        tree: [{
+          id: 'c1', kind: 'component', name: 'ApprovalCard',
+          slot: [{ id: 's1', kind: 'text', text: '附加说明', wrap: 'nowrap' }],
+        }],
+      }],
+    }))
+    expect(ok.error).toBeNull()
+    expect(ok.diagnostics.filter((item) => item.level === 'error')).toHaveLength(0)
+  })
+
+  it('decl.slots 形状校验：非对象 / 缺 prop / prop 非标识符都报错且带路径', () => {
+    const bad = errorsOf(doc({
+      components: { ApprovalCard: { slots: { default: { nope: 'children' } } } },
+    }))
+    expect(bad.some((message) => message.includes('插槽契约') || message.includes('prop'))).toBe(true)
+    const nonIdent = errorsOf(doc({
+      components: { ApprovalCard: { slots: { default: { prop: 'not a prop' } } } },
+    }))
+    expect(nonIdent.some((message) => message.includes('prop'))).toBe(true)
+    const notRecord = errorsOf(doc({
+      components: { ApprovalCard: { slots: ['default'] } },
+    }))
+    expect(notRecord.length).toBeGreaterThan(0)
+  })
+
+  it('显式写 slots 才落键：空 slots 不进序列化产物（幂等不被打破）', () => {
+    const parsed = parseAxDocument(doc({
+      components: { ApprovalCard: { slots: {} } },
+    }))
+    expect(parsed.error).toBeNull()
+    const serialized = serializeAxDocument(parsed.document as AxDocument)
+    expect(serialized).not.toContain('"slots"')
+  })
+
+  it('slots 往返字节稳定（parse → serialize → parse 等值）', () => {
+    const parsed = parseAxDocument(doc({
+      components: {
+        ApprovalCard: {
+          props: { command: 'string', danger: 'boolean' },
+          slots: { default: { prop: 'children' } },
+        },
+      },
+      pages: [{
+        id: 'p1', width: 400, height: 300,
+        tree: [{
+          id: 'c1', kind: 'component', name: 'ApprovalCard',
+          slot: [{ id: 's1', kind: 'text', text: '附加说明', wrap: 'nowrap' }],
+        }],
+      }],
+    }))
+    expect(parsed.error).toBeNull()
+    const first = serializeAxDocument(parsed.document as AxDocument)
+    expect(first).toContain('"slots"')
+    const second = serializeAxDocument(parseAxDocument(first).document as AxDocument)
+    expect(second).toBe(first)
+  })
+
+  it('注册表核对：decl.slots 插槽名不在注册表契约 / 注入 prop 与 props 撞名都报错', () => {
+    const inventory: DesignComponentSummary[] = [
+      {
+        name: 'Panel',
+        kind: 'presentational' as const,
+        sourcePath: 'components/Panel.tsx',
+        props: [{ name: 'title', type: 'string', required: true, description: '标题' }],
+        fixtures: ['default'],
+        fixtureProps: { default: ['title'] },
+        slots: { default: { prop: 'children' } },
+      },
+    ]
+    const source = (decl: Record<string, unknown>): string => JSON.stringify({
+      ax: '1.5',
+      tokens: {},
+      components: { Panel: decl },
+      pages: [{ id: 'p1', width: 400, height: 300, tree: [] }],
+    })
+    // 插槽名不在注册表契约内。
+    const unknownSlot = parseAxDocument(source({ slots: { header: { prop: 'head' } } }), { componentInventory: inventory })
+    expect(unknownSlot.diagnostics.filter((item) => item.level === 'error').map((item) => item.message).join('\n'))
+      .toContain('header')
+    // 注入 prop 与 props 契约撞名。
+    const collision = parseAxDocument(source({ slots: { default: { prop: 'title' } } }), { componentInventory: inventory })
+    expect(collision.diagnostics.filter((item) => item.level === 'error').map((item) => item.message).join('\n'))
+      .toContain('撞名')
+    // 合法契约（children 不在 props 白名单内，目录生成器本就剔除 children）零报错。
+    const ok = parseAxDocument(source({ slots: { default: { prop: 'children' } } }), { componentInventory: inventory })
+    expect(ok.diagnostics.filter((item) => item.level === 'error')).toHaveLength(0)
   })
 })

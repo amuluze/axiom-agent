@@ -167,6 +167,9 @@ describe('workspace tool validation', () => {
       commandLength: command.length,
       cwd: '.',
       timeoutMs: 5_000,
+      vcsCredentials: false,
+      containerControl: false,
+      requestedNetworkPolicy: 'LoopbackOnly',
     })
   })
 })

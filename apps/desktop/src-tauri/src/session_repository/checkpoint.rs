@@ -1,8 +1,8 @@
+use crate::runtime_manifest::validate_identifier;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection};
 use std::collections::HashSet;
-use crate::runtime_manifest::validate_identifier;
 
 use super::*;
 
@@ -60,11 +60,47 @@ pub(super) fn validate_checkpoint_tool_ledger(
         if entry.tool.trim().is_empty() {
             return Err("上下文检查点工具账本工具名无效".to_string());
         }
-        if entry.status != "done" && entry.status != "pending" {
+        if entry.status != "done" && entry.status != "pending" && entry.status != "interrupted" {
             return Err("上下文检查点工具账本状态无效".to_string());
         }
-        if entry.path.as_ref().is_some_and(|path| path.trim().is_empty()) {
+        if entry
+            .path
+            .as_ref()
+            .is_some_and(|path| path.trim().is_empty())
+        {
             return Err("上下文检查点工具账本路径无效".to_string());
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn validate_checkpoint_sdd_facts(facts: &SessionCheckpointFacts) -> Result<(), String> {
+    if facts.loaded_skills.len() > MAX_LOADED_SKILL_ENTRIES {
+        return Err("上下文检查点已加载 Skill 超过上限".to_string());
+    }
+    let mut skill_names = HashSet::new();
+    for entry in &facts.loaded_skills {
+        if entry.name.trim().is_empty()
+            || entry.name.len() > 128
+            || !skill_names.insert(entry.name.as_str())
+            || entry.source.trim().is_empty()
+            || entry.source.len() > 128
+        {
+            return Err("上下文检查点已加载 Skill 事实无效".to_string());
+        }
+    }
+    if facts.sdd_reviews.len() > MAX_SDD_REVIEW_ENTRIES {
+        return Err("上下文检查点 SDD 审查结论超过上限".to_string());
+    }
+    let mut reviewers = HashSet::new();
+    for entry in &facts.sdd_reviews {
+        if !matches!(
+            entry.reviewer.as_str(),
+            "explore_subagent" | "inspect_subagent" | "examine_subagent" | "review_subagent"
+        ) || !reviewers.insert(entry.reviewer.as_str())
+            || !matches!(entry.verdict.as_str(), "pass" | "fail" | "unknown")
+        {
+            return Err("上下文检查点 SDD 审查事实无效".to_string());
         }
     }
     Ok(())
@@ -147,6 +183,7 @@ pub(super) fn validate_session_checkpoint_request(
     }
     validate_checkpoint_read_progress(&request.facts.read_progress, &modified)?;
     validate_checkpoint_tool_ledger(&request.facts.tool_ledger)?;
+    validate_checkpoint_sdd_facts(&request.facts)?;
     let excluded_json = serde_json::to_string(&request.excluded_message_ids)
         .map_err(|error| format!("无法编码上下文检查点排除消息：{error}"))?;
     let facts_json = serde_json::to_string(&request.facts)
@@ -169,7 +206,9 @@ pub(super) fn assistant_tool_call_ids(message: &Value) -> Result<Vec<String>, St
         .collect()
 }
 
-pub(super) fn assert_checkpoint_boundary(messages: &[PersistedCheckpointMessage]) -> Result<(), String> {
+pub(super) fn assert_checkpoint_boundary(
+    messages: &[PersistedCheckpointMessage],
+) -> Result<(), String> {
     let boundary_index = messages
         .len()
         .checked_sub(1)

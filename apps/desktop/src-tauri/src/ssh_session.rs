@@ -266,18 +266,22 @@ fn control_socket_path(data_root: &Path, host_id: &str) -> PathBuf {
 /// - `-tt` 强制远端 PTY（交互终端语义）；
 /// - `ControlMaster=auto` + 无 ControlPersist：首个连接即 master，随终端退出
 ///   一并结束——不断开语义（P2 SFTP 复用同一 ControlPath 多路复用）；
+///   数据根过深导致 ControlPath 超过 unix socket 上限时省略 Control*，退化为
+///   直连（ssh 会直接以 `ControlPath too long` 拒绝连接，复用只是优化）；
 /// - `StrictHostKeyChecking=accept-new`：首连自动信任（TOFU），已登记主机
 ///   密钥变更仍然拒绝——与手工 ssh 的安全语义一致，只省一次交互确认；
 /// - ServerAlive 让断线在秒级体现在进程退出上，驱动状态列回落；
 /// - destination 前的 `--` 终止选项解析：用户名/地址即便混入 `-` 前缀也只
 ///   会被当作目的地（与 validate_host_input 的 leading-dash 拒绝双保险）。
 fn build_ssh_args(control_socket: &Path, host: &SshTarget) -> Vec<String> {
-    let mut args = vec![
-        "-tt".into(),
-        "-o".into(),
-        "ControlMaster=auto".into(),
-        "-o".into(),
-        format!("ControlPath={}", control_socket.display()),
+    let mut args = vec!["-tt".to_string()];
+    if crate::ssh::control_socket_path_supported(control_socket) {
+        args.push("-o".into());
+        args.push("ControlMaster=auto".into());
+        args.push("-o".into());
+        args.push(format!("ControlPath={}", control_socket.display()));
+    }
+    args.extend([
         "-o".into(),
         format!("ConnectTimeout={CONNECT_TIMEOUT_SECONDS}"),
         "-o".into(),
@@ -286,7 +290,7 @@ fn build_ssh_args(control_socket: &Path, host: &SshTarget) -> Vec<String> {
         format!("ServerAliveCountMax={KEEPALIVE_COUNT_MAX}"),
         "-o".into(),
         "StrictHostKeyChecking=accept-new".into(),
-    ];
+    ]);
     // 显式私钥优先于 agent/默认密钥（ssh 对显式 -i 身份先行尝试）；不追加
     // IdentitiesOnly——保留 agent 与默认密钥兜底，行为是默认集合的纯增量。
     if let Some(key_path) = &host.private_key_path {
@@ -815,9 +819,14 @@ fn exec_channel_command(args: &[String]) -> Result<std::process::Command, String
 }
 
 fn build_exec_args(control_socket: &Path, host: &SshTarget, remote_command: &str) -> Vec<String> {
-    vec![
-        "-o".into(),
-        format!("ControlPath={}", control_socket.display()),
+    let mut args: Vec<String> = Vec::new();
+    // ControlPath 超限时省略：无法复用 master 就直连（密码主机因此无法复用
+    // 已认证会话，属已知残余限制——原先超限时两个通道都直接失败）。
+    if crate::ssh::control_socket_path_supported(control_socket) {
+        args.push("-o".into());
+        args.push(format!("ControlPath={}", control_socket.display()));
+    }
+    args.extend([
         "-o".into(),
         format!("ConnectTimeout={CONNECT_TIMEOUT_SECONDS}"),
         "-o".into(),
@@ -829,11 +838,16 @@ fn build_exec_args(control_socket: &Path, host: &SshTarget, remote_command: &str
         "--".into(),
         format!("{}@{}", host.username, host.hostname),
         remote_command.to_string(),
-    ]
+    ]);
+    args
 }
 
 #[derive(Clone, Debug, Serialize)]
-#[serde(tag = "phase", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "phase",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 enum SshUploadEvent {
     Start {
         host_id: String,
@@ -878,7 +892,11 @@ fn validate_remote_name(file_name: &str) -> Result<&str, String> {
 
 /// 上传动作：原生文件选择器（路径来源不可由渲染进程指定，堵住任意本地文件
 /// 读取面）→ 复用 ControlPath 主连接流式写入远端家目录 → 事件回报进度。
-async fn upload_file(app: AppHandle, host_id: String, remote_dir: String) -> Result<SshCommandResponse, String> {
+async fn upload_file(
+    app: AppHandle,
+    host_id: String,
+    remote_dir: String,
+) -> Result<SshCommandResponse, String> {
     use tauri_plugin_dialog::DialogExt;
 
     let host_id = validate_host_id(&host_id)?.to_string();
@@ -928,8 +946,8 @@ async fn upload_file(app: AppHandle, host_id: String, remote_dir: String) -> Res
         return Err("SSH 会话未激活，无法上传".into());
     }
 
-    let metadata = std::fs::metadata(&local_path)
-        .map_err(|error| format!("无法读取文件信息：{error}"))?;
+    let metadata =
+        std::fs::metadata(&local_path).map_err(|error| format!("无法读取文件信息：{error}"))?;
     if !metadata.is_file() {
         return Err("所选路径不是常规文件".into());
     }
@@ -951,7 +969,8 @@ async fn upload_file(app: AppHandle, host_id: String, remote_dir: String) -> Res
     let pid_slot: Arc<StdMutex<Option<u32>>> = Arc::new(StdMutex::new(None));
     state.mark_upload_started(&host_id, Arc::clone(&cancel), Arc::clone(&pid_slot))?;
 
-    let control_socket = control_socket_path(&crate::storage_paths::axiom_data_root(&app)?, &host_id);
+    let control_socket =
+        control_socket_path(&crate::storage_paths::axiom_data_root(&app)?, &host_id);
     let remote_command = remote_upload_command(&name, &remote_dir);
     let args = build_exec_args(&control_socket, &target, &remote_command);
     // 续传材料登记完整远端目标：失败/取消后探测与追加必须打回原位。
@@ -985,19 +1004,18 @@ async fn upload_file(app: AppHandle, host_id: String, remote_dir: String) -> Res
                 }
                 // 失败/取消都保留续传材料（本地路径 + 文件名 + 远端目标）。
                 Ok(UploadOutcome::Cancelled) | Ok(UploadOutcome::Failed(_)) | Err(_) => {
-                    state.mark_upload_interrupted(&host_id, local_path.clone(), &name, &remote_target);
+                    state.mark_upload_interrupted(
+                        &host_id,
+                        local_path.clone(),
+                        &name,
+                        &remote_target,
+                    );
                 }
             }
         }
         let event = match outcome {
-            Ok(UploadOutcome::Completed) => SshUploadEvent::Done {
-                host_id,
-                name,
-            },
-            Ok(UploadOutcome::Cancelled) => SshUploadEvent::Cancelled {
-                host_id,
-                name,
-            },
+            Ok(UploadOutcome::Completed) => SshUploadEvent::Done { host_id, name },
+            Ok(UploadOutcome::Cancelled) => SshUploadEvent::Cancelled { host_id, name },
             // run_upload 把 Failed 归一为 Err 返回，此处不可达。
             Ok(UploadOutcome::Failed(_)) => unreachable!("Failed is normalized to Err"),
             Err(error) => SshUploadEvent::Failed {
@@ -1051,7 +1069,8 @@ async fn resume_upload(app: AppHandle, host_id: String) -> Result<SshCommandResp
     let local_metadata = std::fs::metadata(&interrupted.local_path)
         .map_err(|error| format!("本地文件已不可读：{error}"))?;
 
-    let control_socket = control_socket_path(&crate::storage_paths::axiom_data_root(&app)?, &host_id);
+    let control_socket =
+        control_socket_path(&crate::storage_paths::axiom_data_root(&app)?, &host_id);
     // 探测远端实际字节数。同步子进程等待必须离开 tokio worker（master 半死时
     // 回退直连要等满 ConnectTimeout），与注册表读同一 spawn_blocking 范式。
     let probe_args = build_exec_args(
@@ -1060,14 +1079,16 @@ async fn resume_upload(app: AppHandle, host_id: String) -> Result<SshCommandResp
         &remote_probe_size_command(&remote_target),
     );
     let remote_offset = {
-        let output = tauri::async_runtime::spawn_blocking(move || -> Result<std::process::Output, String> {
-            let mut command = exec_channel_command(&probe_args)?;
-            command
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
-            command.output().map_err(|error| error.to_string())
-        })
+        let output = tauri::async_runtime::spawn_blocking(
+            move || -> Result<std::process::Output, String> {
+                let mut command = exec_channel_command(&probe_args)?;
+                command
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped());
+                command.output().map_err(|error| error.to_string())
+            },
+        )
         .await
         .map_err(|error| format!("SSH 续传任务中断：{error}"))?
         .map_err(|error| format!("探测远端文件大小失败：{error}"))?;
@@ -1088,7 +1109,11 @@ async fn resume_upload(app: AppHandle, host_id: String) -> Result<SshCommandResp
     let pid_slot: Arc<StdMutex<Option<u32>>> = Arc::new(StdMutex::new(None));
     state.mark_upload_started(&host_id, Arc::clone(&cancel), Arc::clone(&pid_slot))?;
 
-    let append_args = build_exec_args(&control_socket, &target, &remote_append_command(&remote_target));
+    let append_args = build_exec_args(
+        &control_socket,
+        &target,
+        &remote_append_command(&remote_target),
+    );
     let _ = app.emit(
         SSH_UPLOAD_EVENT,
         SshUploadEvent::Start {
@@ -1129,19 +1154,18 @@ async fn resume_upload(app: AppHandle, host_id: String) -> Result<SshCommandResp
                 }
                 // 失败/取消都保留续传材料（沿用原上传的远端目标，打回原位）。
                 Ok(UploadOutcome::Cancelled) | Ok(UploadOutcome::Failed(_)) | Err(_) => {
-                    state.mark_upload_interrupted(&host_id, interrupted.local_path.clone(), &name, &interrupted.remote_target);
+                    state.mark_upload_interrupted(
+                        &host_id,
+                        interrupted.local_path.clone(),
+                        &name,
+                        &interrupted.remote_target,
+                    );
                 }
             }
         }
         let event = match outcome {
-            Ok(UploadOutcome::Completed) => SshUploadEvent::Done {
-                host_id,
-                name,
-            },
-            Ok(UploadOutcome::Cancelled) => SshUploadEvent::Cancelled {
-                host_id,
-                name,
-            },
+            Ok(UploadOutcome::Completed) => SshUploadEvent::Done { host_id, name },
+            Ok(UploadOutcome::Cancelled) => SshUploadEvent::Cancelled { host_id, name },
             // run_upload 把 Failed 归一为 Err 返回，此处不可达。
             Ok(UploadOutcome::Failed(_)) => unreachable!("Failed is normalized to Err"),
             Err(error) => SshUploadEvent::Failed {
@@ -1211,8 +1235,8 @@ fn run_upload(context: UploadContext<'_>) -> Result<UploadOutcome, String> {
         .take()
         .ok_or_else(|| "无法接通上传写端".to_string())?;
 
-    let mut file = std::fs::File::open(local_path)
-        .map_err(|error| format!("打开本地文件失败：{error}"))?;
+    let mut file =
+        std::fs::File::open(local_path).map_err(|error| format!("打开本地文件失败：{error}"))?;
     if start_offset > 0 {
         use std::io::Seek;
         file.seek(std::io::SeekFrom::Start(start_offset))
@@ -1236,9 +1260,7 @@ fn run_upload(context: UploadContext<'_>) -> Result<UploadOutcome, String> {
             if cancel.load(Ordering::SeqCst) {
                 break UploadOutcome::Cancelled;
             }
-            break UploadOutcome::Failed(format!(
-                "写入远端失败（连接可能已断开）：{error}"
-            ));
+            break UploadOutcome::Failed(format!("写入远端失败（连接可能已断开）：{error}"));
         }
         transferred += read as u64;
         if transferred - last_reported >= UPLOAD_PROGRESS_INTERVAL_BYTES as u64 {
@@ -1313,7 +1335,11 @@ pub(crate) async fn dispatch_session_action(
     action: SshSessionAction,
 ) -> Result<SshCommandResponse, String> {
     match action {
-        SshSessionAction::Open { host_id, cols, rows } => {
+        SshSessionAction::Open {
+            host_id,
+            cols,
+            rows,
+        } => {
             #[cfg(target_os = "macos")]
             {
                 open_session(app, host_id, cols, rows).await
@@ -1368,7 +1394,11 @@ pub(crate) async fn dispatch_session_action(
                 ))
             }
         }
-        SshSessionAction::Resize { host_id, cols, rows } => {
+        SshSessionAction::Resize {
+            host_id,
+            cols,
+            rows,
+        } => {
             let host_id = validate_host_id(&host_id)?;
             let state = app.state::<SshSessionState>();
             let sessions = state
@@ -1397,9 +1427,10 @@ pub(crate) async fn dispatch_session_action(
             state.signal_close(host_id);
             Ok(SshCommandResponse::Ack)
         }
-        SshSessionAction::Upload { host_id, remote_dir } => {
-            upload_file(app, host_id, remote_dir).await
-        }
+        SshSessionAction::Upload {
+            host_id,
+            remote_dir,
+        } => upload_file(app, host_id, remote_dir).await,
         SshSessionAction::Resume { host_id } => resume_upload(app, host_id).await,
         SshSessionAction::Cancel { host_id } => {
             let host_id = validate_host_id(&host_id)?;
@@ -1409,9 +1440,10 @@ pub(crate) async fn dispatch_session_action(
         }
         SshSessionAction::ListFiles { host_id, path } => list_files(app, host_id, path).await,
         SshSessionAction::MakeDir { host_id, path } => make_dir(app, host_id, path).await,
-        SshSessionAction::UploadFolder { host_id, remote_dir } => {
-            upload_folder(app, host_id, remote_dir).await
-        }
+        SshSessionAction::UploadFolder {
+            host_id,
+            remote_dir,
+        } => upload_folder(app, host_id, remote_dir).await,
         SshSessionAction::List => {
             let state = app.state::<SshSessionState>();
             Ok(SshCommandResponse::Sessions {
@@ -1448,18 +1480,23 @@ async fn list_files(
 
     let control_socket =
         control_socket_path(&crate::storage_paths::axiom_data_root(&app)?, &host_id);
-    let list_args = build_exec_args(&control_socket, &target, &remote_list_command(&path_checked));
-    let output = tauri::async_runtime::spawn_blocking(move || -> Result<std::process::Output, String> {
-        let mut command = exec_channel_command(&list_args)?;
-        command
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        command.output().map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| format!("SSH 列目录任务中断：{error}"))?
-    .map_err(|error| format!("列出远程目录失败：{error}"))?;
+    let list_args = build_exec_args(
+        &control_socket,
+        &target,
+        &remote_list_command(&path_checked),
+    );
+    let output =
+        tauri::async_runtime::spawn_blocking(move || -> Result<std::process::Output, String> {
+            let mut command = exec_channel_command(&list_args)?;
+            command
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            command.output().map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| format!("SSH 列目录任务中断：{error}"))?
+        .map_err(|error| format!("列出远程目录失败：{error}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let detail = stderr.trim();
@@ -1486,10 +1523,7 @@ const MAX_LIST_ENTRIES: usize = 1000;
 /// 条目截断（纯函数）：超出上限保留前 N 条并置 truncated。
 fn cap_dir_entries(entries: Vec<RemoteDirEntry>) -> (Vec<RemoteDirEntry>, bool) {
     if entries.len() > MAX_LIST_ENTRIES {
-        (
-            entries.into_iter().take(MAX_LIST_ENTRIES).collect(),
-            true,
-        )
+        (entries.into_iter().take(MAX_LIST_ENTRIES).collect(), true)
     } else {
         (entries, false)
     }
@@ -1517,18 +1551,23 @@ async fn make_dir(
 
     let control_socket =
         control_socket_path(&crate::storage_paths::axiom_data_root(&app)?, &host_id);
-    let mkdir_args = build_exec_args(&control_socket, &target, &remote_mkdir_command(&path_checked));
-    let output = tauri::async_runtime::spawn_blocking(move || -> Result<std::process::Output, String> {
-        let mut command = exec_channel_command(&mkdir_args)?;
-        command
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        command.output().map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| format!("SSH 建目录任务中断：{error}"))?
-    .map_err(|error| format!("创建远程目录失败：{error}"))?;
+    let mkdir_args = build_exec_args(
+        &control_socket,
+        &target,
+        &remote_mkdir_command(&path_checked),
+    );
+    let output =
+        tauri::async_runtime::spawn_blocking(move || -> Result<std::process::Output, String> {
+            let mut command = exec_channel_command(&mkdir_args)?;
+            command
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            command.output().map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| format!("SSH 建目录任务中断：{error}"))?
+        .map_err(|error| format!("创建远程目录失败：{error}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let detail = stderr.trim();
@@ -1572,7 +1611,8 @@ fn collect_folder_entries(
     dirs: &mut Vec<String>,
     files: &mut Vec<(String, std::path::PathBuf, u64)>,
 ) -> Result<(), String> {
-    let reader = std::fs::read_dir(current).map_err(|error| format!("读取本地目录失败：{error}"))?;
+    let reader =
+        std::fs::read_dir(current).map_err(|error| format!("读取本地目录失败：{error}"))?;
     for entry in reader {
         let entry = entry.map_err(|error| format!("读取本地目录条目失败：{error}"))?;
         let path = entry.path();
@@ -1581,7 +1621,9 @@ fn collect_folder_entries(
             .map_err(|_| "路径规范化失败".to_string())?
             .to_string_lossy()
             .replace(std::path::MAIN_SEPARATOR, "/");
-        let file_type = entry.file_type().map_err(|error| format!("读取条目类型失败：{error}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("读取条目类型失败：{error}"))?;
         if file_type.is_dir() {
             dirs.push(rel.clone());
             collect_folder_entries(root, &path, dirs, files)?;
@@ -1956,6 +1998,16 @@ mod tests {
         assert!(args.contains(&"-p".to_string()));
         let index = args.iter().position(|arg| arg == "-p").unwrap();
         assert_eq!(args[index + 1], "2222");
+
+        // 数据根过深导致 ControlPath 超过 unix socket 上限时退化为直连。
+        let long_socket = PathBuf::from(format!(
+            "/tmp/{}/cm-0123456789abcdef.sock",
+            "segment".repeat(16)
+        ));
+        let long_joined = build_ssh_args(&long_socket, &target).join(" ");
+        assert!(!long_joined.contains("ControlMaster="), "{long_joined}");
+        assert!(!long_joined.contains("ControlPath="), "{long_joined}");
+        assert!(long_joined.contains("ConnectTimeout=10"), "{long_joined}");
         // `--` 紧邻登录目标之前：终止选项解析，user@host 即便携带 `-` 前缀也
         // 只会被当作目的地。
         let last = args.len() - 1;
@@ -2081,7 +2133,10 @@ mod tests {
         );
         assert!(!sub_list.contains("cd -- '"), "~ 前缀不得整段引号包裹");
         let abs_list = remote_list_command("/var/log");
-        assert!(abs_list.contains("cd -- '"), "绝对路径照旧整段引号：{abs_list}");
+        assert!(
+            abs_list.contains("cd -- '"),
+            "绝对路径照旧整段引号：{abs_list}"
+        );
         assert_eq!(remote_mkdir_command("~"), "mkdir -p -- ~");
         assert_eq!(remote_mkdir_command("~/a b"), "mkdir -p -- ~/'a b'");
         assert_eq!(remote_mkdir_command("/tmp/x"), "mkdir -p -- '/tmp/x'");
@@ -2149,10 +2204,7 @@ mod tests {
             // stat 失败不应静默丢字段（GNU/BSD 至少一路有值）。
             for name in ["a file.txt", "中文名.md", "subdir"] {
                 assert!(!by_name(name).perms.is_empty(), "{name} perms 为空");
-                assert!(
-                    !by_name(name).modified_at.is_empty(),
-                    "{name} mtime 为空"
-                );
+                assert!(!by_name(name).modified_at.is_empty(), "{name} mtime 为空");
             }
         }
 
@@ -2192,7 +2244,8 @@ mod tests {
 
         // 不存在的路径：非零退出且 stderr 带真实原因（不再被 2>/dev/null 吞掉）。
         let missing = dir.join("does-not-exist");
-        let (ok, _, stderr) = run_login_shell("sh", &remote_list_command(&missing.to_string_lossy()));
+        let (ok, _, stderr) =
+            run_login_shell("sh", &remote_list_command(&missing.to_string_lossy()));
         assert!(!ok);
         assert!(stderr.contains("cd"), "stderr 应包含 cd 失败原因：{stderr}");
 
@@ -2274,6 +2327,19 @@ mod tests {
             .unwrap();
         assert_eq!(args[destination_index - 1], "--");
         assert_eq!(args.last().unwrap(), "cat > ~/'a.bin'");
+
+        // 超限 ControlPath 退化为直连：省略 ControlPath，其余语义不变。
+        let long_socket = PathBuf::from(format!(
+            "/tmp/{}/cm-0123456789abcdef.sock",
+            "segment".repeat(16)
+        ));
+        let long_joined = build_exec_args(&long_socket, &target, "cat > ~/'a.bin'").join(" ");
+        assert!(!long_joined.contains("ControlPath="), "{long_joined}");
+        assert!(long_joined.contains("ConnectTimeout=10"), "{long_joined}");
+        assert!(
+            long_joined.contains("deploy@server.example.com"),
+            "{long_joined}"
+        );
     }
 
     #[test]
@@ -2293,18 +2359,12 @@ mod tests {
     fn quotes_append_and_probe_commands() {
         // 输入是登记的完整远端目标：`~` 前缀展开、其余整段转义——续传探测与
         // 追加必须打回原位，裸文件名会把非 `~` 目标注销到 `~` 根。
-        assert_eq!(
-            remote_probe_size_command("~/a.bin"),
-            "wc -c < ~/'a.bin'"
-        );
+        assert_eq!(remote_probe_size_command("~/a.bin"), "wc -c < ~/'a.bin'");
         assert_eq!(
             remote_append_command("~/logs/a.bin"),
             "cat >> ~/'logs/a.bin'"
         );
-        assert_eq!(
-            remote_append_command("~/it's"),
-            "cat >> ~/'it'\\''s'"
-        );
+        assert_eq!(remote_append_command("~/it's"), "cat >> ~/'it'\\''s'");
         assert_eq!(
             remote_append_command("/var/data/a.bin"),
             "cat >> '/var/data/a.bin'"
@@ -2318,7 +2378,9 @@ mod tests {
         let directory = temporary_directory();
         // write_askpass_script 会创建 <dir>/ssh 子目录并加固为 0700。
         let script = write_askpass_script(&directory, "0123456789abcdef").unwrap();
-        assert!(script.to_string_lossy().contains(".askpass-0123456789abcdef.sh"));
+        assert!(script
+            .to_string_lossy()
+            .contains(".askpass-0123456789abcdef.sh"));
         let mode = std::fs::metadata(&script).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700);
         let body = std::fs::read_to_string(&script).unwrap();
@@ -2403,15 +2465,12 @@ mod tests {
         let mut dirs: Vec<String> = Vec::new();
         let mut files: Vec<(String, std::path::PathBuf, u64)> = Vec::new();
         collect_folder_entries(&root, &root, &mut dirs, &mut files).unwrap();
-        let folder = root
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
+        let folder = root.file_name().unwrap().to_string_lossy().into_owned();
         scope_folder_entries(&folder, &mut dirs, &mut files);
 
         assert!(
-            dirs.iter().any(|rel| rel.as_str() == format!("{folder}/src"))
+            dirs.iter()
+                .any(|rel| rel.as_str() == format!("{folder}/src"))
                 && dirs
                     .iter()
                     .any(|rel| rel.as_str() == format!("{folder}/src/deep"))
@@ -2442,8 +2501,7 @@ mod tests {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
-                    .unwrap();
+                std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
         }
         program

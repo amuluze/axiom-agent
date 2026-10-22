@@ -1,3 +1,4 @@
+import { toolApprovalScope } from '@/agent/core/approvalScope'
 import type { AgentTool, JsonValue } from '@/agent/core/types'
 import type { AgentEnvironment } from '@/agent/environment/AgentEnvironment'
 import { desktopAgentEnvironment } from '@/agent/environment/agentEnvironmentHost'
@@ -92,12 +93,17 @@ export const createEditTool = (environment: AgentEnvironment): AgentTool => ({
   label: 'edit',
   promptSnippet: '对一个工作区文件执行一次或多次精确的 oldText → newText 替换。',
   promptGuidelines: [
+    '工作区授权不能解除凭据或 Axiom 数据保护；隐私目录只开放经原生确认的项目子目录，拒绝后不要通过改名或其他工具绕过。',
+    '路径默认工作区相对；完全访问模式下可用绝对路径（含工作区外），凭据与 Axiom 数据目录在任何模式下都不可写。',
     '每条 edits[].oldText 必须在文件中精确匹配一次（模糊匹配可容忍智能引号、连字符和空白差异），并尽量短小同时保持唯一。',
     '修改同一文件的多个不相邻位置时，在一次调用里传入多条互不重叠的 edit；重叠的 edit 会被拒绝。',
   ],
   // v7：结果 details 新增 diffAdded/diffRemoved/diffPreview——会话 UI 可展开查看
   // 改动 diff；schema 不变，仅输出语义增强（details 不回灌模型）。
-  runtimeVersion: '7',
+  // v11：完全访问档真正兑现 schema 承诺——写通道消费审批租约 tier，工作区外
+  // 绝对路径在 Unrestricted 租约下可用（此前仅 apply_changes/restore_trash 生效，
+  // edit 恒在 Rust 侧被拒）。schema 与保护路径判定不变。
+  runtimeVersion: '12',
   recoveryPolicy: 'idempotent',
   prepareArguments: prepareEditArguments,
   idempotencyKey: async (input) => {
@@ -120,7 +126,7 @@ export const createEditTool = (environment: AgentEnvironment): AgentTool => ({
     properties: {
       path: {
         type: 'string',
-        description: 'Workspace-relative path of the file to edit.',
+        description: 'Path of the file to edit. Workspace-relative by default; absolute paths are accepted in full-access mode (protected credential and Axiom data paths stay refused).',
       },
       edits: {
         type: 'array',
@@ -152,7 +158,7 @@ export const createEditTool = (environment: AgentEnvironment): AgentTool => ({
       return { ok: false, error: 'Arguments must be an object with only path and edits.' }
     }
     if (typeof input.path !== 'string' || !isMutablePath(input.path)) {
-      return { ok: false, error: 'path must be a non-empty workspace-relative path without "..", "\\", or ".git"/".axiom" segments.' }
+      return { ok: false, error: 'path must be a non-empty path without ".." or "\\" segments; workspace-relative by default, absolute allowed in full-access mode.' }
     }
     if (!Array.isArray(input.edits) || input.edits.length === 0) {
       return { ok: false, error: 'edits must be a non-empty array of { oldText, newText } objects.' }
@@ -184,7 +190,10 @@ export const createEditTool = (environment: AgentEnvironment): AgentTool => ({
     return {
       category: 'workspace-write',
       title: edits.length > 1 ? `Edit ${path} (${edits.length} replacements)?` : `Edit ${path}?`,
+      titleKey: 'app.approval.edit.title',
+      titleParams: { path, count: edits.length },
       description: 'Axiom applies the replacements only when every oldText matches the file exactly once.',
+      descriptionKey: 'app.approval.edit.description',
       path,
       preview,
     }
@@ -203,7 +212,7 @@ export const createEditTool = (environment: AgentEnvironment): AgentTool => ({
     if (!isJsonObject(input)) throw new Error('Invalid edit arguments.')
     if (context.signal.aborted) throw new DOMException('Aborted', 'AbortError')
     const { path, edits } = asEditInput(input)
-    const result = await environment.workspace.editTextFile(path, edits, context.approvalLease)
+    const result = await environment.workspace.editTextFile(path, edits, context.approvalLease, toolApprovalScope(context))
     // Rust 已成功落盘：abort 信号只在编辑完成后到达时，不把已生效的编辑判为失败
     // （对齐 applyChangesTool/restoreTrashTool 的 completedAfterAbort 语义）。
     const completedAfterAbort = context.signal.aborted

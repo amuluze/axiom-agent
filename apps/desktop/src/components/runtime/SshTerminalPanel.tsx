@@ -651,14 +651,13 @@ export const SshTerminalPanel = () => {
       {/* SFTP 文件浏览器：从终端底部向上弹出的面板（对齐设计稿「Axiom — SSH」waUDZ）。
           高度经顶部把手拖拽/键盘调整，偏好经 uiStore 持久化。 */}
       {filePanelOpen && activeHostId && (
-        <div
+        <section
           className="sshview__sftp"
           aria-label={t('app.sshView.terminal.sftp.aria')}
           style={{ height: sftpPanelHeight }}
         >
-          <div
+          <hr
             className="sshview__sftp-resizer"
-            role="separator"
             aria-orientation="horizontal"
             aria-label={t('app.sshView.terminal.sftp.resizerAria')}
             aria-valuenow={Math.round(sftpPanelHeight)}
@@ -725,10 +724,10 @@ export const SshTerminalPanel = () => {
 
           {mkdirInput && (
             <div className="sshview__sftp-mkdir">
-              <input
+              {/* biome-ignore lint/a11y/noAutofocus: 用户刚打开新建目录输入 */}
+              <input autoFocus
                 value={mkdirName}
                 placeholder={t('app.sshView.terminal.sftp.mkdirPlaceholder')}
-                autoFocus
                 onChange={(event) => setMkdirName(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') void submitMkdir()
@@ -833,7 +832,7 @@ export const SshTerminalPanel = () => {
               </>
             )}
           </div>
-        </div>
+        </section>
       )}
       {manageOpen && (
         <div className="sshpanel__manage">

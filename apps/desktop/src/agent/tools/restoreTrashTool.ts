@@ -1,3 +1,4 @@
+import { toolApprovalScope } from '@/agent/core/approvalScope'
 import type { AgentTool, JsonValue } from '@/agent/core/types'
 import type { AgentEnvironment } from '@/agent/environment/AgentEnvironment'
 import { desktopAgentEnvironment } from '@/agent/environment/agentEnvironmentHost'
@@ -17,9 +18,11 @@ export const createRestoreTrashTool = (environment: AgentEnvironment): AgentTool
   label: 'restore_trash',
   promptSnippet: '从可恢复的回收批次中还原路径。',
   promptGuidelines: [
+    '工作区授权不能解除凭据或 Axiom 数据保护；隐私目录只开放经原生确认的项目子目录，拒绝后不要通过改名或其他工具绕过。',
     '使用 apply_changes 返回的 recoveryId；若缺失或已过期，请请求用户重新授权工作区。',
+    '完全访问下产生的工作区外回收批次只能在完全访问仍开启时主动恢复；标准模式收到拒绝后应说明原因并请用户自行决定是否重新开启完全访问。',
   ],
-  runtimeVersion: '3',
+  runtimeVersion: '7',
   recoveryPolicy: 'never',
   description:
     'Restore every path from a recoverable trash batch (returned by apply_changes) back to its original location. Refused when the original location is now occupied. Each invocation requires an approval lease.',
@@ -50,7 +53,10 @@ export const createRestoreTrashTool = (environment: AgentEnvironment): AgentTool
     return {
       category: 'workspace-write',
       title: `Restore trash batch ${recoveryId}?`,
+      titleKey: 'app.approval.restoreTrash.title',
+      titleParams: { recoveryId },
       description: 'Axiom restores every path in the batch; conflicts abort the restoration.',
+      descriptionKey: 'app.approval.restoreTrash.description',
       path: recoveryId,
       preview: `restore recoverable workspace trash ${recoveryId}`,
     }
@@ -61,7 +67,7 @@ export const createRestoreTrashTool = (environment: AgentEnvironment): AgentTool
     if (!isJsonObject(input)) throw new Error('Invalid restore_trash arguments.')
     if (context.signal.aborted) throw new DOMException('Aborted', 'AbortError')
     const recoveryId = asRecoveryId(input)
-    const result = await environment.workspace.restoreTrash(recoveryId, context.approvalLease)
+    const result = await environment.workspace.restoreTrash(recoveryId, context.approvalLease, toolApprovalScope(context))
     return {
       content: `Restored trash batch ${recoveryId} (${result.changes.length} paths).${context.signal.aborted ? '\nAbort signal arrived mid-restore; restoration is complete and not auto-replayed.' : ''}`,
       details: {

@@ -1,57 +1,59 @@
+import ProjectDesignPreview from './ProjectDesignPreview'
+import { pageUsesProjectComponents } from '@/agent/design/projectPreview'
 /**
- * 设计无限画布（docs/design-canvas.md D4 / §11 无限画布重构）。
+ * 设计无限画布（.ax 的评审投影；现况见 docs/design-project-components.md 与
+ * docs/ax-format.md，docs/design-canvas.md 为历史演进记录）。
  *
- * .pen 的全部页（顶层 frame）按各自 x/y 铺在同一张无限画布上：pan / 以光标
- * 为中心的缩放 / 适应画布、点选高亮、页与绝对定位节点拖动改位、删除、属性
- * 检查器编辑、undo/redo。编辑以「原始 JSON 字段补丁」写回
- * write_design_document（CAS 防覆盖外部保存），写盘成功后经 markWritten
- * 短路轮询并阻止自回声重采纳；无 rawJson 的调用方（对比列）退化为只读浏览。
+ * 全部页铺在同一张无限画布上：pan / 以光标为中心的缩放 / 适应画布、点选高亮、
+ * 页分组摆放、扫描验证、引用到会话与实现提示词注入。`.ax` 是「评审面」：
+ * 作者只有 LLM，画布不接入手势编辑——页拖动只写 localStorage 摆放叠加层，
+ * 唯一写手势是两段式确认的整页删除（useDesignDocument.deletePage：读盘 CAS
+ * 预检 + 摘除后整稿过 .ax 校验 + CAS 写回）。
+ * 画布不接手工编辑层：`.ax` 没有可写回的节点补丁通道。
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
 import { useUiStore } from '@/stores/uiStore'
-import { findPenNode, parsePenDocument } from '@/agent/design/penParser'
-import type { PenDocument, PenNode, PenNodeUnion } from '@/agent/design/penParser'
+import { findPenNode } from '@/agent/design/penParser'
+import type { PenDocument } from '@/agent/design/penParser'
 import PenNodeView from './PenNodeView'
 import DesignScanPanel from './DesignScanPanel'
 import { useDesignScan, type DesignScanBatchRender } from './useDesignScan'
-import type { DesignScanRenderOutcome } from '@/agent/design/designScan'
-import {
-  domRectToViewportFrame,
-  fitsViewport,
-  fullyInsideViewport,
-  panTargetFor,
-  rasterOrderOf,
-  rectsIntersect,
-  runPool,
-} from './canvasScanSweep'
-import { captureRectStats, nativeCaptureSupported } from './nativePageCapture'
-import { renderPenPageForScan } from './ax/renderPageHost'
+import { nativeCaptureSupported } from './nativePageCapture'
+import { createCanvasScanSweep } from './canvasScanSweepController'
 import { buildDesignImplementationPrompt } from './designImplementationPrompt'
+import { buildDesignReferencePrompt } from './designSelectionContext'
 import { renderPenPageToPngBase64 } from './ax/renderPageHost'
 import { useCanvasThemeMode } from './useCanvasThemeMode'
-import {
-  applyPatchToRaw,
-  applyPatchesToRaw,
-  collectRefNodeIds,
-  findRawNodePath,
-  readAtRaw,
-  serializePenRaw,
-} from './designEditing'
-import type { DesignEditPatch } from './designEditing'
-import { encodeUtf8ToBase64 } from '@/platform/base64'
-import { exportDesignPng, writeDesignDocument } from '@/platform/designDocument'
+import { exportDesignPng } from '@/platform/designDocument'
 import { useT } from '@/i18n'
+import {
+  boundsOf,
+  buildPlacements,
+  GROUP_BAND_HEIGHT,
+  GROUP_BAND_SCREEN_CLEARANCE,
+  pageNameOf as pageName,
+  resolvePageGroups,
+} from './designPageGrouping'
+import type { ContentBounds, PagePlacement } from './designPageGrouping'
+import {
+  clampScale,
+  computePageSnap,
+  containsNode,
+  loadPageLayout,
+  MAX_SCALE,
+  MIN_SCALE,
+  PAGE_SNAP_THRESHOLD_SCREEN_PX,
+  pageSizeLabel,
+  savePageLayout,
+  ZOOM_STEP,
+} from './canvasGeometry'
+import type { PageLayoutOffsets, PageSnapGuide } from './canvasGeometry'
 
-const MIN_SCALE = 0.1
-const MAX_SCALE = 4
-const ZOOM_STEP = 0.2
 /** 拖拽位移超过该值（屏幕像素）视为拖动而非点选。 */
 const DRAG_CLICK_THRESHOLD_PX = 6
 /** `.ax` 页级删除确认态的自动收起时长：足够完成「看清→再点」，短到不碍下一次点选。 */
 const DELETE_ARM_TIMEOUT_MS = 3_000
-/** 无坐标页的自动排布间距（兜底：axiom.pen 的页都带 x/y）。 */
-const AUTO_LAYOUT_GAP = 120
 /** 视口裁剪的外扩边距（视口尺寸比例）：快速平移时不露白。 */
 const CULLING_MARGIN_RATIO = 0.5
 /**
@@ -80,18 +82,6 @@ type Interaction =
       downNodeId: string | null
     }
   | {
-      kind: 'node'
-      pointerId: number
-      nodeId: string
-      /** 点按（无位移）时选中的节点：拖绝对节点 = 自身。 */
-      selectNodeId: string
-      element: HTMLElement
-      startClientX: number
-      startClientY: number
-      baseX: number
-      baseY: number
-    }
-  | {
       kind: 'page'
       pointerId: number
       pageId: string
@@ -108,252 +98,27 @@ type Interaction =
       snapDy?: number
     }
 
-interface PagePlacement {
-  page: PenNodeUnion
-  x: number
-  y: number
-  width: number
-  height: number
-  /** 页是否声明了高度（组织性 frame 没有，见 pageSizeOf）。 */
-  hasHeight: boolean
-}
-
-interface ContentBounds {
-  minX: number
-  minY: number
-  maxX: number
-  maxY: number
-}
-
-const pageName = (page: PenNodeUnion): string =>
-  ('name' in page && typeof page.name === 'string' ? page.name : page.id)
-
 /**
  * 页面摆放叠加层（`.ax` 评审面专用）。`.ax` 格式页没有坐标（硬规则「坐标不进
  * 设计稿」），画布自动排布；用户拖动是**评审呈现层**的调整，不是设计内容——
- * 按 D3「画布不做内容编辑」不写文件、不走 raw 补丁（绕过格式校验），落
- * localStorage 按文档路径归档。`.pen` 不走叠加层：文件坐标即权威。
+ * 按 D3「画布不做内容编辑」不写文件（绕过格式校验），落 localStorage 按文档
+ * 路径归档。
  */
-type PageLayoutOffsets = Record<string, { x: number; y: number }>
-
-const PAGE_LAYOUT_STORAGE_KEY = 'axiom.design.page-layout.v1'
-
-const loadPageLayout = (docPath: string): PageLayoutOffsets => {
-  try {
-    const raw = window.localStorage.getItem(PAGE_LAYOUT_STORAGE_KEY)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw) as Record<string, PageLayoutOffsets>
-    return parsed[docPath] ?? {}
-  } catch {
-    return {}
-  }
-}
-
-const savePageLayout = (docPath: string, offsets: PageLayoutOffsets): void => {
-  try {
-    const raw = window.localStorage.getItem(PAGE_LAYOUT_STORAGE_KEY)
-    const all = (raw ? JSON.parse(raw) : {}) as Record<string, PageLayoutOffsets>
-    all[docPath] = offsets
-    window.localStorage.setItem(PAGE_LAYOUT_STORAGE_KEY, JSON.stringify(all))
-  } catch {
-    // localStorage 不可用（配额/隐私模式）：仅失去跨重启记忆，本次拖动照常生效。
-  }
-}
-
-/** 名称是否已自带宽×高（设计稿常见命名「… · 1180×780」），此时不再拼接尺寸。 */
-const NAME_HAS_SIZE = /\d+\s*×\s*\d+\s*$/
-
-const pageSizeLabel = (page: PenNodeUnion, width: number, height: number): string | null =>
-  NAME_HAS_SIZE.test(pageName(page)) ? null : `${width}×${height}`
-
-/**
- * 页尺寸。**未声明 height 的顶层 frame 不是画布页**——.pen 里的 `Section — …`
- * 标题带与组件展示区是无高度的组织性 frame（分组标签语义）。此前它们被套上
- * 240px 兜底高度后变成「一张 8980×240 的空页」：按文档 x/y 压在同组页面上
- * （`Section — 会话` y=1671 与页首 y=1831 重叠 80px），页底又是一块不透明填充，
- * 于是每页顶部 80px 被盖住、整条带子看起来是一大块莫名其妙的色块。
- * hasHeight 让这类 frame 只保留标签与命中区：不铺页底、不画卡片框、不显示
- * 臆造的尺寸。
- */
-const pageSizeOf = (
-  page: PenNodeUnion,
-): { width: number; height: number; hasHeight: boolean } => {
-  // 组件节点（`.ax` 的 component）没有尺寸字段：走 in 窄化，与 unknown 占位同口径。
-  const width = 'width' in page && typeof page.width === 'number' && page.width > 0 ? page.width : 320
-  const height = 'height' in page && typeof page.height === 'number' && page.height > 0 ? page.height : 240
-  return { width, height, hasHeight: 'height' in page && typeof page.height === 'number' && page.height > 0 }
-}
-
-/** 坐标读取：unknown 占位节点没有 x/y（PenUnknownNode），统一走 in 窄化。 */
-const coordOf = (page: PenNodeUnion): { x?: number; y?: number } => ({
-  x: 'x' in page && typeof page.x === 'number' ? page.x : undefined,
-  y: 'y' in page && typeof page.y === 'number' ? page.y : undefined,
-})
-
-/** 页布局：有 x/y 的按原坐标铺开；无坐标的兜底排在既有内容下方一行。 */
-const buildPlacements = (pages: readonly PenNodeUnion[]): PagePlacement[] => {
-  const placed: PagePlacement[] = []
-  const auto: PenNodeUnion[] = []
-  for (const page of pages) {
-    const { x, y } = coordOf(page)
-    if (x !== undefined && y !== undefined) {
-      placed.push({ page, x, y, ...pageSizeOf(page) })
-    } else {
-      auto.push(page)
-    }
-  }
-  if (auto.length > 0) {
-    let bottom = -Infinity
-    let left = Infinity
-    for (const item of placed) {
-      bottom = Math.max(bottom, item.y + item.height)
-      left = Math.min(left, item.x)
-    }
-    if (!Number.isFinite(bottom) || !Number.isFinite(left)) {
-      bottom = 0
-      left = 0
-    }
-    let cursorX = left
-    for (const page of auto) {
-      const size = pageSizeOf(page)
-      placed.push({ page, x: cursorX, y: bottom + AUTO_LAYOUT_GAP, ...size })
-      cursorX += size.width + AUTO_LAYOUT_GAP
-    }
-  }
-  return placed
-}
-
-const boundsOf = (placements: readonly PagePlacement[]): ContentBounds | null => {
-  if (placements.length === 0) return null
-  let minX = Infinity
-  let minY = Infinity
-  let maxX = -Infinity
-  let maxY = -Infinity
-  for (const item of placements) {
-    minX = Math.min(minX, item.x)
-    minY = Math.min(minY, item.y)
-    maxX = Math.max(maxX, item.x + item.width)
-    maxY = Math.max(maxY, item.y + item.height)
-  }
-  return { minX, minY, maxX, maxY }
-}
-
-const containsNode = (node: PenNodeUnion, nodeId: string): boolean => {
-  if (node.id === nodeId) return true
-  const children = 'children' in node ? node.children : undefined
-  return (children ?? []).some((child) => containsNode(child, nodeId))
-}
-
-// ---------------------------------------------------------------- 页面拖动吸附
-
-/** 吸附触发阈值（屏幕像素）：除以缩放得画布坐标阈值，各缩放级别手感一致。 */
-export const PAGE_SNAP_THRESHOLD_SCREEN_PX = 6
-
-/** 对齐参考线（画布坐标）：value 是参考轴坐标，start/end 是线段在另一轴的范围。 */
-export interface PageSnapGuide {
-  value: number
-  start: number
-  end: number
-}
-
-export interface PageSnapResult {
-  dx: number
-  dy: number
-  /** 竖直参考线（x 轴对齐：左/中/右）。 */
-  guideX: PageSnapGuide | null
-  /** 水平参考线（y 轴对齐：上/中/下）。 */
-  guideY: PageSnapGuide | null
-}
-
-/**
- * 页面拖动吸附（Figma 式智能对齐）：拖动页的左/中/右、上/中/下三轴与**其它页**
- * 的同轴做阈值吸附，返回修正后的位移与参考线段。纯函数——指针层逐帧调用，
- * 松手提交的坐标即吸附后的坐标。
- */
-export const computePageSnap = (
-  placements: readonly PagePlacement[],
-  draggedId: string,
-  baseX: number,
-  baseY: number,
-  rawDx: number,
-  rawDy: number,
-  threshold: number,
-): PageSnapResult => {
-  const dragged = placements.find((item) => item.page.id === draggedId)
-  if (!dragged) return { dx: rawDx, dy: rawDy, guideX: null, guideY: null }
-  const others = placements.filter((item) => item.page.id !== draggedId)
-
-  const snapAxis = (
-    axis: 'x' | 'y',
-    raw: number,
-    crossDelta: number,
-  ): { delta: number; guide: PageSnapGuide | null } => {
-    const size = axis === 'x' ? dragged.width : dragged.height
-    const base = axis === 'x' ? baseX : baseY
-    const crossBase = axis === 'x' ? baseY : baseX
-    const crossSize = axis === 'x' ? dragged.height : dragged.width
-    const draggedAxes = [base, base + size / 2, base + size].map((value) => value + raw)
-    let best: { distance: number; delta: number; guide: PageSnapGuide } | null = null
-    for (const other of others) {
-      const otherSize = axis === 'x' ? other.width : other.height
-      const otherBase = axis === 'x' ? other.x : other.y
-      const otherCrossBase = axis === 'x' ? other.y : other.x
-      const otherCrossSize = axis === 'x' ? other.height : other.width
-      for (const target of [otherBase, otherBase + otherSize / 2, otherBase + otherSize]) {
-        for (const value of draggedAxes) {
-          const distance = Math.abs(value - target)
-          if (distance > threshold) continue
-          if (best && distance >= best.distance) continue
-          // 参考线段覆盖拖动页与对齐页的联合范围（对齐关系一目了然）。
-          const crossStart = Math.min(crossBase + crossDelta, otherCrossBase)
-          const crossEnd = Math.max(crossBase + crossDelta + crossSize, otherCrossBase + otherCrossSize)
-          best = { distance, delta: target - value, guide: { value: target, start: crossStart, end: crossEnd } }
-        }
-      }
-    }
-    return best ? { delta: raw + best.delta, guide: best.guide } : { delta: raw, guide: null }
-  }
-
-  const xSnap = snapAxis('x', rawDx, rawDy)
-  const ySnap = snapAxis('y', rawDy, xSnap.delta)
-  return { dx: xSnap.delta, dy: ySnap.delta, guideX: xSnap.guide, guideY: ySnap.guide }
-}
-
-
-const walkNodeChildren = (
-  node: PenNodeUnion,
-  visit: (child: PenNodeUnion) => void,
-): void => {
-  const children = 'children' in node ? node.children : undefined
-  for (const child of children ?? []) {
-    visit(child)
-    walkNodeChildren(child, visit)
-  }
-}
-
 const DesignCanvas = ({
   doc,
-  rawJson = null,
   sha256,
-  onWritten,
-  onReload,
   onDeletePage,
 }: {
   doc: PenDocument
-  /** 原始 JSON 文本：存在才启用编辑层（补丁写回）。对比列等只读场景不传。 */
-  rawJson?: string | null
   sha256?: string
-  onWritten?: (sha256: string) => void
-  onReload?: () => void
   /**
    * `.ax` 评审面的整页删除通道（useDesignDocument.deletePage）。提供后才解锁
-   * 「选中页根 → 删除」；`.pen` 的删除走编辑层（undo 可回退），不经此属性。
+   * 「选中页根 → 删除」。
    */
   onDeletePage?: (pageId: string) => Promise<{ ok: boolean; message: string | null }>
 }) => {
   const { t } = useT()
   const themeMode = useCanvasThemeMode()
-  const editable = Boolean(rawJson && onWritten)
   const [scale, setScale] = useState(1)
   const [offset, setOffset] = useState({ x: 0, y: 0 })
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -364,11 +129,6 @@ const DesignCanvas = ({
   // 显式反馈（导出/保存）：null 为无提示，完成与失败都不静默。
   const [notice, setNotice] = useState<{ tone: 'info' | 'error'; text: string } | null>(null)
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 })
-  // 撤销栈代际：栈本身在 ref 里，bump 它驱动状态栏按钮的可用性重渲染。
-  const [, setHistoryVersion] = useState(0)
-  // 编辑层：raw 原始 JSON 树 + 解析投影。本地编辑后 doc 与 props.doc 分叉，
-  // 外部变更经 sha 采纳整体换代（undo/redo 栈随之清空）。
-  const [edit, setEdit] = useState<{ raw: unknown; doc: PenDocument } | null>(null)
   // `.ax` 评审面的页面摆放（localStorage 持久化）：agent 换代不影响——文件里
   // 没有页坐标，叠加层与文件内容没有冲突面。
   const [pageOffsets, setPageOffsets] = useState<PageLayoutOffsets>({})
@@ -386,13 +146,6 @@ const DesignCanvas = ({
   const interactionRef = useRef<Interaction | null>(null)
   const dragDistanceRef = useRef(0)
   const autoFitDoneRef = useRef(false)
-  const adoptedShaRef = useRef<string | undefined>(undefined)
-  const casShaRef = useRef<string | undefined>(undefined)
-  const writeChainRef = useRef<Promise<void>>(Promise.resolve())
-  const undoStackRef = useRef<DesignEditPatch[][]>([])
-  const redoStackRef = useRef<DesignEditPatch[][]>([])
-  const editRef = useRef(edit)
-  editRef.current = edit
   // 扫掠（原位扫描）的命令面：offset/scale 镜像供异步编排读取；abort 由用户
   // pointerdown 置位（扫掠在步进间隙检查，让位给用户操作）。
   const offsetRef = useRef(offset)
@@ -417,12 +170,12 @@ const DesignCanvas = ({
   const scanBatchRef = useRef<DesignScanBatchRender | null>(null)
   const [sweeping, setSweeping] = useState(false)
 
-  const viewDoc = edit?.doc ?? doc
+  const viewDoc = doc
 
   // 切换文档时重读摆放叠加层（按文档路径归档）。
   useEffect(() => {
-    setPageOffsets(loadPageLayout(doc.fileName))
-  }, [doc.fileName])
+    setPageOffsets(loadPageLayout(JSON.stringify([doc.workspacePath ?? null, doc.fileName])))
+  }, [doc.fileName, doc.workspacePath])
 
   // 扫描运行状态上提到画布层：面板与画布叠加层（当前页扫描光束 / 已完成页
   // 状态描边）消费同一份数据，扫描时画布逐页点亮（pen.dev 的动态扫描效果）。
@@ -443,141 +196,26 @@ const DesignCanvas = ({
     if (scanOpen) void runScanRef.current()
   }, [scanOpen])
 
-  // 外部内容采纳：sha 换代（首次加载 / Agent·pen.dev 保存）才重建编辑层。
-  // 自写回声被 markWritten 同步的 sha 短路（adoptedShaRef 已在写盘时更新）。
-  useEffect(() => {
-    if (!rawJson) {
-      setEdit(null)
-      adoptedShaRef.current = undefined
-      return
+  // 分组排布：有坐标页原样保留，无坐标页按内容智能分组排成多行（组头带描述分组）。
+  // `.ax` 评审面的手动摆放（localStorage）仍以偏移叠加在此之上。
+  const { placements, groupBands } = useMemo(() => {
+    const layout = buildPlacements(viewDoc.pages, viewDoc)
+    if (!axReview || Object.keys(pageOffsets).length === 0) return layout
+    return {
+      placements: layout.placements.map((item) => {
+        const offset = pageOffsets[item.page.id]
+        return offset ? { ...item, x: offset.x, y: offset.y } : item
+      }),
+      // 组头带锚在分组基准位上：手动拖动不拖走组头（它描述的是分组，不是某一页）。
+      groupBands: layout.groupBands,
     }
-    if (sha256 !== undefined && sha256 === adoptedShaRef.current) return
-    try {
-      const raw: unknown = JSON.parse(rawJson)
-      undoStackRef.current = []
-      redoStackRef.current = []
-      setHistoryVersion((version) => version + 1)
-      adoptedShaRef.current = sha256
-      casShaRef.current = sha256
-      setEdit({ raw, doc })
-    } catch {
-      setEdit(null)
-    }
-    // doc 与 rawJson 由同一次 setLoaded 原子更新，作为采纳来源一起消费。
-  }, [rawJson, sha256, doc])
-
-  /**
-   * 重解析 + 排队写盘。写请求串行出队，CAS 基准在出队时才读——连续两次编辑
-   * 之间上一次写盘已把 casShaRef 推进到新值，不会误判冲突。写失败（典型是
-   * CAS 命中外部修改）回滚本组补丁并触发 reload，从磁盘收回权威内容。
-   */
-  const publishRaw = useCallback(
-    (raw: unknown, group: DesignEditPatch[] | null) => {
-      const source = serializePenRaw(raw)
-      const parsed = parsePenDocument(source, doc.fileName).document
-      if (parsed) setEdit({ raw, doc: parsed })
-      const contentBase64 = encodeUtf8ToBase64(source)
-      writeChainRef.current = writeChainRef.current.then(async () => {
-        try {
-          const written = await writeDesignDocument(doc.fileName, contentBase64, casShaRef.current)
-          casShaRef.current = written.sha256
-          adoptedShaRef.current = written.sha256
-          onWritten?.(written.sha256)
-          setNotice(null)
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          setNotice({ tone: 'error', text: t('app.design.canvas.writeFailed', { message }) })
-          if (group) {
-            for (const patch of group.slice().reverse()) {
-              applyPatchToRaw(raw, { path: patch.path, before: patch.after, after: patch.before })
-            }
-            undoStackRef.current = undoStackRef.current.filter((item) => item !== group)
-            const reverted = parsePenDocument(serializePenRaw(raw), doc.fileName).document
-            if (reverted) setEdit({ raw, doc: reverted })
-          }
-          onReload?.()
-        }
-      })
-    },
-    [doc.fileName, onWritten, onReload, t],
-  )
-
-  const applyEditPatches = useCallback(
-    (patches: DesignEditPatch[]): boolean => {
-      const current = editRef.current
-      if (!current || !editable) return false
-      if (!applyPatchesToRaw(current.raw, patches)) return false
-      undoStackRef.current.push(patches)
-      redoStackRef.current = []
-      setHistoryVersion((version) => version + 1)
-      publishRaw(current.raw, patches)
-      return true
-    },
-    [editable, publishRaw],
-  )
-
-  const undo = useCallback(() => {
-    const current = editRef.current
-    const group = undoStackRef.current.pop()
-    if (!current || !group) return
-    const inverses = group
-      .slice()
-      .reverse()
-      .map((patch) => ({ path: patch.path, before: patch.after, after: patch.before }))
-    if (applyPatchesToRaw(current.raw, inverses)) {
-      redoStackRef.current.push(group)
-      publishRaw(current.raw, null)
-    } else {
-      undoStackRef.current.push(group)
-    }
-    setHistoryVersion((version) => version + 1)
-  }, [publishRaw])
-
-  const redo = useCallback(() => {
-    const current = editRef.current
-    const group = redoStackRef.current.pop()
-    if (!current || !group) return
-    if (applyPatchesToRaw(current.raw, group)) {
-      undoStackRef.current.push(group)
-      publishRaw(current.raw, null)
-    } else {
-      redoStackRef.current.push(group)
-    }
-    setHistoryVersion((version) => version + 1)
-  }, [publishRaw])
-
-  // 撤销/重做可用性读的是 ref 长度：变更点总会触发 setHistoryVersion 重渲染。
-  const canUndo = editable && undoStackRef.current.length > 0
-  const canRedo = editable && redoStackRef.current.length > 0
-
-  const placements = useMemo(() => {
-    const base = buildPlacements(viewDoc.pages)
-    if (!axReview || editable || Object.keys(pageOffsets).length === 0) return base
-    return base.map((item) => {
-      const offset = pageOffsets[item.page.id]
-      return offset ? { ...item, x: offset.x, y: offset.y } : item
-    })
-  }, [viewDoc, editable, axReview, pageOffsets])
+  }, [viewDoc, axReview, pageOffsets])
   const pageIds = useMemo(() => new Set(placements.map((item) => item.page.id)), [placements])
 
   /**
-   * 页面拖动的持久化出口。编辑态（.pen）写文件坐标（既有 CAS + undo 通道）；
-   * `.ax` 评审面写 localStorage 摆放叠加层（不写文件）；无编辑通道的只读 .pen
-   * 没有出口——维持「页内按下 = 平移」的旧语义。
+   * 页面拖动的持久化出口。`.ax` 评审面写 localStorage 摆放叠加层（不写文件）。
    */
-  const pageDragTarget: 'file' | 'offsets' | null = editable ? 'file' : axReview ? 'offsets' : null
-
-  // ref 实例内部的解析节点在 raw 树里没有对应物（子树来自组件定义克隆），
-  // 按 id 编辑会误伤组件本体——整体只读。
-  const readonlyIds = useMemo(() => {
-    const result = new Set<string>()
-    if (!edit) return result
-    for (const refId of collectRefNodeIds(edit.raw)) {
-      const parsed = findPenNode(edit.doc, refId)
-      if (parsed) walkNodeChildren(parsed, (child) => result.add(child.id))
-    }
-    return result
-  }, [edit])
+  const pageDragTarget: 'offsets' | null = axReview ? 'offsets' : null
 
   // 视口裁剪：只挂载与视口（含外扩边距）相交的页，75 页不全量渲染。
   const visiblePlacements = useMemo(() => {
@@ -601,16 +239,36 @@ const DesignCanvas = ({
     [visiblePlacements],
   )
 
+  // 组头带与页同规格做视口裁剪（band 悬在行上方第二个标签位，让开页标签）。
+  const visibleGroups = useMemo(() => {
+    if (groupBands.length === 0) return []
+    if (viewportSize.width <= 0 || viewportSize.height <= 0) return groupBands
+    const marginX = (viewportSize.width * CULLING_MARGIN_RATIO) / scale
+    const marginY = (viewportSize.height * CULLING_MARGIN_RATIO) / scale
+    const viewX = -offset.x / scale - marginX
+    const viewY = -offset.y / scale - marginY
+    const viewWidth = viewportSize.width / scale + marginX * 2
+    const viewHeight = viewportSize.height / scale + marginY * 2
+    return groupBands.filter((band) => {
+      // 带在屏幕空间悬于行上缘上方 GROUP_BAND_SCREEN_CLEARANCE 处，换算回画布坐标参与裁剪。
+      const top = band.rowTop - GROUP_BAND_SCREEN_CLEARANCE / scale
+      const height = GROUP_BAND_HEIGHT / scale
+      return (
+        band.left < viewX + viewWidth &&
+        band.right > viewX &&
+        top < viewY + viewHeight &&
+        top + height > viewY
+      )
+    })
+  }, [groupBands, viewportSize, offset, scale])
+
   const selectedNode = useMemo(
     () => (selectedId ? findPenNode(viewDoc, selectedId) ?? null : null),
     [viewDoc, selectedId],
   )
-  const selectedWritable = Boolean(
-    editable && selectedNode && !readonlyIds.has(selectedNode.id),
-  )
   // `.ax` 评审面的页级删除：仅当选中的是页根、有删除通道、且删后仍有页
   // （`.ax` 校验器拒绝空 pages 数组——与其写不进去，不如按钮直接说明）。
-  const axPageSelected = Boolean(axReview && !editable && selectedNode && pageIds.has(selectedNode.id))
+  const axPageSelected = Boolean(axReview && selectedNode && pageIds.has(selectedNode.id))
   const axPageDeletable = Boolean(axPageSelected && onDeletePage && viewDoc.pages.length > 1)
   // 页级删除两段式确认：`.ax` 无撤销栈，误点的代价是一页内容——第一次点击
   // 只武装（按钮变确认态，短暂超时自动收起），第二次才执行。
@@ -635,29 +293,28 @@ const DesignCanvas = ({
       if (!onDeletePage) return
       const result = await onDeletePage(pageId)
       if (!result.ok) {
-        setNotice({ tone: 'error', text: t('app.design.canvas.deletePageFailed', { message: result.message ?? '' }) })
+        // message 为 null = 用户在原生确认框里取消了：什么都没发生，不报错误。
+        if (result.message) {
+          setNotice({ tone: 'error', text: t('app.design.canvas.deletePageFailed', { message: result.message }) })
+        }
+      } else if (result.message) {
+        setNotice({ tone: 'error', text: result.message })
       }
     },
     [onDeletePage, t],
   )
 
-  const deleteButtonTitle = selectedWritable
-    ? undefined
-    : axPageDeletable
-      ? deleteArmed
-        ? t('app.design.canvas.deleteArmed')
-        : t('app.design.canvas.deletePageHint')
-      : axPageSelected
-        ? t('app.design.canvas.deleteLastPageDisabled')
-          : axReview
-            ? t('app.design.inspector.deleteReviewReadonly')
-            : t('app.design.canvas.deleteDisabled')
+  const deleteButtonTitle = axPageDeletable
+    ? deleteArmed
+      ? t('app.design.canvas.deleteArmed')
+      : t('app.design.canvas.deletePageHint')
+    : axPageSelected
+      ? t('app.design.canvas.deleteLastPageDisabled')
+        : axReview
+          ? t('app.design.inspector.deleteReviewReadonly')
+          : t('app.design.canvas.deleteDisabled')
 
   const onDeleteButtonClick = () => {
-    if (selectedWritable) {
-      deleteSelected()
-      return
-    }
     if (!axPageDeletable || !selectedId) return
     if (!deleteArmed) {
       setDeleteArmed(true)
@@ -668,11 +325,6 @@ const DesignCanvas = ({
     disarmDelete()
     void runAxPageDelete(selectedId)
   }
-  const selectedMovable = Boolean(
-    selectedNode &&
-      (pageIds.has(selectedNode.id) ||
-        ('layoutPosition' in selectedNode && selectedNode.layoutPosition === 'absolute')),
-  )
 
   // 选中高亮走 DOM class（避免把 selectedId 灌进整棵 memo 树）；
   // viewDoc/visibleKey 是高亮重挂的失效信号（内容换代/裁剪集合变化）。
@@ -798,11 +450,10 @@ const DesignCanvas = ({
 
   const referenceSelected = useCallback(() => {
     if (!selectedNode) return
-    const name = 'name' in selectedNode && typeof selectedNode.name === 'string'
-      ? selectedNode.name
-      : selectedNode.id
-    requestComposerInsertion(`@[${name}](${doc.fileName})（design_query nodeId: ${selectedNode.id}）`)
-  }, [selectedNode, doc.fileName, requestComposerInsertion])
+    // 「引用到会话」只投递定位（稿路径 + 页/节点 id）：内容由模型在会话里用
+    // design_query 按需读取，不让可能陈旧的选中子树占会话上下文。
+    requestComposerInsertion(buildDesignReferencePrompt(viewDoc, selectedNode))
+  }, [selectedNode, viewDoc, requestComposerInsertion])
 
   const implementSelected = useCallback(() => {
     if (!selectedNode) return
@@ -820,244 +471,45 @@ const DesignCanvas = ({
     )
   }, [selectedNode, viewDoc, requestComposerInsertion, t])
 
-  const deleteSelected = useCallback(() => {
-    const current = editRef.current
-    if (!current || !selectedId || !editable) return
-    if (readonlyIds.has(selectedId)) return
-    const nodePath = findRawNodePath(current.raw, selectedId)
-    if (!nodePath || nodePath.length === 0) return
-    const before = readAtRaw(current.raw, nodePath)
-    if (before === undefined) return
-    applyEditPatches([{ path: nodePath, before, after: undefined }])
-    setSelectedId(null)
-  }, [selectedId, editable, readonlyIds, applyEditPatches])
-
-  const commitNodeMove = useCallback(
-    (nodeId: string, baseX: number, baseY: number, dx: number, dy: number) => {
-      const current = editRef.current
-      if (!current) return
-      const node = findPenNode(current.doc, nodeId)
-      const nodePath = findRawNodePath(current.raw, nodeId)
-      if (!node || !nodePath) return
-      const beforeX = 'x' in node && typeof node.x === 'number' ? node.x : undefined
-      const beforeY = 'y' in node && typeof node.y === 'number' ? node.y : undefined
-      applyEditPatches([
-        { path: [...nodePath, 'x'], before: beforeX, after: Math.round(baseX + dx) },
-        { path: [...nodePath, 'y'], before: beforeY, after: Math.round(baseY + dy) },
-      ])
-    },
-    [applyEditPatches],
-  )
-
   /**
-   * 页面移动提交。编辑态：页根 x/y 进文件（与节点移动同一 CAS/undo 通道；原本
-   * 无坐标的自动排布页就此固化为显式坐标）。`.ax` 评审面：进 localStorage 摆放
-   * 叠加层——评审呈现层的调整不写文件，也绝不走 raw 补丁绕过格式校验。
+   * 页面移动提交。`.ax` 评审面：进 localStorage 摆放叠加层——评审呈现层的调整
+   * 不写文件（绕过格式校验）。
    */
   const commitPageMove = useCallback(
     (pageId: string, baseX: number, baseY: number, dx: number, dy: number) => {
       const nextX = Math.round(baseX + dx)
       const nextY = Math.round(baseY + dy)
-      if (editable) {
-        const current = editRef.current
-        if (!current) return
-        const node = findPenNode(current.doc, pageId)
-        const nodePath = findRawNodePath(current.raw, pageId)
-        if (!node || !nodePath) return
-        const beforeX = 'x' in node && typeof node.x === 'number' ? node.x : undefined
-        const beforeY = 'y' in node && typeof node.y === 'number' ? node.y : undefined
-        applyEditPatches([
-          { path: [...nodePath, 'x'], before: beforeX, after: nextX },
-          { path: [...nodePath, 'y'], before: beforeY, after: nextY },
-        ])
-        return
-      }
       setPageOffsets((current) => {
         const next = { ...current, [pageId]: { x: nextX, y: nextY } }
-        savePageLayout(doc.fileName, next)
+        savePageLayout(JSON.stringify([doc.workspacePath ?? null, doc.fileName]), next)
         return next
       })
     },
-    [editable, applyEditPatches, doc.fileName],
+    [doc.fileName, doc.workspacePath],
   )
 
-  // ---------------------------------------------------------------- 画布原位扫描（扫掠编排器）
-  //
-  // pen.dev 式扫描：页面**留在画布原位**，相机（视口）按光栅序推进，每一停驻点
-  // 先让扫描光束自上而下扫过本批页（动态效果），光束出 DOM 后再**并行**原位截图
-  // （原生截图按页矩形，零挂载；光带画在矩形内，截图时必须在 DOM 之外，否则
-  // 污染像素统计）。判定逐页回报点亮画布。装不进视口的巨页与相交页走 staging
-  // 挂载回退（正确性优先）；平移落定仍不可见的页同样降级回退（自愈，不空转）；
-  // 用户 pointerdown / 滚轮或内容换代即中断扫掠（让位给用户），未扫页记
-  // 「渲染检查未完成」而非失败；结束后还原用户视口。
-  const SCREEN_CAPTURE_CONCURRENCY = 4
-  const SWEEP_SETTLE_MS = 260
-  // 光束停驻：与 design.css 的 design-scan-sweep 动画时长（0.9s）一致——每个
-  // 停驻点光束恰好自上而下扫一遭；CLEAR 是光束出 DOM 的缓冲（React 提交 + 绘制）。
-  const SWEEP_BEAM_MS = 900
-  const SWEEP_BEAM_CLEAR_MS = 80
+  /**
+   * 清空手动摆放（`.ax` 评审面）：页面回到智能分组的基准排布。手动偏移叠加在
+   * 分组布局之上，散拖几页后想要回整齐只有显式重置一条路（逐页拖回不现实）。
+   */
+  const resetPageOffsets = useCallback(() => {
+    savePageLayout(JSON.stringify([doc.workspacePath ?? null, doc.fileName]), {})
+    setPageOffsets({})
+  }, [doc.workspacePath, doc.fileName])
 
-  const stagingOutcomeOf = async (pageId: string): Promise<DesignScanRenderOutcome> => {
-    try {
-      const result = await renderPenPageForScan({ doc: viewDoc, pageIdOrIndex: pageId, maxBytes: 16 * 1024 })
-      if (!result) return { ok: false, reason: '渲染器不可用' }
-      if (!result.ok) return { ok: false, reason: result.reason }
-      return {
-        ok: true,
-        width: result.width,
-        height: result.height,
-        samples: result.samples,
-        distinctColors: result.distinctColors,
-        topColorFraction: result.topColorFraction,
-      }
-    } catch (error) {
-      return { ok: false, reason: error instanceof Error ? error.message : String(error) }
-    }
-  }
-
-  const runScanSweep: DesignScanBatchRender = async (pages, onPageDone, onActive) => {
-    // 视口的窗口 rect 一次取齐：尺寸（可见性/装得下判定）+ 原点（DOM 真值换算基点）。
-    // getBoundingClientRect 是 WebView 窗口坐标，而扫掠几何全在画布视口坐标系工作
-    // ——画布视口被侧栏/顶栏偏移几百像素，DOM 真值必须减原点换算，否则平移居中的
-    // 页永远判不可见、成片降级 staging（用户看到成片「渲染检查未完成」）。窗口 rect
-    // 测不到（jsdom 全 0）时回退 ResizeObserver 的 viewportSize。
-    const viewportWindowRect = viewportRef.current?.getBoundingClientRect()
-    const viewportOrigin = {
-      left: viewportWindowRect?.left ?? 0,
-      top: viewportWindowRect?.top ?? 0,
-    }
-    const viewport =
-      viewportWindowRect && viewportWindowRect.width > 0 && viewportWindowRect.height > 0
-        ? { width: viewportWindowRect.width, height: viewportWindowRect.height }
-        : { width: viewportSize.width, height: viewportSize.height }
-    const placementOf = new Map(placements.map((item) => [item.page.id, item]))
-    const pageById = new Map(pages.map((page) => [page.id, page]))
-    const screenRectOf = (item: PagePlacement) => {
-      const rect = surfaceRef.current
-        ?.querySelector<HTMLElement>(`[data-page-wrapper="${item.page.id}"]`)
-        ?.getBoundingClientRect()
-      // DOM 真值优先（含 transform），但必须换算到视口坐标系；取不到时按
-      // offset/scale 推算（推算本来就是视口坐标系）。
-      if (rect && rect.width > 0 && rect.height > 0) {
-        return domRectToViewportFrame(
-          { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-          viewportOrigin,
-        )
-      }
-      return {
-        x: item.x * scaleRef.current + offsetRef.current.x,
-        y: item.y * scaleRef.current + offsetRef.current.y,
-        width: item.width * scaleRef.current,
-        height: item.height * scaleRef.current,
-      }
-    }
-
-    // staging 回退集合：装不进视口的巨页 + 与其它页相交的页（原位截图会拍到覆盖
-    // 其上的内容，统计失真）。
-    const fallbackIds = new Set<string>()
-    for (const item of placements) {
-      if (!fitsViewport(screenRectOf(item), viewport)) fallbackIds.add(item.page.id)
-    }
-    for (const a of placements) {
-      for (const b of placements) {
-        if (a.page.id >= b.page.id) continue
-        if (rectsIntersect(screenRectOf(a), screenRectOf(b))) {
-          fallbackIds.add(a.page.id)
-          fallbackIds.add(b.page.id)
-        }
-      }
-    }
-    const sweepable = pages.filter((page) => placementOf.has(page.id) && !fallbackIds.has(page.id))
-    const stagingPages = pages.filter((page) => !sweepable.includes(page))
-
-    sweepActiveRef.current = true
-    sweepAbortRef.current = false
-    const restoreOffset = offsetRef.current
-    setSweeping(true)
-    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-    try {
-      // 光栅序（画布坐标排序与平移无关）：相机左→右、上→下逐行推进。
-      let pending = rasterOrderOf(
-        sweepable.flatMap((page) => {
-          const item = placementOf.get(page.id)
-          if (!item) return []
-          return [{ id: page.id, screen: { x: item.x, y: item.y, width: item.width, height: item.height } }]
-        }),
-        viewport,
-      )
-      // 每轮必有进展（采集或降级），循环至多 2N 轮自然终止，无须 guard 兜底。
-      let stalledFor: string | null = null
-      while (pending.length > 0) {
-        if (sweepAbortRef.current) break
-        // 本停驻点：完全可见的待扫页先亮光束、后并行原位截图。
-        const visible = pending.filter((id) => {
-          const item = placementOf.get(id)
-          return item !== undefined && fullyInsideViewport(screenRectOf(item), viewport)
-        })
-        if (visible.length > 0) {
-          onActive(visible)
-          await sleep(SWEEP_BEAM_MS)
-          if (sweepAbortRef.current) break
-          onActive(null)
-          await sleep(SWEEP_BEAM_CLEAR_MS)
-          await runPool(visible, SCREEN_CAPTURE_CONCURRENCY, async (id) => {
-            const rect = surfaceRef.current
-              ?.querySelector<HTMLElement>(`[data-page-wrapper="${id}"]`)
-              ?.getBoundingClientRect()
-            if (!rect || rect.width <= 0 || rect.height <= 0) {
-              onPageDone(id, { ok: false, reason: '页面矩形不可用' })
-              return
-            }
-            try {
-              const stats = await captureRectStats([rect.x, rect.y, rect.width, rect.height])
-              onPageDone(id, {
-                ok: true,
-                width: stats.width,
-                height: stats.height,
-                samples: stats.stats.samples,
-                distinctColors: stats.stats.distinctColors,
-                topColorFraction: stats.stats.topColorFraction,
-              })
-            } catch (error) {
-              onPageDone(id, { ok: false, reason: `原位截图失败：${error instanceof Error ? error.message : String(error)}` })
-            }
-          })
-          pending = pending.filter((id) => !visible.includes(id))
-          stalledFor = null
-          continue
-        }
-        // 平移到下一页（居中），等过渡落定后重试；落定仍不可见（几何口径边缘）
-        // 该页降级 staging——平移循环不空转，剩余页不会成片「扫描中断」。
-        const nextId = pending[0]
-        const next = nextId !== undefined ? placementOf.get(nextId) : undefined
-        if (!next) break
-        if (stalledFor === nextId) {
-          pending = pending.slice(1)
-          const page = nextId !== undefined ? pageById.get(nextId) : undefined
-          if (page) stagingPages.push(page)
-          stalledFor = null
-          continue
-        }
-        stalledFor = nextId ?? null
-        setOffset(panTargetFor({ x: next.x, y: next.y, width: next.width, height: next.height }, scaleRef.current, viewport))
-        await sleep(SWEEP_SETTLE_MS)
-      }
-    } finally {
-      setSweeping(false)
-      onActive(null)
-      setOffset(restoreOffset)
-    }
-    // staging 回退（巨页/相交页/几何降级页）：串行挂载路径，逐页检查中断——
-    // 扫掠被中断时剩余页一并放弃（未回报页由引擎记「渲染检查未完成」）。每页
-    // 报告在途集合，staging 期间画布同样有扫描光束（否则只有遮罩闪、没有进度感）。
-    for (const page of stagingPages) {
-      if (sweepAbortRef.current) break
-      onActive([page.id])
-      onPageDone(page.id, await stagingOutcomeOf(page.id))
-    }
-    onActive(null)
-    sweepActiveRef.current = false
-  }
+  const runScanSweep = createCanvasScanSweep({
+    doc: viewDoc,
+    placements,
+    viewportSize,
+    viewportRef,
+    surfaceRef,
+    offsetRef,
+    scaleRef,
+    sweepActiveRef,
+    sweepAbortRef,
+    setOffset,
+    setSweeping,
+  })
   scanBatchRef.current = runScanSweep
 
   // 内容换代（Agent 写盘 / 编辑重解析）即在途扫掠作废：旧 placements 闭包下的
@@ -1068,8 +520,7 @@ const DesignCanvas = ({
     abortSweepIfActive()
   }, [viewDoc, abortSweepIfActive])
 
-  // 键盘：Esc 取消选中；Del/Backspace 删除；Cmd/Ctrl+Z 撤销（+Shift 重做）。
-  // 输入控件聚焦时不劫持按键。
+  // 键盘：Esc 取消选中。输入控件聚焦时不劫持按键。
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
@@ -1079,25 +530,11 @@ const DesignCanvas = ({
       ) {
         return
       }
-      if (event.key === 'Escape') {
-        setSelectedId(null)
-        return
-      }
-      if (!editable) return
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
-        event.preventDefault()
-        if (event.shiftKey) redo()
-        else undo()
-        return
-      }
-      if ((event.key === 'Delete' || event.key === 'Backspace') && selectedId) {
-        event.preventDefault()
-        deleteSelected()
-      }
+      if (event.key === 'Escape') setSelectedId(null)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [editable, selectedId, undo, redo, deleteSelected])
+  }, [])
 
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     abortSweepIfActive()
@@ -1164,7 +601,6 @@ const DesignCanvas = ({
           // 同上：无捕获环境按事件冒泡处理。
         }
       }
-      // 无持久化出口的只读 .pen：维持「标签上按下不 pan」的既有语义，
       // 点击/双击由标签自身处理。
       return
     }
@@ -1176,35 +612,6 @@ const DesignCanvas = ({
     const element = target?.closest<HTMLElement>('[data-pen-id]')
     const nodeId = element?.getAttribute('data-pen-id') ?? null
     const node = nodeId ? findPenNode(viewDoc, nodeId) : undefined
-
-    // 绝对定位节点拖自身（编辑态专属：位置写入文件）。
-    if (
-      editable &&
-      element &&
-      nodeId &&
-      node &&
-      !readonlyIds.has(nodeId) &&
-      'layoutPosition' in node &&
-      node.layoutPosition === 'absolute' &&
-      !pageIds.has(nodeId)
-    ) {
-      const placement = placements.find((item) => item.page.id === nodeId)
-      const baseX = 'x' in node && typeof node.x === 'number' ? node.x : placement ? placement.x : 0
-      const baseY = 'y' in node && typeof node.y === 'number' ? node.y : placement ? placement.y : 0
-      interactionRef.current = {
-        kind: 'node',
-        pointerId: event.pointerId,
-        nodeId,
-        selectNodeId: nodeId,
-        element,
-        startClientX: event.clientX,
-        startClientY: event.clientY,
-        baseX,
-        baseY,
-      }
-      captureViewport()
-      return
-    }
 
     // 页内按下（页根、流内子节点、ref 内容等）：拖动移动**所属页**——对齐
     // Figma/pen.dev 的顶层 frame 手感，页面常被子内容铺满，「抓住内容拖」必须
@@ -1284,8 +691,6 @@ const DesignCanvas = ({
       })
       return
     }
-    // 拖动预览直接写元素 transform（不经 React 状态），松手时由提交的数据接管。
-    interaction.element.style.transform = `translate(${rawDx}px, ${rawDy}px)`
   }
 
   const onPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -1302,16 +707,6 @@ const DesignCanvas = ({
     setPageSnapGuides(null)
     if (!moved) {
       setSelectedId(interaction.selectNodeId)
-      return
-    }
-    if (interaction.kind === 'node') {
-      commitNodeMove(
-        interaction.nodeId,
-        interaction.baseX,
-        interaction.baseY,
-        (event.clientX - interaction.startClientX) / scale,
-        (event.clientY - interaction.startClientY) / scale,
-      )
       return
     }
     commitPageMove(
@@ -1413,18 +808,6 @@ const DesignCanvas = ({
     }
   }, [selectedNode, placements, viewDoc, t])
 
-  /** 检查器字段提交：对选中节点 raw 定位后打单字段补丁。 */
-  const patchSelectedField = useCallback(
-    (field: string, value: unknown) => {
-      const current = editRef.current
-      if (!current || !selectedId || !editable || readonlyIds.has(selectedId)) return
-      const nodePath = findRawNodePath(current.raw, selectedId)
-      if (!nodePath) return
-      applyEditPatches([{ path: [...nodePath, field], before: readAtRaw(current.raw, [...nodePath, field]), after: value }])
-    },
-    [selectedId, editable, readonlyIds, applyEditPatches],
-  )
-
   const visibleSet = useMemo(
     () => new Set(visiblePlacements.map((item) => item.page.id)),
     [visiblePlacements],
@@ -1440,6 +823,11 @@ const DesignCanvas = ({
     })
     return numbers
   }, [placements])
+
+  // 状态栏「按状态页导航」与画布排布共用同一份分组结果（声明 group → 名称 → 内容扫描）。
+  const pageGroups = useMemo(() => resolvePageGroups(viewDoc), [viewDoc])
+  const pagesById = useMemo(() => new Map(viewDoc.pages.map((page) => [page.id, page])), [viewDoc])
+  const hasPageOffsets = Object.keys(pageOffsets).length > 0
 
   // 页底：设计稿的 bg-main（明暗自洽），缺失时用应用卡片色兜底。
   const pageSurface = viewDoc.modeVariables[themeMode]['bg-main'] || 'var(--bg-card)'
@@ -1465,12 +853,6 @@ const DesignCanvas = ({
   const selectedNodeName = selectedNode
     ? ('name' in selectedNode && typeof selectedNode.name === 'string' ? selectedNode.name : selectedNode.id)
     : ''
-  const selectedNodeNameValue = selectedNode && 'name' in selectedNode && typeof selectedNode.name === 'string'
-    ? selectedNode.name
-    : ''
-
-  const selectedPenNode: PenNode | null =
-    selectedNode && selectedNode.type !== 'unknown' ? (selectedNode as PenNode) : null
 
   return (
     <div className="design-canvas">
@@ -1520,7 +902,12 @@ const DesignCanvas = ({
                 }}
               >
                 {visibleSet.has(placement.page.id) ? (
-                  <PenNodeView node={placement.page} document={viewDoc} themeMode={themeMode} />
+                  (() => {
+                    const axPage = viewDoc.axDocument?.pages.find((page) => page.id === placement.page.id)
+                    return axPage && pageUsesProjectComponents(axPage.tree, viewDoc.projectComponents)
+                      ? <ProjectDesignPreview document={viewDoc} page={axPage} theme={themeMode} />
+                      : <PenNodeView node={placement.page} document={viewDoc} themeMode={themeMode} />
+                  })()
                 ) : null}
               </div>
             ))
@@ -1551,6 +938,26 @@ const DesignCanvas = ({
         {/* 页卡片层：屏幕空间绘制（1px 边框/标签不随缩放变形）。内容仍在上面的
             变换面里；低倍率时卡片接管指针，让「点中某页」成为可行操作。 */}
         <div className={`design-canvas__page-layer${sweeping ? ' is-scanning' : ''}`} data-testid="design-canvas-page-layer">
+          {/* 组头带：屏幕空间标签（不随缩放变形），描述下方一行的分组。 */}
+          {visibleGroups.map((band) => {
+            const left = band.left * scale + offset.x
+            // 屏幕像素定位：与页标签同一坐标系（标签占行上缘上方 24px，带在其上）。
+            const top = band.rowTop * scale + offset.y - GROUP_BAND_SCREEN_CLEARANCE
+            return (
+              <div
+                key={band.key}
+                className="design-canvas__group-band"
+                style={{ left, top, width: Math.max((band.right - band.left) * scale, 120) }}
+                aria-hidden="true"
+              >
+                <span className="design-canvas__group-band-title">{band.title}</span>
+                <span className="design-canvas__group-band-count">
+                  {t('app.design.group.pageCount', { count: band.count })}
+                </span>
+                <span className="design-canvas__group-band-rule" />
+              </div>
+            )
+          })}
           {visiblePlacements.map((placement) => {
             // 尺寸标签只在页真有高度时显示：无高度 frame 的 240 是兜底值，
             // 显示出来就是给设计稿编造一个它没有的尺寸。
@@ -1600,6 +1007,7 @@ const DesignCanvas = ({
                   type="button"
                   data-canvas-ui="page-label"
                   data-page-id={placement.page.id}
+                  aria-label={pageName(placement.page)}
                   className={`design-canvas__page-label${selected ? ' is-selected' : ''}`}
                   style={{ left, top: top - LABEL_HEIGHT_PX - 4, maxWidth: Math.max(width, 60) }}
                   title={`${pageName(placement.page)} · ${placement.width}×${placement.height}
@@ -1628,75 +1036,6 @@ ${t('app.design.canvas.fitPageHint')}`}
               {selectedNodeName}
             </span>
           </div>
-          {readonlyIds.has(selectedNode.id) && (
-            <p className="design-canvas__inspector-readonly">
-              {t('app.design.inspector.readonly')}
-            </p>
-          )}
-          {selectedWritable && (
-            <div className="design-canvas__inspector-fields">
-              <InspectorTextField
-                label={t('app.design.inspector.name')}
-                value={selectedNodeNameValue}
-                onCommit={(value) => patchSelectedField('name', value === '' ? undefined : value)}
-              />
-              {selectedMovable && (
-                <>
-                  <InspectorNumberField
-                    label="X"
-                    value={selectedPenNode && typeof selectedPenNode.x === 'number' ? selectedPenNode.x : undefined}
-                    onCommit={(value) => patchSelectedField('x', value)}
-                  />
-                  <InspectorNumberField
-                    label="Y"
-                    value={selectedPenNode && typeof selectedPenNode.y === 'number' ? selectedPenNode.y : undefined}
-                    onCommit={(value) => patchSelectedField('y', value)}
-                  />
-                </>
-              )}
-              {selectedPenNode && typeof selectedPenNode.width === 'number' && (
-                <InspectorNumberField
-                  label={t('app.design.inspector.width')}
-                  value={selectedPenNode.width}
-                  onCommit={(value) => patchSelectedField('width', value)}
-                />
-              )}
-              {selectedPenNode && typeof selectedPenNode.height === 'number' && (
-                <InspectorNumberField
-                  label={t('app.design.inspector.height')}
-                  value={selectedPenNode.height}
-                  onCommit={(value) => patchSelectedField('height', value)}
-                />
-              )}
-              {selectedPenNode?.type === 'text' && (
-                <InspectorTextArea
-                  label={t('app.design.inspector.content')}
-                  value={selectedPenNode.content ?? ''}
-                  onCommit={(value) => patchSelectedField('content', value)}
-                />
-              )}
-              {selectedPenNode && typeof selectedPenNode.fontSize === 'number' && (
-                <InspectorNumberField
-                  label={t('app.design.inspector.fontSize')}
-                  value={selectedPenNode.fontSize}
-                  onCommit={(value) => patchSelectedField('fontSize', value)}
-                />
-              )}
-              {selectedPenNode && typeof selectedPenNode.cornerRadius === 'number' && (
-                <InspectorNumberField
-                  label={t('app.design.inspector.radius')}
-                  value={selectedPenNode.cornerRadius}
-                  onCommit={(value) => patchSelectedField('cornerRadius', value)}
-                />
-              )}
-              {selectedPenNode?.fill && (
-                <InspectorFillField
-                  fill={selectedPenNode.fill}
-                  onCommit={(value) => patchSelectedField('fill', { kind: 'solid', value })}
-                />
-              )}
-            </div>
-          )}
           <div className="design-canvas__inspector-actions">
             <button type="button" onClick={referenceSelected}>
               {t('app.design.canvas.reference')}
@@ -1707,7 +1046,7 @@ ${t('app.design.canvas.fitPageHint')}`}
             <button
               type="button"
               className={`design-canvas__inspector-delete${deleteArmed ? ' is-armed' : ''}`}
-              disabled={!selectedWritable && !axPageDeletable}
+              disabled={!axPageDeletable}
               title={deleteButtonTitle}
               onClick={onDeleteButtonClick}
             >
@@ -1721,6 +1060,30 @@ ${t('app.design.canvas.fitPageHint')}`}
           {doc.fileName} · {viewDoc.pages.length}
           {t('app.design.pages.countSuffix')}
         </span>
+        {axReview && viewDoc.pages.length > 1 && pageGroups.length > 1 && (
+          <select aria-label={t('app.design.canvas.statePage')} value={selectedPageId ?? viewDoc.pages[0]?.id ?? ''}
+            onChange={(event) => focusPageFromScan(event.target.value)}>
+            {pageGroups.map((group) => (
+              <optgroup key={group.key} label={group.title ?? t('app.design.pages.aria')}>
+                {group.pageIds.map((pageId) => {
+                  const page = pagesById.get(pageId)
+                  if (!page) return null
+                  const state = viewDoc.pageMetadata?.[pageId]?.state
+                  return (
+                    <option key={pageId} value={pageId}>
+                      {pageName(page)}{state ? ` · ${Object.values(state).join(' / ')}` : ''}
+                    </option>
+                  )
+                })}
+              </optgroup>
+            ))}
+          </select>
+        )}
+        {axReview && hasPageOffsets && (
+          <button type="button" onClick={resetPageOffsets} title={t('app.design.canvas.resetLayoutHint')}>
+            {t('app.design.canvas.resetLayout')}
+          </button>
+        )}
         <span className="design-canvas__zoom">
           <button type="button" onClick={() => setScale((s) => clampScale(s - ZOOM_STEP))} aria-label={t('app.design.zoom.out')}>
             −
@@ -1761,16 +1124,6 @@ ${t('app.design.canvas.fitPageHint')}`}
         >
           {t('app.design.scan.toggle')}
         </button>
-        {editable && (
-          <span className="design-canvas__history">
-            <button type="button" onClick={undo} disabled={!canUndo} aria-label={t('app.design.canvas.undo')}>
-              {t('app.design.canvas.undo')}
-            </button>
-            <button type="button" onClick={redo} disabled={!canRedo} aria-label={t('app.design.canvas.redo')}>
-              {t('app.design.canvas.redo')}
-            </button>
-          </span>
-        )}
         {notice && (
           <span
             className={`design-canvas__notice is-${notice.tone}`}
@@ -1809,151 +1162,6 @@ ${t('app.design.canvas.fitPageHint')}`}
         />
       )}
     </div>
-  )
-}
-
-const clampScale = (value: number): number => Math.min(MAX_SCALE, Math.max(MIN_SCALE, value))
-
-/** 检查器字段公共行为：外部值换代即重置草稿，blur/Enter 提交。 */
-const useDraft = (value: string): [string, (next: string) => void, () => void] => {
-  const [draft, setDraft] = useState(value)
-  useEffect(() => {
-    setDraft(value)
-  }, [value])
-  return [draft, setDraft, () => setDraft(value)]
-}
-
-const InspectorTextField = ({
-  label,
-  value,
-  onCommit,
-}: {
-  label: string
-  value: string
-  onCommit: (value: string) => void
-}) => {
-  const [draft, setDraft, reset] = useDraft(value)
-  const commit = (): void => {
-    if (draft === value) return
-    if (draft.trim() === '') {
-      reset()
-      return
-    }
-    onCommit(draft.trim())
-  }
-  return (
-    <label className="design-canvas__field">
-      <span>{label}</span>
-      <input
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter') (event.target as HTMLInputElement).blur()
-        }}
-        spellCheck={false}
-      />
-    </label>
-  )
-}
-
-const InspectorNumberField = ({
-  label,
-  value,
-  onCommit,
-}: {
-  label: string
-  value: number | undefined
-  onCommit: (value: number) => void
-}) => {
-  const [draft, setDraft, reset] = useDraft(value === undefined ? '' : String(value))
-  const commit = (): void => {
-    const parsed = Number(draft.trim())
-    if (!Number.isFinite(parsed)) {
-      reset()
-      return
-    }
-    if (parsed === value) return
-    onCommit(parsed)
-  }
-  return (
-    <label className="design-canvas__field">
-      <span>{label}</span>
-      <input
-        value={draft}
-        inputMode="decimal"
-        onChange={(event) => setDraft(event.target.value)}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter') (event.target as HTMLInputElement).blur()
-        }}
-        spellCheck={false}
-      />
-    </label>
-  )
-}
-
-const InspectorTextArea = ({
-  label,
-  value,
-  onCommit,
-}: {
-  label: string
-  value: string
-  onCommit: (value: string) => void
-}) => {
-  const [draft, setDraft] = useState(value)
-  useEffect(() => {
-    setDraft(value)
-  }, [value])
-  const commit = (): void => {
-    if (draft !== value) onCommit(draft)
-  }
-  return (
-    <label className="design-canvas__field design-canvas__field--area">
-      <span>{label}</span>
-      <textarea
-        value={draft}
-        rows={3}
-        onChange={(event) => setDraft(event.target.value)}
-        onBlur={commit}
-        spellCheck={false}
-      />
-    </label>
-  )
-}
-
-const InspectorFillField = ({
-  fill,
-  onCommit,
-}: {
-  fill: PenNode['fill']
-  onCommit: (hex: string) => void
-}) => {
-  const { t } = useT()
-  if (fill?.kind !== 'solid') {
-    return (
-      <div className="design-canvas__field">
-        <span>{t('app.design.inspector.fill')}</span>
-        <span className="design-canvas__field-static">{fill ? fill.kind : '—'}</span>
-      </div>
-    )
-  }
-  const hex = /^#[0-9a-fA-F]{6}$/.test(fill.value) ? fill.value : null
-  if (!hex) {
-    // token 填充展示引用名，不提供字面编辑（避免把设计 token 打散成硬编码色）。
-    return (
-      <div className="design-canvas__field">
-        <span>{t('app.design.inspector.fill')}</span>
-        <span className="design-canvas__field-static">{fill.value}</span>
-      </div>
-    )
-  }
-  return (
-    <label className="design-canvas__field">
-      <span>{t('app.design.inspector.fill')}</span>
-      <input type="color" value={hex} onChange={(event) => onCommit(event.target.value)} />
-    </label>
   )
 }
 

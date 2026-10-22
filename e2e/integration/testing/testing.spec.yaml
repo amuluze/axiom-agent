@@ -1,0 +1,24 @@
+feature:
+  id: e2e-testing-journey
+  title: 测试页运行旅程
+  summary: 从扫描工作区 tests/*.testspec.json，到逐步审批的运行，再到失败报告回填开发会话：
+    每一步都由宿主的权威命令驱动（假宿主下为内存态），未实现的命令必须 fail-loud。
+business_rules:
+  - id: CE-E2E-TEST-001
+    title: 扫描工作区 tests/ 目录并展示每个用例文件的校验状态
+  - id: CE-E2E-TEST-002
+    title: 开始运行后写步骤弹出审批卡片，允许后宿主签发租约并执行
+  - id: CE-E2E-TEST-003
+    title: 运行结束在测试页展示运行报告（运行状态与步骤明细）
+  - id: CE-E2E-TEST-004
+    title: 失败报告的「发送并打开会话」切到会话视图并渲染失败摘要
+groups:
+  - id: index
+    title: 扫描
+    cases: [scan-lists-specs]
+  - id: run
+    title: 运行
+    cases: [run-with-approval]
+  - id: handoff
+    title: 发送会话
+    cases: [report-handoff-to-session]

@@ -15,8 +15,19 @@ import type { PenDiagnostic } from './penParser'
  * 1.2：overlay 增加可选 `scrim`（遮罩语义，见 AxScrim）——1.1 的稿逐字节合法。
  * 1.3：frame/text/icon/rect/ellipse/path 增加可选 `shadow`（外阴影，见 AxShadow）
  * ——1.2 的稿逐字节合法。
+ * 1.4：新增顶层可选 `symbols`（文档内局部组件：props 契约 + body 原语子树，
+ * 见 AxSymbolDef）与 `{$param}` 绑定（body 文案位引用参数）——1.3 的稿逐字节合法。
+ * 1.5：组件声明增加可选 `slots`（具名插槽契约，见 AxSlotDecl）——1.4 的稿逐字节合法。
+ * 1.6：symbol 的 props 契约支持枚举型（`{ enum: [...] }`），`{$param}` 随之可落在
+ * 枚举位（首期仅 `icon` 的 `name`，见 `AX_PARAM_ENUM_POSITIONS`）——1.5 的稿逐字节合法。
  */
-export const AX_FORMAT_VERSION = '1.3'
+export const AX_FORMAT_VERSION = '1.6'
+
+/** 枚举位白名单（1.6）：`symbols.<名>.body` 里这些位置接受 `{$param}`（页树不接受）。 */
+export const AX_PARAM_ENUM_POSITIONS = ['icon.name'] as const
+
+/** 枚举值域上限：值域是写进契约又被实例逐次消费的闭集，超限说明参数建模错了。 */
+export const AX_SYMBOL_ENUM_MAX_VALUES = 32
 
 /** 解析器已验证的格式主版本；超出即拒绝（与 .pen 的「记诊断继续渲染」不同）。 */
 export const AX_SUPPORTED_MAJOR = 1
@@ -52,11 +63,16 @@ export type AxJsonValue =
   | AxJsonValue[]
   | { [key: string]: AxJsonValue }
 
-/** 文案/标签值：字面量，或显式声明其为 mock 展示文案 / 绑真实数据源（规则 2）。 */
+/**
+ * 文案/标签值：字面量，或显式声明其为 mock 展示文案 / 绑真实数据源 / 引用 symbol
+ * 参数（规则 2；`$param` 只出现在 `symbols.<name>.body` 的文案位，1.4）。
+ */
 export interface AxBinding {
   /** mock 字面量：文案用字符串，组件 props 可以是结构化值（对象/数组）。 */
   $mock?: AxJsonValue
   $bind?: string
+  /** symbol body 内的参数引用（名字必须是该 symbol 契约里声明的 string 型 prop）。 */
+  $param?: string
 }
 
 export type AxTextValue = string | AxBinding
@@ -103,8 +119,12 @@ export interface AxLineHeight {
 export interface AxNode {
   id: string
   kind: AxNodeKind
-  /** component */
-  name?: string
+  /**
+   * component：组件 / symbol 名（解析期必须收到字符串）。
+   * icon（1.6）：图标名，或枚举位 `{$param}` 引用——仅 `symbols.<名>.body` 内的 icon
+   * 允许后者；页树与其它节点仍是字符串（校验器 fail-closed）。
+   */
+  name?: string | AxSymbolParamRef
   variant?: string
   props?: Record<string, AxPropValue>
   /** 数据档案名（注册表 fixtures 键）：预览态用哪份数据。 */
@@ -228,6 +248,63 @@ export interface AxPage {
 export interface AxComponentDecl {
   variant?: string[]
   props?: Record<string, string>
+  /**
+   * 具名插槽契约（1.5）：插槽名 → 内容注入的组件 prop 名。首版只有 children 形态
+   * （内容是 AxNode[]，宿主/codegen 以 ReactNode 直传该 prop），不做作用域插槽；
+   * 节点侧 `slot` 数组的内容归属 `default` 插槽（AX_DEFAULT_SLOT_NAME）。
+   */
+  slots?: Record<string, AxSlotDecl>
+}
+
+/** 单个具名插槽的契约（1.5）：`prop` 是组件接收插槽内容的 prop 名（如 `children`）。 */
+export interface AxSlotDecl {
+  prop: string
+}
+
+/**
+ * 文档内局部组件（symbol，1.4）：props 契约 + body 原语子树。实例是 `component`
+ * 节点（`name` 命中 `symbols` 时走本路径，优先于注册表词汇），props 值在投影与
+ * codegen 时替换 body 文案位的 `{$param}` 引用。
+ *
+ * v1 边界（校验器强制）：参数只落在文案位且契约类型仅 string；body 禁 component
+ * （无嵌套 symbol、不含注册表组件）与 overlay；实例无 variant/slot/fixture；
+ * 所有声明的 props 在实例上必填（无默认值）。body 属原语侧的具名复用——带度量，
+ * 不违反规则 9（其准确边界是「part 不带度量、定位不带坐标、原语带度量」）。
+ */
+/**
+ * 枚举位参数引用（1.6）：只在 `symbols.<名>.body` 的 `AX_PARAM_ENUM_POSITIONS` 位置出现。
+ * 实例传字面量，校验器按契约值域 fail-closed；投影期替换为字面量、codegen 发射为
+ * 联合字面量属性上的引用。
+ */
+export interface AxSymbolParamRef {
+  $param: string
+}
+
+/** 枚举型参数契约（1.6）：闭集值域，实例值必须命中其一。 */
+export interface AxSymbolEnumProp {
+  enum: readonly string[]
+}
+
+/** symbol 参数契约：`'string'`（文案位替换）或枚举型（枚举位替换，1.6）。 */
+export type AxSymbolProp = 'string' | AxSymbolEnumProp
+
+/**
+ * component / symbol 名（窄化访问，1.6）：枚举位 `{$param}` 只允许出现在 symbol body
+ * 的 icon 上，校验器在写入期已拒绝了其它形态——这里拿到引用即非法稿。
+ */
+export const axNodeNameOf = (node: AxNode): string | undefined =>
+  typeof node.name === 'string' ? node.name : undefined
+
+/** 枚举位引用读取（1.6）：非枚举位引用（含字面量字符串）返回 undefined。 */
+export const axParamRefOf = (value: unknown): AxSymbolParamRef | undefined => {
+  if (typeof value !== 'object' || value === null) return undefined
+  const param = (value as AxSymbolParamRef).$param
+  return typeof param === 'string' ? { $param: param } : undefined
+}
+
+export interface AxSymbolDef {
+  props?: Record<string, AxSymbolProp>
+  body: AxNode[]
 }
 
 export interface AxToken {
@@ -243,6 +320,8 @@ export interface AxDocument {
   name?: string
   tokens: Record<string, AxToken>
   components: Record<string, AxComponentDecl>
+  /** 文档内局部组件（1.4 起）。可选：存量稿无此键；序列化时为空则不落键（往返字节稳定）。 */
+  symbols?: Record<string, AxSymbolDef>
   pages: AxPage[]
 }
 
@@ -290,13 +369,50 @@ export const AX_ALLOWED_KEYS: Record<AxNodeKind, readonly string[]> = {
   overlay: ['id', 'kind', 'anchor', 'offset', 'scrim', 'children'],
 }
 
-export const AX_DOC_KEYS = ['ax', 'name', 'tokens', 'components', 'pages'] as const
+/**
+ * `AxNode` 接口的全部键名。它和 `AX_ALLOWED_KEYS` 是**两份**事实源（接口给类型、白名单给
+ * 校验），过去只在 review 里靠肉眼对齐——接口新增字段忘了进白名单，合法字段会被判错；
+ * 白名单写了接口没有的键，则类型与校验说的不是一回事。本常量把它们锁在一起：
+ * 下面的类型级穷尽断言让「接口加字段但没登记」在 `tsc` 阶段就报错，配套测试再断言
+ * 每个 kind 的键集是本常量的子集、且所有 kind 的并集与之相等。
+ */
+export const AX_NODE_KEY_NAMES = [
+  'id', 'kind', 'name', 'variant', 'props', 'fixture', 'slot', 'part', 'label', 'supporting',
+  'icon', 'count', 'selected', 'state', 'layout', 'gap', 'padding', 'width', 'height',
+  'justifyContent', 'alignItems', 'clip', 'theme', 'children', 'text', 'fontSize', 'fontWeight',
+  'fontFamily', 'lineHeight', 'letterSpacing', 'textAlign', 'wrap', 'fill', 'stroke',
+  'strokeWidth', 'shadow', 'cornerRadius', 'innerRadius', 'geometry', 'viewBox', 'asset', 'mode',
+  'size', 'anchor', 'offset', 'scrim',
+] as const satisfies readonly (keyof AxNode)[]
+
+/** 编译期穷尽断言：`AxNode` 新增字段未登记进 `AX_NODE_KEY_NAMES` 即类型错误。 */
+type MissingAxNodeKeys = Exclude<keyof AxNode, (typeof AX_NODE_KEY_NAMES)[number]>
+const _axNodeKeysExhaustive: MissingAxNodeKeys extends never ? true : never = true
+void _axNodeKeysExhaustive
+
+export const AX_DOC_KEYS = ['ax', 'name', 'tokens', 'components', 'symbols', 'pages'] as const
 export const AX_PAGE_KEYS = [
   'id', 'name', 'layout', 'gap', 'padding', 'group', 'state',
   'width', 'height', 'background', 'tree',
 ] as const
 export const AX_TOKEN_KEYS = ['$type', '$value'] as const
-export const AX_COMPONENT_DECL_KEYS = ['variant', 'props'] as const
+export const AX_COMPONENT_DECL_KEYS = ['variant', 'props', 'slots'] as const
+/** slot 契约对象的允许键（1.5）：内容注入的组件 prop 名。 */
+export const AX_SLOT_DECL_KEYS = ['prop'] as const
+/**
+ * 节点 `slot` 数组的内容归属插槽名（1.5）：首版节点侧只开放 default 具名插槽的
+ * children 形态写作；decl.slots 未声明该名时节点带 slot 内容即校验错误（fail-closed）。
+ */
+export const AX_DEFAULT_SLOT_NAME = 'default'
+/** symbol 定义对象的允许键（1.4）：props 契约 + body 子树。 */
+export const AX_SYMBOL_DEF_KEYS = ['props', 'body'] as const
+/**
+ * symbol 实例展开节点的 id 分隔符（投影层派生，authored id 禁用）：投影把实例 body
+ * 物化成 `${实例id}~s:${bodyId}`，反查（designSelectionContext）据此前缀取回实例的
+ * authored 节点——点选 symbol 内部即选中整个实例。与 `~overlay`/`~scrim` 同属保留
+ * 约定：后两者是「后缀剥离」，本分隔符是「前缀注入」。
+ */
+export const AX_SYMBOL_ID_SEP = '~s:'
 /** scrim 对象的允许键：遮罩只有绘制值（半透明色/渐变/图片填充）。 */
 export const AX_SCRIM_KEYS = ['fill'] as const
 
@@ -328,11 +444,12 @@ export const isAxJsonValue = (value: unknown): value is AxJsonValue => {
 }
 
 /**
- * 绑定值形态（`{$mock}` / `{$bind}`，二者互斥且必须有一个）。
+ * 绑定值形态（`{$mock}` / `{$bind}` / `{$param}`，互斥且必须有一个）。
  * `$bind` 只接受字符串（数据源路径），`$mock` 接受任意 JSON 值——组件的 json 型 props
- * 需要结构化 mock（1.1 起）；文案节点另由 `checkTextValue` 收紧为字符串 mock。
+ * 需要结构化 mock（1.1 起）；`$param` 只接受字符串（参数名，1.4，仅 symbol body 内
+ * 合法，由校验器按所在位置收紧）；文案节点另由 `checkTextValue` 收紧为字符串 mock。
  */
-export const axBindingKind = (value: unknown): 'mock' | 'bind' | null => {
+export const axBindingKind = (value: unknown): 'mock' | 'bind' | 'param' | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const record = value as Record<string, unknown>
   const keys = Object.keys(record)
@@ -340,6 +457,7 @@ export const axBindingKind = (value: unknown): 'mock' | 'bind' | null => {
   const key = keys[0]
   if (key === '$mock' && isAxJsonValue(record[key])) return 'mock'
   if (key === '$bind' && typeof record[key] === 'string') return 'bind'
+  if (key === '$param' && typeof record[key] === 'string') return 'param'
   return null
 }
 

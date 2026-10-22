@@ -12,11 +12,14 @@
  *    显式降级（不静默返回巨图把上下文撑爆）。
  * 4. **用完即拆**：React root unmount + 容器移除（渲染是副作用，不能留在 DOM 里）。
  */
+import { renderProjectDesignPreview } from '@/platform/projectDesignPreview'
+import { pageUsesProjectComponents } from '@/agent/design/projectPreview'
 import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
 import type { CSSProperties } from 'react'
 import { parseAxDocument, projectAxToPenDocument } from '@/agent/design/axParser'
 import type { AxDocument } from '@/agent/design/axSchema'
+import type { DesignComponentDetail } from '@/agent/design/componentInventoryHost'
 import {
   setDesignScanRenderConcurrency,
   type DesignPageRenderFailure,
@@ -29,9 +32,40 @@ import type { RgbaImage } from '@/agent/design/visualCompare'
 import { useUiStore } from '@/stores/uiStore'
 import type { PenDocument, PenNode } from '@/agent/design/penParser'
 import PenNodeView from '../PenNodeView'
+import { axComponentInventorySummary } from './registry'
 import CanvasErrorBoundary from '../CanvasErrorBoundary'
-import { renderPageToPngBase64, renderPageToPngWithStats } from '../exportPagePng'
+import { renderPageToPngBase64, renderPageToPngWithStats, sampleCanvasPixels } from '../exportPagePng'
 import { captureMountedPage, nativeCaptureSupported } from '../nativePageCapture'
+
+function captureProjectPage(input: Parameters<typeof renderProjectDesignPreview>[0], scan: true): Promise<DesignScanPageRenderResult>
+function captureProjectPage(input: Parameters<typeof renderProjectDesignPreview>[0], scan?: false): Promise<DesignPageRenderResult | DesignPageRenderFailure>
+async function captureProjectPage(input: Parameters<typeof renderProjectDesignPreview>[0], scan = false): Promise<DesignScanPageRenderResult | DesignPageRenderResult | DesignPageRenderFailure> {
+  const captured = await renderProjectDesignPreview({ ...input, maxBytes: 6 * 1024 * 1024 })
+  if ('ok' in captured) return captured
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const element = new Image()
+    element.onload = () => resolve(element)
+    element.onerror = () => reject(new Error('项目预览 PNG 解码失败'))
+    element.src = `data:image/png;base64,${captured.base64}`
+  })
+  let statistics: ReturnType<typeof sampleCanvasPixels> | undefined
+  for (const factor of [1, 0.5, 0.25]) {
+    const canvas = window.document.createElement('canvas')
+    canvas.width = Math.max(1, Math.round(captured.width * factor))
+    canvas.height = Math.max(1, Math.round(captured.height * factor))
+    const context = canvas.getContext('2d')
+    if (!context) return { ok: false, reason: '无法创建项目预览图像上下文' }
+    context.drawImage(image, 0, 0, canvas.width, canvas.height)
+    statistics ??= sampleCanvasPixels(canvas)
+    const base64 = factor === 1 ? captured.base64 : canvas.toDataURL('image/png').split(',')[1] ?? ''
+    if (base64.length <= input.maxBytes) {
+      const result = { ...captured, base64, width: canvas.width, height: canvas.height, scale: captured.scale * factor }
+      return scan ? { ...result, ...statistics, ok: true } : result
+    }
+  }
+  return scan ? { ok: true, width: captured.width, height: captured.height, scale: captured.scale, pageName: captured.pageName, ...statistics }
+    : { ok: false, reason: '项目预览截图超过图片预算，请调大 imageMaxBytes' }
+}
 
 /** 降采样阶梯（设计稿像素倍率）。 */
 const SCALE_LADDER = [2, 1, 0.5] as const
@@ -52,6 +86,54 @@ const nextFrame = (): Promise<void> =>
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve())
     else setTimeout(resolve, 0)
   })
+
+/** 非帧同步的等待节拍（`setTimeout` 宏任务）。 */
+const waitTick = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+
+/**
+ * 等 React 首次提交（有界等待）。
+ *
+ * 并发渲染下首次提交可能晚于两帧——页越重、扫描的并发 lane 越明显。只采样一次会把
+ * 合法页误判成「渲染树为空」，而这是**错误级**判定（整页 fail，模型会据此去「修」没坏
+ * 的页）。已提交立即返回，只有持续为空才判失败；失败路径才付这段等待。
+ *
+ * 轮询**刻意不用 `requestAnimationFrame`**：WKWebView 在窗口不可见/被遮挡时会把 rAF
+ * 节流到 1Hz 甚至暂停，帧同步的等待就变成不可控的长等待（挂载卡住，而不是按预算判
+ * 失败）。`setTimeout` 的节奏不受可见性影响，等待时长因此可预期。
+ */
+const COMMIT_WAIT_BUDGET_MS = 2_000
+const COMMIT_POLL_MIN_MS = 16
+const COMMIT_POLL_MAX_MS = 200
+
+/** 首次提交等待的过程数据（失败原因里回显，便于区分「页没提交」与「等得不够」）。 */
+export interface CommitWaitOutcome {
+  attempts: number
+  elapsedMs: number
+}
+
+export const waitForCommittedTree = async (
+  container: HTMLElement,
+  options: { budgetMs?: number; outcome?: CommitWaitOutcome } = {},
+): Promise<HTMLElement | null> => {
+  const budgetMs = options.budgetMs ?? COMMIT_WAIT_BUDGET_MS
+  const startedAt = Date.now()
+  const outcome = options.outcome ?? { attempts: 0, elapsedMs: 0 }
+  let attempts = 0
+  for (;;) {
+    const element = container.firstElementChild as HTMLElement | null
+    outcome.attempts = attempts
+    outcome.elapsedMs = Date.now() - startedAt
+    if (element) return element
+    if (outcome.elapsedMs >= budgetMs) return null
+    attempts += 1
+    // 递增退避（16 → 200ms）：早期轮询密（提交通常几毫秒内到），后期稀疏——不与主
+    // 线程上的光栅化/截图抢时间片。
+    await waitTick(Math.min(COMMIT_POLL_MAX_MS, COMMIT_POLL_MIN_MS * 2 ** Math.min(attempts - 1, 4)))
+  }
+}
 
 export interface MountedPage {
   element: HTMLElement
@@ -100,6 +182,10 @@ export const mountPenPageElement = async (
   const page = pageIndex >= 0 ? doc.pages[pageIndex] : undefined
   if (!page) return { mounted: null, error: `页面不存在：${String(pageIdOrIndex)}` }
   const frame = page as PenNode
+  const externalNames = new Set(doc.projectComponents?.map((entry) => entry.summary.name))
+  const hasExternal = (node: PenDocument['pages'][number]): boolean =>
+    (node.type === 'component' && externalNames.has(node.name)) || ('children' in node && (node.children ?? []).some(hasExternal))
+  if (hasExternal(page)) return { mounted: null, error: '项目组件尚无隔离的运行预览，请在项目开发服务中验证；目录仅提供类型契约' }
   const width = typeof frame.width === 'number' ? frame.width : 0
   const height = typeof frame.height === 'number' ? frame.height : 0
   if (width <= 0 || height <= 0) {
@@ -163,16 +249,17 @@ export const mountPenPageElement = async (
       new Promise<void>((resolve) => setTimeout(resolve, 3_000)),
     ])
   }
-  const element = container.firstElementChild as HTMLElement | null
+  const commitWait: CommitWaitOutcome = { attempts: 0, elapsedMs: 0 }
+  const element = await waitForCommittedTree(container, { outcome: commitWait })
   if (!element) {
+    // 失败原因带上过程数据：区分「页面确实没提交」与「等待预算不够」——前者要修稿或
+    // 修组件，后者只是这一次没赶上，模型不该据此去改没坏的页。
+    const reason = renderError
+      ? `渲染树为空（React 未捕获错误：${renderError}）`
+      : `渲染树为空（React 未提交任何内容；等待 ${commitWait.elapsedMs}ms、轮询 ${commitWait.attempts} 次后仍无子节点，visibility=${window.document.visibilityState}）`
     root.unmount()
     container.remove()
-    return {
-      mounted: null,
-      error: renderError
-        ? `渲染树为空（React 未捕获错误：${renderError}）`
-        : '渲染树为空（React 未提交任何内容）',
-    }
+    return { mounted: null, error: reason }
   }
   return {
     mounted: {
@@ -197,10 +284,12 @@ export const mountAxPageElement = async (
   axDocument: AxDocument,
   pageIdOrIndex: string | number,
   themeMode: 'light' | 'dark' = currentThemeMode(),
-  options: { mode?: 'offscreen' | 'capture' } = {},
+  options: { mode?: 'offscreen' | 'capture'; fileName?: string; workspacePath?: string; projectComponents?: DesignComponentDetail[] } = {},
 ): Promise<MountOutcome> => {
-  const projection = projectAxToPenDocument(axDocument, 'render.ax').document
+  const projection = projectAxToPenDocument(axDocument, options.fileName ?? 'render.ax').document
   if (!projection) return { mounted: null, error: '文档投影失败' }
+  projection.workspacePath = options.workspacePath
+  projection.projectComponents = options.projectComponents
   return mountPenPageElement(projection, pageIdOrIndex, themeMode, options)
 }
 
@@ -210,7 +299,7 @@ export const mountAxPageElement = async (
 export const renderAxPageToPng = async (
   request: DesignPageRenderRequest,
 ): Promise<DesignPageRenderResult | DesignPageRenderFailure | null> => {
-  const parsed = parseAxDocument(request.source)
+  const parsed = parseAxDocument(request.source, { componentInventory: request.componentInventory ?? axComponentInventorySummary() })
   if (!parsed.document) {
     const detail = parsed.error
       ?? parsed.diagnostics
@@ -220,9 +309,25 @@ export const renderAxPageToPng = async (
     return { ok: false, reason: `设计稿解析失败：${detail || '未知错误'}` }
   }
   const themeMode = currentThemeMode()
+  const index = pageIndexOf(parsed.document.pages, request.pageIdOrIndex)
+  const externalPage = parsed.document.pages[index]
+  // compare via=preview 的同引擎档：显式旗标强制走 design:preview 隔离 Chromium——
+  // 即使页面不含项目组件（纯原语页也经项目运行时渲染），两侧同引擎后判定阈值收紧。
+  // 服务未配置时由调用方先判定回落；配置了但运行失败照常返回 ok:false + 原因。
+  if (request.forceProjectPreview && externalPage) {
+    return await captureProjectPage({ command: request.projectBrowserCommand, workspacePath: request.workspacePath, preview: request.projectPreview, file: request.fileName, source: request.source,
+      page: externalPage, theme: themeMode, maxBytes: request.maxBytes })
+  }
+  if (externalPage && pageUsesProjectComponents(externalPage.tree, request.projectComponents)) {
+    return await captureProjectPage({ command: request.projectBrowserCommand, workspacePath: request.workspacePath, preview: request.projectPreview, file: request.fileName, source: request.source,
+      page: externalPage, theme: themeMode, maxBytes: request.maxBytes })
+  }
   const native = await nativeCaptureSupported()
   const { mounted, error } = await mountAxPageElement(parsed.document, request.pageIdOrIndex, themeMode, {
     mode: native ? 'capture' : 'offscreen',
+    fileName: request.fileName,
+    workspacePath: request.workspacePath,
+    projectComponents: request.projectComponents,
   })
   if (!mounted) {
     return { ok: false, reason: `页面挂载失败：${error ?? '未知原因'}` }
@@ -306,6 +411,13 @@ export const renderPenPageForScan = async (
   const height = typeof frame.height === 'number' ? frame.height : 0
   if (width <= 0 || height <= 0) {
     return { ok: false, reason: '页面没有有效尺寸' }
+  }
+  const axPage = request.doc.axDocument?.pages.find((entry) => entry.id === page.id)
+  if (axPage && pageUsesProjectComponents(axPage.tree, request.doc.projectComponents)) {
+    if (!request.doc.axSource) return { ok: false, reason: '项目预览缺少原始稿件，无法校验 SHA-256' }
+    const rendered = await captureProjectPage({ command: request.projectBrowserCommand, workspacePath: request.doc.workspacePath, preview: request.doc.projectPreview, source: request.doc.axSource,
+      file: request.doc.fileName, page: axPage, theme: themeMode, maxBytes: request.maxBytes }, true)
+    return rendered
   }
   const mounted_ = await mountPenPageElement(request.doc, request.pageIdOrIndex, themeMode, {
     mode: native ? 'capture' : 'offscreen',
@@ -427,6 +539,14 @@ export const renderPenPageToPngBase64 = async (
 ): Promise<string | null> => {
   const native = await nativeCaptureSupported()
   const themeMode = currentThemeMode()
+  const page = doc.axDocument?.pages[pageIndexOf(doc.pages, pageIdOrIndex)]
+  if (page && pageUsesProjectComponents(page.tree, doc.projectComponents)) {
+    if (!doc.axSource) throw new Error('项目预览缺少原始稿件，无法校验 SHA-256')
+    const result = await renderProjectDesignPreview({ workspacePath: doc.workspacePath, preview: doc.projectPreview, source: doc.axSource, file: doc.fileName,
+      page, theme: themeMode, maxBytes: Number.MAX_SAFE_INTEGER })
+    if ('ok' in result) throw new Error(result.reason)
+    return result.base64
+  }
   const { mounted } = await mountPenPageElement(doc, pageIdOrIndex, themeMode, {
     mode: native ? 'capture' : 'offscreen',
   })

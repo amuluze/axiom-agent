@@ -24,7 +24,7 @@ export interface AgentWorkspaceSlice {
   addWorkspace: () => Promise<boolean>
   activateWorkspace: (path: string) => Promise<boolean>
   revokeWorkspace: (path?: string) => Promise<boolean>
-  authorizeFile: () => Promise<boolean>
+  authorizeFile: () => Promise<AuthorizedReadFile | null>
   authorizeDirectory: () => Promise<boolean>
   revokeFile: (path: string) => Promise<boolean>
   refreshWorkspaceBranchInfo: () => Promise<void>

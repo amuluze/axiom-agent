@@ -4,12 +4,20 @@ const mocks = vi.hoisted(() => ({
   checkForAppUpdate: vi.fn(),
   downloadAndInstallAppUpdate: vi.fn(),
   relaunchApp: vi.fn(),
+  AppUpdateInstallError: class AppUpdateInstallError extends Error {
+    readonly stage: 'download' | 'signature' | 'storage' | 'replace' | 'unknown'
+    constructor(stage: 'download' | 'signature' | 'storage' | 'replace' | 'unknown', message: string) {
+      super(message)
+      this.stage = stage
+    }
+  },
 }))
 
 vi.mock('@/platform/updater', () => ({
   checkForAppUpdate: mocks.checkForAppUpdate,
   downloadAndInstallAppUpdate: mocks.downloadAndInstallAppUpdate,
   relaunchApp: mocks.relaunchApp,
+  AppUpdateInstallError: mocks.AppUpdateInstallError,
 }))
 
 vi.mock('@/platform/environment', () => ({
@@ -42,10 +50,21 @@ const resetUpdaterSlice = () => {
     availableUpdate: null,
     updateProgress: null,
     updateMessage: null,
+    updateFailure: null,
   })
 }
 
+const storage = new Map<string, string>()
+
 beforeEach(() => {
+  storage.clear()
+  vi.stubGlobal('window', {
+    localStorage: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    },
+  })
   resetUpdaterSlice()
   resetUpdaterServiceForTests()
   vi.useFakeTimers()
@@ -56,6 +75,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+  vi.unstubAllGlobals()
 })
 
 describe('updaterService 检查更新', () => {
@@ -139,12 +159,41 @@ describe('updaterService 安装与重启', () => {
     useUiStore.setState({
       availableUpdate: { version: '0.3.0', notes: null, pubDate: null },
     })
-    mocks.downloadAndInstallAppUpdate.mockRejectedValue(new Error('签名校验失败'))
+    mocks.downloadAndInstallAppUpdate.mockRejectedValue(
+      new mocks.AppUpdateInstallError('signature', '签名校验失败'),
+    )
     await expect(installPendingUpdate()).rejects.toThrow('签名校验失败')
     expect(updaterState()).toMatchObject({
       phase: 'error',
-      message: '安装更新失败：签名校验失败',
+      message: '更新在签名校验阶段失败：签名校验失败。未自动重启；重新检查后可手动重试。',
     })
+    expect(useUiStore.getState().updateFailure).toMatchObject({
+      version: '0.3.0',
+      stage: 'signature',
+    })
+    await expect(installPendingUpdate()).rejects.toThrow('请先重新检查更新')
+    expect(mocks.downloadAndInstallAppUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  it('重启后恢复失败阶段且不自动重试或重启', async () => {
+    useUiStore.setState({
+      availableUpdate: { version: '0.3.0', notes: null, pubDate: null },
+    })
+    mocks.downloadAndInstallAppUpdate.mockRejectedValue(
+      new mocks.AppUpdateInstallError('storage', 'No space left on device'),
+    )
+    await expect(installPendingUpdate()).rejects.toThrow('No space')
+
+    resetUpdaterServiceForTests({ preserveFailure: true })
+    resetUpdaterSlice()
+    initUpdaterService()
+
+    expect(useUiStore.getState()).toMatchObject({
+      updatePhase: 'error',
+      updateFailure: { version: '0.3.0', stage: 'storage' },
+    })
+    expect(mocks.downloadAndInstallAppUpdate).toHaveBeenCalledTimes(1)
+    expect(mocks.relaunchApp).not.toHaveBeenCalled()
   })
 
   it('没有待安装更新时空操作', async () => {

@@ -94,6 +94,7 @@ export const useDesignScan = ({
         // 批量路径（画布原位扫掠）：引擎按页回报判定与在途集合，画布逐页点亮。
         const next = await scanDesignPagesBatch(pages, documentIssues, batchRender, {
           requireSize,
+          pageMetadata: doc.pageMetadata,
           onProgress: (update) => {
             if (!alive()) return
             setProgress({ done: update.done, total: update.total })
@@ -125,6 +126,7 @@ export const useDesignScan = ({
         : undefined
       const next = await scanDesignPages(pages, documentIssues, renderPage, {
         requireSize,
+        pageMetadata: doc.pageMetadata,
         onProgress: (update) => {
           if (!alive()) return
           setProgress({ done: update.done, total: update.total })

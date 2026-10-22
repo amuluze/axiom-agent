@@ -20,6 +20,7 @@ import type { ReactNode } from 'react'
 import type { PendingToolApproval } from '@/agent/approval/ApprovalCoordinator'
 import type { useAgentStore } from '@/stores/agentStore'
 import type { useUiStore } from '@/stores/uiStore'
+import type { FeedbackPreviewState } from '@/components/feedback/FeedbackDialog'
 import type { useConnectStore } from '@/stores/connectStore'
 
 /** 会话列表的类型直接取自 store：三元素条件表达式两分支同型，组件侧无需窄化。 */
@@ -30,6 +31,7 @@ type UiState = ReturnType<typeof useUiStore.getState>
 type ConnectState = ReturnType<typeof useConnectStore.getState>
 
 export interface DesignPreviewValue {
+  feedback?: FeedbackPreviewState
   /** ApprovalCard：当前待审批项（null = 无，卡片自渲染为空）。 */
   pendingApproval?: PendingToolApproval | null
   /** BackgroundApprovals：后台会话审批列表。 */

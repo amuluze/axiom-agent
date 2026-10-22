@@ -218,7 +218,9 @@ pub(crate) struct ConnectState {
 
 impl ConnectState {
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, ConnectInner>, String> {
-        self.inner.lock().map_err(|_| "connect state lock is poisoned".to_string())
+        self.inner
+            .lock()
+            .map_err(|_| "connect state lock is poisoned".to_string())
     }
 }
 
@@ -253,7 +255,10 @@ pub(crate) fn random_bytes(count: usize) -> Vec<u8> {
 }
 
 pub(crate) fn random_hex(count: usize) -> String {
-    random_bytes(count).iter().map(|byte| format!("{byte:02x}")).collect()
+    random_bytes(count)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /* ------------------------------------------------------------------ *
@@ -280,7 +285,8 @@ fn load_config_from(directory: &std::path::Path) -> Result<ConnectConfigFile, St
         }
         Err(error) => return Err(format!("failed to inspect connect config: {error}")),
     }
-    let bytes = fs::read(&path).map_err(|error| format!("failed to read connect config: {error}"))?;
+    let bytes =
+        fs::read(&path).map_err(|error| format!("failed to read connect config: {error}"))?;
     let config: ConnectConfigFile = serde_json::from_slice(&bytes)
         .map_err(|error| format!("connect config is invalid: {error}"))?;
     // 只拒绝「更新版本写入的配置」（降级运行时读不懂其语义，fail-closed 不丢数据）；
@@ -294,7 +300,10 @@ fn load_config_from(directory: &std::path::Path) -> Result<ConnectConfigFile, St
     Ok(config)
 }
 
-fn persist_config_to(directory: &std::path::Path, config: &ConnectConfigFile) -> Result<(), String> {
+fn persist_config_to(
+    directory: &std::path::Path,
+    config: &ConnectConfigFile,
+) -> Result<(), String> {
     let encoded = serde_json::to_vec(config)
         .map_err(|error| format!("failed to encode connect config: {error}"))?;
     let mut temporary = tempfile::NamedTempFile::new_in(directory)
@@ -330,7 +339,11 @@ fn persist_config(app: &AppHandle, config: &ConnectConfigFile) -> Result<(), Str
 // rename_all 只作用于 variant 名（tag 值）；字段必须另用 rename_all_fields 转
 // camelCase——否则 WebView 读 event.chatId 得到 undefined，回发路由全断。
 #[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
 pub(crate) enum ConnectEventPayload {
     Status {
         platform: ConnectPlatform,
@@ -368,18 +381,25 @@ pub(crate) fn set_status(
             Err(_) => return,
         };
         inner.statuses.insert(platform, (status, message.clone()));
-        ConnectEventPayload::Status { platform, status, message }
+        ConnectEventPayload::Status {
+            platform,
+            status,
+            message,
+        }
     };
     let _ = app.emit(CONNECT_EVENT, payload);
 }
 
 pub(crate) fn reset_inbound_watermark(state: &Arc<Mutex<ConnectInner>>, platform: ConnectPlatform) {
     if let Ok(mut inner) = state.lock() {
-        let inbound = inner.inbounds.entry(platform).or_insert_with(|| PlatformInbound {
-            seen: HashSet::new(),
-            seen_order: VecDeque::new(),
-            watermark_ms: 0,
-        });
+        let inbound = inner
+            .inbounds
+            .entry(platform)
+            .or_insert_with(|| PlatformInbound {
+                seen: HashSet::new(),
+                seen_order: VecDeque::new(),
+                watermark_ms: 0,
+            });
         inbound.watermark_ms = now_ms() - OLD_MESSAGE_GRACE_MS;
     }
 }
@@ -459,7 +479,11 @@ where
     if message.text.len() > MAX_INBOUND_TEXT_BYTES {
         return InboundOutcome::TooLarge;
     }
-    let binding_key = (message.platform, message.chat_id.clone(), message.user_id.clone());
+    let binding_key = (
+        message.platform,
+        message.chat_id.clone(),
+        message.user_id.clone(),
+    );
     let dispatch = {
         let mut inner = match state.lock() {
             Ok(inner) => inner,
@@ -486,7 +510,9 @@ where
         if message.create_time_ms > 0 && message.create_time_ms < inbound.watermark_ms {
             return InboundOutcome::TooOld;
         }
-        inner.reply_contexts.insert(binding_key, message.reply.clone());
+        inner
+            .reply_contexts
+            .insert(binding_key, message.reply.clone());
         let bound = inner.config.bindings.iter().any(|binding| {
             binding.platform == message.platform
                 && binding.chat_id == message.chat_id
@@ -561,21 +587,28 @@ where
             }
         };
         if outcome.0 {
-            let _ = app.emit(CONNECT_EVENT, ConnectEventPayload::Paired {
-                platform: message.platform,
-                chat_id: message.chat_id.clone(),
-                chat_type: message.chat_type.clone(),
-                user_id: message.user_id.clone(),
-                user_name: message.user_name.clone(),
-            });
-            let _ = send("✅ 已连接 Axiom，现在可以直接发消息操控会话。发送 /help 查看用法。").await;
+            let _ = app.emit(
+                CONNECT_EVENT,
+                ConnectEventPayload::Paired {
+                    platform: message.platform,
+                    chat_id: message.chat_id.clone(),
+                    chat_type: message.chat_type.clone(),
+                    user_id: message.user_id.clone(),
+                    user_name: message.user_name.clone(),
+                },
+            );
+            let _ =
+                send("✅ 已连接 Axiom，现在可以直接发消息操控会话。发送 /help 查看用法。").await;
             return InboundOutcome::Paired;
         }
         let _ = send(outcome.1).await;
         return InboundOutcome::Ignored;
     }
     if trimmed.starts_with('/') {
-        let _ = send("此聊天尚未与 Axiom 配对。请在 Axiom 连接面板生成配对码，然后发送：/bind <配对码>").await;
+        let _ = send(
+            "此聊天尚未与 Axiom 配对。请在 Axiom 连接面板生成配对码，然后发送：/bind <配对码>",
+        )
+        .await;
     }
     InboundOutcome::Ignored
 }
@@ -600,7 +633,11 @@ fn platform_secret_key(platform: ConnectPlatform) -> &'static str {
     }
 }
 
-fn spawn_platform(app: &AppHandle, state: &ConnectState, platform: ConnectPlatform) -> Result<(), String> {
+fn spawn_platform(
+    app: &AppHandle,
+    state: &ConnectState,
+    platform: ConnectPlatform,
+) -> Result<(), String> {
     let shared = state.inner.clone();
     {
         let mut inner = state.lock()?;
@@ -628,7 +665,10 @@ fn spawn_platform(app: &AppHandle, state: &ConnectState, platform: ConnectPlatfo
             tauri::async_runtime::spawn(dingtalk::run_dingtalk(
                 app_handle,
                 shared,
-                dingtalk::DingtalkCreds { client_id, client_secret },
+                dingtalk::DingtalkCreds {
+                    client_id,
+                    client_secret,
+                },
             ))
         }
         ConnectPlatform::Weixin => {
@@ -657,7 +697,11 @@ fn stop_platform(app: &AppHandle, state: &ConnectState, platform: ConnectPlatfor
         }
         let (status, message) = (ConnectStatusKind::Disconnected, None);
         inner.statuses.insert(platform, (status, message.clone()));
-        ConnectEventPayload::Status { platform, status, message }
+        ConnectEventPayload::Status {
+            platform,
+            status,
+            message,
+        }
     };
     let _ = app.emit(CONNECT_EVENT, payload);
 }
@@ -701,11 +745,14 @@ pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
     *initialized = true;
     for platform in enabled_platforms {
         if let Err(error) = spawn_platform(app, &state, platform) {
-            let _ = app.emit(CONNECT_EVENT, ConnectEventPayload::Status {
-                platform,
-                status: ConnectStatusKind::Error,
-                message: Some(error),
-            });
+            let _ = app.emit(
+                CONNECT_EVENT,
+                ConnectEventPayload::Status {
+                    platform,
+                    status: ConnectStatusKind::Error,
+                    message: Some(error),
+                },
+            );
         }
     }
     Ok(())
@@ -857,7 +904,10 @@ pub fn save_connect_platform_config(
     request: SaveConnectPlatformRequest,
 ) -> Result<(), String> {
     ensure_initialized(&app)?;
-    let SaveConnectPlatformRequest { platform, credential } = request;
+    let SaveConnectPlatformRequest {
+        platform,
+        credential,
+    } = request;
     let normalized = |value: &Option<String>| {
         value
             .as_deref()
@@ -867,8 +917,8 @@ pub fn save_connect_platform_config(
     };
     match platform {
         ConnectPlatform::Feishu => {
-            let app_id = normalized(&credential.app_id)
-                .ok_or_else(|| "飞书 App ID 不能为空".to_string())?;
+            let app_id =
+                normalized(&credential.app_id).ok_or_else(|| "飞书 App ID 不能为空".to_string())?;
             let app_secret = normalized(&credential.app_secret)
                 .ok_or_else(|| "飞书 App Secret 不能为空".to_string())?;
             save_connect_secret(&secrets, FEISHU_SECRET_KEY, &app_secret)?;
@@ -897,8 +947,8 @@ pub fn save_connect_platform_config(
             restart_if_running(&app, &state, platform)
         }
         ConnectPlatform::Weixin => {
-            let token = normalized(&credential.token)
-                .ok_or_else(|| "微信 token 不能为空".to_string())?;
+            let token =
+                normalized(&credential.token).ok_or_else(|| "微信 token 不能为空".to_string())?;
             save_connect_secret(&secrets, WEIXIN_SECRET_KEY, &token)
         }
     }
@@ -1080,9 +1130,11 @@ pub fn unpair_connect_binding(
                 && binding.chat_id == request.chat_id
                 && binding.user_id == request.user_id)
         });
-        inner
-            .reply_contexts
-            .remove(&(request.platform, request.chat_id.clone(), request.user_id.clone()));
+        inner.reply_contexts.remove(&(
+            request.platform,
+            request.chat_id.clone(),
+            request.user_id.clone(),
+        ));
         inner.config.clone()
     };
     persist_config(&app, &config)
@@ -1118,10 +1170,18 @@ pub async fn connect_reply_message(
         let inner = state.lock()?;
         let context = inner
             .reply_contexts
-            .get(&(request.platform, request.chat_id.clone(), request.user_id.clone()))
+            .get(&(
+                request.platform,
+                request.chat_id.clone(),
+                request.user_id.clone(),
+            ))
             .cloned()
             .ok_or_else(|| "该会话尚无可用的回复通道（请先从聊天工具发送一条消息）".to_string())?;
-        (context, inner.config.feishu.account_id.clone(), inner.config.dingtalk.account_id.clone())
+        (
+            context,
+            inner.config.feishu.account_id.clone(),
+            inner.config.dingtalk.account_id.clone(),
+        )
     };
     match request.platform {
         ConnectPlatform::Feishu => {
@@ -1130,7 +1190,10 @@ pub async fn connect_reply_message(
             feishu::send_reply(
                 &app,
                 state.inner.clone(),
-                feishu::FeishuCreds { app_id: feishu_id, app_secret },
+                feishu::FeishuCreds {
+                    app_id: feishu_id,
+                    app_secret,
+                },
                 &context,
                 &text,
             )
@@ -1142,7 +1205,10 @@ pub async fn connect_reply_message(
             dingtalk::send_reply(
                 &app,
                 state.inner.clone(),
-                dingtalk::DingtalkCreds { client_id: dingtalk_id, client_secret },
+                dingtalk::DingtalkCreds {
+                    client_id: dingtalk_id,
+                    client_secret,
+                },
                 &context,
                 &text,
             )
@@ -1187,10 +1253,13 @@ pub fn start_wechat_login(
                 inner.logins.remove(&oldest);
             }
         }
-        inner.logins.insert(login_id.clone(), WechatLoginSession {
-            rows: Vec::new(),
-            status: weixin::WechatLoginStatus::Starting,
-        });
+        inner.logins.insert(
+            login_id.clone(),
+            WechatLoginSession {
+                rows: Vec::new(),
+                status: weixin::WechatLoginStatus::Starting,
+            },
+        );
     }
     let app_handle = app.clone();
     let state_inner = state.inner.clone();
@@ -1198,7 +1267,10 @@ pub fn start_wechat_login(
     tauri::async_runtime::spawn(async move {
         weixin::run_wechat_login(app_handle, state_inner, login_for_task).await;
     });
-    Ok(ConnectWechatQrView { login_id, rows: Vec::new() })
+    Ok(ConnectWechatQrView {
+        login_id,
+        rows: Vec::new(),
+    })
 }
 
 #[derive(Deserialize)]
@@ -1210,7 +1282,11 @@ pub(crate) struct PollWechatLoginRequest {
 // 同 ConnectEventPayload：variant 级字段需 rename_all_fields（当前字段均为
 // 单词，暂无实际影响，防御未来新增多词字段）。
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "status")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "status"
+)]
 pub(crate) enum ConnectWechatLoginStatusView {
     Starting,
     Waiting { rows: Vec<String> },
@@ -1327,7 +1403,10 @@ mod tests {
         let config = ConnectConfigFile {
             schema_version: CONFIG_SCHEMA_VERSION,
             workspace_path: Some("/tmp/project".into()),
-            feishu: PlatformIdConfig { enabled: true, account_id: "cli_test".into() },
+            feishu: PlatformIdConfig {
+                enabled: true,
+                account_id: "cli_test".into(),
+            },
             dingtalk: PlatformIdConfig::default(),
             weixin: WeixinConfig { enabled: false },
             bindings: vec![StoredBinding {

@@ -1,3 +1,4 @@
+import { toolApprovalScope } from '@/agent/core/approvalScope'
 /**
  * `design_import`：把 `.pen` 设计稿编译成自有格式 `.ax`（docs/ax-format.md §6 P1 的产品入口）。
  *
@@ -21,7 +22,7 @@ import { parsePenDocument } from '@/agent/design/penParser'
 import { AX_FORMAT_VERSION, type AxDocument } from '@/agent/design/axSchema'
 import { serializeAxDocument } from '@/agent/design/axParser'
 import { importPenDocument, type ImportPenResult } from '@/agent/design/importPen'
-import { hasOnlyKeys, isJsonObject, isSafeRelativePath } from './workspaceToolUtils'
+import { hasOnlyKeys, isJsonObject, isMutablePath } from './workspaceToolUtils'
 
 /** 与 Rust 侧 design_document_write_limit 同口径（8MiB）。 */
 const MAX_DESIGN_DOCUMENT_BYTES = 8 * 1024 * 1024
@@ -111,7 +112,9 @@ export const createDesignImportTool = (environment: AgentEnvironment): AgentTool
   label: 'design_import',
   promptSnippet: '把 .pen 设计稿编译为自有格式 .ax（画布评审 + 设计→代码都以 .ax 为准）。',
   promptGuidelines: [
-    'source 为工作区内 .pen 路径，target 为**尚不存在**的 .ax 路径（已存在会被拒绝，不会覆盖）。',
+    '工作区授权不能解除凭据或 Axiom 数据保护；隐私目录只开放经原生确认的项目子目录，拒绝后不要通过改名或其他工具绕过。',
+    '路径默认工作区相对；完全访问模式下可用绝对路径（含工作区外），凭据与 Axiom 数据目录在任何模式下都不可写。',
+    'source 为 .pen 路径、target 为**尚不存在**的 .ax 路径（已存在会被拒绝，不会覆盖）；两者默认工作区相对，完全访问模式下可用绝对路径。',
     '这是一次性迁移：产物是完整 .ax（原语 1:1 + 能对上的组件实例升级为 component 节点）。',
     '返回的组件实例计数与未迁移字段清单说明「哪些块已是实现词汇、哪些还没」——需要补齐时再迭代。',
     '迁移后以 .ax 为准继续迭代（design_query 读 .ax 会给出解析后的规格与组件清单）。',
@@ -120,7 +123,9 @@ export const createDesignImportTool = (environment: AgentEnvironment): AgentTool
   // 绑定模型输入 {source,target}，与写通道消费侧失配，导致该工具从未能落盘。
   // v3：产物契约扩展——ref 实例按 axComponentMap 升级为 `component` 节点，返回体新增
   // 升级/未升级组件实例的计数（details.upgradedComponents / deferredComponents）。
-  runtimeVersion: '3',
+  // v8：与 write/edit 同批兑现完全访问档——design_import 的 target 落盘走
+  // create_workspace_text_file，工作区外绝对路径此前恒被拒。schema 不变。
+  runtimeVersion: '9',
   // 新建文件且拒绝已存在目标：重放无害（与 write 同口径）。
   recoveryPolicy: 'idempotent',
   executionMode: 'sequential',
@@ -138,11 +143,11 @@ export const createDesignImportTool = (environment: AgentEnvironment): AgentTool
     properties: {
       source: {
         type: 'string',
-        description: 'Workspace-relative .pen path to compile.',
+        description: '.pen path to compile. Workspace-relative by default; absolute paths are accepted in full-access mode.',
       },
       target: {
         type: 'string',
-        description: 'Workspace-relative .ax path to create (must not exist).',
+        description: '.ax path to create (must not exist). Workspace-relative by default; absolute paths are accepted in full-access mode.',
       },
     },
     required: ['source', 'target'],
@@ -152,11 +157,11 @@ export const createDesignImportTool = (environment: AgentEnvironment): AgentTool
     if (!isJsonObject(input) || !hasOnlyKeys(input, ['source', 'target'])) {
       return { ok: false, error: 'Arguments must be an object with only source and target.' }
     }
-    if (typeof input.source !== 'string' || !isPenPath(input.source) || !isSafeRelativePath(input.source, false)) {
-      return { ok: false, error: 'source must be a workspace-relative path ending in .pen.' }
+    if (typeof input.source !== 'string' || !isPenPath(input.source) || !isMutablePath(input.source)) {
+      return { ok: false, error: 'source must be a path ending in .pen; workspace-relative by default, absolute allowed in full-access mode.' }
     }
-    if (typeof input.target !== 'string' || !isAxPath(input.target) || !isSafeRelativePath(input.target, false)) {
-      return { ok: false, error: 'target must be a workspace-relative path ending in .ax.' }
+    if (typeof input.target !== 'string' || !isAxPath(input.target) || !isMutablePath(input.target)) {
+      return { ok: false, error: 'target must be a path ending in .ax; workspace-relative by default, absolute allowed in full-access mode.' }
     }
     if (input.source === input.target) {
       return { ok: false, error: 'source and target must differ.' }
@@ -168,7 +173,10 @@ export const createDesignImportTool = (environment: AgentEnvironment): AgentTool
     return {
       category: 'workspace-write',
       title: `Compile ${source} to ${target}?`,
+      titleKey: 'app.approval.designImport.title',
+      titleParams: { source, target },
       description: 'Axiom will create a new .ax design document from the .pen source; existing targets are refused.',
+      descriptionKey: 'app.approval.designImport.description',
       path: target,
       preview: `${source} → ${target}`,
     }
@@ -213,7 +221,7 @@ export const createDesignImportTool = (environment: AgentEnvironment): AgentTool
       }
     }
     const { document: axDocument, content: serialized, warnings, components } = outcome.compiled
-    const written = await environment.workspace.createTextFile(target, serialized, context.approvalLease)
+    const written = await environment.workspace.createTextFile(target, serialized, context.approvalLease, toolApprovalScope(context))
     const nodeCount = axDocument.pages.reduce((total, page) => total + page.tree.length, 0)
     const unmigrated = new Set<string>()
     for (const warning of warnings) {

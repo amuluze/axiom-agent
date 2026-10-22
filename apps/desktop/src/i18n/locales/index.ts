@@ -19,6 +19,7 @@ import { browserEn, browserZh, computerEn, computerZh } from './browser'
 import { skillsEn, skillsZh, subagentsEn, subagentsZh } from './skills'
 import { appEn, appZh } from './app'
 import { statusEn, statusZh } from './status'
+import { testingEn, testingZh } from './testing'
 
 export type MessageCatalog = Record<string, string>
 
@@ -41,6 +42,7 @@ export const messageCatalogs: Record<'zh-CN' | 'en', MessageCatalog> = {
     ...subagentsZh,
     ...appZh,
     ...statusZh,
+    ...testingZh,
   },
   en: {
     ...coreEn,
@@ -60,6 +62,7 @@ export const messageCatalogs: Record<'zh-CN' | 'en', MessageCatalog> = {
     ...subagentsEn,
     ...appEn,
     ...statusEn,
+    ...testingEn,
   },
 }
 

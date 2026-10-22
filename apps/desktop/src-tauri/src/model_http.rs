@@ -1,6 +1,6 @@
 use crate::{
     generated_provider_table::{
-        PROVIDER_REQUEST_HEADERS, PROVIDER_SESSION_HEADER_HOSTS, PROVIDER_SESSION_HEADERS,
+        PROVIDER_REQUEST_HEADERS, PROVIDER_SESSION_HEADERS, PROVIDER_SESSION_HEADER_HOSTS,
     },
     network_policy::redirect_policy,
     provider_profiles::{is_secret_id_bound_to_provider, resolve_profile, ResolvedProfile},
@@ -81,6 +81,8 @@ pub(crate) struct ModelStreamChunk {
     chunk: Option<Vec<u8>>,
     done: bool,
     error: Option<String>,
+    retry_count: Option<u32>,
+    credential_scan: Option<&'static str>,
 }
 
 #[derive(Default)]
@@ -524,6 +526,8 @@ fn status_event(request_id: &str, status: u16) -> ModelStreamChunk {
         chunk: None,
         done: false,
         error: None,
+        retry_count: None,
+        credential_scan: None,
     }
 }
 
@@ -534,6 +538,8 @@ fn bytes_event(request_id: &str, chunk: Vec<u8>) -> ModelStreamChunk {
         chunk: Some(chunk),
         done: false,
         error: None,
+        retry_count: None,
+        credential_scan: None,
     }
 }
 
@@ -544,6 +550,8 @@ fn done_event(request_id: &str) -> ModelStreamChunk {
         chunk: None,
         done: true,
         error: None,
+        retry_count: None,
+        credential_scan: None,
     }
 }
 
@@ -554,6 +562,24 @@ fn error_event(request_id: &str, error: &str) -> ModelStreamChunk {
         chunk: None,
         done: true,
         error: Some(error.to_string()),
+        retry_count: None,
+        credential_scan: None,
+    }
+}
+
+fn manifest_event(
+    request_id: &str,
+    retry_count: u32,
+    credential_scan: Option<&'static str>,
+) -> ModelStreamChunk {
+    ModelStreamChunk {
+        request_id: request_id.to_string(),
+        status: None,
+        chunk: None,
+        done: false,
+        error: None,
+        retry_count: Some(retry_count),
+        credential_scan,
     }
 }
 
@@ -581,6 +607,14 @@ where
         &request.provider_id,
         request.secret_id.as_deref(),
     )?;
+    let validated_request_id =
+        crate::request_id::validate_request_id("model", &request.request_id)?.to_string();
+    if let Err(error) = crate::model_egress::validate_model_egress(&request.body, secret.as_deref())
+    {
+        emit(manifest_event(&validated_request_id, 0, Some("blocked")))?;
+        return Err(error);
+    }
+    emit(manifest_event(&validated_request_id, 0, Some("passed")))?;
     let timeout = timeout_duration(request.timeout_ms);
     let client = build_client(timeout)?;
     let (request_id, mut cancel_receiver) = register_request(request_state, &request.request_id)?;
@@ -588,6 +622,9 @@ where
     let result = async {
         let mut retries = 0u32;
         loop {
+            if retries > 0 {
+                emit(manifest_event(&request_id, retries, None))?;
+            }
             let builder = client
                 .post(url.clone())
                 .header(CONTENT_TYPE, "application/json")
@@ -750,6 +787,7 @@ async fn probe_model_http_with_state(
         &request.provider_id,
         request.secret_id.as_deref(),
     )?;
+    crate::model_egress::validate_model_egress(&request.body, secret.as_deref())?;
     let inactivity_timeout = timeout_duration(request.timeout_ms);
     let client = build_client(inactivity_timeout)?;
     let host = url.host_str().map(str::to_string);
@@ -819,6 +857,56 @@ mod tests {
             model_id: None,
             session_id: None,
         }
+    }
+
+    #[tokio::test]
+    async fn credential_guard_rejects_stream_and_probe_before_connecting() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/v1/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        // 令牌夹具运行时拼接：源码不出现「ghp_+20 位」完整字面量——读源码的
+        // 会话会被出口护栏（model_egress.rs）拦截，测试语料不得自带这个形态。
+        let token = format!("ghp_{}{}", "0123456789abcdef", "ghijklmnopqrstuv");
+
+        let body =
+            serde_json::json!({ "messages": [{ "role": "tool", "content": token }] }).to_string();
+        let mut events = Vec::new();
+        let result = stream_model_http_to_events(
+            request(url.clone(), "egress-rejection", body.clone()),
+            &ModelRequestState::default(),
+            &SecretState::default(),
+            |event| {
+                events.push(event);
+                Ok(())
+            },
+        )
+        .await;
+        let error = result.unwrap_err();
+        assert!(error.contains("模型请求已阻止"));
+        assert!(!error.contains(token.as_str()));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].credential_scan, Some("blocked"));
+        assert_eq!(events[0].retry_count, Some(0));
+        let result = probe_model_http_with_state(
+            ModelProbeRequest {
+                provider_id: "generic-openai-compatible".into(),
+                endpoint: Some(url),
+                body,
+                secret_id: None,
+                timeout_ms: Some(5000),
+                model_id: None,
+            },
+            &SecretState::default(),
+        )
+        .await;
+        assert!(result.unwrap_err().contains("模型请求已阻止"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -959,7 +1047,10 @@ mod tests {
 
     #[test]
     fn validates_request_ids() {
-        assert_eq!(crate::request_id::validate_request_id("model", "request-1"), Ok("request-1"));
+        assert_eq!(
+            crate::request_id::validate_request_id("model", "request-1"),
+            Ok("request-1")
+        );
         assert!(crate::request_id::validate_request_id("model", "").is_err());
         assert!(crate::request_id::validate_request_id("model", "request/1").is_err());
     }
@@ -1005,12 +1096,9 @@ mod tests {
     fn applies_messages_authentication_for_anthropic_wire_models() {
         // OpenCode Go 的 messages 形状模型：认证走 x-api-key + anthropic-version，
         // 不能是 Bearer（同一个 Key，不同协议头的区别由 resolve_profile 的 apiFormat 决定）。
-        let resolved = crate::provider_profiles::resolve_profile(
-            "opencode-go",
-            None,
-            Some("minimax-m3"),
-        )
-        .unwrap();
+        let resolved =
+            crate::provider_profiles::resolve_profile("opencode-go", None, Some("minimax-m3"))
+                .unwrap();
         let request = apply_authentication(
             reqwest::Client::new().post("http://localhost/v1/messages"),
             resolved.api_format,
@@ -1108,7 +1196,10 @@ mod tests {
             "session header missing on the wire:\n{wire}"
         );
         assert!(
-            wire.contains(&format!("user-agent: axiom/{}", env!("CARGO_PKG_VERSION").to_lowercase())),
+            wire.contains(&format!(
+                "user-agent: axiom/{}",
+                env!("CARGO_PKG_VERSION").to_lowercase()
+            )),
             "user-agent missing on the wire:\n{wire}"
         );
     }
@@ -1138,7 +1229,10 @@ mod tests {
             "session header missing on the probe wire:\n{wire}"
         );
         assert!(
-            wire.contains(&format!("user-agent: axiom/{}", env!("CARGO_PKG_VERSION").to_lowercase())),
+            wire.contains(&format!(
+                "user-agent: axiom/{}",
+                env!("CARGO_PKG_VERSION").to_lowercase()
+            )),
             "user-agent missing on the probe wire:\n{wire}"
         );
     }
@@ -1157,17 +1251,37 @@ mod tests {
         };
         // 真实会话身份原样透传（上游按它做会话归因）。
         assert_eq!(
-            request(Some("session-abc")).headers().get("x-opencode-session").unwrap(),
+            request(Some("session-abc"))
+                .headers()
+                .get("x-opencode-session")
+                .unwrap(),
             "session-abc"
         );
         // 回归：缺失/空白的会话身份**不能省略该头**——上游按它路由，缺失即 400
         // （「Request is missing x-opencode-session and cannot be routed efficiently」）。
         // 回落值只需稳定非空，且同一进程内保持一致。
         let fallback = request(None);
-        let value = fallback.headers().get("x-opencode-session").unwrap().to_str().unwrap();
-        assert!(value.starts_with("axiom-desktop-"), "unexpected fallback: {value}");
-        assert_eq!(value, request(Some("   ")).headers().get("x-opencode-session").unwrap());
-        assert_eq!(value, request(None).headers().get("x-opencode-session").unwrap());
+        let value = fallback
+            .headers()
+            .get("x-opencode-session")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            value.starts_with("axiom-desktop-"),
+            "unexpected fallback: {value}"
+        );
+        assert_eq!(
+            value,
+            request(Some("   "))
+                .headers()
+                .get("x-opencode-session")
+                .unwrap()
+        );
+        assert_eq!(
+            value,
+            request(None).headers().get("x-opencode-session").unwrap()
+        );
         // provider 未声明、且 host 不属于任何声明了会话头的服务：不注入。
         let undeclared = apply_session_header(
             reqwest::Client::new().post("http://localhost/v1/responses"),
@@ -1207,8 +1321,14 @@ mod tests {
             Some("session-abc")
         );
         // 形近域名不命中（避免把会话头发给无关服务）。
-        assert_eq!(header_of("custom-openai-compatible", "notopencode.ai"), None);
-        assert_eq!(header_of("generic-openai-compatible", "api.openai.com"), None);
+        assert_eq!(
+            header_of("custom-openai-compatible", "notopencode.ai"),
+            None
+        );
+        assert_eq!(
+            header_of("generic-openai-compatible", "api.openai.com"),
+            None
+        );
     }
 
     #[test]
@@ -1316,7 +1436,7 @@ mod tests {
         .unwrap();
         server.join().unwrap();
 
-        assert_eq!(events.first().and_then(|event| event.status), Some(200));
+        assert!(events.iter().any(|event| event.status == Some(200)));
         let body = events
             .iter()
             .filter_map(|event| event.chunk.as_ref())
@@ -1468,6 +1588,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(server.join().unwrap(), 2);
+        assert!(events.iter().any(|event| event.retry_count == Some(1)));
+        assert!(events
+            .iter()
+            .any(|event| event.credential_scan == Some("passed")));
         assert_eq!(
             events
                 .iter()
@@ -1509,6 +1633,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(server.join().unwrap(), 2);
+        assert!(events.iter().any(|event| event.retry_count == Some(1)));
         assert_eq!(
             events
                 .iter()

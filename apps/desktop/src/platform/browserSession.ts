@@ -51,6 +51,7 @@ export type BrowserCommandRequest =
   | { action: 'hover'; tabId: string; ref: number }
   | { action: 'wait'; tabId: string; text?: string; durationMs?: number }
   | { action: 'find'; tabId: string; text: string; limit?: number }
+  | { action: 'resolveLocator'; tabId: string; locator: UiLocatorSpec }
   | { action: 'back'; tabId: string }
   | { action: 'forward'; tabId: string }
   | { action: 'navigationHistory'; tabId: string }
@@ -68,6 +69,43 @@ export interface BrowserEngineInfo {
   path: string
   available: boolean
 }
+
+/**
+ * Agent 写探索通道的请求子集（G1-3）：从完整宿主请求里 `Extract` 出写动作变体，
+ * 因此与 Rust 变体逐字段同步是**结构性**的（改宿主变体不会漂移，写路径也拿不到
+ * 未列入的写动作）。由 `AgentEnvironment.browser.write` 暴露，与 Agent 层定义的
+ * 只读子集 `BrowserReadCommandRequest` 分列。
+ */
+export type BrowserWriteCommandRequest = Extract<
+  BrowserCommandRequest,
+  { action: 'navigate' | 'click' | 'fill' | 'selectOption' | 'typeText' | 'press' }
+>
+
+/** 结构化定位器（U1-1）：与 Rust browser_locator::LocatorSpec 逐字段同步。 */
+export interface UiLocatorSpec {
+  testId?: string
+  role?: string
+  name?: string
+  label?: string
+  text?: string
+  css?: string
+  exact?: boolean
+}
+
+export interface LocatorCandidate {
+  /** backend node ref，仅在当前步骤内有效，写动作后立即作废。 */
+  ref: number
+  role: string
+  name: string
+  value?: string
+  disabled: boolean
+}
+
+/** Rust LocatorResolution 的镜像：只有 unique 才允许执行动作，ambiguous 禁止取第一个。 */
+export type LocatorResolution =
+  | { status: 'notFound' }
+  | { status: 'unique'; candidate: LocatorCandidate }
+  | { status: 'ambiguous'; total: number; candidates: LocatorCandidate[] }
 
 export interface BrowserTabInfo {
   tabId: string
@@ -116,6 +154,7 @@ export type BrowserCommandResponse =
   | { type: 'dialogState'; dialog?: JsDialogInfo }
   | { type: 'navigationState'; canGoBack: boolean; canGoForward: boolean }
   | { type: 'waited'; textMatched: boolean; waitedMs: number }
+  | { type: 'locatorResolved'; resolution: LocatorResolution }
   | {
       type: 'found'
       url: string
@@ -172,6 +211,7 @@ const SPAWN_REQUIRED_ACTIONS = new Set<BrowserCommandRequest['action']>([
   'hover',
   'wait',
   'find',
+  'resolveLocator',
   'back',
   'forward',
   'reload',
@@ -229,6 +269,19 @@ export const shutdownBrowser = (): Promise<BrowserCommandResponse> =>
   browserCommand({ action: 'shutdown' })
 
 /** 清理隔离 profile 数据：cache 保留登录态，all 整库重建（不可撤销）。 */
+/**
+ * 结构化定位（U1-1）。只把 Rust 判定原样返回：歧义与未命中由调用方（Runner）决定失败语义，
+ * 这里不做“取第一个”之类的兜底。
+ */
+export const resolveBrowserLocator = async (
+  tabId: string,
+  locator: UiLocatorSpec,
+): Promise<LocatorResolution> => {
+  const response = await browserCommand({ action: 'resolveLocator', tabId, locator })
+  if (response.type !== 'locatorResolved') throw new Error('浏览器返回了非定位结果')
+  return response.resolution
+}
+
 export const clearBrowserProfileData = (mode: 'cache' | 'all'): Promise<BrowserCommandResponse> =>
   browserCommand({ action: 'clearProfileData', mode })
 

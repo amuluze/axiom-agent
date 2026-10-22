@@ -7,7 +7,8 @@
  * 写代码」的最小可行形态，不做 codegen（保真度不可控），只产出提示词。
  */
 import { axPartClassNames, axPartSpecOf } from '@/agent/design/axParts'
-import type { PenDocument, PenNodeUnion, PenPaint, PenSize } from '@/agent/design/penParser'
+import { buildDesignScopeLine } from './designSelectionContext'
+import type { PenDocument, PenNode, PenNodeUnion, PenPaint, PenSize } from '@/agent/design/penParser'
 
 /** 结构上限：提示词要有用而不是淹没上下文，超限截断并标注。 */
 const DEFAULT_MAX_DEPTH = 6
@@ -108,6 +109,18 @@ interface WalkState {
   truncated: boolean
 }
 
+const collapseSpace = (value: string): string => value.replace(/\s+/gu, ' ').trim()
+
+/**
+ * 文案位：`$bind` 在投影里是 `{data.path}` 形态——按绑定标注成 `bind:`，不写成字面文案；
+ * 否则实现侧会把占位符抄成硬编码字符串。
+ */
+const textOf = (node: PenNode): string => {
+  const content = collapseSpace(node.content ?? '')
+  const bound = /^\{[A-Za-z_$][\w.$[\]]*\}$/u.test(content)
+  return bound ? `bind:${content.slice(1, -1)}` : `text:"${content}"`
+}
+
 const describeNode = (node: PenNodeUnion): string => {
   const name = 'name' in node && typeof node.name === 'string' ? node.name : undefined
   const label = name ? `"${name}"` : node.id
@@ -117,17 +130,47 @@ const describeNode = (node: PenNodeUnion): string => {
     if (dimensions) parts.push(dimensions)
   }
   parts.push(...formatLayout(node))
-  if (node.type === 'component' || node.type === 'part') return parts.join(' · ')
+  if (node.type === 'component' || node.type === 'part') {
+    if (node.type === 'part') {
+      // 部件的语义字段全部带上：实现侧不能靠“画得像”去猜 supporting/count/state。
+      if (node.icon) parts.push(`icon:${node.icon}`)
+      if (node.supporting) parts.push(`supporting:"${collapseSpace(node.supporting)}"`)
+      if (node.count !== undefined) parts.push(`count:${node.count}`)
+      if (node.selected) parts.push('selected')
+      if (node.state) parts.push(`state:${node.state}`)
+    } else if (node.fixture) {
+      parts.push(`fixture:${node.fixture}`)
+    }
+    return parts.join(' · ')
+  }
+  if (node.type !== 'unknown') {
+    if (node.clip) parts.push('clip:true')
+    if (node.opacity !== undefined) parts.push(`opacity:${node.opacity}`)
+    if (node.refMissing) parts.push('refMissing')
+  }
   const fill = formatPaint(node.type === 'unknown' ? undefined : node.fill)
   if (fill) parts.push(`bg:${fill}`)
   const stroke = formatPaint(node.type === 'unknown' ? undefined : node.stroke)
   if (stroke) parts.push(`border:${stroke}`)
+  if (node.type !== 'unknown' && node.strokeWidth !== undefined) {
+    parts.push(`strokeWidth:${typeof node.strokeWidth === 'number' ? node.strokeWidth : JSON.stringify(node.strokeWidth)}`)
+  }
   if (node.type === 'text') {
     const font = [node.fontSize, node.fontWeight].filter((value) => value !== undefined).map(String)
     if (font.length) parts.push(`font:${font.join('/')}`)
-    parts.push(`text:"${(node.content ?? '').replace(/\s+/gu, ' ').trim()}"`)
+    if (node.fontFamily) parts.push(`family:${node.fontFamily}`)
+    parts.push(textOf(node))
+    if (node.textGrowth) parts.push(`wrap:${node.textGrowth}`)
+    if (node.textAlign) parts.push(`align:${node.textAlign}`)
+    if (node.lineHeight !== undefined) parts.push(`line:${String(node.lineHeight)}`)
+    if (node.letterSpacing !== undefined) parts.push(`tracking:${String(node.letterSpacing)}`)
   }
   if (node.type === 'icon') parts.push(`icon:${node.icon ?? '?'}`)
+  if (node.type === 'ellipse' && node.innerRadius !== undefined) parts.push(`inner:${node.innerRadius}`)
+  if (node.type === 'path') {
+    if (node.geometry) parts.push(`path:${node.geometry}`)
+    if (node.viewBox) parts.push(`viewBox:${node.viewBox.join(' ')}`)
+  }
   return parts.join(' ')
 }
 
@@ -170,6 +213,9 @@ export const buildDesignImplementationPrompt = ({
   const sections: string[] = []
   sections.push(labels.intro)
   sections.push(`${doc.fileName} · ${doc.version ? `v${doc.version}` : 'v?'}`)
+  // 范围头代替原先内联的 `ax-selection@1` JSON：结构树已含实现所需语义，
+  // 同一棵子树再写一遍 JSON 是纯冗余；需要完整规格时按范围头的 query 复核。
+  sections.push(buildDesignScopeLine(doc, node))
   sections.push('')
   sections.push(`## ${labels.structure}`)
   sections.push(...state.lines)

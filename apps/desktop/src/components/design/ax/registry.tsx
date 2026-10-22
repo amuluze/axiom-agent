@@ -29,12 +29,19 @@ import { MessageActions } from '@/components/session/MessageActions'
 import { SessionMessageStream } from '@/components/session/SessionMessageStream'
 import { MessageContent, RichMessageContent } from '@/components/MessageContent'
 import { Sidebar } from '@/components/sidebar/Sidebar'
+import { WindowActions } from '@/components/session/WindowActions'
+import { SettingsNavigation } from '@/components/settings/SettingsNavigation'
+import { SettingsTopBar } from '@/components/settings/SettingsTopBar'
+import { FeedbackDialog, type FeedbackPreviewState } from '@/components/feedback/FeedbackDialog'
+import { SummaryInstructionsDialog } from '@/components/SummaryInstructionsDialog'
+import { BuiltinPromptEditorDialog } from '@/components/settings/BuiltinPromptEditorDialog'
 import { Composer } from '@/components/composer/Composer'
 import {
   PROVIDER_PROFILE_SCHEMA_VERSION,
   type ProviderProfile,
 } from '@/agent/transport/providerProfile'
 import type { AuthorizedWorkspace } from '@/platform/workspace'
+import type { AxSlotDecl } from '@/agent/design/axSchema'
 import type { DesignPreviewValue, DesignStoreSlices } from './previewContext'
 import type {
   DesignComponentDetail,
@@ -52,6 +59,7 @@ export interface AxPropSpec {
 /** 注册表条目：约束组件名、props 契约、数据档案与来源路径。 */
 export interface AxComponentEntry {
   name: string
+  previewFrame?: 'dialog'
   /**
    * `presentational`：props 驱动，直接渲染；
    * `store-bound`：需要 `preview` 提供预览态数据与 no-op 动作（见 previewContext）。
@@ -73,6 +81,13 @@ export interface AxComponentEntry {
    */
   storePreview?: (fixture: Record<string, unknown>) => DesignStoreSlices
   /**
+   * 具名插槽契约（.ax 1.5）：组件真实消费 children 形态内容时声明（插槽名 → 注入
+   * prop 名）。三处复用：读取路径核对 decl.slots、AxComponentHost 注入真实 prop、
+   * codegen 直译 children/具名 prop——未声明的插槽在解析期即报错（fail-closed）。
+   * 注入 prop 不得与本条目 props 契约撞名（解析器注册表核对强制）。
+   */
+  slots?: Record<string, AxSlotDecl>
+  /**
    * 固定 props：回调/句柄等**无法在 `.ax` 里表达**、但组件渲染需要的值（预览态一律 no-op）。
    * 与 fixture/节点 props 合并时优先级最低（作者声明永远覆盖）。
    */
@@ -81,6 +96,72 @@ export interface AxComponentEntry {
   sourcePath: string
   notes?: string
 }
+
+/**
+ * 注册表 props 契约 ↔ 真实组件签名的**编译期一致性门禁**（零运行时成本，寄生在
+ * 仓库既有的 `npm run typecheck` 上，不新增脚本/不新增 CI 步骤）。
+ *
+ * 为什么要有这道门：注册表的 props 是**手写**的。组件改名或改 props 时，画布路径会
+ * fail-closed 拒绝渲染（存量 `.ax` 稿直接报错，这个方向是安全的）；真正致命的是反
+ * 方向——手写契约与组件签名漂移后，`validateAxProps` 仍以注册表为准，于是会**放行
+ * 实际不合法的稿**（模型照组件源码写了注册表里没有的 prop，被原样塞进 DOM），或**拒
+ * 绝实际合法的稿**（模型写的是组件真有的 prop，注册表说没有，报错信息还是错的）。
+ * 两者都是「校验器与被校验对象不同源」的静默失败，只能在编译期由组件签名单方面兜住。
+ *
+ * 门禁只校验**名字集合 / 必填性**两件能被类型判定的事，`type` 种类与 `description`
+ * 仍是手写（面向模型的中文说明，不生成）。
+ *
+ * 下面是为此准备的两步取值：先从组件签名上摘出 props 类型（无参组件得到空对象，
+ * `keyof` 即 `never`），再从中分出「全部 prop 名」与「必填 prop 名」。
+ */
+type FirstParameter<T extends unknown[]> = T extends []
+  ? Record<never, never>
+  : T extends [infer P, ...unknown[]] ? NonNullable<P>
+    : T extends [(infer P)?, ...unknown[]] ? NonNullable<P>
+    : Record<never, never>
+
+/** 组件签名上的 props 类型。 */
+type ComponentProps<C extends (...args: never[]) => unknown> = FirstParameter<Parameters<C>>
+
+/** 组件签名上的全部 prop 名（无 props 的组件得到 `never`，即「一条都不能声明」）。 */
+type ComponentPropNames<C extends (...args: never[]) => unknown> = Extract<keyof ComponentProps<C>, string>
+
+/**
+ * 组件签名上的必填 prop 名，**排除 `.ax` 无法表达的回调类 prop**——回调/句柄/内部注入
+ * 的值不进 props 契约，一律走 `statics`（预览态 no-op），因此它们不参与这里的必填判定。
+ */
+type RequiredComponentPropNames<C extends (...args: never[]) => unknown> = {
+  [K in ComponentPropNames<C>]-?: ComponentProps<C>[K] extends (...args: never[]) => unknown
+    ? never
+    : object extends Pick<ComponentProps<C>, K> ? never : K
+}[ComponentPropNames<C>]
+
+/** 单条 prop 规格：必填 prop 必须写 `required: true`，可选 prop 不得写 `required: true`。 */
+type AxPropSpecFor<Required extends boolean> = AxPropSpec &
+  (Required extends true ? { required: true } : { required?: false })
+
+/**
+ * presentational 条目的**全量契约**：组件签名上的每个必填 prop 都必须出现且标
+ * `required: true`，可选 prop 允许省略；出现组件签名上没有的 prop 直接编译失败。
+ */
+export type AxPropsOf<C extends (...args: never[]) => unknown> = {
+  [K in RequiredComponentPropNames<C>]: AxPropSpecFor<true>
+} & {
+  [K in Exclude<ComponentPropNames<C>, RequiredComponentPropNames<C>>]?: AxPropSpecFor<false>
+}
+
+/**
+ * store-bound 条目的**收窄契约**：`.ax` 只暴露该组件 props 里「能被 `.ax` 表达」的
+ * 一小部分（其余由 store 切片注入），因此允许整条 props 为空；但只要写了某个 prop，
+ * 它就必须是真实 prop，且必填性不得写错（该必填却漏标、或不该必填却标了，都编译失败）。
+ */
+export type AxPropsSubsetOf<C extends (...args: never[]) => unknown> = {
+  [K in ComponentPropNames<C>]?: AxPropSpecFor<K extends RequiredComponentPropNames<C> ? true : false>
+}
+
+/** statics 的 key 必须是真实 prop 名（值是预览态 no-op，不校验取值）。 */
+export type AxStaticsOf<C extends (...args: never[]) => unknown> =
+  Partial<Record<ComponentPropNames<C>, unknown>>
 
 /** 把具体 props 类型的组件登记为注册表消费的松类型（唯一一处断言）。 */
 const asEntryComponent = <P,>(component: ComponentType<P>): ComponentType<Record<string, unknown>> =>
@@ -96,7 +177,7 @@ const pendingCommandApprovalFixture: PendingToolApproval = {
   presentation: {
     category: 'workspace-command',
     title: '需要批准 · 执行项目代码',
-    description: '本次批准仅对当前命令有效；后续操作仍会再次询问。',
+    description: '仅对本次命令有效，后续仍会询问。',
     path: '/workspace/axiom',
     preview: 'npm test --workspace apps/desktop',
     danger: false,
@@ -182,7 +263,6 @@ const COMPOSER_AGENT_NOOPS = {
   // result.updated（undefined 会在点击路径抛未处理 rejection），拒绝分支既形状
   // 合法又语义诚实——预览态的运行时本来就「不接受」。
   queueSteering: async () => ({ accepted: false as const, reason: 'runtime-not-accepting' as const }),
-  queueFollowUp: async () => ({ accepted: false as const, reason: 'runtime-not-accepting' as const }),
   clearQueuedMessages: () => undefined,
   // 恢复编辑走 falsy 早退（restored 为空即不动输入框），undefined 即安全的 no-op。
   restoreQueuedMessage: async () => undefined,
@@ -268,21 +348,32 @@ const streamMessagesFixture = [
 ] as unknown as AgentState['messages']
 
 /** 结果消息示例：ResultChip 只读 content/createdAt。 */
-const completedMessageFixture = {
+const completedMessageFixture: AgentMessage = {
   id: 'design-preview-result',
   role: 'assistant',
+  stopReason: 'stop',
   content: '任务完成 · 3 处文件改动 · 全部测试通过',
   // assistant 消息必须带 toolCalls（块构建与 RichMessageContent 都会遍历它）。
   toolCalls: [],
   createdAt: 1_750_000_000_000,
-} as unknown as AgentMessage
+}
+
+const feedbackDraft = { kind: 'feature', title: '增加设计评审', description: '希望支持多方案对比与评审记录', contact: 'designer@example.invalid', showErrors: false } as const
+const feedbackPreviews: Record<string, FeedbackPreviewState> = {
+  default: { kind: 'feature', title: '', description: '', contact: '', showErrors: false, phase: { state: 'editing' } },
+  bug: { kind: 'bug', title: '', description: '', contact: '', showErrors: false, phase: { state: 'editing' } },
+  invalid: { kind: null, title: '', description: '', contact: '', showErrors: true, phase: { state: 'editing' } },
+  submitting: { ...feedbackDraft, phase: { state: 'submitting' } },
+  failure: { ...feedbackDraft, phase: { state: 'failure', message: '服务暂时不可用，请重试' } },
+  success: { ...feedbackDraft, phase: { state: 'success', receipt: { kind: 'feature', title: feedbackDraft.title, contact: feedbackDraft.contact, reference: 'DESIGN-001', deduped: false } } },
+}
 
 export const AX_COMPONENT_REGISTRY: Record<string, AxComponentEntry> = {
   ApprovalCard: {
     name: 'ApprovalCard',
     kind: 'store-bound',
     component: asEntryComponent(ApprovalCard),
-    props: {},
+    props: {} satisfies AxPropsSubsetOf<typeof ApprovalCard>,
     fixtures: { 'pending-command': { pendingApproval: pendingCommandApprovalFixture } },
     preview: (fixture) => ({
       pendingApproval: (fixture.pendingApproval as PendingToolApproval | undefined) ?? null,
@@ -294,11 +385,13 @@ export const AX_COMPONENT_REGISTRY: Record<string, AxComponentEntry> = {
     name: 'PausedBanner',
     kind: 'store-bound',
     component: asEntryComponent(PausedBanner),
-    props: {},
+    props: {} satisfies AxPropsSubsetOf<typeof PausedBanner>,
+    // default 具名插槽（1.5）：横幅尾部的附加说明内容（PausedBanner 的 children）。
+    slots: { default: { prop: 'children' } },
     fixtures: { default: {} },
     preview: () => ({}),
     sourcePath: 'components/session/PausedBanner.tsx',
-    notes: '暂停横幅：唯一依赖是「继续会话」动作，预览态为 no-op。',
+    notes: '暂停横幅：唯一依赖是「继续会话」动作，预览态为 no-op；default 插槽注入横幅附加内容。',
   },
   ToolCallCard: {
     name: 'ToolCallCard',
@@ -309,7 +402,7 @@ export const AX_COMPONENT_REGISTRY: Record<string, AxComponentEntry> = {
       toolCallId: { type: 'string', description: '工具调用 id' },
       call: { type: 'json', description: '触发调用的助手消息（可选，缺省只渲染标题）' },
       result: { type: 'json', description: '工具结果消息（可选）' },
-    },
+    } satisfies AxPropsOf<typeof ToolCallCard>,
     fixtures: { minimal: { toolName: 'bash', toolCallId: 'design-preview-tool' } },
     sourcePath: 'components/session/ToolCallCard.tsx',
   },
@@ -317,7 +410,7 @@ export const AX_COMPONENT_REGISTRY: Record<string, AxComponentEntry> = {
     name: 'ResultChip',
     kind: 'presentational',
     component: asEntryComponent(ResultChip),
-    props: { message: { type: 'json', required: true, description: '结果消息（读 content/createdAt）' } },
+    props: { message: { type: 'json', required: true, description: '结果消息（读 content/createdAt）' } } satisfies AxPropsOf<typeof ResultChip>,
     fixtures: { completed: { message: completedMessageFixture } },
     sourcePath: 'components/session/ResultChip.tsx',
   },
@@ -327,7 +420,7 @@ export const AX_COMPONENT_REGISTRY: Record<string, AxComponentEntry> = {
     component: asEntryComponent(SessionMessageStream),
     props: {
       scrollResetKey: { type: 'string', description: '贴底滚动的重置键（缺省跟随会话）' },
-    },
+    } satisfies AxPropsSubsetOf<typeof SessionMessageStream>,
     fixtures: { 'two-turn': { messages: streamMessagesFixture, running: false } },
     preview: (fixture) => ({
       messages: (fixture.messages as AgentState['messages'] | undefined) ?? [],
@@ -346,23 +439,23 @@ export const AX_COMPONENT_REGISTRY: Record<string, AxComponentEntry> = {
     component: asEntryComponent(MessageActions),
     props: {
       role: { type: 'string', required: true, description: 'user 或 assistant（决定操作集合）' },
-      text: { type: 'string', description: '复制的内容；空内容不渲染复制按钮' },
-      busy: { type: 'boolean', description: '会话忙时禁用会改动会话的操作' },
-      branchable: { type: 'boolean', description: '可分支' },
-      summarizable: { type: 'boolean', description: '可总结后分支' },
-      retryable: { type: 'boolean', description: '可重试' },
-      editable: { type: 'boolean', description: '可编辑（用户消息）' },
-    },
+      text: { type: 'string', required: true, description: '复制的内容；空内容不渲染复制按钮' },
+      busy: { type: 'boolean', required: true, description: '会话忙时禁用会改动会话的操作' },
+      branchable: { type: 'boolean', required: true, description: '可分支' },
+      summarizable: { type: 'boolean', required: true, description: '可总结后分支' },
+      retryable: { type: 'boolean', required: true, description: '可重试' },
+      editable: { type: 'boolean', required: true, description: '可编辑（用户消息）' },
+    } satisfies AxPropsOf<typeof MessageActions>,
     // 四个回调在预览态一律 no-op（评审不得改动会话）。
     statics: {
       onBranch: () => undefined,
       onSummarizedBranch: () => undefined,
       onRetry: () => undefined,
       onEdit: () => undefined,
-    },
+    } satisfies AxStaticsOf<typeof MessageActions>,
     fixtures: {
-      'agent-message': { role: 'assistant', text: '示例回复', busy: false, branchable: true },
-      'user-message': { role: 'user', text: '示例提问', busy: false, editable: true },
+      'agent-message': { role: 'assistant', text: '示例回复', busy: false, branchable: true, summarizable: false, retryable: false, editable: false },
+      'user-message': { role: 'user', text: '示例提问', busy: false, editable: true, branchable: false, summarizable: false, retryable: false },
     },
     sourcePath: 'components/session/MessageActions.tsx',
     notes: '消息操作行（hover 出现）：回调由 statics 提供 no-op。',
@@ -375,7 +468,7 @@ export const AX_COMPONENT_REGISTRY: Record<string, AxComponentEntry> = {
       message: { type: 'json', required: true, description: '消息（按 role 渲染文本/思考/工具调用块）' },
       renderToolCalls: { type: 'boolean', description: '是否渲染工具调用块（默认 true）' },
       streaming: { type: 'boolean', description: '是否流式草稿态' },
-    },
+    } satisfies AxPropsOf<typeof RichMessageContent>,
     fixtures: { 'assistant-text': { message: completedMessageFixture } },
     sourcePath: 'components/MessageContent.tsx',
     notes: '富文本消息渲染（Markdown / 思考 / 工具调用块）。',
@@ -384,7 +477,7 @@ export const AX_COMPONENT_REGISTRY: Record<string, AxComponentEntry> = {
     name: 'MessageContent',
     kind: 'presentational',
     component: asEntryComponent(MessageContent),
-    props: { content: { type: 'string', required: true, description: 'Markdown 文本' } },
+    props: { content: { type: 'string', required: true, description: 'Markdown 文本' } } satisfies AxPropsOf<typeof MessageContent>,
     fixtures: { markdown: { content: '**加粗** 与 `code` 行\n\n- 列表项' } },
     sourcePath: 'components/MessageContent.tsx',
   },
@@ -392,7 +485,7 @@ export const AX_COMPONENT_REGISTRY: Record<string, AxComponentEntry> = {
     name: 'BackgroundApprovals',
     kind: 'store-bound',
     component: asEntryComponent(BackgroundApprovals),
-    props: {},
+    props: {} satisfies AxPropsSubsetOf<typeof BackgroundApprovals>,
     fixtures: {
       'one-pending': {
         backgroundApprovals: [pendingCommandApprovalFixture],
@@ -414,17 +507,51 @@ export const AX_COMPONENT_REGISTRY: Record<string, AxComponentEntry> = {
       messageId: { type: 'string', required: true, description: '出错消息 id' },
       error: { type: 'string', required: true, description: '错误文本' },
       message: { type: 'json', description: '关联的助手消息（可选，用于友好文案）' },
-    },
+    } satisfies AxPropsOf<typeof ErrorCard>,
     fixtures: { provider: { messageId: 'design-preview-error', error: '连接被重置（ECONNRESET）' } },
     sourcePath: 'components/session/ErrorCard.tsx',
   },
+  WindowActions: {
+    name: 'WindowActions', kind: 'store-bound', component: asEntryComponent(WindowActions), props: {} satisfies AxPropsSubsetOf<typeof WindowActions>,
+    fixtures: { default: {}, terminal: { terminalPanelOpen: true }, ssh: { runtimeRailOpen: true, runtimeRailPane: 'ssh' } },
+    storePreview: (fixture) => ({ ui: { terminalPanelOpen: fixture.terminalPanelOpen === true, runtimeRailOpen: fixture.runtimeRailOpen === true, runtimeRailPane: fixture.runtimeRailPane === 'ssh' ? 'ssh' : 'picker' } }),
+    sourcePath: 'components/session/WindowActions.tsx',
+  },
+  SettingsNavigation: {
+    name: 'SettingsNavigation', kind: 'presentational', component: asEntryComponent(SettingsNavigation),
+    props: { section: { type: 'string', required: true, description: '设置分区' }, blocking: { type: 'boolean', description: '禁止返回' }, providerSetupRequired: { type: 'boolean', description: '仅开放模型设置' }, updateVersion: { type: 'string', description: '可用更新版本' } } satisfies AxPropsOf<typeof SettingsNavigation>,
+    fixtures: { default: { section: 'general' }, models: { section: 'models' }, skills: { section: 'skills' }, setup: { section: 'models', blocking: true, providerSetupRequired: true } },
+    statics: { onSelect: () => undefined, onClose: () => undefined } satisfies AxStaticsOf<typeof SettingsNavigation>, sourcePath: 'components/settings/SettingsNavigation.tsx',
+  },
+  SettingsTopBar: {
+    name: 'SettingsTopBar', kind: 'store-bound', component: asEntryComponent(SettingsTopBar), props: {} satisfies AxPropsSubsetOf<typeof SettingsTopBar>, fixtures: { default: {} },
+    storePreview: () => ({ ui: SHARED_UI_SLICE }), sourcePath: 'components/settings/SettingsTopBar.tsx',
+  },
+  FeedbackDialog: {
+    name: 'FeedbackDialog', kind: 'store-bound', component: asEntryComponent(FeedbackDialog), previewFrame: 'dialog',
+    props: {} satisfies AxPropsSubsetOf<typeof FeedbackDialog>, fixtures: Object.fromEntries(Object.entries(feedbackPreviews).map(([key, value]) => [key, { ...value }])),
+    statics: { request: { kind: 'feature' } } satisfies AxStaticsOf<typeof FeedbackDialog>,
+    preview: (fixture) => ({ feedback: Object.values(feedbackPreviews).find((value) => value.phase === fixture.phase) ?? feedbackPreviews.default }),
+    sourcePath: 'components/feedback/FeedbackDialog.tsx',
+  },
+  SummaryInstructionsDialog: {
+    name: 'SummaryInstructionsDialog', kind: 'presentational', component: asEntryComponent(SummaryInstructionsDialog), previewFrame: 'dialog',
+    props: { mode: { type: 'string', required: true, description: 'compaction 或 branch' } } satisfies AxPropsOf<typeof SummaryInstructionsDialog>, fixtures: { default: { mode: 'compaction' }, branch: { mode: 'branch' } },
+    preview: () => ({}), statics: { onCancel: () => undefined, onSubmit: () => undefined } satisfies AxStaticsOf<typeof SummaryInstructionsDialog>, sourcePath: 'components/SummaryInstructionsDialog.tsx',
+  },
+  BuiltinPromptEditorDialog: {
+    name: 'BuiltinPromptEditorDialog', kind: 'presentational', component: asEntryComponent(BuiltinPromptEditorDialog), previewFrame: 'dialog',
+    props: { target: { type: 'json', required: true, description: '技能或子智能体目标' } } satisfies AxPropsOf<typeof BuiltinPromptEditorDialog>, fixtures: { default: { target: { kind: 'skill', name: 'design' } }, subagent: { target: { kind: 'subagent', subKind: 'inspect' } } },
+    preview: () => ({}), statics: { onClose: () => undefined, onSaved: () => undefined } satisfies AxStaticsOf<typeof BuiltinPromptEditorDialog>, sourcePath: 'components/settings/BuiltinPromptEditorDialog.tsx',
+  },
+
   Sidebar: {
     name: 'Sidebar',
     kind: 'store-bound',
     component: asEntryComponent(Sidebar),
     props: {
       variant: { type: 'string', description: "渲染形态：'default'（带拖拽把手）或 'overlay'（移动浮层）" },
-    },
+    } satisfies AxPropsSubsetOf<typeof Sidebar>,
     fixtures: { default: { sessions: 'list' }, empty: { sessions: 'empty' } },
     storePreview: (fixture) => ({
       agent: sidebarAgentSlice(fixture),
@@ -441,7 +568,7 @@ export const AX_COMPONENT_REGISTRY: Record<string, AxComponentEntry> = {
     props: {
       variant: { type: 'string', description: "'new-task'（欢迎页居中）或 'session'（会话底部）" },
       showAccessPicker: { type: 'boolean', description: '是否显示审批模式下拉（默认 true）' },
-    },
+    } satisfies AxPropsSubsetOf<typeof Composer>,
     fixtures: { default: { queued: 'none' }, queued: { queued: 'two' } },
     storePreview: (fixture) => ({
       agent: composerAgentSlice(fixture),
@@ -471,6 +598,9 @@ const summarizeEntry = (entry: AxComponentEntry): DesignComponentSummary => ({
       Object.entries(entry.fixtures).map(([name, fixture]) => [name, Object.keys(fixture)]),
     )
     : {},
+  // 插槽契约（1.5）：default 命名插槽连带置 defaultSlot（codegen 直译 children 的既有开关）。
+  ...(entry.slots ? { slots: entry.slots } : {}),
+  ...(entry.slots?.default ? { defaultSlot: true } : {}),
   ...(entry.notes ? { notes: entry.notes } : {}),
 })
 
@@ -495,6 +625,8 @@ export const axComponentDetailOf = (name: string): DesignComponentDetail | null 
     summary: summarizeEntry(entry),
     statics: Object.keys(entry.statics ?? {}),
     fixtures: entry.fixtures,
+    // slots 段（1.5）：mode=component 详单新增，模型写节点 slot 内容前据此确认契约。
+    ...(entry.slots ? { slots: entry.slots } : {}),
   }
 }
 
@@ -564,4 +696,4 @@ export const axPreviewValueOf = (
   entry: AxComponentEntry,
   fixture: string | undefined,
 ): DesignPreviewValue | null =>
-  entry.kind === 'store-bound' ? (entry.preview?.(axFixtureOf(entry, fixture)) ?? {}) : null
+  entry.preview?.(axFixtureOf(entry, fixture)) ?? (entry.kind === 'store-bound' ? {} : null)

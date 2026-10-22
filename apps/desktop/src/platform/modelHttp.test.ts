@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { SendManifest } from '@/agent/context/sendManifest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   isTauriRuntime: vi.fn(),
@@ -15,6 +16,7 @@ import {
   modelHttpByteStream,
   probeModelHttp,
 } from './modelHttp'
+import { setSendManifestSink } from './sendManifest'
 
 interface StreamPayload {
   requestId: string
@@ -22,6 +24,8 @@ interface StreamPayload {
   chunk?: number[]
   done: boolean
   error?: string
+  retryCount?: number
+  credentialScan?: 'passed' | 'blocked'
 }
 
 interface StreamHandle {
@@ -57,6 +61,10 @@ beforeEach(() => {
   mocks.listen.mockReset()
 })
 
+afterEach(() => {
+  setSendManifestSink(undefined)
+})
+
 describe('modelHttpByteStream', () => {
   it('streams chunks, reports response metadata, and unlistens on completion', async () => {
     const stream = installStream()
@@ -88,6 +96,28 @@ describe('modelHttpByteStream', () => {
 
     stream.handler({ requestId: 'req-1', error: 'connection refused', done: true })
     await expect(nextPromise).rejects.toThrow('connection refused')
+  })
+
+  it('projects native credential scan and retry events into the send manifest', async () => {
+    const manifests: SendManifest[] = []
+    setSendManifestSink((manifest) => manifests.push(manifest))
+    const stream = installStream()
+    const iterator = modelHttpByteStream(request, new AbortController().signal)[Symbol.asyncIterator]()
+    const nextPromise = iterator.next()
+    await vi.waitFor(() => expect(mocks.listen).toHaveBeenCalled())
+
+    stream.handler({
+      requestId: 'req-1',
+      done: false,
+      retryCount: 0,
+      credentialScan: 'passed',
+    })
+    stream.handler({ requestId: 'req-1', done: false, retryCount: 1 })
+    stream.handler({ requestId: 'req-1', done: true })
+
+    expect((await nextPromise).done).toBe(true)
+    expect(manifests.at(0)).toMatchObject({ retryCount: 0, credentialScan: 'pending' })
+    expect(manifests.at(-1)).toMatchObject({ retryCount: 1, credentialScan: 'passed' })
   })
 
   it('forwards an invoke failure as a terminal stream error', async () => {

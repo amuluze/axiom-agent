@@ -1,13 +1,102 @@
+use crate::runtime_manifest::validate_identifier;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{Connection, QueryBuilder, Row, Sqlite, SqliteConnection};
 use std::collections::{HashMap, HashSet};
-use crate::runtime_manifest::validate_identifier;
 
 use super::*;
 
 pub(super) fn interrupted_tool_key(run_id: &str, tool_call_id: &str) -> String {
     format!("{run_id}\0{tool_call_id}")
+}
+
+/// 中断 run 的恢复摘要（在状态改写前后都可读：只读 provider_requests/tool_executions
+/// 的持久化状态，不受 run 状态变更影响）。
+#[derive(Default)]
+pub(super) struct InterruptedRunSummary {
+    completed_runs: u64,
+    failed_runs: u64,
+    unknown_runs: u64,
+    possibly_executed_tool_executions: u64,
+    recovered_sessions: Vec<String>,
+}
+
+/// 按持久化状态给每个中断 run 定性（completed / failed / unknown），并汇总受影响
+/// 会话与"已执行但结果未保存"的工具调用数（可能已产生落地副作用）。
+pub(super) async fn summarize_interrupted_runs(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    run_ids: &[String],
+) -> Result<InterruptedRunSummary, String> {
+    let mut summary = InterruptedRunSummary::default();
+    if run_ids.is_empty() {
+        return Ok(summary);
+    }
+    let mut sessions: HashSet<String> = HashSet::new();
+    for chunk in run_ids.chunks(RECOVERY_RUN_ID_BATCH_SIZE) {
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "SELECT r.session_id,
+               CASE
+                 WHEN EXISTS (SELECT 1 FROM provider_requests p
+                              WHERE p.run_id = r.id AND p.status = 'response_received')
+                   THEN 'completed'
+                 WHEN EXISTS (SELECT 1 FROM tool_executions t
+                              WHERE t.run_id = r.id AND t.status = 'error')
+                   THEN 'failed'
+                 ELSE 'unknown'
+               END AS disposition
+             FROM agent_runs r WHERE r.id IN (",
+        );
+        {
+            let mut separated = builder.separated(", ");
+            for run_id in chunk {
+                separated.push_bind(run_id.clone());
+            }
+        }
+        builder.push(")");
+        let rows = builder
+            .build()
+            .fetch_all(&mut **transaction)
+            .await
+            .map_err(|error| format!("无法读取中断 Run 恢复摘要：{error}"))?;
+        for row in rows {
+            let session_id: String = row
+                .try_get("session_id")
+                .map_err(|error| format!("无法读取恢复摘要 Session：{error}"))?;
+            sessions.insert(session_id);
+            let disposition: String = row
+                .try_get("disposition")
+                .map_err(|error| format!("无法读取恢复摘要处置：{error}"))?;
+            match disposition.as_str() {
+                "completed" => summary.completed_runs += 1,
+                "failed" => summary.failed_runs += 1,
+                _ => summary.unknown_runs += 1,
+            }
+        }
+        let mut counter = QueryBuilder::<Sqlite>::new(
+            "SELECT COUNT(*) FROM tool_executions t
+             JOIN agent_runs r ON r.id = t.run_id
+             WHERE r.id IN (",
+        );
+        {
+            let mut separated = counter.separated(", ");
+            for run_id in chunk {
+                separated.push_bind(run_id.clone());
+            }
+        }
+        counter.push(") AND t.status IN ('completed', 'error')");
+        let count: i64 = counter
+            .build()
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(|error| format!("无法统计可能已执行的工具调用：{error}"))?
+            .try_get(0)
+            .map_err(|error| format!("无法读取可能已执行的工具调用计数：{error}"))?;
+        summary.possibly_executed_tool_executions += count.max(0) as u64;
+    }
+    let mut recovered_sessions: Vec<String> = sessions.into_iter().collect();
+    recovered_sessions.sort_unstable();
+    summary.recovered_sessions = recovered_sessions;
+    Ok(summary)
 }
 
 pub(super) fn add_interrupted_tool_candidate(
@@ -59,6 +148,7 @@ pub(super) async fn recover_repository(
     .fetch_all(&mut *transaction)
     .await
     .map_err(|error| format!("无法读取未完成 Agent Run：{error}"))?;
+    let summary = summarize_interrupted_runs(&mut transaction, &running_run_ids).await?;
     let interrupted_runs = sqlx::query(
         "UPDATE agent_runs
          SET status = 'interrupted', end_reason = 'interrupted',
@@ -195,7 +285,7 @@ pub(super) async fn recover_repository(
             .await
             .map_err(|error| format!("无法读取未完成工具执行 Run：{error}"))?;
     recovery_run_ids.extend(running_tool_run_ids);
-    sqlx::query(
+    let interrupted_tool_executions = sqlx::query(
         "UPDATE tool_executions
          SET status = 'interrupted', is_error = 1,
              result_preview = COALESCE(result_preview, ?),
@@ -207,7 +297,8 @@ pub(super) async fn recover_repository(
     .bind(now)
     .execute(&mut *transaction)
     .await
-    .map_err(|error| format!("无法中断未完成工具执行：{error}"))?;
+    .map_err(|error| format!("无法中断未完成工具执行：{error}"))?
+    .rows_affected();
 
     let mut recovery_run_ids: Vec<String> = recovery_run_ids.into_iter().collect();
     recovery_run_ids.sort_unstable();
@@ -570,6 +661,12 @@ pub(super) async fn recover_repository(
         .map_err(|error| format!("无法提交 SessionRepository 恢复事务：{error}"))?;
     Ok(RecoverSessionRepositoryResult {
         recovered_runs: interrupted_runs.rows_affected(),
+        completed_runs: summary.completed_runs,
+        failed_runs: summary.failed_runs,
+        unknown_runs: summary.unknown_runs,
+        interrupted_tool_executions,
+        possibly_executed_tool_executions: summary.possibly_executed_tool_executions,
+        recovered_sessions: summary.recovered_sessions,
     })
 }
 
@@ -590,6 +687,15 @@ pub(super) async fn recover_session(
         .begin()
         .await
         .map_err(|error| format!("无法开始 Session 恢复事务：{error}"))?;
+    let running_run_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM agent_runs WHERE session_id = ? AND status = 'running'
+         ORDER BY started_at ASC, id ASC",
+    )
+    .bind(session_id)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|error| format!("无法读取指定 Session 的未完成 Agent Run：{error}"))?;
+    let summary = summarize_interrupted_runs(&mut transaction, &running_run_ids).await?;
     let interrupted_runs = sqlx::query(
         "UPDATE agent_runs
          SET status = 'interrupted', end_reason = 'interrupted',
@@ -611,7 +717,7 @@ pub(super) async fn recover_session(
     .execute(&mut *transaction)
     .await
     .map_err(|error| format!("无法中断指定 Session 的未完成 Provider request：{error}"))?;
-    sqlx::query(
+    let interrupted_tool_executions = sqlx::query(
         "UPDATE tool_executions
          SET status = 'interrupted', is_error = 1,
              result_preview = COALESCE(result_preview, ?),
@@ -625,15 +731,15 @@ pub(super) async fn recover_session(
     .bind(session_id)
     .execute(&mut *transaction)
     .await
-    .map_err(|error| format!("无法中断指定 Session 的未完成工具执行：{error}"))?;
-    let updated_sessions = sqlx::query(
-        "UPDATE agent_sessions SET status = 'idle', updated_at = ? WHERE id = ?",
-    )
-    .bind(now)
-    .bind(session_id)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|error| format!("无法复位指定 Session 状态：{error}"))?;
+    .map_err(|error| format!("无法中断指定 Session 的未完成工具执行：{error}"))?
+    .rows_affected();
+    let updated_sessions =
+        sqlx::query("UPDATE agent_sessions SET status = 'idle', updated_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(session_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| format!("无法复位指定 Session 状态：{error}"))?;
     if updated_sessions.rows_affected() != 1 {
         return Err("会话不存在或已被删除".to_string());
     }
@@ -643,5 +749,11 @@ pub(super) async fn recover_session(
         .map_err(|error| format!("无法提交 Session 恢复事务：{error}"))?;
     Ok(RecoverSessionRepositoryResult {
         recovered_runs: interrupted_runs.rows_affected(),
+        completed_runs: summary.completed_runs,
+        failed_runs: summary.failed_runs,
+        unknown_runs: summary.unknown_runs,
+        interrupted_tool_executions,
+        possibly_executed_tool_executions: summary.possibly_executed_tool_executions,
+        recovered_sessions: summary.recovered_sessions,
     })
 }

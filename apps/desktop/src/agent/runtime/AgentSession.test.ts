@@ -10,6 +10,8 @@ import type {
 import { createBranchMessageCopies } from '@/agent/session/branch'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentSession } from './AgentSession'
+import { createFakeAgentEnvironment } from '@/agent/tools/__fixtures__/fakeAgentEnvironment'
+import type { SubAgentRuntime } from '@/agent/subagent/contracts'
 import type { AgentMutationJournal, AgentSessionJournalEntry } from './mutationJournal'
 
 class CompactingTransport implements ModelTransport {
@@ -1207,7 +1209,7 @@ describe('AgentSession runtime updates', () => {
     expect(() => session.setTools([runtimeTool, runtimeTool])).toThrow('重复工具')
   })
 
-  it('reconstructs branch-local tool activation and rejects inconsistent history', () => {
+  it('reconstructs branch-local tool activation within the current registry', () => {
     const history: AgentMessage[] = [
       { id: 'u1', role: 'user', content: 'discover', createdAt: 1 },
       {
@@ -1243,8 +1245,8 @@ describe('AgentSession runtime updates', () => {
       .toEqual(['runtime_tool'])
     expect(createSession(history).getActiveTools().map((tool) => tool.name))
       .toEqual(['runtime_tool', 'deferred_runtime_tool'])
-    expect(() => new AgentSession({
-      sessionId: 'invalid-history',
+    expect(new AgentSession({
+      sessionId: 'revoked-history',
       systemPrompt: 'system',
       model: { provider: 'test', model: 'model' },
       transport: new ResumeTransport(),
@@ -1260,7 +1262,7 @@ describe('AgentSession runtime updates', () => {
         isError: false,
         createdAt: 1,
       }],
-    })).toThrow('未知工具')
+    }).getActiveTools().map((tool) => tool.name)).toEqual(['runtime_tool'])
   })
 
   it('updates the idle runtime and uses the new model, reasoning, tools, and transport', async () => {
@@ -2880,4 +2882,38 @@ describe('AgentSession post-turn idle compaction', () => {
     // 1 次普通请求（运行中同步压缩）+ 1 次摘要请求；空闲压缩因本 run 已压缩而跳过
     expect(transport.requests).toHaveLength(2)
   })
+})
+
+
+it('委托绑定取现场活跃工具，未激活注册工具不继承，委托信号在工具结束后失效', async () => {
+  const delegate = vi.fn<SubAgentRuntime['delegate']>(async (_request, _binding, _signal) => ({
+    status: 'completed', summary: '结论', turns: 1, toolCalls: 0, modelRequests: 1, endReason: 'completed', durationMs: 1,
+  }))
+  let requests = 0
+  const transport: ModelTransport = { async *stream() {
+    if (requests++ === 0) {
+      yield { type: 'tool_call_start', index: 0, id: 'delegate-call', name: 'delegate' }
+      yield { type: 'tool_call_delta', index: 0, argumentsDelta: '{}' }
+      yield { type: 'tool_call_end', index: 0 }
+      yield { type: 'done', stopReason: 'tool_use' }
+    } else {
+      yield { type: 'text_delta', delta: '结束' }
+      yield { type: 'done', stopReason: 'stop' }
+    }
+  } }
+  const tool: AgentTool = { ...runtimeTool, name: 'delegate', execute: async (_input, context) => {
+    if (!context.delegateAgent) throw new Error('缺委托端口')
+    const result = await context.delegateAgent({ kind: 'review', task: '审查' })
+    return { content: result.summary }
+  } }
+  const session = new AgentSession({ sessionId: 'delegate-session', systemPrompt: 'system', model: { provider: 'test', model: 'model' },
+    transport, tools: [tool, { ...runtimeTool, name: 'read' }, { ...runtimeTool, name: 'web_fetch' }], activeToolNames: ['delegate', 'read'],
+    subAgentRuntime: { delegate }, subAgentEnvironment: createFakeAgentEnvironment(),
+  })
+  await session.prompt('执行审查')
+  expect(delegate).toHaveBeenCalledOnce()
+  const call = vi.mocked(delegate).mock.calls[0]
+  expect(call[1].parentActiveToolNames).toEqual(['delegate', 'read'])
+  expect(call[1].parentToolCallId).toBe('delegate-call')
+  expect(call[2].aborted).toBe(true)
 })

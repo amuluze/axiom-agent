@@ -1,6 +1,12 @@
 import '@testing-library/jest-dom/vitest'
 import { cleanup } from '@testing-library/react'
 import { afterEach } from 'vitest'
+import { installMemoryLocalStorage } from './src/testSupport/memoryLocalStorage'
+
+// 每个测试文件独立的内存版 localStorage。setup 每个文件都跑一次，因此文件之间
+// 彻底隔离——原先依赖 NODE_OPTIONS 的 --localstorage-file 是所有 worker 共享的
+// 同一份落盘文件，并发下互相覆盖会产生间歇假红。
+installMemoryLocalStorage()
 
 // 测试环境统一中文系统语言：i18n 的 system 偏好经 navigator.language 解析，
 // node/jsdom 默认 en-US 会让存量中文断言全部失效。defineProperty 只覆盖
@@ -26,6 +32,14 @@ if (typeof globalThis.MouseEvent !== 'undefined' && typeof globalThis.PointerEve
   }
   Object.defineProperty(globalThis, 'PointerEvent', {
     value: PointerEventPolyfill,
+    configurable: true,
+    writable: true,
+  })
+}
+
+if (typeof globalThis.HTMLCanvasElement !== 'undefined') {
+  Object.defineProperty(globalThis.HTMLCanvasElement.prototype, 'getContext', {
+    value: () => null,
     configurable: true,
     writable: true,
   })

@@ -129,7 +129,8 @@ pub(crate) fn resize_image(bytes: &[u8]) -> Result<ResizedImage, String> {
     let mut current_h = target_h;
 
     loop {
-        let resized = original.resize_exact(current_w, current_h, image::imageops::FilterType::Lanczos3);
+        let resized =
+            original.resize_exact(current_w, current_h, image::imageops::FilterType::Lanczos3);
         let mut out: Vec<u8> = Vec::new();
         resized
             .write_to(&mut Cursor::new(&mut out), format)

@@ -1,6 +1,10 @@
 .composer {
   width: 100%;
   max-width: var(--message-column);
+  /* 弹层宽度的容器基准:主会话页 Composer 宽(≤768px),min(…, 100cqw) 不生效;
+     窄宿主(设计助手侧栏)里把弹层压到 Composer 内宽,右/左锚定都不再溢出
+     .sidebar 的 overflow:hidden。 */
+  container-type: inline-size;
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: 18px;
@@ -71,7 +75,7 @@
      向下弹出会被 session__content 的 overflow:hidden 裁剪。 */
   bottom: calc(100% + 6px);
   left: 0;
-  min-width: min(360px, calc(100vw - 48px));
+  min-width: min(360px, 100cqw);
   max-width: 440px;
   padding: var(--space-2);
   border: 1px solid var(--border-subtle);
@@ -171,6 +175,21 @@
   row-gap: 6px;
 }
 
+/* 附件上传入口：与访问模式并排的轻量 + 图标按钮，点击走原生选择器登记引用。 */
+.composer__attach-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+
+.composer__attach-button:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
 .composer__access-mode {
   display: inline-flex;
   align-items: center;
@@ -240,7 +259,9 @@
 .composer__access-picker .composer__access-menu {
   bottom: calc(100% + 6px);
   left: 0;
-  min-width: min(280px, calc(100vw - 48px));
+  min-width: min(280px, 100cqw);
+  /* 完全访问的后果描述较长：给上限让文案按词换行，避免菜单撑出视口。 */
+  max-width: min(360px, 100cqw);
   z-index: 40;
 }
 
@@ -314,6 +335,7 @@
 /* 交互控件不参与收缩、文字不折行：空间不足时优先牺牲可截断的模型名，
    而不是把「免审批模式」「稍后跟进」压成两行。 */
 .composer__access-mode,
+.composer__attach-button,
 .composer__follow-up,
 .composer__budget-trigger,
 .composer__usage,
@@ -395,6 +417,22 @@
   z-index: 40;
 }
 
+/* 窄宿主（设计助手侧栏）：悬浮卡右锚触发器会左溢出宿主被 .sidebar 裁切
+   （触发器右缘距宿主右缘 ~160px + nowrap 内容宽）——改为锚 picker 左缘、
+   宽度收窄到宿主内并允许换行。宽宿主（主会话页）不进此分支，保持右锚。 */
+@container (max-width: 420px) {
+  .composer__budget-popover,
+  .composer__usage-popover {
+    left: 0;
+    right: auto;
+    /* 绝对定位收缩适配受 picker 容器宽度压瘪:显式给自然内容宽,上限宿主内
+       （超限时内容换行）。 */
+    width: max-content;
+    max-width: calc(100cqw - 52px);
+    white-space: normal;
+  }
+}
+
 /* 水位与用量两组数值含义无交集，用分隔线明确分区，避免水位被读成命中率。 */
 .composer__budget-popover > * + * {
   margin-top: 2px;
@@ -456,7 +494,7 @@
   bottom: calc(100% + 6px);
   /* 触发按钮位于控制行右侧（模型选择器之前），弹层右对齐防溢出。 */
   right: 0;
-  width: min(300px, calc(100vw - 48px));
+  width: min(300px, 100cqw);
   padding: var(--space-3);
   display: flex;
   flex-direction: column;
@@ -466,6 +504,8 @@
   background: var(--bg-card);
   box-shadow: var(--shadow-popover);
   z-index: 40;
+  /* 窄宿主（设计助手侧栏）水平钳制：useHorizontalMenuClamp 写入的平移量。 */
+  transform: translateX(var(--composer-menu-shift, 0px));
 }
 
 .composer__budget-heading {
@@ -528,6 +568,28 @@
   font-size: 0.8462rem;
 }
 
+.composer__budget-sdd {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  font-size: 0.8462rem;
+}
+
+.composer__budget-sdd-title {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.composer__budget-sdd [data-status='fail'],
+.composer__budget-sdd [data-status='unknown'],
+.composer__budget-sdd-warning {
+  color: var(--warn);
+}
+
 .composer__budget-checkpoint summary {
   cursor: pointer;
 }
@@ -548,7 +610,9 @@
 .composer__access-menu,
 .composer__model-menu {
   position: absolute;
-  min-width: 280px;
+  min-width: min(280px, 100cqw);
+  /* 窄宿主（设计助手侧栏）水平钳制：useHorizontalMenuClamp 写入的平移量。 */
+  transform: translateX(var(--composer-menu-shift, 0px));
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -589,7 +653,9 @@
   position: absolute;
   right: 0;
   bottom: calc(100% + 6px);
-  min-width: 180px;
+  min-width: min(180px, 100cqw);
+  /* 窄宿主（设计助手侧栏）水平钳制：useHorizontalMenuClamp 写入的平移量。 */
+  transform: translateX(var(--composer-menu-shift, 0px));
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -626,6 +692,17 @@
   padding: 6px var(--space-3);
   color: var(--text-tertiary);
   font-size: 0.9231rem;
+}
+
+/* 模式切换失败就地提示：留在菜单内（用户点选的位置），不要求跨页去设置面板
+   找 settingsError。红色与「停止」一类破坏性提示同色，语义都是「操作未生效」。 */
+.composer__access-error {
+  margin-top: 2px;
+  padding: 6px var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+  color: var(--diff-red);
+  font-size: 0.8846rem;
+  line-height: 1.4;
 }
 
 /* 待发送/恢复队列面板移至输入框上方后，作为 form 直接子元素撑满行宽；
@@ -670,6 +747,9 @@ form.composer > .composer__queue {
 .composer__menu-item-desc {
   color: var(--text-secondary);
   font-size: 0.8846rem;
+  /* 完全访问的后果较长（关沙箱 / 工作区外读写 / 凭据 / 出网），按词换行而非
+     溢出——菜单宽度由内容撑开，单行截断会把关键后果藏掉。 */
+  overflow-wrap: anywhere;
 }
 
 .composer__menu-item--active {
@@ -749,6 +829,13 @@ form.composer > .composer__queue {
 }
 
 /* 目录候选的「进入」入口：默认弱化，行 hover/键盘高亮时显现。 */
+.composer__mention-section {
+  margin: 0;
+  border: 0;
+  padding: 0;
+  min-width: 0;
+}
+
 .composer__mention-item-enter {
   flex: none;
   display: inline-flex;
@@ -778,10 +865,9 @@ form.composer > .composer__queue {
   padding: 5px 8px 1px;
   color: var(--text-tertiary);
   font-size: 0.7692rem;
-  letter-spacing: 0.4px;
 }
 
-/* 模式头（at-sign/sparkles/hash + 标题）：三级文字色、10px、0.6px 字距。 */
+/* 模式头（at-sign/sparkles/hash + 标题）：三级文字色、10px。 */
 .composer__mention-title {
   display: flex;
   align-items: center;
@@ -790,7 +876,6 @@ form.composer > .composer__queue {
   padding: 0 8px;
   color: var(--text-tertiary);
   font-size: 0.7692rem;
-  letter-spacing: 0.6px;
 }
 
 .composer__mention-divider {
@@ -931,7 +1016,6 @@ form.composer > .composer__queue {
   flex: none;
   color: var(--accent-text);
   font-size: 0.7692rem;
-  letter-spacing: 0.02em;
   opacity: 0.7;
 }
 
@@ -1272,4 +1356,51 @@ form.composer > .composer__queue {
 
 .composer__edit-cancel:focus-visible {
   outline: 1px solid var(--accent);
+}
+
+/* 完全访问的常驻提醒：模式本身是用户显式选择，不当成错误；用琥珀警示条
+   持续显示后果，并提供一键回落标准模式。 */
+.composer__full-access-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border-subtle));
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+  color: var(--warn-text);
+  font-size: 0.8846rem;
+  line-height: 1.45;
+}
+
+.composer__full-access-banner > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.composer__full-access-banner--reminder {
+  border-color: color-mix(in srgb, var(--warn) 75%, var(--border-subtle));
+  background: color-mix(in srgb, var(--warn) 16%, var(--bg-card));
+}
+
+.composer__full-access-reminder {
+  display: block;
+  margin-top: 3px;
+  color: var(--warn-text);
+  font-weight: 600;
+}
+
+.composer__full-access-revoke {
+  flex: none;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--warn) 50%, var(--border-subtle));
+  border-radius: var(--radius-sm);
+  color: var(--warn-text);
+  font-size: 0.8462rem;
+  font-weight: 500;
+}
+
+.composer__full-access-revoke:hover {
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
 }

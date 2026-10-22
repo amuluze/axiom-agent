@@ -7,6 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::bash_policy_generated::MAX_TIMEOUT_MS;
 use crate::{
     sandbox::{self, CommandTier},
     workspace_access::{authorized_root_for, WorkspaceAccessState},
@@ -33,57 +34,160 @@ pub(crate) struct WorkspaceApprovalRequest {
     workspace_path: Option<String>,
 }
 
+/// 会话审批模式。原生确认退役后只剩两档：
+/// - `Interactive`（标准）：写入与命令经审批卡片确认一次，始终在 OS 沙箱内执行；
+/// - `Automatic`（完全访问）：无任何确认，命令不经沙箱直属。
+///
+/// 历史的 `SandboxSafe` / `Single` 逐请求单层值已随原生确认一并删除——它们曾经
+/// 只用于区分「需要第二次原生手势」，而那道手势已不存在。
 #[derive(Clone, Copy, Debug, Deserialize, Default, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum WorkspaceApprovalConfirmationMode {
     #[default]
     Interactive,
     Automatic,
-    /// 单层 UI 审批：bash 专用（出网不单独设卡）。tier 由 Rust 权威分类并绑定 lease，
-    /// 不信任前端自报（与 Automatic 同级特权模式，fail-closed）。
-    SandboxSafe,
-    /// SSH 远程执行的「会话内已授权主机」签发模式：仅对 run_ssh_command 生效，
-    /// 且必须命中 ssh_agent 的 Rust 权威授权表（由原生对话框「本会话内允许」
-    /// 写入）。渲染进程自报本模式而无真实授权时 fail-closed 拒绝。
-    SshSessionGranted,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ApprovalScope {
+    pub(crate) session_id: String,
+    pub(crate) run_id: String,
+    pub(crate) tool_call_id: String,
+}
+
+impl ApprovalScope {
+    fn validate(&self) -> Result<(), String> {
+        validate_scope_id(&self.session_id, "sessionId")?;
+        validate_scope_id(&self.run_id, "runId")?;
+        validate_scope_id(&self.tool_call_id, "toolCallId")
+    }
+}
+
+struct ApprovalBinding {
+    scope: Option<ApprovalScope>,
+    session_generation: Option<u64>,
+}
+
+struct ApprovalLeaseInput {
+    tool_name: String,
+    input_digest: String,
+    workspace_generation: u64,
+    workspace_path: Option<String>,
+    tier: Option<CommandTier>,
+    confirmation_mode: WorkspaceApprovalConfirmationMode,
+    mode_generation: u64,
 }
 
 struct WorkspaceApprovalLease {
+    binding: ApprovalBinding,
     tool_name: String,
     input_digest: String,
     workspace_generation: u64,
     workspace_path: Option<String>,
     expires_at: Instant,
-    /// 命令安全分级。仅 bash / run_workspace_command 的 SandboxSafe 租约有值；
+    /// 命令安全分级。仅 bash / run_workspace_command 的租约有值；
     /// 其余工具为 None。签发时由 Rust 权威分类，consume 时返回供执行分流。
     tier: Option<CommandTier>,
+    confirmation_mode: WorkspaceApprovalConfirmationMode,
+    mode_generation: u64,
+}
+
+#[derive(Clone, Copy)]
+struct WorkspaceApprovalModeEntry {
+    mode: WorkspaceApprovalConfirmationMode,
+    generation: u64,
 }
 
 #[derive(Default)]
 pub(crate) struct WorkspaceApprovalState {
     leases: Mutex<HashMap<String, WorkspaceApprovalLease>>,
-    /// Rust 权威的审批模式：只有用户通过 access-mode 显式开启自动放行后，
-    /// 前端才能以 automatic 模式签发租约。默认为 Interactive（逐次审批），fail-closed。
-    mode: Mutex<WorkspaceApprovalConfirmationMode>,
+    modes: Mutex<HashMap<String, WorkspaceApprovalModeEntry>>,
+}
+
+/// 会话模式只承载「交互确认 / 完全访问（自动）」两档；SandboxSafe 与 Single 是
+/// 逐请求单层确认模式，已停用，不能作为会话状态。
+fn validate_session_mode(mode: WorkspaceApprovalConfirmationMode) -> Result<(), String> {
+    if !matches!(
+        mode,
+        WorkspaceApprovalConfirmationMode::Interactive
+            | WorkspaceApprovalConfirmationMode::Automatic
+    ) {
+        return Err("会话审批模式只支持 interactive / automatic".into());
+    }
+    Ok(())
 }
 
 impl WorkspaceApprovalState {
-    fn set_mode(&self, mode: WorkspaceApprovalConfirmationMode) -> Result<(), String> {
-        *self
-            .mode
+    /// 写入 held 模式并返回新代际。`pub(crate)`：跨层联合测试（DB access_mode +
+    /// held 模式 + 会话撤销代际）需要在仓储测试里直接布置动作前状态。
+    pub(crate) fn set_mode(
+        &self,
+        session_id: &str,
+        mode: WorkspaceApprovalConfirmationMode,
+    ) -> Result<u64, String> {
+        validate_scope_id(session_id, "sessionId")?;
+        validate_session_mode(mode)?;
+        let mut modes = self
+            .modes
             .lock()
-            .map_err(|_| "workspace approval state lock is poisoned".to_string())? = mode;
-        Ok(())
+            .map_err(|_| "workspace approval state lock is poisoned".to_string())?;
+        let entry = modes
+            .entry(session_id.to_string())
+            .or_insert(WorkspaceApprovalModeEntry {
+                mode: WorkspaceApprovalConfirmationMode::Interactive,
+                generation: 0,
+            });
+        entry.mode = mode;
+        entry.generation = entry.generation.saturating_add(1);
+        Ok(entry.generation)
     }
 
-    fn mode(&self) -> Result<WorkspaceApprovalConfirmationMode, String> {
-        self.mode
+    /// 切换会话审批模式（标准 / 完全访问）。模式代际由 `set_mode` 递增，使既有
+    /// Automatic 租约失效——降级后旧租约不得继续被消费。
+    fn apply_mode(
+        &self,
+        session_id: &str,
+        mode: WorkspaceApprovalConfirmationMode,
+    ) -> Result<(), String> {
+        validate_scope_id(session_id, "sessionId")?;
+        validate_session_mode(mode)?;
+        self.set_mode(session_id, mode).map(|_| ())
+    }
+
+    /// 当前 held 模式与代际；缺失条目等价标准模式。`pub(crate)` 理由同
+    /// {@link Self::set_mode}。
+    pub(crate) fn mode_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<(WorkspaceApprovalConfirmationMode, u64), String> {
+        validate_scope_id(session_id, "sessionId")?;
+        self.modes
             .lock()
             .map_err(|_| "workspace approval state lock is poisoned".to_string())
-            .map(|mode| *mode)
+            .map(|modes| {
+                modes
+                    .get(session_id)
+                    .map(|entry| (entry.mode, entry.generation))
+                    .unwrap_or((WorkspaceApprovalConfirmationMode::Interactive, 0))
+            })
+    }
+
+    /// 会话离开可运行生命周期时删除 held mode。缺失条目等价于标准模式，且旧
+    /// Automatic 租约因代际快照不再匹配而无法消费。
+    pub(crate) fn retire_session(&self, session_id: &str) -> Result<(), String> {
+        validate_scope_id(session_id, "sessionId")?;
+        self.modes
+            .lock()
+            .map_err(|_| "workspace approval state lock is poisoned".to_string())?
+            .remove(session_id);
+        Ok(())
     }
 }
 
+/// 自动签发的双重门：请求侧 Automatic 必须以用户在 Composer 显式选择的
+/// 「完全访问」会话模式（held Automatic）为前提——受陷渲染进程无法绕过用户
+/// 选择自行请求自动租约。
 fn confirm_automatic_allowed(
     held_mode: WorkspaceApprovalConfirmationMode,
     requested_mode: WorkspaceApprovalConfirmationMode,
@@ -91,10 +195,7 @@ fn confirm_automatic_allowed(
     if requested_mode == WorkspaceApprovalConfirmationMode::Automatic
         && held_mode != WorkspaceApprovalConfirmationMode::Automatic
     {
-        return Err(
-            "automatic approval is not enabled; select an auto-approval access mode first"
-                .to_string(),
-        );
+        return Err("自动审批需要用户在 Composer 显式选择完全访问模式".into());
     }
     Ok(())
 }
@@ -115,28 +216,48 @@ fn canonical_input(tool_name: &str, input: &Value) -> Result<Value, String> {
     Ok(canonicalize_value(&semantic_input(tool_name, input)?))
 }
 
-/// 工具语义输入（未规范化）：**逐字保留**原有三条分支与其中途返回——
-/// bash 只绑 command + cwd、ssh 只绑 host + command、其余工具绑完整 input。
-/// 中途返回不得改写成统一构造：否则 timeout / network / sessionId 会被一并绑进 digest。
+fn workspace_command_timeout(input: &Value) -> Result<Option<u64>, String> {
+    let seconds = input.get("timeout").filter(|value| !value.is_null());
+    let milliseconds = input.get("timeoutMs").filter(|value| !value.is_null());
+    if seconds.is_some() && milliseconds.is_some() {
+        return Err("workspace command must declare timeout or timeoutMs, not both".into());
+    }
+    let timeout = if let Some(seconds) = seconds {
+        let milliseconds = seconds.as_f64().ok_or("timeout must be a number")? * 1_000.0;
+        let rounded = milliseconds.round();
+        if !milliseconds.is_finite()
+            || rounded <= 0.0
+            || (milliseconds - rounded).abs() > f64::EPSILON * milliseconds.abs().max(1.0) * 4.0
+            || milliseconds > MAX_TIMEOUT_MS as f64
+        {
+            return Err(
+                "timeout must resolve to a positive whole millisecond within the limit".into(),
+            );
+        }
+        Some(rounded as u64)
+    } else if let Some(milliseconds) = milliseconds {
+        Some(
+            milliseconds
+                .as_u64()
+                .filter(|timeout| *timeout > 0 && *timeout <= MAX_TIMEOUT_MS)
+                .ok_or("timeoutMs must be a positive integer within the limit")?,
+        )
+    } else {
+        None
+    };
+    Ok(timeout)
+}
+
 fn semantic_input(tool_name: &str, input: &Value) -> Result<Value, String> {
     if tool_name == "run_workspace_command" {
         // bash 工具采用自由命令模型：lease 必须精确绑定实际执行的命令字符串。
-        // 只归一化 command + cwd，忽略超时字段——签发侧（前端参数 `timeout`，秒）
-        // 与消费侧（Rust `WorkspaceCommandRequest.timeoutMs`，毫秒）字段名/单位不一致，
-        // 但超时不构成安全语义，不参与绑定。
         let command = required_string(input, "command")?;
         return Ok(json!({
             "command": command,
             "cwd": input.get("cwd").and_then(Value::as_str),
-        }));
-    }
-    if tool_name == "run_ssh_command" {
-        // SSH 远程执行绑定「目标主机 + 命令」；超时同 bash 不参与绑定。
-        let host = required_string(input, "host")?;
-        let command = required_string(input, "command")?;
-        return Ok(json!({
-            "host": host,
-            "command": command,
+            "timeoutMs": workspace_command_timeout(input)?,
+            "vcsCredentials": command_privilege(input, "vcsCredentials")?,
+            "containerControl": command_privilege(input, "containerControl")?,
         }));
     }
     Ok(input.clone())
@@ -169,7 +290,7 @@ fn canonicalize_value(value: &Value) -> Value {
     }
 }
 
-fn canonical_input_digest(tool_name: &str, input: &Value) -> Result<String, String> {
+pub(crate) fn canonical_input_digest(tool_name: &str, input: &Value) -> Result<String, String> {
     let input = canonical_input(tool_name, input)?;
     let encoded = serde_json::to_vec(&json!({ "toolName": tool_name, "input": input }))
         .map_err(|error| format!("failed to encode workspace approval input: {error}"))?;
@@ -177,6 +298,42 @@ fn canonical_input_digest(tool_name: &str, input: &Value) -> Result<String, Stri
         return Err("workspace approval input exceeds the safe limit".into());
     }
     Ok(format!("{:x}", Sha256::digest(encoded)))
+}
+
+fn command_privilege(input: &Value, field: &str) -> Result<bool, String> {
+    match input.get(field) {
+        None => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        _ => Err(format!("{field} must be a boolean")),
+    }
+}
+
+/// 高危命令判定的 TS 侧对应物：`bashTool.ts::isDangerousCommand`。Rust 侧不再做
+/// 风险判定（原生确认已整体退役），但两侧词表的逐字一致性断言仍保留在
+/// `scripts/bash-policy-audit.mjs` 的 TS 语料中。
+fn validate_command_confirmation(
+    input: &Value,
+    mode: WorkspaceApprovalConfirmationMode,
+    available: bool,
+) -> Result<CommandTier, String> {
+    let command = required_string(input, "command")?;
+    // 完全访问：对齐 ChatGPT Full Access（Codex 的 danger-full-access）——命令
+    // 不经沙箱，以宿主用户权限直跑。不做档位分类也不做特权门：沙箱已被绕开，
+    // 档位与 vcsCredentials/containerControl 声明都失去了约束对象，网络、凭据与
+    // 容器权限直接由宿主用户权限决定。这就是「把确认和沙箱一起关掉」的落点。
+    if mode == WorkspaceApprovalConfirmationMode::Automatic {
+        return Ok(CommandTier::Unrestricted);
+    }
+    let declared_network = input
+        .get("network")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let tier = sandbox::classify_command(command, declared_network);
+    // 标准模式全档单层：分类仍决定沙箱档位（回环 / 出网），但不再触发任何原生
+    // 确认——用户在审批卡片上点一次即可（卡片上的 danger 勾选框、命令预览与网络
+    // 档说明仍由 TS 侧 isDangerousCommand 驱动）。沙箱不可用时 fail-closed。
+    sandbox::command_network_policy(tier, available)?;
+    Ok(tier)
 }
 
 fn required_string<'a>(input: &'a Value, field: &str) -> Result<&'a str, String> {
@@ -187,192 +344,20 @@ fn required_string<'a>(input: &'a Value, field: &str) -> Result<&'a str, String>
         .ok_or_else(|| format!("workspace approval input is missing {field}"))
 }
 
-/// 对话框文案总长度兜底：截断到 500 字符，避免原生对话框过长。
-fn bounded_dialog_message(message: &str) -> String {
-    let mut result = message.chars().take(500).collect::<String>();
-    if message.chars().count() > 500 {
-        result.push('…');
-    }
-    result
-}
-
-/// 单段内容预览：字符截断并追加省略提示。
-fn bounded_preview(text: &str, max_chars: usize) -> String {
-    let mut result = text.chars().take(max_chars).collect::<String>();
-    if text.chars().count() > max_chars {
-        result.push_str("…[预览已截断]");
-    }
-    result
-}
-
-/// apply_workspace_changes 的单条操作摘要行。
-fn summarize_change_operation(operation: &Value) -> Option<String> {
-    let kind = operation.get("type").and_then(Value::as_str)?;
-    match kind {
-        "create-file" => {
-            let path = operation.get("path").and_then(Value::as_str)?;
-            Some(format!("新建文件 {path}"))
-        }
-        "patch-file" => {
-            let path = operation.get("path").and_then(Value::as_str)?;
-            let removed = operation
-                .get("oldText")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .lines()
-                .count();
-            let added = operation
-                .get("newText")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .lines()
-                .count();
-            Some(format!("修改文件 {path}（-{removed}/+{added} 行）"))
-        }
-        "create-directory" => {
-            let path = operation.get("path").and_then(Value::as_str)?;
-            Some(format!("新建目录 {path}"))
-        }
-        "move" => {
-            let from = operation.get("from").and_then(Value::as_str)?;
-            let to = operation.get("to").and_then(Value::as_str)?;
-            Some(format!("移动 {from} → {to}"))
-        }
-        "trash" => {
-            let path = operation.get("path").and_then(Value::as_str)?;
-            Some(format!("删除（可恢复）{path}"))
-        }
-        _ => None,
-    }
-}
-
-const MAX_CHANGE_OPERATION_ROWS: usize = 8;
-const MAX_EDIT_PREVIEW_ROWS: usize = 3;
-const PREVIEW_CHARS: usize = 240;
-
-/// 为 Rust 侧原生审批对话框构造人类可读的操作摘要。纯函数，便于单元测试。
-/// 审批数据（命令/路径/内容/操作列表）全在 `request.input` 中且已被 SHA-256 绑定，
-/// 此处只做展示增强，不参与 lease 绑定语义。
-fn approval_dialog_message(request: &WorkspaceApprovalRequest) -> String {
-    let (label, detail) = match request.tool_name.as_str() {
-        "run_workspace_command" => (
-            "执行命令",
-            request
-                .input
-                .get("command")
-                .and_then(Value::as_str)
-                .map(|command| format!("命令：{command}")),
-        ),
-        "create_workspace_file" => (
-            "创建文件",
-            request.input.get("path").and_then(Value::as_str).map(|path| {
-                let preview = request
-                    .input
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .map(|content| format!("\n写入内容预览：{}", bounded_preview(content, PREVIEW_CHARS)));
-                format!("路径：{path}{}", preview.unwrap_or_default())
-            }),
-        ),
-        "edit_workspace_file" => (
-            "修改文件",
-            request.input.get("path").and_then(Value::as_str).map(|path| {
-                let summary = request
-                    .input
-                    .get("edits")
-                    .and_then(Value::as_array)
-                    .map(|edits| {
-                        let rows: Vec<String> = edits
-                            .iter()
-                            .take(MAX_EDIT_PREVIEW_ROWS)
-                            .map(|edit| {
-                                let old = edit.get("oldText").and_then(Value::as_str).unwrap_or("");
-                                let new = edit.get("newText").and_then(Value::as_str).unwrap_or("");
-                                format!(
-                                    "替换：{} → {}",
-                                    bounded_preview(old, PREVIEW_CHARS),
-                                    bounded_preview(new, PREVIEW_CHARS)
-                                )
-                            })
-                            .collect();
-                        let mut body = rows.join("\n");
-                        if edits.len() > MAX_EDIT_PREVIEW_ROWS {
-                            body.push_str(&format!(
-                                "\n… 其余 {} 处替换省略",
-                                edits.len() - MAX_EDIT_PREVIEW_ROWS
-                            ));
-                        }
-                        format!("\n{body}")
-                    });
-                format!("路径：{path}{}", summary.unwrap_or_default())
-            }),
-        ),
-        "apply_workspace_changes" => (
-            "批量应用工作区改动",
-            request
-                .input
-                .get("operations")
-                .and_then(Value::as_array)
-                .map(|operations| {
-                    let mut body = String::new();
-                    for (index, operation) in operations.iter().take(MAX_CHANGE_OPERATION_ROWS).enumerate() {
-                        let line = summarize_change_operation(operation).unwrap_or_else(|| "未知操作".to_string());
-                        body.push_str(&format!("{}. {line}\n", index + 1));
-                    }
-                    if operations.len() > MAX_CHANGE_OPERATION_ROWS {
-                        body.push_str(&format!(
-                            "… 其余 {} 条操作省略（共 {} 条）",
-                            operations.len() - MAX_CHANGE_OPERATION_ROWS,
-                            operations.len()
-                        ));
-                    }
-                    body.pop();
-                    body
-                }),
-        ),
-        "restore_workspace_trash" => (
-            "恢复工作区删除",
-            request
-                .input
-                .get("recoveryId")
-                .and_then(Value::as_str)
-                .map(|recovery_id| format!("恢复批次：{recovery_id}")),
-        ),
-        "run_ssh_command" => (
-            "SSH 远程执行",
-            request.input.get("host").and_then(Value::as_str).map(|host| {
-                let command = request
-                    .input
-                    .get("command")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                format!("主机：{host}\n命令：{}", bounded_preview(command, PREVIEW_CHARS))
-            }),
-        ),
-        other => (other, None),
-    };
-    let message = match detail {
-        Some(detail) => format!("{label}\n{detail}\n\n此操作仅允许执行一次。"),
-        None => format!("{label}\n\n此操作仅允许执行一次。"),
-    };
-    bounded_dialog_message(&message)
-}
-
-/// Interactive（逐次审批）的确认收敛到 Rust 侧原生对话框：用户在系统级对话框
-/// 点“允许”后才由调用方签发 lease token。受陷渲染进程无法伪造该用户手势。
-/// 用非阻塞 `show` + oneshot 等待，避免阻塞 async runtime 线程导致应用卡死。
-///
-/// 对话框必须绑定主窗口作为 parent：否则 rfd 会退化为 CFUserNotification 用户
-/// 通知（无 parent 分支），其窗口不属于常规 AX 可访问树（无障碍不可用，且无人
-/// 值守自动化无法驱动）。绑定 parent 后走 NSAlert sheet，AX 可读且可自动测试。
-async fn confirm_interactive(app: &tauri::AppHandle, request: &WorkspaceApprovalRequest) -> Result<(), String> {
+async fn confirm_full_access(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager as _;
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
-    let mut dialog = app.dialog()
-        .message(approval_dialog_message(request))
-        .title("Axiom 请求批准操作")
+    let mut dialog = app
+        .dialog()
+        .message(
+            "完全访问会在当前会话关闭 OS 沙箱并取消全部确认：命令以你的用户权限直接执行，可读写工作区之外的任意文件、读取或修改凭据与 Axiom 数据、发起任意网络请求——包括以本机存储的凭据（如 SSH 私钥）连接网络可达的远程机器并执行任意操作。命令文本的尽力拦截不构成安全边界。影响范围不限于这台机器，也覆盖它能触达的远程系统。仅在你完全信任当前任务与工作区内容时启用。",
+        )
+        .title("为当前会话启用完全访问（关闭沙箱）？")
         .kind(MessageDialogKind::Warning)
-        .buttons(MessageDialogButtons::OkCancelCustom("允许".to_string(), "拒绝".to_string()));
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "启用完全访问".to_string(),
+            "取消".to_string(),
+        ));
     if let Some(window) = app.get_webview_window("main") {
         dialog = dialog.parent(&window);
     }
@@ -380,16 +365,15 @@ async fn confirm_interactive(app: &tauri::AppHandle, request: &WorkspaceApproval
     dialog.show(move |confirmed| {
         let _ = sender.send(confirmed);
     });
-    let confirmed = receiver
+    if receiver
         .await
-        .map_err(|_| "审批对话框意外关闭".to_string())?;
-    if !confirmed {
-        return Err("用户在系统审批对话框中拒绝了该操作".into());
+        .map_err(|_| "访问模式确认对话框意外关闭".to_string())?
+    {
+        Ok(())
+    } else {
+        Err("用户取消启用完全访问".into())
     }
-    Ok(())
 }
-
-
 
 fn random_token() -> Result<String, String> {
     let mut bytes = [0_u8; 32];
@@ -399,6 +383,7 @@ fn random_token() -> Result<String, String> {
 }
 
 impl WorkspaceApprovalState {
+    #[cfg(test)]
     fn issue(
         &self,
         tool_name: String,
@@ -406,6 +391,44 @@ impl WorkspaceApprovalState {
         workspace_generation: u64,
         workspace_path: Option<String>,
         tier: Option<CommandTier>,
+    ) -> Result<String, String> {
+        self.issue_bound(
+            ApprovalLeaseInput {
+                tool_name,
+                input_digest,
+                workspace_generation,
+                workspace_path,
+                tier,
+                confirmation_mode: WorkspaceApprovalConfirmationMode::Interactive,
+                mode_generation: 0,
+            },
+            ApprovalBinding {
+                scope: None,
+                session_generation: None,
+            },
+        )
+    }
+
+    fn issue_scoped(
+        &self,
+        input: ApprovalLeaseInput,
+        binding: ApprovalBinding,
+    ) -> Result<String, String> {
+        binding
+            .scope
+            .as_ref()
+            .ok_or("审批调用身份缺失")?
+            .validate()?;
+        if binding.session_generation.is_none() {
+            return Err("审批会话代际缺失".into());
+        }
+        self.issue_bound(input, binding)
+    }
+
+    fn issue_bound(
+        &self,
+        input: ApprovalLeaseInput,
+        binding: ApprovalBinding,
     ) -> Result<String, String> {
         let token = random_token()?;
         let now = Instant::now();
@@ -420,17 +443,21 @@ impl WorkspaceApprovalState {
         leases.insert(
             token.clone(),
             WorkspaceApprovalLease {
-                tool_name,
-                input_digest,
-                workspace_generation,
-                workspace_path,
+                binding,
+                tool_name: input.tool_name,
+                input_digest: input.input_digest,
+                workspace_generation: input.workspace_generation,
+                workspace_path: input.workspace_path,
                 expires_at: now + APPROVAL_LEASE_TTL,
-                tier,
+                tier: input.tier,
+                confirmation_mode: input.confirmation_mode,
+                mode_generation: input.mode_generation,
             },
         );
         Ok(token)
     }
 
+    #[cfg(test)]
     pub(crate) fn consume(
         &self,
         token: &str,
@@ -438,6 +465,51 @@ impl WorkspaceApprovalState {
         input: Value,
         workspace_generation: u64,
         workspace_path: Option<&str>,
+    ) -> Result<Option<CommandTier>, String> {
+        self.consume_bound(
+            token,
+            tool_name,
+            input,
+            workspace_generation,
+            workspace_path,
+            None,
+        )
+    }
+
+    pub(crate) fn consume_scoped(
+        &self,
+        token: &str,
+        tool_name: &str,
+        input: Value,
+        workspace_generation: u64,
+        workspace_path: Option<&str>,
+        authority: (
+            &ApprovalScope,
+            &crate::session_authorization::SessionAuthorizationState,
+        ),
+    ) -> Result<Option<CommandTier>, String> {
+        authority.0.validate()?;
+        self.consume_bound(
+            token,
+            tool_name,
+            input,
+            workspace_generation,
+            workspace_path,
+            Some(authority),
+        )
+    }
+
+    fn consume_bound(
+        &self,
+        token: &str,
+        tool_name: &str,
+        input: Value,
+        workspace_generation: u64,
+        workspace_path: Option<&str>,
+        authority: Option<(
+            &ApprovalScope,
+            &crate::session_authorization::SessionAuthorizationState,
+        )>,
     ) -> Result<Option<CommandTier>, String> {
         if token.len() != 64 || !token.chars().all(|character| character.is_ascii_hexdigit()) {
             return Err("workspace approval lease is invalid".into());
@@ -448,6 +520,21 @@ impl WorkspaceApprovalState {
             .map_err(|_| "workspace approval state lock is poisoned".to_string())?
             .remove(token)
             .ok_or_else(|| "workspace approval lease is missing or already consumed".to_string())?;
+        if lease.binding.scope.as_ref() != authority.map(|(scope, _)| scope) {
+            return Err("审批租赁不属于本次会话、run 或工具调用".into());
+        }
+        if let Some((scope, authorizations)) = authority {
+            authorizations.verify_scope_generation(
+                &scope.session_id,
+                lease.binding.session_generation.ok_or("审批会话代际缺失")?,
+            )?;
+            if lease.confirmation_mode == WorkspaceApprovalConfirmationMode::Automatic {
+                let (_, current_generation) = self.mode_snapshot(&scope.session_id)?;
+                if lease.mode_generation != current_generation {
+                    return Err("访问模式已变化，自动审批租赁失效".into());
+                }
+            }
+        }
         if lease.expires_at <= Instant::now() {
             return Err("workspace approval lease has expired".into());
         }
@@ -468,44 +555,18 @@ impl WorkspaceApprovalState {
 
 #[tauri::command]
 pub(crate) async fn set_workspace_approval_mode(
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
     approval_state: tauri::State<'_, WorkspaceApprovalState>,
+    session_id: String,
     mode: WorkspaceApprovalConfirmationMode,
 ) -> Result<(), String> {
-    let held_mode = approval_state.mode()?;
-    // 自动放行是安全模式跃迁：从逐次审批切到自动放行必须经系统级对话框确认，
-    // 防止受陷渲染进程无条件置 automatic 从而绕过逐次审批。
-    // e2e 构建由无人值守的故障注入脚本驱动，旁路该对话框。
+    let (held_mode, _) = approval_state.mode_snapshot(&session_id)?;
     if mode == WorkspaceApprovalConfirmationMode::Automatic
         && held_mode != WorkspaceApprovalConfirmationMode::Automatic
     {
-        #[cfg(not(feature = "e2e"))]
-        {
-            use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
-            let (sender, receiver) = tokio::sync::oneshot::channel();
-            _app
-                .dialog()
-                .message(
-                    "开启自动放行后，Agent 在授权工作区内执行写操作将不再逐次询问。\n此确认仅影响当前进程。",
-                )
-                .title("开启自动审批")
-                .kind(MessageDialogKind::Warning)
-                .buttons(MessageDialogButtons::OkCancelCustom(
-                    "开启自动审批".to_string(),
-                    "保持逐次审批".to_string(),
-                ))
-                .show(move |confirmed| {
-                    let _ = sender.send(confirmed);
-                });
-            let confirmed = receiver
-                .await
-                .map_err(|_| "自动放行确认对话框意外关闭".to_string())?;
-            if !confirmed {
-                return Err("用户取消了开启自动放行".into());
-            }
-        }
+        confirm_full_access(&app).await?;
     }
-    approval_state.set_mode(mode)
+    approval_state.apply_mode(&session_id, mode)
 }
 
 #[tauri::command]
@@ -515,91 +576,55 @@ pub(crate) async fn request_workspace_approval_lease(
     approval_state: tauri::State<'_, WorkspaceApprovalState>,
     request: WorkspaceApprovalRequest,
 ) -> Result<String, String> {
+    use tauri::Manager as _;
     validate_scope_id(&request.session_id, "sessionId")?;
     validate_scope_id(&request.run_id, "runId")?;
     validate_scope_id(&request.tool_call_id, "toolCallId")?;
-    // 自动放行必须是用户显式开启的 access-mode（Rust 侧权威状态）为前提；
-    // WebView 不得凭空自报 automatic。
-    let held_mode = approval_state.mode()?;
+    let (held_mode, mode_generation) = approval_state.mode_snapshot(&request.session_id)?;
     confirm_automatic_allowed(held_mode, request.confirmation_mode)?;
-    let digest = canonical_input_digest(&request.tool_name, &request.input)?;
+    let approval_input = request.input.clone();
+    let authorizations = _app.state::<crate::session_authorization::SessionAuthorizationState>();
+    let session_generation = authorizations.scope_generation(&request.session_id)?;
+    let digest = canonical_input_digest(&request.tool_name, &approval_input)?;
     let workspace = authorized_root_for(&workspace_state, request.workspace_path.as_deref())?;
     let workspace_path = Some(workspace.to_string_lossy().into_owned());
     let workspace_generation = workspace_state.generation_for(&workspace);
 
-    // bash 命令统一在签发时权威分类并绑定 lease（含模型声明的 network）：执行侧
-    // 不再重复关键字分类，三种确认模式的网络档口径一致。非 bash 工具为 None。
-    let bash_tier = if request.tool_name == "run_workspace_command" {
-        let command = required_string(&request.input, "command")?;
-        let declared_network = request
-            .input
-            .get("network")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        Some(sandbox::classify_command(command, declared_network))
+    let lease_tier = if request.tool_name == "run_workspace_command" {
+        Some(validate_command_confirmation(
+            &request.input,
+            request.confirmation_mode,
+            sandbox::sandbox_available(),
+        )?)
+    } else if held_mode == WorkspaceApprovalConfirmationMode::Automatic {
+        // 完全访问不只关确认，也关沙箱：写工具的租约同样标记为 Unrestricted，
+        // 消费方据此放开工作区包含限制，改为只受敏感路径策略约束。
+        // 判据是 held_mode（会话持有的用户选择），不是请求自报的
+        // confirmation_mode——受陷渲染进程无法自报取到该档。
+        Some(CommandTier::Unrestricted)
     } else {
         None
     };
 
-    // Interactive（逐次审批）的确认收敛到 Rust 侧原生对话框：用户在系统级对话框
-    // 点“允许”后才签发 lease token，受陷渲染进程无法伪造该用户手势。
-    // automatic 模式已在 set_workspace_approval_mode 经原生对话框开启，此处直接签发。
-    // SandboxSafe（单层 UI）是特权模式：出网不再单独设二次原生确认，单层卡片审批
-    // 覆盖 bash 全部分级；tier 由 Rust 权威分类并存入 lease（不信任前端自报）。
-    // 沙箱不可用时：SandboxSafe 档 fail-closed 拒绝（沙箱是该档唯一防护，与执行侧
-    // 回退语义一致）；NetworkRequired 档放行（执行侧本就回退常规用户权限执行，
-    // 见 workspace_command.rs 的 network_policy 选择）。
-    let lease_tier = match request.confirmation_mode {
-        WorkspaceApprovalConfirmationMode::Interactive => {
-            // SSH 远程执行的首连确认走三选一对话框（仅此一次 / 本会话内允许该
-            // 主机 / 拒绝）：「本会话允许」写入 ssh_agent 的授权表，是唯一的
-            // SshSessionGranted 授权来源。其余工具维持通用两键对话框。
-            if request.tool_name == "run_ssh_command" {
-                let host = required_string(&request.input, "host")?;
-                let command = required_string(&request.input, "command")?;
-                crate::ssh_agent::confirm_ssh_exec_interactive(
-                    &_app,
-                    &request.session_id,
-                    host,
-                    command,
-                )
-                .await?;
-            } else {
-                confirm_interactive(&_app, &request).await?;
-            }
-            bash_tier
-        }
-        WorkspaceApprovalConfirmationMode::SshSessionGranted => {
-            if request.tool_name != "run_ssh_command" {
-                return Err("ssh session-granted approval only applies to run_ssh_command".into());
-            }
-            let host = required_string(&request.input, "host")?;
-            if !crate::ssh_agent::ssh_session_grant_valid(&_app, &request.session_id, host) {
-                // 授权表未命中：TS 镜像丢失/伪造/会话已回收，回落审批卡重新确认。
-                return Err("SSH 会话授权缺失或已失效，请重新审批".into());
-            }
-            None
-        }
-        WorkspaceApprovalConfirmationMode::SandboxSafe => {
-            // 非 bash 工具不得走单层模式（该模式无原生确认，越权请求 fail-closed）。
-            let tier = bash_tier
-                .ok_or("sandboxSafe single-step approval only applies to run_workspace_command")?;
-            if !sandbox::sandbox_available() && tier == CommandTier::SandboxSafe {
-                return Err(sandbox::sandbox_unavailable_error(
-                    "single-step approval requires the sandbox",
-                ));
-            }
-            Some(tier)
-        }
-        WorkspaceApprovalConfirmationMode::Automatic => bash_tier,
-    };
-
-    approval_state.issue(
-        request.tool_name,
-        digest,
-        workspace_generation,
-        workspace_path,
-        lease_tier,
+    authorizations.verify_scope_generation(&request.session_id, session_generation)?;
+    approval_state.issue_scoped(
+        ApprovalLeaseInput {
+            tool_name: request.tool_name,
+            input_digest: digest,
+            workspace_generation,
+            workspace_path,
+            tier: lease_tier,
+            confirmation_mode: request.confirmation_mode,
+            mode_generation,
+        },
+        ApprovalBinding {
+            session_generation: Some(session_generation),
+            scope: Some(ApprovalScope {
+                session_id: request.session_id,
+                run_id: request.run_id,
+                tool_call_id: request.tool_call_id,
+            }),
+        },
     )
 }
 
@@ -607,163 +632,197 @@ pub(crate) async fn request_workspace_approval_lease(
 mod tests {
     use super::*;
 
+    /// 完全访问对齐 ChatGPT Full Access：Automatic 档返回 Unrestricted（无沙箱、
+    /// 无确认），且不再做特权门与网络档分类。标准模式全档单层：分类仍决定沙箱
+    /// 档位，但不再触发任何原生确认。
     #[test]
-    fn run_ssh_command_canonical_input_binds_host_and_command_only() {
-        // 超时/会话字段不参与绑定：签发与消费两侧的非安全字段差异不影响 digest。
-        let issued = json!({
-            "sessionId": "sess-1",
-            "host": "prod",
-            "command": "uptime",
-            "timeout_ms": 30_000,
-        });
-        let digest = canonical_input_digest("run_ssh_command", &issued).unwrap();
-        let consumed = json!({ "host": "prod", "command": "uptime" });
+    fn automatic_returns_unsandboxed_tier_while_standard_classifies() {
+        let outbound = json!({ "command": "npm publish --dry-run", "network": true });
+        let loopback = json!({ "command": "npm test" });
+        // 标准模式：分类照旧（出网 / 回环），沙箱不可用时 fail-closed。
         assert_eq!(
-            digest,
-            canonical_input_digest("run_ssh_command", &consumed).unwrap()
+            validate_command_confirmation(
+                &outbound,
+                WorkspaceApprovalConfirmationMode::Interactive,
+                true,
+            )
+            .unwrap(),
+            CommandTier::NetworkRequired
         );
-        // 目标主机或命令任一变化即不匹配。
-        let tampered = json!({ "host": "other", "command": "uptime" });
-        assert_ne!(
-            digest,
-            canonical_input_digest("run_ssh_command", &tampered).unwrap()
+        assert_eq!(
+            validate_command_confirmation(
+                &loopback,
+                WorkspaceApprovalConfirmationMode::Interactive,
+                true,
+            )
+            .unwrap(),
+            CommandTier::SandboxSafe
         );
-        let tampered = json!({ "host": "prod", "command": "rm -rf /" });
-        assert_ne!(
-            digest,
-            canonical_input_digest("run_ssh_command", &tampered).unwrap()
-        );
-        // 缺 host/command 时 fail-closed。
-        assert!(canonical_input_digest("run_ssh_command", &json!({ "host": "prod" })).is_err());
-    }
-
-    #[test]
-    fn automatic_lease_requires_an_explicit_rust_side_mode() {
-        // 默认 Interactive：前端自报 automatic 必须被拒绝
-        assert!(confirm_automatic_allowed(
+        assert!(validate_command_confirmation(
+            &loopback,
             WorkspaceApprovalConfirmationMode::Interactive,
-            WorkspaceApprovalConfirmationMode::Automatic,
+            false,
         )
         .is_err());
-        // Interactive 请求总是放行
-        assert!(confirm_automatic_allowed(
-            WorkspaceApprovalConfirmationMode::Interactive,
-            WorkspaceApprovalConfirmationMode::Interactive,
-        )
-        .is_ok());
-        // 用户显式开启自动放行后才允许 automatic
-        assert!(confirm_automatic_allowed(
-            WorkspaceApprovalConfirmationMode::Automatic,
-            WorkspaceApprovalConfirmationMode::Automatic,
-        )
-        .is_ok());
+        // 完全访问：无沙箱档，不需要沙箱可用，也不因特权声明被拒。
+        for input in [
+            loopback.clone(),
+            outbound.clone(),
+            json!({ "command": "git push", "vcsCredentials": true }),
+            json!({ "command": "docker compose up -d", "containerControl": true }),
+        ] {
+            assert_eq!(
+                validate_command_confirmation(
+                    &input,
+                    WorkspaceApprovalConfirmationMode::Automatic,
+                    false,
+                )
+                .unwrap(),
+                CommandTier::Unrestricted,
+                "完全访问恒返回无沙箱档：{input}"
+            );
+        }
     }
-
     #[test]
     fn state_mode_roundtrips_through_set_mode() {
         let state = WorkspaceApprovalState::default();
         assert_eq!(
-            state.mode().unwrap(),
-            WorkspaceApprovalConfirmationMode::Interactive,
+            state.mode_snapshot("s1").unwrap(),
+            (WorkspaceApprovalConfirmationMode::Interactive, 0),
             "未显式开启自动放行前必须保持 fail-closed 的 Interactive"
         );
         state
-            .set_mode(WorkspaceApprovalConfirmationMode::Automatic)
+            .set_mode("s1", WorkspaceApprovalConfirmationMode::Automatic)
             .unwrap();
         assert_eq!(
-            state.mode().unwrap(),
+            state.mode_snapshot("s1").unwrap().0,
             WorkspaceApprovalConfirmationMode::Automatic
+        );
+        assert_eq!(
+            state.mode_snapshot("s2").unwrap().0,
+            WorkspaceApprovalConfirmationMode::Interactive,
+            "会话模式不得串扰"
+        );
+        // 此处曾用 SandboxSafe 断言「逐请求模式不能作为会话状态」；该变体已随原生
+        // 确认删除，枚举只剩 Interactive / Automatic 两个合法值，故不再有可构造的
+        // 非法会话模式可供断言。
+        state
+            .set_mode("s1", WorkspaceApprovalConfirmationMode::Interactive)
+            .unwrap();
+        assert_eq!(
+            state.mode_snapshot("s1").unwrap().0,
+            WorkspaceApprovalConfirmationMode::Interactive
         );
     }
 
     #[test]
-    fn approval_dialog_message_carries_operation_details() {
-        let command = json!({
-            "sessionId": "session-1",
-            "runId": "run-1",
-            "toolCallId": "call-1",
-            "toolName": "run_workspace_command",
-            "input": { "command": "npm test -- --coverage", "cwd": "apps/desktop" },
-            "confirmationMode": "interactive"
-        });
-        let request: WorkspaceApprovalRequest =
-            serde_json::from_value(command).unwrap();
-        let message = approval_dialog_message(&request);
-        assert!(message.contains("执行命令"), "missing label: {message}");
-        assert!(message.contains("npm test -- --coverage"), "missing command: {message}");
-        assert!(message.contains("仅允许执行一次"), "missing scope note: {message}");
-
-        let change = json!({
-            "sessionId": "session-1",
-            "runId": "run-1",
-            "toolCallId": "call-2",
-            "toolName": "apply_workspace_changes",
-            "input": {
-                "operations": [
-                    { "type": "create-file", "path": "src/new.ts", "content": "export const x = 1\n" },
-                    { "type": "patch-file", "path": "src/main.ts", "expectedSha256": "abc", "oldText": "a\nb", "newText": "a\nb\nc" },
-                    { "type": "move", "from": "a.txt", "to": "b.txt", "expectedSha256": null },
-                    { "type": "trash", "path": "old.log", "expectedSha256": null },
-                ]
-            },
-            "confirmationMode": "interactive"
-        });
-        let request: WorkspaceApprovalRequest = serde_json::from_value(change).unwrap();
-        let message = approval_dialog_message(&request);
-        assert!(message.contains("批量应用工作区改动"), "missing label: {message}");
-        assert!(message.contains("新建文件 src/new.ts"), "missing create-file: {message}");
-        assert!(message.contains("修改文件 src/main.ts（-2/+3 行）"), "missing patch-file: {message}");
-        assert!(message.contains("移动 a.txt → b.txt"), "missing move: {message}");
-        assert!(message.contains("删除（可恢复）old.log"), "missing trash: {message}");
-
-        let create = json!({
-            "sessionId": "session-1",
-            "runId": "run-1",
-            "toolCallId": "call-3",
-            "toolName": "create_workspace_file",
-            "input": { "path": "docs/todo.md", "content": "# TODO\n- 修复审批预览\n" },
-            "confirmationMode": "interactive"
-        });
-        let request: WorkspaceApprovalRequest = serde_json::from_value(create).unwrap();
-        let message = approval_dialog_message(&request);
-        assert!(message.contains("创建文件"), "missing label: {message}");
-        assert!(message.contains("路径：docs/todo.md"), "missing path: {message}");
-        assert!(message.contains("写入内容预览：# TODO"), "missing content preview: {message}");
-
-        let edit = json!({
-            "sessionId": "session-1",
-            "runId": "run-1",
-            "toolCallId": "call-4",
-            "toolName": "edit_workspace_file",
-            "input": {
-                "path": "src/main.ts",
-                "edits": [
-                    { "oldText": "console.log(1)", "newText": "console.log(2)" },
-                    { "oldText": "a", "newText": "b" },
-                ],
-            },
-            "confirmationMode": "interactive"
-        });
-        let request: WorkspaceApprovalRequest = serde_json::from_value(edit).unwrap();
-        let message = approval_dialog_message(&request);
-        assert!(message.contains("修改文件"), "missing label: {message}");
-        assert!(message.contains("路径：src/main.ts"), "missing path: {message}");
-        assert!(message.contains("替换：console.log(1) → console.log(2)"), "missing edit preview: {message}");
-    }
-
-    #[test]
-    fn approval_dialog_message_falls_back_to_tool_name() {
-        let request = WorkspaceApprovalRequest {
+    fn mode_change_invalidates_automatic_lease() {
+        let state = WorkspaceApprovalState::default();
+        let authorizations = crate::session_authorization::SessionAuthorizationState::default();
+        let scope = ApprovalScope {
             session_id: "session-1".into(),
             run_id: "run-1".into(),
             tool_call_id: "call-1".into(),
-            tool_name: "custom_tool".into(),
-            input: json!({ "opaque": true }),
-            confirmation_mode: WorkspaceApprovalConfirmationMode::Interactive,
-            workspace_path: None,
         };
-        let message = approval_dialog_message(&request);
-        assert!(message.contains("custom_tool"), "missing fallback label: {message}");
+        let session_generation = authorizations.scope_generation(&scope.session_id).unwrap();
+        let mode_generation = state
+            .set_mode(
+                &scope.session_id,
+                WorkspaceApprovalConfirmationMode::Automatic,
+            )
+            .unwrap();
+        let input = json!({ "path": "src/main.ts", "content": "hello" });
+        let token = state
+            .issue_scoped(
+                ApprovalLeaseInput {
+                    tool_name: "create_workspace_file".into(),
+                    input_digest: canonical_input_digest("create_workspace_file", &input).unwrap(),
+                    workspace_generation: 3,
+                    workspace_path: Some("/repo".into()),
+                    tier: None,
+                    confirmation_mode: WorkspaceApprovalConfirmationMode::Automatic,
+                    mode_generation,
+                },
+                ApprovalBinding {
+                    scope: Some(scope.clone()),
+                    session_generation: Some(session_generation),
+                },
+            )
+            .unwrap();
+
+        state
+            .set_mode(
+                &scope.session_id,
+                WorkspaceApprovalConfirmationMode::Interactive,
+            )
+            .unwrap();
+        let error = state
+            .consume_scoped(
+                &token,
+                "create_workspace_file",
+                input,
+                3,
+                Some("/repo"),
+                (&scope, &authorizations),
+            )
+            .unwrap_err();
+        assert!(
+            error.contains("访问模式已变化"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn retiring_session_removes_full_access_and_invalidates_automatic_lease() {
+        let state = WorkspaceApprovalState::default();
+        let authorizations = crate::session_authorization::SessionAuthorizationState::default();
+        let scope = ApprovalScope {
+            session_id: "session-retired".into(),
+            run_id: "run-1".into(),
+            tool_call_id: "call-1".into(),
+        };
+        let session_generation = authorizations.scope_generation(&scope.session_id).unwrap();
+        let mode_generation = state
+            .set_mode(
+                &scope.session_id,
+                WorkspaceApprovalConfirmationMode::Automatic,
+            )
+            .unwrap();
+        let input = json!({ "path": "src/main.ts", "content": "hello" });
+        let token = state
+            .issue_scoped(
+                ApprovalLeaseInput {
+                    tool_name: "create_workspace_file".into(),
+                    input_digest: canonical_input_digest("create_workspace_file", &input).unwrap(),
+                    workspace_generation: 3,
+                    workspace_path: Some("/repo".into()),
+                    tier: None,
+                    confirmation_mode: WorkspaceApprovalConfirmationMode::Automatic,
+                    mode_generation,
+                },
+                ApprovalBinding {
+                    scope: Some(scope.clone()),
+                    session_generation: Some(session_generation),
+                },
+            )
+            .unwrap();
+
+        state.retire_session(&scope.session_id).unwrap();
+        assert_eq!(
+            state.mode_snapshot(&scope.session_id).unwrap(),
+            (WorkspaceApprovalConfirmationMode::Interactive, 0)
+        );
+        assert!(state
+            .consume_scoped(
+                &token,
+                "create_workspace_file",
+                input,
+                3,
+                Some("/repo"),
+                (&scope, &authorizations),
+            )
+            .unwrap_err()
+            .contains("访问模式已变化"));
     }
 
     #[test]
@@ -831,44 +890,10 @@ mod tests {
     }
 
     #[test]
-    fn requires_an_explicit_strict_confirmation_mode() {
-        let base = json!({
-            "sessionId": "session-1",
-            "runId": "run-1",
-            "toolCallId": "call-1",
-            "toolName": "create_workspace_file",
-            "input": { "path": "notes.txt", "content": "hello" }
-        });
-        assert!(serde_json::from_value::<WorkspaceApprovalRequest>(base.clone()).is_err());
-
-        let mut automatic = base.clone();
-        automatic["confirmationMode"] = json!("automatic");
-        assert_eq!(
-            serde_json::from_value::<WorkspaceApprovalRequest>(automatic)
-                .unwrap()
-                .confirmation_mode,
-            WorkspaceApprovalConfirmationMode::Automatic
-        );
-
-        let mut sandbox = base.clone();
-        sandbox["confirmationMode"] = json!("sandboxSafe");
-        assert_eq!(
-            serde_json::from_value::<WorkspaceApprovalRequest>(sandbox)
-                .unwrap()
-                .confirmation_mode,
-            WorkspaceApprovalConfirmationMode::SandboxSafe
-        );
-
-        let mut invalid = base;
-        invalid["confirmationMode"] = json!(true);
-        assert!(serde_json::from_value::<WorkspaceApprovalRequest>(invalid).is_err());
-    }
-
-    #[test]
     fn sandbox_lease_returns_bound_tier() {
         let state = WorkspaceApprovalState::default();
         // SandboxSafe 租约：tier 存 lease，consume 时原样返回
-        let issued = json!({ "command": "npm test", "cwd": "." });
+        let issued = json!({ "command": "npm test", "cwd": ".", "timeout": 30 });
         let token = state
             .issue(
                 "run_workspace_command".into(),
@@ -911,6 +936,47 @@ mod tests {
     }
 
     #[test]
+    fn command_lease_rejects_privilege_tampering_and_reuse() {
+        let state = WorkspaceApprovalState::default();
+        let issued = json!({ "command": "git fetch", "cwd": ".", "vcsCredentials": true, "containerControl": false });
+        let issue = || {
+            state
+                .issue(
+                    "run_workspace_command".into(),
+                    canonical_input_digest("run_workspace_command", &issued).unwrap(),
+                    1,
+                    Some("/repo".into()),
+                    Some(CommandTier::NetworkRequired),
+                )
+                .unwrap()
+        };
+        for field in ["vcsCredentials", "containerControl"] {
+            let token = issue();
+            let mut tampered = issued.clone();
+            tampered[field] = json!(!issued[field].as_bool().unwrap());
+            assert!(state
+                .consume(&token, "run_workspace_command", tampered, 1, Some("/repo"))
+                .is_err());
+        }
+        let token = issue();
+        assert_eq!(
+            state
+                .consume(
+                    &token,
+                    "run_workspace_command",
+                    issued.clone(),
+                    1,
+                    Some("/repo")
+                )
+                .unwrap(),
+            Some(CommandTier::NetworkRequired)
+        );
+        assert!(state
+            .consume(&token, "run_workspace_command", issued, 1, Some("/repo"))
+            .is_err());
+    }
+
+    #[test]
     fn command_lease_closes_loop_across_frontend_and_backend_input_shapes() {
         let state = WorkspaceApprovalState::default();
         // 签发侧 input 来自前端 bash 工具参数 { command, cwd, timeout（秒） }，
@@ -935,13 +1001,7 @@ mod tests {
             )
             .unwrap();
         state
-            .consume(
-                &token,
-                "run_workspace_command",
-                consumed,
-                1,
-                Some("/repo"),
-            )
+            .consume(&token, "run_workspace_command", consumed, 1, Some("/repo"))
             .unwrap();
     }
 
@@ -970,7 +1030,7 @@ mod tests {
     }
 
     #[test]
-    fn command_lease_is_insensitive_to_timeout_field_differences() {
+    fn command_lease_normalizes_timeout_units() {
         let state = WorkspaceApprovalState::default();
         // 签发侧缺失 cwd（前端未提供）与消费侧显式 null（Rust 序列化）必须归一化一致；
         // timeout（秒）与 timeoutMs（毫秒）字段形状差异不影响绑定。
@@ -995,6 +1055,75 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn command_lease_rejects_changed_removed_or_added_timeout() {
+        for (issued, consumed) in [
+            (
+                json!({ "command": "ls -la", "timeout": 30 }),
+                json!({ "command": "ls -la", "timeoutMs": 60_000 }),
+            ),
+            (
+                json!({ "command": "ls -la", "timeout": 30 }),
+                json!({ "command": "ls -la", "timeoutMs": null }),
+            ),
+            (
+                json!({ "command": "ls -la", "timeout": 30 }),
+                json!({ "command": "ls -la" }),
+            ),
+            (
+                json!({ "command": "ls -la" }),
+                json!({ "command": "ls -la", "timeoutMs": 30_000 }),
+            ),
+        ] {
+            let state = WorkspaceApprovalState::default();
+            let token = state
+                .issue(
+                    "run_workspace_command".into(),
+                    canonical_input_digest("run_workspace_command", &issued).unwrap(),
+                    1,
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert!(state
+                .consume(&token, "run_workspace_command", consumed, 1, None)
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn command_timeout_rejects_ambiguous_or_invalid_values() {
+        for input in [
+            json!({ "timeout": 30, "timeoutMs": 30_000 }),
+            json!({ "timeout": "30" }),
+            json!({ "timeout": 0.0001 }),
+            json!({ "timeout": 0 }),
+            json!({ "timeout": -1 }),
+            json!({ "timeout": 2_147_483.648 }),
+            json!({ "timeoutMs": 1.1 }),
+            json!({ "timeoutMs": 0 }),
+            json!({ "timeoutMs": 2_147_483_648_u64 }),
+        ] {
+            assert!(workspace_command_timeout(&input).is_err(), "{input}");
+        }
+        assert_eq!(
+            workspace_command_timeout(&json!({ "timeout": 0.001 })).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            workspace_command_timeout(&json!({ "timeout": 0.029 })).unwrap(),
+            Some(29)
+        );
+        assert_eq!(
+            workspace_command_timeout(&json!({ "timeoutMs": 2_147_483_647 })).unwrap(),
+            Some(2_147_483_647)
+        );
+        assert_eq!(
+            workspace_command_timeout(&json!({ "timeout": null, "timeoutMs": null })).unwrap(),
+            None
+        );
+    }
+
     // ---- 规范化口径（.specs/domain/workspace-authorization.md 不变量 7）----
 
     fn digest_of(input: &Value) -> String {
@@ -1007,8 +1136,11 @@ mod tests {
 
     fn encoded_len_of_content(content: String) -> usize {
         serde_json::to_vec(
-            &canonical_input("create_workspace_file", &json!({ "path": "p.ax", "content": content }))
-                .unwrap(),
+            &canonical_input(
+                "create_workspace_file",
+                &json!({ "path": "p.ax", "content": content }),
+            )
+            .unwrap(),
         )
         .unwrap()
         .len()
@@ -1105,11 +1237,19 @@ mod tests {
         let inline = "t".repeat(APPROVAL_STRING_INLINE_BYTES);
         let hashed = "t".repeat(APPROVAL_STRING_INLINE_BYTES + 1);
         assert_eq!(
-            canonical_input("create_workspace_file", &json!({ "content": inline.clone() })).unwrap(),
+            canonical_input(
+                "create_workspace_file",
+                &json!({ "content": inline.clone() })
+            )
+            .unwrap(),
             json!({ "@o": { "content": { "@s": inline } } })
         );
         assert_eq!(
-            canonical_input("create_workspace_file", &json!({ "content": hashed.clone() })).unwrap(),
+            canonical_input(
+                "create_workspace_file",
+                &json!({ "content": hashed.clone() })
+            )
+            .unwrap(),
             json!({ "@o": { "content": {
                 "@sha256": format!("{:x}", Sha256::digest(hashed.as_bytes())),
                 "@bytes": APPROVAL_STRING_INLINE_BYTES + 1,

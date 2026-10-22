@@ -1,0 +1,41 @@
+{
+  "ax": "1.4",
+  "name": "TableRow",
+  "tokens": {},
+  "components": {},
+  "symbols": {
+    "TableRow": {
+      "props": { "col1": "string", "col2": "string", "col3": "string", "col4": "string" },
+      "body": [
+        {
+          "id": "row-root",
+          "kind": "frame",
+          "layout": "horizontal",
+          "gap": 8,
+          "padding": [10, 12, 10, 12],
+          "width": "fill_container",
+          "strokeWidth": { "bottom": 1 },
+          "stroke": "#E7E4DE",
+          "children": [
+            { "id": "row-c1", "kind": "text", "text": { "$param": "col1" }, "wrap": "nowrap", "fontSize": 13, "fill": "#1F1E1C", "width": 220 },
+            { "id": "row-c2", "kind": "text", "text": { "$param": "col2" }, "wrap": "nowrap", "fontSize": 13, "fill": "#1F1E1C", "width": "fill_container" },
+            { "id": "row-c3", "kind": "text", "text": { "$param": "col3" }, "wrap": "nowrap", "fontSize": 13, "fill": "#6B6862", "width": 120 },
+            { "id": "row-c4", "kind": "text", "text": { "$param": "col4" }, "wrap": "nowrap", "fontSize": 13, "fill": "#3167FA", "width": 96 }
+          ]
+        }
+      ]
+    }
+  },
+  "pages": [
+    {
+      "id": "table-page",
+      "name": "TableRow 模式",
+      "width": 800,
+      "height": 60,
+      "layout": "vertical",
+      "tree": [
+        { "id": "usage", "kind": "component", "name": "TableRow", "props": { "col1": "SO-10241", "col2": "杭州市滨江区", "col3": "2026-10-08", "col4": "已支付" } }
+      ]
+    }
+  ]
+}

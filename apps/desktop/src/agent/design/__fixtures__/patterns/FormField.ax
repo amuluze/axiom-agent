@@ -1,0 +1,52 @@
+{
+  "ax": "1.4",
+  "name": "FormField",
+  "tokens": {},
+  "components": {},
+  "symbols": {
+    "FormField": {
+      "props": { "label": "string", "placeholder": "string" },
+      "body": [
+        {
+          "id": "ff-root",
+          "kind": "frame",
+          "layout": "vertical",
+          "gap": 6,
+          "width": "fill_container",
+          "children": [
+            { "id": "ff-label", "kind": "text", "text": { "$param": "label" }, "wrap": "nowrap", "fontSize": 13, "fill": "#1F1E1C" },
+            {
+              "id": "ff-input",
+              "kind": "frame",
+              "layout": "horizontal",
+              "padding": [8, 12, 8, 12],
+              "width": "fill_container",
+              "fill": "#FFFFFF",
+              "cornerRadius": 6,
+              "strokeWidth": 1,
+              "stroke": "#E7E4DE",
+              "children": [
+                { "id": "ff-placeholder", "kind": "text", "text": { "$param": "placeholder" }, "wrap": "nowrap", "fontSize": 14, "fill": "#A5A199" }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "pages": [
+    {
+      "id": "form-page",
+      "name": "FormField 模式",
+      "width": 480,
+      "height": 140,
+      "layout": "vertical",
+      "gap": 16,
+      "padding": [24, 24, 24, 24],
+      "tree": [
+        { "id": "f1", "kind": "component", "name": "FormField", "props": { "label": "订单编号", "placeholder": "请输入 SO 编号" } },
+        { "id": "f2", "kind": "component", "name": "FormField", "props": { "label": "收货人", "placeholder": "请输入姓名" } }
+      ]
+    }
+  ]
+}

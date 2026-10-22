@@ -56,7 +56,7 @@ describe('editTool prepareArguments', () => {
       baseContext({ approvalLease: 'lease-1' }),
     )
     expect(environment.workspace.editTextFile).toHaveBeenCalledWith(
-      'a.ts', [{ oldText: 'x', newText: 'y' }], 'lease-1',
+      'a.ts', [{ oldText: 'x', newText: 'y' }], 'lease-1', { sessionId: 'session-1', runId: 'run-1', toolCallId: 'tool-1' },
     )
     expect(result.content).toContain('Edited a.ts')
   })
@@ -76,7 +76,7 @@ describe('editTool prepareArguments', () => {
       baseContext({ approvalLease: 'lease-1' }),
     )
     expect(environment.workspace.editTextFile).toHaveBeenCalledWith(
-      'a.ts', [{ oldText: 'x', newText: 'y' }], 'lease-1',
+      'a.ts', [{ oldText: 'x', newText: 'y' }], 'lease-1', { sessionId: 'session-1', runId: 'run-1', toolCallId: 'tool-1' },
     )
   })
 

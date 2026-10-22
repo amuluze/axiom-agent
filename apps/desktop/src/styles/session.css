@@ -315,7 +315,6 @@
   color: var(--text-primary);
   font-weight: 650;
   line-height: 1.28;
-  letter-spacing: -0.012em;
 }
 
 .message-markdown h1 {
@@ -691,6 +690,8 @@
 }
 
 .tool-card {
+  min-width: 0;
+  margin: 0;
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);

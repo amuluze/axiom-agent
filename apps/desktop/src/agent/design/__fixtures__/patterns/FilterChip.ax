@@ -1,0 +1,43 @@
+{
+  "ax": "1.4",
+  "name": "FilterChip",
+  "tokens": {},
+  "components": {},
+  "symbols": {
+    "FilterChip": {
+      "props": { "label": "string" },
+      "body": [
+        {
+          "id": "chip-root",
+          "kind": "frame",
+          "layout": "horizontal",
+          "gap": 6,
+          "padding": [6, 12, 6, 12],
+          "fill": "#FFFFFF",
+          "cornerRadius": 999,
+          "strokeWidth": 1,
+          "stroke": "#E7E4DE",
+          "children": [
+            { "id": "chip-label", "kind": "text", "text": { "$param": "label" }, "wrap": "nowrap", "fontSize": 13, "fill": "#1F1E1C" }
+          ]
+        }
+      ]
+    }
+  },
+  "pages": [
+    {
+      "id": "filter-page",
+      "name": "FilterChip 模式",
+      "width": 600,
+      "height": 60,
+      "layout": "horizontal",
+      "gap": 8,
+      "padding": [16, 16, 16, 16],
+      "tree": [
+        { "id": "f1", "kind": "component", "name": "FilterChip", "props": { "label": "全部" } },
+        { "id": "f2", "kind": "component", "name": "FilterChip", "props": { "label": "已支付" } },
+        { "id": "f3", "kind": "component", "name": "FilterChip", "props": { "label": "已发货" } }
+      ]
+    }
+  ]
+}

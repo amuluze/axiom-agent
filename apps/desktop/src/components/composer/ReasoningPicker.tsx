@@ -4,6 +4,7 @@ import { useAgentStore } from '@/stores/agentStore'
 import { resolveModelDescriptor } from '@/agent/transport/provider'
 import type { ReasoningSettings } from '@/agent/runtime/reasoningSettings'
 import { useUpwardMenuClamp } from '@/components/composer/useUpwardMenuClamp'
+import { useHorizontalMenuClamp } from '@/components/composer/useHorizontalMenuClamp'
 import { useT } from '@/i18n'
 
 const LEVELS: ReasoningSettings['level'][] = [
@@ -46,7 +47,9 @@ export const ReasoningPicker = ({ disabled = false }: { disabled?: boolean }) =>
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const pickerRef = useRef<HTMLDivElement | null>(null)
+  const menuRef = useRef<HTMLDivElement | null>(null)
   useUpwardMenuClamp(pickerRef, open)
+  useHorizontalMenuClamp(menuRef, open)
 
   const provider = useAgentStore((state) => state.provider)
   const reasoning = useAgentStore((state) => state.reasoningSettings)
@@ -114,7 +117,7 @@ export const ReasoningPicker = ({ disabled = false }: { disabled?: boolean }) =>
         <ChevronDown size={11} />
       </button>
       {open && (
-        <div className="composer__reasoning-menu" role="menu">
+        <div className="composer__reasoning-menu" ref={menuRef} role="menu">
           <div className="composer__menu-title">{t('app.composer.reasoning.title')}</div>
           {LEVELS.map((level) => (
             <button

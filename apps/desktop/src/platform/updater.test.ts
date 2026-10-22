@@ -19,7 +19,9 @@ vi.mock('./environment', () => ({
 }))
 
 import {
+  AppUpdateInstallError,
   checkForAppUpdate,
+  classifyUpdateInstallFailure,
   downloadAndInstallAppUpdate,
   relaunchApp,
   resetPendingUpdatesForTests,
@@ -139,6 +141,34 @@ describe('downloadAndInstallAppUpdate 进度累计', () => {
     expect(next.close).not.toHaveBeenCalled()
     await expect(downloadAndInstallAppUpdate('0.3.0')).rejects.toThrow('没有待安装的更新')
     await downloadAndInstallAppUpdate('0.4.0')
+  })
+
+  it.each([
+    ['download', 'network connection interrupted'],
+    ['download', 'error sending request for url (http://127.0.0.1/updates/Axiom.app.tar.gz)'],
+    ['signature', 'minisign signature verification failed'],
+    ['storage', 'No space left on device (os error 28)'],
+    ['replace', 'permission denied while replacing application'],
+  ] as const)('将 %s 故障分类并丢弃失败句柄，重复安装前必须重新检查', async (stage, message) => {
+    const update = fakeUpdate('0.5.0', [])
+    update.downloadAndInstall.mockRejectedValue(new Error(message))
+    mocks.check.mockResolvedValue(update)
+    await checkForAppUpdate()
+
+    await expect(downloadAndInstallAppUpdate('0.5.0')).rejects.toMatchObject({
+      name: 'AppUpdateInstallError',
+      stage,
+    })
+    expect(update.close).toHaveBeenCalledTimes(1)
+    await expect(downloadAndInstallAppUpdate('0.5.0')).rejects.toThrow('请先检查更新')
+  })
+
+  it('未知插件错误保留 unknown 分类', () => {
+    expect(classifyUpdateInstallFailure(new Error('unexpected updater failure'))).toBe('unknown')
+    expect(new AppUpdateInstallError('unknown', 'failed')).toMatchObject({
+      name: 'AppUpdateInstallError',
+      stage: 'unknown',
+    })
   })
 })
 

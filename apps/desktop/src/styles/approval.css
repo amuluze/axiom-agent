@@ -31,7 +31,6 @@
   color: var(--text-secondary);
   font-size: 0.8462rem;
   font-weight: 600;
-  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
@@ -188,7 +187,6 @@
 .approval-inbox__eyebrow {
   font-size: 0.8462rem;
   font-weight: 600;
-  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
@@ -265,3 +263,37 @@
   cursor: not-allowed;
   opacity: 0.55;
 }
+
+.approval-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-overlay);
+  z-index: 40;
+}
+.summary-instructions-dialog {
+  width: 560px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-popover);
+}
+.summary-instructions-dialog .approval-header { display: flex; justify-content: space-between; gap: var(--space-3); align-items: start; }
+.summary-instructions-dialog h2 { margin: var(--space-1) 0 0; font-size: 1.2308rem; }
+.summary-instructions-dialog .approval-description { margin: 0; color: var(--text-secondary); }
+.summary-instructions-field { display: flex; flex-direction: column; gap: var(--space-2); }
+.summary-instructions-field textarea { min-height: 160px; resize: vertical; padding: var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--bg-input); color: var(--text-primary); }
+.summary-instructions-meta { color: var(--text-tertiary); font-size: 0.8462rem; }
+.summary-instructions-meta.is-error { color: var(--diff-red); }
+.summary-instructions-replace { display: flex; align-items: start; gap: var(--space-2); }
+.summary-instructions-dialog .approval-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
+.summary-instructions-dialog .approval-actions button { padding: 6px 12px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); }

@@ -1,0 +1,28 @@
+{
+  "name": "axiom-e2e",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Axiom WebView 端到端集成测试（Playwright + 假 Tauri 宿主）",
+  "scripts": {
+    "dev": "vite --config vite.config.ts",
+    "test": "playwright test",
+    "test:integration": "playwright test --project=integration",
+    "test:e2e": "playwright test --project=e2e",
+    "list-tests": "playwright test --list",
+    "typecheck": "tsc --noEmit",
+    "check-suite": "node --experimental-strip-types scripts/validate-suite.ts",
+    "validate": "npm run typecheck && npm run check-suite && npm run list-tests"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "yaml": "^2.7.0",
+    "zod": "^3.24.1"
+  }
+}

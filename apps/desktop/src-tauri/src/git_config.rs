@@ -46,7 +46,10 @@ mod tests {
 
     #[test]
     fn neutralizes_all_critical_execution_driving_keys() {
-        let keys: HashSet<&str> = git_config_neutralization().iter().map(|(k, _)| *k).collect();
+        let keys: HashSet<&str> = git_config_neutralization()
+            .iter()
+            .map(|(k, _)| *k)
+            .collect();
         // 最小必需集：缺失任一条即视为回归
         for critical in [
             "core.hooksPath",
@@ -75,7 +78,10 @@ mod tests {
         // 值必须是纯字符串，不携带空格/引号/命令替换，避免自身引入解析面
         for (key, value) in git_config_neutralization() {
             assert!(
-                !value.chars().any(|c| matches!(c, ' ' | '"' | '\'' | '$' | '`' | '\\' | ';' | '&' | '|' | '>' | '<')),
+                !value.chars().any(|c| matches!(
+                    c,
+                    ' ' | '"' | '\'' | '$' | '`' | '\\' | ';' | '&' | '|' | '>' | '<'
+                )),
                 "中和值 {key}={value} 含特殊字符",
             );
         }

@@ -6,21 +6,38 @@
  * 为什么需要原生路径：SVG foreignObject 管线会被 WebKit 污染画布（SecurityError），
  * 只在 Chromium 可用——见 exportPagePng.ts 顶部说明与 renderPageHost.tsx 的回退链。
  */
-import { captureWebViewViewport, probeWebViewCapture } from '@/platform/webviewCapture'
+import { captureWebViewViewport, probeWebViewCapture, type WebViewCaptureResult } from '@/platform/webviewCapture'
 import { sampleCanvasPixels, type PngPixelStats } from './exportPagePng'
+import { captureRetryDelayMs, classifyCaptureFailure } from './captureRetryPolicy'
 
 /**
- * 原生截图瞬时失败重试一次：快照经主线程派发（Rust 侧 15s 有界等待），渲染队列
- * 拥塞、窗口瞬时遮挡等会造成偶发超时与空快照，重试大概率恢复。能走到这里的调用方
- * 都已通过支持性探测（命令已注册），失败只剩瞬时类；两次都失败按第二次的错误抛出。
+ * 延时。**刻意不用 `Promise.withResolvers()`**：它在 WebKit 侧要Safari 17.4
+ * （= macOS 14.5）才有，而本应用的系统下限是 macOS 12（tauri.conf.json 的
+ * `minimumSystemVersion`），在新系统上会直接抛 TypeError 把截图路径打断。
+ */
+const sleepMs = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+
+/**
+ * 原生截图的瞬时失败重试：最多一次，且只对**瞬时类**失败重试。
+ * 快照经主线程派发（Rust 侧 15s 有界等待），渲染队列拥塞、窗口瞬时遮挡会造成偶发
+ * 超时与空快照，重试大概率恢复；反过来，矩形非法、平台不支持这类**永久失败**重试
+ * 只是白等一整轮超时——用户看到的是界面卡十几秒然后报同一个错，故直接抛出。
+ * 间隔带抖动：扫描一次并行 4 张截图，固定节奏会让它们在同一瞬间重试、再次压上
+ * 主线程，把瞬时拥塞放大成持续拥塞（见 captureRetryPolicy.ts）。
+ * 两次都失败按第二次的错误抛出。
  */
 const captureViewportWithRetry = async (
   rect?: [number, number, number, number],
-): Promise<Awaited<ReturnType<typeof captureWebViewViewport>>> => {
+): Promise<WebViewCaptureResult> => {
   try {
     return await captureWebViewViewport(rect)
-  } catch {
-    await new Promise((resolve) => setTimeout(resolve, 250))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (classifyCaptureFailure(message) === 'permanent') throw error
+    await sleepMs(captureRetryDelayMs(1))
     return captureWebViewViewport(rect)
   }
 }

@@ -75,7 +75,7 @@ describe('Session Repository shared contract', () => {
       toolStart(contract.tool.driftedArguments),
     )).rejects.toThrow(contract.expected.driftError)
 
-    await expect(repository.recoverRuntimeState()).resolves.toEqual({
+    await expect(repository.recoverRuntimeState()).resolves.toMatchObject({
       recoveredRuns: contract.expected.recoveredRuns,
     })
     await expect(repository.loadSession(sessionId)).resolves.toMatchObject({

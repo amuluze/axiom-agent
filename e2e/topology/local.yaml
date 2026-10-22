@@ -1,0 +1,10 @@
+# 本地 e2e 拓扑：只放结构事实（URL、端口约定），秘密与覆盖放 .env。
+name: local
+app:
+  # 被测前端：e2e 专用 Vite dev server（apps/desktop 源码 + 假 Tauri 宿主注入）。
+  base_url: http://127.0.0.1:1430
+host:
+  # 假 Tauri 宿主（Node）监听回环随机端口，由 worker fixture 启动；
+  # 桥接脚本经 addInitScript 注入 window.__TAURI_INTERNALS__，把 invoke 转发到该端口。
+  bind: 127.0.0.1
+  loopback_only: true

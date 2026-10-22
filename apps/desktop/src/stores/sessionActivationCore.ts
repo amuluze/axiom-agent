@@ -10,6 +10,7 @@ import type { RuntimeDependencyManifest } from '@/agent/runtime/runtimeDependenc
 import { getRuntimeProjection, getRuntimeProvider, setRuntimeProjection, type ActiveToolInfo } from './runtimeCaches'
 import { promptSessionTitle } from '@/agent/session/title'
 import { applyStreamingEvent, initStreamingDraft } from '@/agent/core/streamingDraft'
+import { clearDesignMutations, recordDesignMutation } from '@/agent/design/designAuthorActivity'
 
 /**
  * The setState payload written by `commitSessionActivation`. Module-local to
@@ -45,6 +46,7 @@ export interface AgentCoreProjection {
   reasoningSettings: ReasoningSettings
   sessions: StoredAgentSession[]
   activeSessionId: string
+  accessMode: NonNullable<StoredAgentSession['accessMode']>
   messages: AgentMessage[]
   activeTools: Record<string, ActiveToolInfo>
   endReason: AgentRunEndReason | null
@@ -109,6 +111,7 @@ export const applySessionActivationState = (
     reasoningSettings: prepared.reasoningSettings,
     sessions: prepared.sessions,
     activeSessionId: prepared.snapshot.session.id,
+    accessMode: prepared.sessions.find((session) => session.id === prepared.snapshot.session.id)?.accessMode ?? 'standard',
     messages: prepared.snapshot.messages,
     activeTools: {},
     endReason: null,
@@ -198,6 +201,11 @@ export const applySessionEvent = (
   boundRuntime: AgentHarness,
   bindings: SessionEventBindings,
 ): void => {
+  if (event.type === 'tool_execution_start') {
+    recordDesignMutation(boundSessionId, event.toolName, event.arguments)
+  } else if (event.type === 'agent_end' || event.type === 'agent_settled') {
+    clearDesignMutations(boundSessionId)
+  }
   const reducer = (state: AgentCoreProjection): Partial<AgentCoreProjection> => {
     const projection = getRuntimeProjection(boundSessionId) ?? {
       activeTools: {},

@@ -15,7 +15,7 @@ import type { SummaryRuntimeHooks } from './summaryHooks'
  */
 export const DESKTOP_RUNTIME_HOOK_REGISTRATION: RuntimeHookRegistration = Object.freeze({
   id: 'axiom.desktop.runtime-hooks',
-  version: '9',
+  version: '10',
   source: 'desktop',
   priority: 100,
   timeoutMs: 5_000,
@@ -27,6 +27,7 @@ export interface ProductRuntimeHooks extends SummaryRuntimeHooks {
 
 export interface ProductRuntimeHookOptions {
   sessionId: string
+  validateCapabilities?: () => Promise<void>
   discoveryToolName: string
   /**
    * 不含工具段的基准提示词 accessor（人设/安全边界/项目上下文/discovery 说明）。
@@ -123,6 +124,16 @@ export const registerProductRuntimeHooks = (
 ): (() => void) => {
   const hooks = createProductRuntimeHooks(options)
   const unregister = [
+    harnessHooks.on('before_agent_start', async (event) => {
+      assertSession(event.sessionId, options.sessionId, 'Agent start')
+      await options.validateCapabilities?.()
+      return undefined
+    }, DESKTOP_RUNTIME_HOOK_REGISTRATION),
+    harnessHooks.on('before_provider_request', async (event) => {
+      assertSession(event.sessionId, options.sessionId, 'Provider request')
+      await options.validateCapabilities?.()
+      return undefined
+    }, DESKTOP_RUNTIME_HOOK_REGISTRATION),
     harnessHooks.on(
       'prepare_next_turn',
       ({ snapshot }) => hooks.prepareNextTurn(snapshot),

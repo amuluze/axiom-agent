@@ -67,7 +67,7 @@ describe('emitAxPageToTsx：映射', () => {
   it('组件恒等映射：JSX 标签 + props（$mock 取字面量）+ 注册表导入来源', () => {
     const result = emit()!
     expect(result.code).toContain("import { ApprovalCard } from '@/components/session/ApprovalCard'")
-    expect(result.code).toContain('<ApprovalCard command=\'npm test\' danger={false} />')
+    expect(result.code).toContain('<ApprovalCard command={"npm test"} danger={false} />')
     expect(result.counts.components).toBe(2)
   })
 
@@ -87,7 +87,7 @@ describe('emitAxPageToTsx：映射', () => {
       componentImports: { ToolCallCard: { from: '@/components/session/ToolCallCard' } },
     })!
     // 生成物里必须是对象字面量（写成 JSON 字符串会变成语法错，见下面的解析断言）。
-    expect(result.code).toContain("toolName='read'")
+    expect(result.code).toContain('toolName={"read"}')
     expect(result.code).toContain('call={{')
     expect(syntaxErrorsOf(result.code)).toEqual([])
   })
@@ -112,9 +112,9 @@ describe('emitAxPageToTsx：映射', () => {
     expect(syntaxErrorsOf(result.code)).toEqual([])
   })
 
-  it('$bind 不产出未定义标识符：注释说明接线点 + 占位文本 + 进 unresolved', () => {
+  it('$bind 生成必填类型化接线点，并进入 unresolved', () => {
     const result = emit()!
-    expect(result.code).toContain('{/* $bind: session.title */}session.title')
+    expect(result.code).toContain("{bindings['t2.text']}")
     expect(result.unresolved.some((item) => item.reason.includes('session.title'))).toBe(true)
   })
 
@@ -215,5 +215,93 @@ describe('emitAxPageToTsx：语法有效性', () => {
     expect(syntaxErrorsOf(emitted.code)).toEqual([])
     // 导入产物只含 primitive：unresolved 里不应出现「尚无映射」（那种节点不该被发出去）。
     expect(emitted.unresolved.filter((item) => item.reason === '尚无映射')).toEqual([])
+  })
+})
+
+it('decl.slots 契约的插槽递归直译 children，详单缺契约仍明确 unresolved', () => {
+  // 1.5 起节点 slot 内容必须先在 decl.slots 声明契约（解析 fail-closed，见 axParser 套件）；
+  // codegen 侧按详单 slots 段直译——详单缺 slots 段时仍记 unresolved，不静默丢内容。
+  const ax = parseAxDocument(JSON.stringify({ ax: '1.5', tokens: {}, components: { Panel: { slots: { default: { prop: 'children' } } } }, pages: [{ id: 'p', width: 400, height: 300, tree: [
+    { id: 'panel', kind: 'component', name: 'Panel', slot: [{ id: 'inside', kind: 'text', text: '真实插槽', wrap: 'nowrap' }] },
+  ] }] })).document!
+  const detail = { summary: { name: 'Panel', kind: 'presentational' as const, sourcePath: 'src/Panel.tsx', props: [], fixtures: [], defaultSlot: true }, slots: { default: { prop: 'children' } }, statics: [], fixtures: {} }
+  const result = emitAxPageToTsx(ax, 1, { componentImports: { Panel: { from: '@/Panel' } }, componentDetails: { Panel: detail } })!
+  expect(result.code).toContain('</Panel>')
+  expect(result.code).toContain('真实插槽')
+  expect(result.counts.nodes).toBe(2)
+  expect(result.unresolved).toEqual([])
+  expect(syntaxErrorsOf(result.code)).toEqual([])
+  const missing = emitAxPageToTsx(ax, 1, { componentImports: { Panel: { from: '@/Panel' } }, componentDetails: { Panel: { ...detail, summary: { ...detail.summary, defaultSlot: false }, slots: undefined } } })!
+  expect(missing.unresolved).toContainEqual(expect.objectContaining({ kind: 'component(slot)' }))
+})
+
+describe('emitAxPageToTsx：symbol 局部组件（1.4）', () => {
+  const symbolSource = JSON.stringify({
+    ax: '1.4',
+    tokens: { 'text-md': { $type: 'dimension', $value: '13px' } },
+    components: {},
+    symbols: {
+      TableRow: {
+        props: { c1: 'string', c2: 'string' },
+        body: [{
+          id: 'row', kind: 'frame', layout: 'horizontal', gap: 8, children: [
+            { id: 'cell-a', kind: 'text', text: { $param: 'c1' }, wrap: 'nowrap', fontSize: '$text-md' },
+            { id: 'cell-b', kind: 'text', text: { $param: 'c2' }, wrap: 'nowrap', fontSize: '$text-md' },
+          ],
+        }],
+      },
+      Unused: {
+        props: { x: 'string' },
+        body: [{ id: 'u1', kind: 'text', text: { $param: 'x' }, wrap: 'nowrap' }],
+      },
+    },
+    pages: [{
+      id: 'p-table', name: '订单表', width: 720, height: 480, tree: [
+        { id: 'r1', kind: 'component', name: 'TableRow', props: { c1: '订单 A', c2: '已支付' } },
+        { id: 'r2', kind: 'component', name: 'TableRow', props: { c1: { $mock: '订单 B' }, c2: { $bind: 'rows[1].status' } } },
+      ],
+    }],
+  })
+  const symbolDoc = parseAxDocument(symbolSource).document as AxDocument
+  const emitSymbolPage = () => emitAxPageToTsx(symbolDoc, 'p-table', {})
+
+  it('symbol 发射为同文件局部组件：typed props + 参数引用表达式 + 实例 JSX', () => {
+    const result = emitSymbolPage()!
+    // 局部组件：const TableRow = ({ c1, c2 }: { c1: string; c2: string }) => (<>…</>)
+    expect(result.code).toContain('const TableRow = ({ c1, c2 }: { c1: string; c2: string }) => (')
+    // 参数引用发射为 {c1} 表达式（不是字面量、不是绑定占位）。
+    expect(result.code).toContain('>{c1}<')
+    expect(result.code).toContain('>{c2}<')
+    // 实例：字面量 / $mock 解包直传；未用到的 symbol（Unused）不进产物。
+    expect(result.code).toContain("<TableRow c1={'订单 A'} c2={'已支付'} />")
+    expect(result.code).toContain("<TableRow c1={'订单 B'} c2={bindings['r2.c2']} />")
+    expect(result.code).not.toContain('Unused')
+    expect(result.counts.symbols).toBe(2)
+    expect(result.unresolved).toContainEqual(expect.objectContaining({ kind: 'symbol($bind)', reason: expect.stringContaining('rows[1].status') }))
+    expect(syntaxErrorsOf(result.code)).toEqual([])
+  })
+
+  it('symbol 名净化为合法标识符（非 ASCII 起始加 Sym 前缀，冲突追加序号）', () => {
+    const source = JSON.stringify({
+      ax: '1.4',
+      components: {},
+      symbols: {
+        '表格行': { props: { t: 'string' }, body: [{ id: 'a', kind: 'text', text: { $param: 't' }, wrap: 'nowrap' }] },
+        'Data Cell': { props: { t: 'string' }, body: [{ id: 'b', kind: 'text', text: { $param: 't' }, wrap: 'nowrap' }] },
+        'data-cell': { props: { t: 'string' }, body: [{ id: 'c', kind: 'text', text: { $param: 't' }, wrap: 'nowrap' }] },
+      },
+      pages: [{ id: 'p', width: 100, height: 100, tree: [
+        { id: 'i1', kind: 'component', name: '表格行', props: { t: '一' } },
+        { id: 'i2', kind: 'component', name: 'Data Cell', props: { t: '二' } },
+        { id: 'i3', kind: 'component', name: 'data-cell', props: { t: '三' } },
+      ] }],
+    })
+    const result = emitAxPageToTsx(parseAxDocument(source).document as AxDocument, 1, {})!
+    expect(result.code).toContain('const Sym表格行 =')
+    // 'Data Cell' 与 'data-cell' 净化后同名：按排序分配，后者追加序号，两者互不遮蔽。
+    expect(result.code).toContain('const DataCell =')
+    expect(result.code).toContain('const DataCell2 =')
+    expect(result.code).toContain("<Sym表格行 t={'一'} />")
+    expect(syntaxErrorsOf(result.code)).toEqual([])
   })
 })

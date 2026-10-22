@@ -11,7 +11,7 @@
 //!    markdown 用 interactive 卡片（schema 2.0）。
 
 use super::{
-    cached_rest_token, cache_rest_token, now_ms, reset_inbound_watermark, set_status,
+    cache_rest_token, cached_rest_token, now_ms, reset_inbound_watermark, set_status,
     sleep_backoff, ConnectInner, ConnectPlatform, ConnectStatusKind, InboundChatMessage,
     ReplyContext,
 };
@@ -43,7 +43,9 @@ fn http_client() -> &'static reqwest::Client {
 }
 
 /// 项目内 reqwest 未启用 json feature：统一走字符串 body + 手动反序列化。
-async fn read_json<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T, String> {
+async fn read_json<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+) -> Result<T, String> {
     let text = response
         .text()
         .await
@@ -258,7 +260,9 @@ fn query_param(url: &str, key: &str) -> Option<String> {
 }
 
 /// 获取 WS URL。鉴权失败（code 403/514）返回 fatal=true，任务停止重试。
-async fn fetch_endpoint_url(creds: &FeishuCreds) -> Result<Result<(String, u64, u64), String>, String> {
+async fn fetch_endpoint_url(
+    creds: &FeishuCreds,
+) -> Result<Result<(String, u64, u64), String>, String> {
     let body = serde_json::to_string(&serde_json::json!({
         "AppID": creds.app_id,
         "AppSecret": creds.app_secret,
@@ -276,7 +280,10 @@ async fn fetch_endpoint_url(creds: &FeishuCreds) -> Result<Result<(String, u64, 
     let status = response.status();
     let payload: EndpointResponse = read_json(response).await?;
     if payload.code != 0 {
-        let message = format!("飞书长连接鉴权失败（code {}）: {}", payload.code, payload.msg);
+        let message = format!(
+            "飞书长连接鉴权失败（code {}）: {}",
+            payload.code, payload.msg
+        );
         // 403 Forbidden / 514 AuthFailed：凭证问题，停止重试直到用户修改配置。
         return Ok(Err(if payload.code == 403 || payload.code == 514 {
             format!("{message}（请检查 App ID / App Secret，以及应用是否开通了长连接模式）")
@@ -287,14 +294,18 @@ async fn fetch_endpoint_url(creds: &FeishuCreds) -> Result<Result<(String, u64, 
     if !status.is_success() {
         return Ok(Err(format!("飞书长连接地址响应异常（HTTP {status}）")));
     }
-    let data = payload.data.ok_or_else(|| "飞书长连接地址响应缺少 data".to_string())?;
+    let data = payload
+        .data
+        .ok_or_else(|| "飞书长连接地址响应缺少 data".to_string())?;
     let service_id = query_param(&data.url, "service_id")
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0);
     Ok(Ok((
         data.url,
         service_id,
-        data.client_config.and_then(|config| config.ping_interval).unwrap_or(120),
+        data.client_config
+            .and_then(|config| config.ping_interval)
+            .unwrap_or(120),
     )))
 }
 
@@ -351,7 +362,11 @@ fn parse_receive_event(event: &Value) -> Option<ParsedChatMessage> {
     Some(ParsedChatMessage {
         message_id: message.get("message_id")?.as_str()?.to_string(),
         chat_id: message.get("chat_id")?.as_str()?.to_string(),
-        chat_type: message.get("chat_type").and_then(Value::as_str).unwrap_or("p2p").to_string(),
+        chat_type: message
+            .get("chat_type")
+            .and_then(Value::as_str)
+            .unwrap_or("p2p")
+            .to_string(),
         user_id: sender
             .pointer("/sender_id/open_id")
             .and_then(Value::as_str)
@@ -371,10 +386,20 @@ fn parse_receive_event(event: &Value) -> Option<ParsedChatMessage> {
  * 连接主循环
  * ------------------------------------------------------------------ */
 
-pub(crate) async fn run_feishu(app: AppHandle, state: Arc<Mutex<ConnectInner>>, creds: FeishuCreds) {
+pub(crate) async fn run_feishu(
+    app: AppHandle,
+    state: Arc<Mutex<ConnectInner>>,
+    creds: FeishuCreds,
+) {
     let mut attempt: u32 = 0;
     loop {
-        set_status(&app, &state, ConnectPlatform::Feishu, ConnectStatusKind::Connecting, None);
+        set_status(
+            &app,
+            &state,
+            ConnectPlatform::Feishu,
+            ConnectStatusKind::Connecting,
+            None,
+        );
         match run_feishu_once(&app, &state, &creds).await {
             Ok(()) => return, // fatal：凭证/配置错误，等待用户处理
             Err(error) => {
@@ -400,7 +425,13 @@ async fn run_feishu_once(
     let (url, service_id, ping_interval_secs) = match fetch_endpoint_url(creds).await? {
         Ok(values) => values,
         Err(fatal) => {
-            set_status(app, state, ConnectPlatform::Feishu, ConnectStatusKind::Error, Some(fatal));
+            set_status(
+                app,
+                state,
+                ConnectPlatform::Feishu,
+                ConnectStatusKind::Error,
+                Some(fatal),
+            );
             return Ok(());
         }
     };
@@ -408,7 +439,13 @@ async fn run_feishu_once(
         .await
         .map_err(|error| format!("飞书 WebSocket 连接失败: {error}"))?;
     reset_inbound_watermark(state, ConnectPlatform::Feishu);
-    set_status(app, state, ConnectPlatform::Feishu, ConnectStatusKind::Connected, None);
+    set_status(
+        app,
+        state,
+        ConnectPlatform::Feishu,
+        ConnectStatusKind::Connected,
+        None,
+    );
     let mut ping_interval = tokio::time::interval(Duration::from_secs(ping_interval_secs.max(30)));
     ping_interval.tick().await; // 首个 tick 立即完成，跳过
     let mut ping_seq: u64 = now_ms() as u64;
@@ -510,10 +547,17 @@ async fn run_feishu_once(
         }
         // 每个事件帧都要回 ack（payload 为 {"code":200}），否则服务端会重推。
         let mut ack = frame.clone();
-        ack.headers.push(FrameHeader { key: "biz_rt".into(), value: "1".into() });
+        ack.headers.push(FrameHeader {
+            key: "biz_rt".into(),
+            value: "1".into(),
+        });
         ack.payload = Some(br#"{"code":200}"#.to_vec());
         use futures_util::SinkExt;
-        if socket.send(Message::Binary(encode_frame(&ack).into())).await.is_err() {
+        if socket
+            .send(Message::Binary(encode_frame(&ack).into()))
+            .await
+            .is_err()
+        {
             return Err("飞书 ack 发送失败".into());
         }
     }
@@ -546,7 +590,9 @@ async fn tenant_token(
     }))
     .map_err(|error| format!("编码飞书 token 请求失败: {error}"))?;
     let response = http_client()
-        .post(format!("{BASE_URL}/open-apis/auth/v3/tenant_access_token/internal"))
+        .post(format!(
+            "{BASE_URL}/open-apis/auth/v3/tenant_access_token/internal"
+        ))
         .header(CONTENT_TYPE, "application/json")
         .body(body)
         .timeout(Duration::from_secs(15))
@@ -594,7 +640,10 @@ fn reply_content(text: &str) -> (String, String) {
         });
         ("interactive".to_string(), card.to_string())
     } else {
-        ("text".to_string(), serde_json::json!({ "text": text }).to_string())
+        (
+            "text".to_string(),
+            serde_json::json!({ "text": text }).to_string(),
+        )
     }
 }
 
@@ -611,7 +660,10 @@ fn split_chunks(text: &str, limit: usize) -> Vec<String> {
         if line.chars().count() > limit {
             let mut remaining = line;
             while remaining.chars().count() > limit {
-                let cut = remaining.char_indices().nth(limit).map_or(remaining.len(), |(index, _)| index);
+                let cut = remaining
+                    .char_indices()
+                    .nth(limit)
+                    .map_or(remaining.len(), |(index, _)| index);
                 chunks.push(remaining[..cut].to_string());
                 remaining = &remaining[cut..];
             }
@@ -636,8 +688,8 @@ async fn post_message(
         Some(query) => format!("{BASE_URL}{path}?{query}"),
         None => format!("{BASE_URL}{path}"),
     };
-    let encoded = serde_json::to_string(body)
-        .map_err(|error| format!("编码飞书消息失败: {error}"))?;
+    let encoded =
+        serde_json::to_string(body).map_err(|error| format!("编码飞书消息失败: {error}"))?;
     let response = http_client()
         .post(url)
         .header("Authorization", format!("Bearer {token}"))
@@ -666,7 +718,11 @@ pub(crate) async fn send_reply(
     context: &ReplyContext,
     text: &str,
 ) -> Result<(), String> {
-    let ReplyContext::Feishu { chat_id, message_id } = context else {
+    let ReplyContext::Feishu {
+        chat_id,
+        message_id,
+    } = context
+    else {
         return Err("回复上下文与平台不匹配".into());
     };
     let token = tenant_token(&state, &creds).await?;
@@ -674,7 +730,8 @@ pub(crate) async fn send_reply(
         let (msg_type, content) = reply_content(&chunk);
         let uuid = super::random_hex(8);
         // 优先 reply（引用用户消息）；失败（消息过旧/无权限）回退按 chat_id 创建。
-        let reply_body = serde_json::json!({ "msg_type": msg_type, "content": content, "uuid": uuid });
+        let reply_body =
+            serde_json::json!({ "msg_type": msg_type, "content": content, "uuid": uuid });
         let replied = post_message(
             &token,
             &format!("/open-apis/im/v1/messages/{message_id}/reply"),
@@ -742,8 +799,14 @@ mod tests {
             service: 555,
             method: 1,
             headers: vec![
-                FrameHeader { key: "type".into(), value: "event".into() },
-                FrameHeader { key: "message_id".into(), value: "om_测试".into() },
+                FrameHeader {
+                    key: "type".into(),
+                    value: "event".into(),
+                },
+                FrameHeader {
+                    key: "message_id".into(),
+                    value: "om_测试".into(),
+                },
             ],
             payload: Some(br#"{"schema":"2.0"}"#.to_vec()),
         };
@@ -754,7 +817,10 @@ mod tests {
         assert_eq!(decoded.method, 1);
         assert_eq!(decoded.headers.len(), 2);
         assert_eq!(header_value(&decoded, "type"), Some("event"));
-        assert_eq!(decoded.payload.as_deref(), Some(br#"{"schema":"2.0"}"#.as_slice()));
+        assert_eq!(
+            decoded.payload.as_deref(),
+            Some(br#"{"schema":"2.0"}"#.as_slice())
+        );
     }
 
     #[test]

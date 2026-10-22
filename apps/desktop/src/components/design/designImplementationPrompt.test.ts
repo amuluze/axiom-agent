@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parsePenDocument, type PenNode } from '@/agent/design/penParser'
+import { parseAxDocument, projectAxToPenDocument } from '@/agent/design/axParser'
 import { buildDesignImplementationPrompt } from './designImplementationPrompt'
 
 const PEN_SOURCE = JSON.stringify({
@@ -59,6 +60,26 @@ const build = (source = PEN_SOURCE, options: { maxNodes?: number; maxDepth?: num
   return buildDesignImplementationPrompt({ doc: parsed.document, node: page, labels, ...options })
 }
 
+const AX_SOURCE = JSON.stringify({
+  ax: '1.3',
+  tokens: {},
+  components: {},
+  pages: [{
+    id: 'p-session', name: '会话', width: 375, height: 812,
+    tree: [{ id: 'title', kind: 'text', text: { $bind: 'session.title' }, wrap: 'nowrap' }],
+  }],
+})
+
+const buildAx = (source = AX_SOURCE) => {
+  const parsed = parseAxDocument(source)
+  if (!parsed.document) throw new Error('.ax fixture parse failed')
+  const projected = projectAxToPenDocument(parsed.document, '.pen/session.ax').document
+  if (!projected) throw new Error('.ax projection failed')
+  projected.axDocument = parsed.document
+  const page = projected.pages[0] as PenNode
+  return buildDesignImplementationPrompt({ doc: projected, node: page, labels })
+}
+
 describe('buildDesignImplementationPrompt', () => {
   it('输出实现指令、文件标识与缩进结构树（含尺寸/布局/文案/图标）', () => {
     const prompt = build()
@@ -95,5 +116,20 @@ describe('buildDesignImplementationPrompt', () => {
     const source = JSON.stringify({ children: [{ type: 'browser', id: 'b1', name: '预览' }] })
     const prompt = build(source)
     expect(prompt).toContain('不支持的节点类型 browser')
+  })
+
+  it('只给范围头与结构树，不再把同一棵子树以 ax-selection JSON 重复一遍', () => {
+    const prompt = buildAx()
+    expect(prompt).toContain('范围：页「会话」（pageId: p-session）')
+    expect(prompt).toContain('复核：design_query')
+    expect(prompt).not.toContain('"authored"')
+    expect(prompt).not.toContain('```json')
+  })
+
+  it('$bind 文案标注为 bind 而不是抄成字面文案', () => {
+    const prompt = buildAx()
+    expect(prompt).toContain('bind:session.title')
+    // 旧行为：占位符 `{session.title}` 被当成字面文案输出，实现侧会硬编码它。
+    expect(prompt).not.toContain('text:"{session.title}"')
   })
 })

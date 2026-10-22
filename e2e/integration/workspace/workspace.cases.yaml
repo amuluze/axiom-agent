@@ -1,0 +1,21 @@
+resource: app.workspace
+operation: authorization
+cases:
+  - id: pick-authorize-list
+    desc: 经侧栏入口授权目录后，工作区进入注册表并成为活动工作区
+    verifies: [CE-E2E-WS-001, CE-E2E-WS-002]
+    input:
+      scenario: pick_authorize_list
+      workspace_name: demo
+  - id: composer-binds-workspace
+    desc: 授权后输入区项目选择器显示该工作区（发送闸门的前置条件）
+    verifies: [CE-E2E-WS-003]
+    input:
+      scenario: composer_binds_workspace
+      workspace_name: demo
+  - id: revoke-workspace
+    desc: 移除工作目录后授权注册表清空且活动工作区复位
+    verifies: [CE-E2E-WS-004]
+    input:
+      scenario: revoke_workspace
+      workspace_name: demo

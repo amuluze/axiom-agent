@@ -240,9 +240,12 @@ describe('archiveSession', () => {
 
   it('非活动会话归档成功', async () => {
     const created = await repository.createSession(SESSION_DEFAULTS)
-    state = { ...state, sessions: [created.session] }
+    await repository.updateSessionAccessMode(created.session.id, 'no-approval')
+    state = { ...state, sessions: [{ ...created.session, accessMode: 'no-approval' }] }
     expect(await archiveSession(set, get, deps, created.session.id)).toBe(true)
     expect(state.sessions[0].archivedAt).not.toBeNull()
+    expect(state.sessions[0].accessMode).toBe('standard')
+    expect((await repository.loadSession(created.session.id)).session.accessMode).toBe('standard')
   })
 
   it('归档抛错时写 settingsError', async () => {

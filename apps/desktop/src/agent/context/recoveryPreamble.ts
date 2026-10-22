@@ -62,9 +62,11 @@ const buildCoverage = (checkpoint: ContextCheckpoint | null | undefined): string
   const facts = normalizeFacts(checkpoint.facts)
   const readProgressCount = Object.keys(facts.readProgress).length
   const pendingCount = facts.toolLedger.filter((entry) => entry.status === 'pending').length
+  const reviewFailed = facts.sddReviews.filter((entry) => entry.verdict !== 'pass').length
   return `此前上下文已压缩为检查点：${facts.readFiles.length} 个已读文件、`
     + `${facts.modifiedFiles.length} 个已修改文件、${readProgressCount} 个续读游标、`
-    + `${pendingCount} 个进行中工具。`
+    + `${pendingCount} 个进行中工具、${facts.loadedSkills.length} 个已加载 Skill`
+    + `${reviewFailed > 0 ? `、${reviewFailed} 项未通过/未定的审查` : ''}。`
 }
 
 /**

@@ -1,3 +1,4 @@
+import { toolApprovalScope } from '@/agent/core/approvalScope'
 import { createId } from '@/agent/core/id'
 import type { AgentTool, JsonValue } from '@/agent/core/types'
 import type { AgentEnvironment, WorkspaceChangeOperation } from '@/agent/environment/AgentEnvironment'
@@ -14,6 +15,14 @@ const byteLength = (value: string): number => new TextEncoder().encode(value).by
 
 const validHash = (value: unknown): value is string =>
   typeof value === 'string' && SHA256_PATTERN.test(value)
+
+/**
+ * 写操作路径的 schema 口径（apply_changes 的全部 path/from/to 共用）。
+ * 与 write/edit 的 schema description 同措辞：档位判定在 Rust 侧，标准模式下
+ * 绝对路径会被命令层以「只接受相对路径」拒绝，这里只保证形状合法。
+ */
+const MUTABLE_PATH_DESCRIPTION =
+  'Workspace-relative by default; absolute paths are accepted in full-access mode (protected credential and Axiom data paths stay refused).'
 
 const asOperation = (value: JsonValue): WorkspaceChangeOperation | null => {
   if (!isJsonObject(value) || typeof value.type !== 'string') return null
@@ -134,6 +143,7 @@ export const createApplyChangesTool = (environment: AgentEnvironment): AgentTool
   label: 'apply_changes',
   promptSnippet: '在单次逐文件审批后，原子地应用最多 32 条互不重叠的工作区变更。',
   promptGuidelines: [
+    '工作区授权不能解除凭据或 Axiom 数据保护；隐私目录只开放经原生确认的项目子目录，拒绝后不要通过改名或其他工具绕过。',
     '多文件重构需要整体成功或整体回滚时，用 apply_changes。',
     '每条 patch-file 自带 expected sha256 用于冲突检测；先 read 确认后再提交。',
     'patch-file 的 oldText 是精确字节匹配（不做空白/引号归一化、区分 CRLF）且必须唯一出现一次——不同于容忍模糊差异的 edit。',
@@ -141,7 +151,7 @@ export const createApplyChangesTool = (environment: AgentEnvironment): AgentTool
   ],
   // v5：结果 details 新增 diffAdded/diffRemoved/diffPreview（只覆盖 create-file/
   // patch-file 文本型操作）；schema 不变，仅输出语义增强（details 不回灌模型）。
-  runtimeVersion: '5',
+  runtimeVersion: '10',
   recoveryPolicy: 'never',
   description:
     'Atomically apply up to 32 non-overlapping workspace changes after a single per-file review: create-file, patch-file (with sha256 conflict detection), create-directory, move, and recoverable trash. Any failure rolls back the partially applied steps; the request is not auto-replayed. Each invocation requires an approval lease.',
@@ -159,7 +169,7 @@ export const createApplyChangesTool = (environment: AgentEnvironment): AgentTool
               type: 'object',
               properties: {
                 type: { type: 'string', enum: ['create-file'] },
-                path: { type: 'string' },
+                path: { type: 'string', description: MUTABLE_PATH_DESCRIPTION },
                 content: { type: 'string' },
               },
               required: ['type', 'path', 'content'],
@@ -169,7 +179,7 @@ export const createApplyChangesTool = (environment: AgentEnvironment): AgentTool
               type: 'object',
               properties: {
                 type: { type: 'string', enum: ['patch-file'] },
-                path: { type: 'string' },
+                path: { type: 'string', description: MUTABLE_PATH_DESCRIPTION },
                 expectedSha256: { type: 'string' },
                 oldText: {
                   type: 'string',
@@ -184,7 +194,7 @@ export const createApplyChangesTool = (environment: AgentEnvironment): AgentTool
               type: 'object',
               properties: {
                 type: { type: 'string', enum: ['create-directory'] },
-                path: { type: 'string' },
+                path: { type: 'string', description: MUTABLE_PATH_DESCRIPTION },
               },
               required: ['type', 'path'],
               additionalProperties: false,
@@ -193,8 +203,8 @@ export const createApplyChangesTool = (environment: AgentEnvironment): AgentTool
               type: 'object',
               properties: {
                 type: { type: 'string', enum: ['move'] },
-                from: { type: 'string' },
-                to: { type: 'string' },
+                from: { type: 'string', description: MUTABLE_PATH_DESCRIPTION },
+                to: { type: 'string', description: MUTABLE_PATH_DESCRIPTION },
                 expectedSha256: { type: 'string' },
               },
               required: ['type', 'from', 'to'],
@@ -204,7 +214,7 @@ export const createApplyChangesTool = (environment: AgentEnvironment): AgentTool
               type: 'object',
               properties: {
                 type: { type: 'string', enum: ['trash'] },
-                path: { type: 'string' },
+                path: { type: 'string', description: MUTABLE_PATH_DESCRIPTION },
                 expectedSha256: { type: 'string' },
               },
               required: ['type', 'path'],
@@ -245,7 +255,10 @@ export const createApplyChangesTool = (environment: AgentEnvironment): AgentTool
     return {
       category: 'workspace-write',
       title: `Apply ${operations.length} workspace ${operations.length === 1 ? 'change' : 'changes'} atomically?`,
+      titleKey: 'app.approval.applyChanges.title',
+      titleParams: { count: operations.length },
       description: 'All changes share one transaction: conflicts or failures trigger rollback. Trash entries enter the Axiom recoverable store.',
+      descriptionKey: 'app.approval.applyChanges.description',
       changes: operations.map((operation) => ({
         path: operation.type === 'move' ? `${operation.from} → ${operation.to}` : operation.path,
         preview: approvalPreview(operation),
@@ -273,12 +286,14 @@ export const createApplyChangesTool = (environment: AgentEnvironment): AgentTool
     const result = await environment.workspace.applyChanges(
       { requestId, operations },
       context.approvalLease,
+      toolApprovalScope(context),
     )
     const completedAfterAbort = context.signal.aborted
     return {
       content: [
         `Applied ${result.changes.length} workspace changes atomically.`,
         result.recoveryId ? `Recoverable trash id: ${result.recoveryId}` : '',
+        result.historyWarning ? `Design history warning: ${result.historyWarning}` : '',
         completedAfterAbort ? 'Abort signal arrived mid-transaction; the transaction completed and is not auto-replayed.' : '',
       ].filter(Boolean).join('\n'),
       artifact: result.auditArtifact,
@@ -286,6 +301,7 @@ export const createApplyChangesTool = (environment: AgentEnvironment): AgentTool
         workspace: result.workspace.path,
         requestId: result.requestId,
         recoveryId: result.recoveryId ?? null,
+        historyWarning: result.historyWarning ?? null,
         changes: result.changes.map((change) => ({
           operation: change.operation,
           path: change.path,

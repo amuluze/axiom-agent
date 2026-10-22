@@ -71,7 +71,7 @@ describe('writeTool execute', () => {
       baseContext({ approvalLease: 'lease-1' }),
     )
 
-    expect(environment.workspace.createTextFile).toHaveBeenCalledWith('src/new.ts', 'hello', 'lease-1')
+    expect(environment.workspace.createTextFile).toHaveBeenCalledWith('src/new.ts', 'hello', 'lease-1', { sessionId: 'session-1', runId: 'run-1', toolCallId: 'tool-1' })
     expect(result.content).toContain('Created src/new.ts (5 bytes)')
     expect(result.content).toContain(`sha256: ${'f'.repeat(64)}`)
     expect(result.details).toMatchObject({ path: 'src/new.ts', sizeBytes: 5, operation: 'created' })

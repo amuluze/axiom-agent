@@ -23,7 +23,7 @@ const mocks = vi.hoisted(() => ({
   compactionRunning: false,
   branchSummaryRunning: false,
   accessMode: 'standard' as 'standard' | 'no-approval',
-  setAccessMode: vi.fn(),
+  setAccessMode: vi.fn(async (_mode: 'standard' | 'no-approval') => null as string | null),
   // 队列面板状态与操作：默认空队列，各用例按需注入。
   queuedMessages: [] as Array<{
     id: string
@@ -118,6 +118,8 @@ vi.mock('@/stores/agentStore', async (importOriginal) => {
     },
     contextUsage: mocks.contextUsage,
     contextCheckpoint: mocks.contextCheckpoint,
+    accessMode: mocks.accessMode,
+    setAccessMode: mocks.setAccessMode,
   } as StoreState)
   // deliverInput 的发送分支经 getState() 复核可用性，mock 必须同形提供。
   const useAgentStore = ((selector: (state: StoreState) => unknown): unknown =>
@@ -157,6 +159,7 @@ beforeEach(() => {
   mocks.queueSteering.mockClear()
   mocks.providerOverride = null
   mocks.setAccessMode.mockClear()
+  mocks.setAccessMode.mockResolvedValue(null)
   mocks.setSummaryRequest.mockClear()
   mocks.queuedMessages = []
   mocks.recoveredQueuedMessages = []
@@ -278,6 +281,41 @@ describe('Composer menu dismissal', () => {
     expect(screen.getByText('选择访问模式')).toBeInTheDocument()
     await user.click(screen.getByLabelText('发送给 Axiom'))
     expect(screen.queryByText('选择访问模式')).not.toBeInTheDocument()
+  })
+
+  // 切换失败（如原生风险警告被取消）必须留在用户点选的位置可见：菜单保持打开
+  // 并就地给出原因，否则 Composer 内没有任何反馈，只能去设置页找 settingsError。
+  it('keeps the access menu open and shows the failure reason in place', async () => {
+    const user = userEvent.setup()
+    mocks.setAccessMode.mockResolvedValue('切换访问模式失败：访问模式确认对话框意外关闭')
+    render(<Composer variant="new-task" />)
+    await user.click(screen.getByRole('button', { name: /^访问模式/ }))
+    await user.click(screen.getByRole('button', { name: /完全访问/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('访问模式确认对话框意外关闭')
+    expect(screen.getByText('选择访问模式')).toBeInTheDocument()
+  })
+
+  it('closes the access menu after a successful switch', async () => {
+    const user = userEvent.setup()
+    render(<Composer variant="new-task" />)
+    await user.click(screen.getByRole('button', { name: /^访问模式/ }))
+    await user.click(screen.getByRole('button', { name: /完全访问/ }))
+    await waitFor(() => expect(screen.queryByText('选择访问模式')).not.toBeInTheDocument())
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('clears a previous failure when the menu is reopened', async () => {
+    const user = userEvent.setup()
+    mocks.setAccessMode.mockResolvedValue('切换访问模式失败：原生确认被取消')
+    render(<Composer variant="new-task" />)
+    const trigger = screen.getByRole('button', { name: /^访问模式/ })
+    await user.click(trigger)
+    await user.click(screen.getByRole('button', { name: /完全访问/ }))
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+    await user.click(trigger)
+    await user.click(screen.getByLabelText('发送给 Axiom'))
+    await user.click(trigger)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('closes the model menu when clicking outside', async () => {
@@ -702,7 +740,7 @@ describe('Composer 队列面板操作', () => {
     const user = userEvent.setup()
     render(<Composer />)
 
-    const sendButtons = screen.getAllByRole('button', { name: '立即发送（下一个 turn 边界注入）' })
+    const sendButtons = screen.getAllByRole('button', { name: '立即发送（下轮注入）' })
     expect(sendButtons[0]).toBeDisabled()
     expect(sendButtons[1]).toBeEnabled()
     await user.click(sendButtons[1]!)
@@ -718,7 +756,7 @@ describe('Composer 队列面板操作', () => {
     const user = userEvent.setup()
     render(<Composer />)
 
-    const sendButton = screen.getByRole('button', { name: '立即发送（下一个 turn 边界注入）' })
+    const sendButton = screen.getByRole('button', { name: '立即发送（下轮注入）' })
     expect(sendButton).toBeEnabled()
     await user.click(sendButton)
     expect(mocks.sendQueuedNow).toHaveBeenCalledWith('q1')
@@ -740,10 +778,10 @@ describe('Composer 队列面板操作', () => {
     render(<Composer />)
 
     // 武装项的 chip 可访问名切换为「已放行」语义（accent 软底高亮），未武装项保持原名。
-    expect(screen.getByRole('button', { name: '已放行：等待当前任务到 turn 边界注入' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '立即发送（下一个 turn 边界注入）' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '已放行：将在下轮注入' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '立即发送（下轮注入）' })).toBeInTheDocument()
     // 武装项的发送按钮保持可用（重复点击幂等重武装）。
-    expect(screen.getByRole('button', { name: '已放行：等待当前任务到 turn 边界注入' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '已放行：将在下轮注入' })).toBeEnabled()
     mocks.running = false
     mocks.armedQueueMessageId = null
   })
@@ -772,7 +810,7 @@ describe('Composer 队列面板操作', () => {
     const user = userEvent.setup()
     render(<Composer />)
 
-    expect(screen.getByText('由于你中断了当前响应，队列已暂停')).toBeInTheDocument()
+    expect(screen.getByText('响应已中断，队列已暂停')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '继续' }))
     expect(mocks.saveQueueAutoDrain).toHaveBeenCalledWith(true)
     await user.click(screen.getByRole('button', { name: '清除未发送' }))
@@ -798,7 +836,7 @@ describe('Composer 队列面板操作', () => {
     await user.click(screen.getByRole('button', { name: '编辑这条' }))
     await user.click(screen.getByRole('button', { name: '保存' }))
     await waitFor(() => {
-      expect(screen.getByText('该待发送消息已不存在（可能已被注入或删除）')).toBeInTheDocument()
+      expect(screen.getByText('该消息已不存在（已注入或删除）')).toBeInTheDocument()
     })
     mocks.running = false
   })

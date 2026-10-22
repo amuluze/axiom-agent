@@ -2,8 +2,9 @@ import {
   MAX_SUMMARY_INSTRUCTION_BYTES,
   type SummaryInstructionOptions,
 } from '@/agent/context/summaryInstructions'
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useId, useMemo, useState, type FormEvent } from 'react'
 import { trapDialogFocus, useDialogFocus } from './dialogFocus'
+import { useDesignPreview } from './design/ax/previewContext'
 import { useT } from '@/i18n'
 
 export type SummaryInstructionMode = 'compaction' | 'branch'
@@ -20,9 +21,13 @@ export const SummaryInstructionsDialog = ({
   onSubmit,
 }: SummaryInstructionsDialogProps) => {
   const { t } = useT()
+  const identifier = useId()
+  const titleId = `summary-instructions-title-${identifier}`
+  const descriptionId = `summary-instructions-description-${identifier}`
+  const preview = useDesignPreview()
   const [customInstructions, setCustomInstructions] = useState('')
   const [replaceInstructions, setReplaceInstructions] = useState(false)
-  const dialogRef = useDialogFocus<HTMLFormElement>(mode !== null)
+  const dialogRef = useDialogFocus<HTMLFormElement>(mode !== null && !preview)
   const instructionBytes = useMemo(
     () => new TextEncoder().encode(customInstructions.trim()).byteLength,
     [customInstructions],
@@ -55,7 +60,7 @@ export const SummaryInstructionsDialog = ({
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (tooLarge) return
+    if (preview || tooLarge) return
     const normalized = customInstructions.trim()
     onSubmit({
       ...(normalized ? { customInstructions: normalized } : {}),
@@ -68,17 +73,17 @@ export const SummaryInstructionsDialog = ({
   return (
     <div className="approval-backdrop" role="presentation">
       <form
-        aria-describedby="summary-instructions-description"
-        aria-labelledby="summary-instructions-title"
-        aria-modal="true"
+        aria-describedby={descriptionId}
+        aria-labelledby={titleId}
+        aria-modal={preview ? undefined : true}
         className="approval-dialog summary-instructions-dialog"
         onKeyDown={(event) => {
           if (event.key === 'Escape') {
             event.preventDefault()
-            onCancel()
+            if (!preview) onCancel()
             return
           }
-          trapDialogFocus(event, dialogRef.current)
+          if (!preview) trapDialogFocus(event, dialogRef.current)
         }}
         onSubmit={submit}
         ref={dialogRef}
@@ -87,11 +92,11 @@ export const SummaryInstructionsDialog = ({
         <header className="approval-header">
           <div>
             <div className="eyebrow">{label.eyebrow}</div>
-            <h2 id="summary-instructions-title">{label.title}</h2>
+            <h2 id={titleId}>{label.title}</h2>
           </div>
           <span className="approval-tool-name">{t('app.summaryDialog.modelOnly')}</span>
         </header>
-        <p className="approval-description" id="summary-instructions-description">
+        <p className="approval-description" id={descriptionId}>
           {label.description}
         </p>
         <label className="summary-instructions-field">
@@ -123,7 +128,7 @@ export const SummaryInstructionsDialog = ({
           </label>
         )}
         <footer className="approval-actions">
-          <button className="approval-deny-button" onClick={onCancel} type="button">{t('app.summaryDialog.cancel')}</button>
+          <button className="approval-deny-button" onClick={() => { if (!preview) onCancel() }} type="button">{t('app.summaryDialog.cancel')}</button>
           <button className="approval-allow-button" disabled={tooLarge} type="submit">{label.action}</button>
         </footer>
       </form>

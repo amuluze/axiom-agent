@@ -13,6 +13,8 @@ import { useUiStore } from '@/stores/uiStore'
 import { useT } from '@/i18n'
 import type { FeedbackKind } from '@/stores/uiStore'
 
+import { useDesignUiPreview } from '@/components/design/ax/previewContext'
+
 const DOCS_URL = 'https://axiom.amuluze.com/#/docs'
 
 /**
@@ -22,12 +24,19 @@ const DOCS_URL = 'https://axiom.amuluze.com/#/docs'
  */
 export const WindowActions = () => {
   const { t } = useT()
-  const terminalPanelOpen = useUiStore((state) => state.terminalPanelOpen)
-  const toggleTerminalPanel = useUiStore((state) => state.toggleTerminalPanel)
-  const runtimeRailOpen = useUiStore((state) => state.runtimeRailOpen)
-  const runtimeRailPane = useUiStore((state) => state.runtimeRailPane)
-  const toggleRuntimeRail = useUiStore((state) => state.toggleRuntimeRail)
-  const openRuntimeRailPane = useUiStore((state) => state.openRuntimeRailPane)
+  const preview = useDesignUiPreview()
+  const storeTerminalPanelOpen = useUiStore((state) => state.terminalPanelOpen)
+  const terminalPanelOpen = preview ? preview.terminalPanelOpen : storeTerminalPanelOpen
+  const storeToggleTerminalPanel = useUiStore((state) => state.toggleTerminalPanel)
+  const toggleTerminalPanel = preview ? preview.toggleTerminalPanel : storeToggleTerminalPanel
+  const storeRuntimeRailOpen = useUiStore((state) => state.runtimeRailOpen)
+  const runtimeRailOpen = preview ? preview.runtimeRailOpen : storeRuntimeRailOpen
+  const storeRuntimeRailPane = useUiStore((state) => state.runtimeRailPane)
+  const runtimeRailPane = preview ? preview.runtimeRailPane : storeRuntimeRailPane
+  const storeToggleRuntimeRail = useUiStore((state) => state.toggleRuntimeRail)
+  const toggleRuntimeRail = preview ? preview.toggleRuntimeRail : storeToggleRuntimeRail
+  const storeOpenRuntimeRailPane = useUiStore((state) => state.openRuntimeRailPane)
+  const openRuntimeRailPane = preview ? preview.openRuntimeRailPane : storeOpenRuntimeRailPane
   const buttonClass = 'session__window-action'
   /** SSH 面板是否随 rail 打开且正显示 SSH pane：反映在 toggle 的 active 态。 */
   const sshPaneOpen = runtimeRailOpen && runtimeRailPane === 'ssh'
@@ -58,21 +67,24 @@ export const WindowActions = () => {
 
   /** SSH toggle：开 → 直达 ssh pane；已开 ssh pane → 收起 rail（与 rail toggle 同语义）。 */
   const toggleSshPane = (): void => {
+    if (preview) return
     if (runtimeRailOpen && useUiStore.getState().runtimeRailPane === 'ssh') {
-      toggleRuntimeRail()
+      toggleRuntimeRail?.()
       return
     }
-    openRuntimeRailPane('ssh')
+    openRuntimeRailPane?.('ssh')
   }
 
   const openDocs = () => {
     setHelpMenuOpen(false)
+    if (preview) return
     void openExternalUrl(DOCS_URL).catch(() => undefined)
   }
 
   // 需求/问题共用同一反馈弹窗，按入口预选类型（与设计稿帮助菜单语义一致）。
   const openFeedback = (kind: FeedbackKind) => {
     setHelpMenuOpen(false)
+    if (preview) return
     useUiStore.getState().openFeedback(kind)
   }
 
@@ -126,7 +138,7 @@ export const WindowActions = () => {
         className={`${buttonClass} ${terminalPanelOpen ? `${buttonClass}--active` : ''}`}
         aria-label={t('app.windowActions.toggleTerminal')}
         aria-pressed={terminalPanelOpen}
-        onClick={toggleTerminalPanel}
+        onClick={() => { if (!preview) toggleTerminalPanel?.() }}
       >
         <SquareTerminal size={16} />
       </button>
@@ -144,7 +156,7 @@ export const WindowActions = () => {
         className={`${buttonClass} ${runtimeRailOpen ? `${buttonClass}--active` : ''}`}
         aria-label={t('app.windowActions.toggleRuntime')}
         aria-pressed={runtimeRailOpen}
-        onClick={toggleRuntimeRail}
+        onClick={() => { if (!preview) toggleRuntimeRail?.() }}
       >
         <PanelRight size={16} />
       </button>

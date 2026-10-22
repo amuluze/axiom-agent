@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterAll, beforeAll, beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
-import DesignCanvas, { computePageSnap, PAGE_SNAP_THRESHOLD_SCREEN_PX } from './DesignCanvas'
+import DesignCanvas from './DesignCanvas'
+import { computePageSnap, PAGE_SNAP_THRESHOLD_SCREEN_PX } from './canvasGeometry'
 import { parsePenDocument } from '@/agent/design/penParser'
 import type { PenDocument } from '@/agent/design/penParser'
 import { setDesignScanPageRenderProvider } from '@/agent/design/designRenderHost'
 import { useUiStore } from '@/stores/uiStore'
-import { exportDesignPng, writeDesignDocument } from '@/platform/designDocument'
+import { exportDesignPng } from '@/platform/designDocument'
 
 vi.mock('@/platform/designDocument', () => ({
   readDesignDocumentAsset: vi.fn(async () => ({
@@ -15,7 +16,6 @@ vi.mock('@/platform/designDocument', () => ({
     sha256: 'x',
   })),
   exportDesignPng: vi.fn(async () => '/tmp/首页.png'),
-  writeDesignDocument: vi.fn(async () => ({ sha256: 'written-sha', sizeBytes: 32 })),
 }))
 
 vi.mock('./ax/renderPageHost', () => ({
@@ -27,11 +27,10 @@ interface RawFixture {
   children: Record<string, unknown>[]
 }
 
-const buildDoc = (raw: RawFixture, fileName = '.pen/axiom.pen'): { doc: PenDocument; rawJson: string } => {
-  const rawJson = JSON.stringify(raw)
-  const { document } = parsePenDocument(rawJson, fileName)
+const buildDoc = (raw: RawFixture, fileName = '.pen/axiom.pen'): PenDocument => {
+  const { document } = parsePenDocument(JSON.stringify(raw), fileName)
   if (!document) throw new Error('fixture parse failed')
-  return { doc: document, rawJson }
+  return document
 }
 
 const TWO_PAGES: RawFixture = {
@@ -40,13 +39,6 @@ const TWO_PAGES: RawFixture = {
     { type: 'frame', id: 'page-1', name: '首页', x: 0, y: 0, width: 200, height: 120 },
     { type: 'frame', id: 'page-2', name: '设置', x: 320, y: 0, width: 200, height: 120 },
   ],
-}
-
-const decodeWrite = (call: number) => {
-  const calls = vi.mocked(writeDesignDocument).mock.calls
-  if (call >= calls.length) throw new Error(`write call ${call} not made`)
-  const [path, base64, expected] = calls[call]
-  return { path, expected, json: JSON.parse(atob(base64)) as RawFixture }
 }
 
 /** 画布选择语义在 pointerup（无位移）而非 click：统一从这里派发。 */
@@ -68,13 +60,11 @@ describe('DesignCanvas 无限画布', () => {
 
   beforeEach(() => {
     requestComposerInsertion.mockClear()
-    vi.mocked(writeDesignDocument).mockClear()
-    vi.mocked(writeDesignDocument).mockResolvedValue({ sha256: 'written-sha', sizeBytes: 32 })
     useUiStore.setState({ requestComposerInsertion })
   })
 
   it('全部页铺在同一画布上（无页 tab），页卡片与标签在屏幕空间层', () => {
-    const { doc } = buildDoc(TWO_PAGES)
+    const doc = buildDoc(TWO_PAGES)
     render(<DesignCanvas doc={doc} />)
     expect(document.querySelectorAll('[data-page-wrapper]')).toHaveLength(2)
     expect(screen.queryByRole('tab', { name: '设置' })).toBeNull()
@@ -92,7 +82,7 @@ describe('DesignCanvas 无限画布', () => {
   })
 
   it('点标签选中整页并高亮该页卡片', () => {
-    const { doc } = buildDoc(TWO_PAGES)
+    const doc = buildDoc(TWO_PAGES)
     render(<DesignCanvas doc={doc} />)
     const labels = document.querySelectorAll('.design-canvas__page-label')
     fireEvent.click(labels[1] as HTMLElement)
@@ -103,13 +93,13 @@ describe('DesignCanvas 无限画布', () => {
   })
 
   it('缩放低于阈值时页卡片接管指针：点选归到整页而非页内小节点', () => {
-    const { doc, rawJson } = buildDoc({
+    const doc = buildDoc({
       children: [{
         type: 'frame', id: 'page-1', name: '首页', x: 0, y: 0, width: 200, height: 120,
         children: [{ type: 'text', id: 'inner-1', content: '流内文本' }],
       }],
     })
-    render(<DesignCanvas doc={doc} rawJson={rawJson} sha256="sha-1" onWritten={() => undefined} />)
+    render(<DesignCanvas doc={doc} />)
     // 1 → 0.8 → 0.6 → 0.4 → 0.2：进入低倍率区。
     for (let step = 0; step < 4; step += 1) fireEvent.click(screen.getByLabelText('缩小'))
     expect(screen.getByText('20%')).toBeTruthy()
@@ -124,7 +114,7 @@ describe('DesignCanvas 无限画布', () => {
   })
 
   it('页标签上的指针事件不启动画布平移（指针捕获会吞掉标签自身的 click/dblclick）', () => {
-    const { doc } = buildDoc(TWO_PAGES)
+    const doc = buildDoc(TWO_PAGES)
     render(<DesignCanvas doc={doc} />)
     const surface = screen.getByTestId('design-canvas-surface')
     expect(surface.style.transform).toContain('translate(0px, 0px)')
@@ -136,21 +126,9 @@ describe('DesignCanvas 无限画布', () => {
     expect(surface.style.transform).toContain('translate(0px, 0px)')
   })
 
-  it('拖动页标签移动该页（任何缩放级别都可靠的抓手）', async () => {
-    const { doc, rawJson } = buildDoc(TWO_PAGES)
-    render(<DesignCanvas doc={doc} rawJson={rawJson} sha256="sha-1" onWritten={() => undefined} />)
-    const label = document.querySelector('.design-canvas__page-label') as HTMLElement
-    expect(label.getAttribute('data-page-id')).toBe('page-1')
-    fireEvent.pointerDown(label, { button: 0, pointerId: 1, clientX: 0, clientY: 0 })
-    fireEvent.pointerMove(label, { pointerId: 1, clientX: 80, clientY: 40 })
-    fireEvent.pointerUp(label, { pointerId: 1, clientX: 80, clientY: 40 })
-    await waitFor(() => expect(writeDesignDocument).toHaveBeenCalledTimes(1))
-    expect(decodeWrite(0).json.children[0]).toMatchObject({ id: 'page-1', x: 80, y: 40 })
-  })
-
   it('.ax 评审面拖页：不写文件，位置进 localStorage 叠加层并驱动画布重排', () => {
-    window.localStorage.removeItem('axiom.design.page-layout.v1')
-    const { doc } = buildDoc(
+    window.localStorage.removeItem('axiom.design.page-layout.v2')
+    const doc = buildDoc(
       { version: '1.1', children: [
         { type: 'frame', id: 'page-1', name: '会话', width: 200, height: 120, children: [
           { type: 'text', id: 'inner-1', content: '内容' },
@@ -168,18 +146,17 @@ describe('DesignCanvas 无限画布', () => {
     fireEvent.pointerMove(inner, { pointerId: 1, clientX: 60, clientY: 30 })
     fireEvent.pointerUp(inner, { pointerId: 1, clientX: 60, clientY: 30 })
     // 评审面不写文件；叠加层驱动 wrapper 重排到新位置。
-    expect(writeDesignDocument).not.toHaveBeenCalled()
     expect(wrapper.style.left).toBe(`${Number.parseFloat(baseLeft) + 60}px`)
     expect(wrapper.style.top).toBe(`${120 + 30}px`)
-    const stored = JSON.parse(window.localStorage.getItem('axiom.design.page-layout.v1') ?? '{}') as {
-      '.pen/design.ax'?: Record<string, { x: number; y: number }>
+    const stored = JSON.parse(window.localStorage.getItem('axiom.design.page-layout.v2') ?? '{}') as {
+      [key: string]: Record<string, { x: number; y: number }>
     }
-    expect(stored['.pen/design.ax']?.['page-1']).toEqual({ x: 60, y: 150 })
-    window.localStorage.removeItem('axiom.design.page-layout.v1')
+    expect(stored[JSON.stringify([null, '.pen/design.ax'])]?.['page-1']).toEqual({ x: 60, y: 150 })
+    window.localStorage.removeItem('axiom.design.page-layout.v2')
   })
 
   it('双击页标签聚焦该页：内容远大于视口时按可读下限放大（而非缩成色块）', () => {
-    const { doc } = buildDoc({
+    const doc = buildDoc({
       children: [{ type: 'frame', id: 'big', name: '巨页', x: 0, y: 0, width: 4000, height: 3000 }],
     })
     render(<DesignCanvas doc={doc} />)
@@ -193,59 +170,25 @@ describe('DesignCanvas 无限画布', () => {
   })
 
   it('点选节点高亮并可引用到会话；点击空白取消选中', () => {
-    const { doc } = buildDoc(TWO_PAGES)
+    const doc = buildDoc(TWO_PAGES)
     render(<DesignCanvas doc={doc} />)
     tapNode(document.querySelector('[data-pen-id="page-1"]') as HTMLElement)
     expect(document.querySelector('[data-pen-id="page-1"]')?.classList.contains('is-selected')).toBe(true)
     fireEvent.click(screen.getByText('引用到会话'))
+    // 引用只带定位：页 id 与 page 查询，不含内联的选中子树。
     expect(requestComposerInsertion).toHaveBeenCalledWith(
-      '@[首页](.pen/axiom.pen)（design_query nodeId: page-1）',
+      expect.stringContaining('pageId: page-1'),
+    )
+    expect(requestComposerInsertion).toHaveBeenCalledWith(
+      expect.stringContaining('design_query'),
     )
     tapNode(screen.getByTestId('design-canvas-surface'))
     expect(document.querySelector('[data-pen-id="page-1"]')?.classList.contains('is-selected')).toBe(false)
     expect(screen.queryByText('引用到会话')).toBeNull()
   })
 
-  it('拖动顶层页改 x/y 并经 write_design_document 写回', async () => {
-    const { doc, rawJson } = buildDoc(TWO_PAGES)
-    const onWritten = vi.fn()
-    render(<DesignCanvas doc={doc} rawJson={rawJson} sha256="sha-1" onWritten={onWritten} />)
-    const page = document.querySelector('[data-pen-id="page-1"]') as HTMLElement
-    fireEvent.pointerDown(page, { button: 0, pointerId: 1, clientX: 100, clientY: 100 })
-    fireEvent.pointerMove(page, { pointerId: 1, clientX: 160, clientY: 130 })
-    fireEvent.pointerUp(page, { pointerId: 1, clientX: 160, clientY: 130 })
-    await waitFor(() => expect(writeDesignDocument).toHaveBeenCalledTimes(1))
-    const write = decodeWrite(0)
-    expect(write.path).toBe('.pen/axiom.pen')
-    expect(write.json.children[0]).toMatchObject({ id: 'page-1', x: 60, y: 30 })
-    await waitFor(() => expect(onWritten).toHaveBeenCalledWith('written-sha'))
-  })
-
-  it('按住页内流子节点拖动 = 移动整页（写回页根 x/y）；点按（无位移）仍选中子节点', async () => {
-    const { doc, rawJson } = buildDoc({
-      children: [{
-        type: 'frame', id: 'page-1', name: '首页', x: 0, y: 0, width: 200, height: 120,
-        children: [{ type: 'text', id: 'inner-1', content: '流内文本' }],
-      }],
-    })
-    render(<DesignCanvas doc={doc} rawJson={rawJson} sha256="sha-1" onWritten={() => undefined} />)
-    const inner = document.querySelector('[data-pen-id="inner-1"]') as HTMLElement
-    // 拖动：位置超出点击阈值 → 移动所属页（写回页根坐标，而非平移画布）。
-    fireEvent.pointerDown(inner, { button: 0, pointerId: 1, clientX: 0, clientY: 0 })
-    fireEvent.pointerMove(inner, { pointerId: 1, clientX: 50, clientY: 20 })
-    fireEvent.pointerUp(inner, { pointerId: 1, clientX: 50, clientY: 20 })
-    await waitFor(() => expect(writeDesignDocument).toHaveBeenCalledTimes(1))
-    expect(decodeWrite(0).json.children[0]).toMatchObject({ id: 'page-1', x: 50, y: 20 })
-    const surface = screen.getByTestId('design-canvas-surface')
-    expect(surface.style.transform).toContain('translate(0px, 0px)')
-    // 点按（无位移）：仍选中按中的子节点，而不是页。
-    const innerAfter = document.querySelector('[data-pen-id="inner-1"]') as HTMLElement
-    tapNode(innerAfter)
-    await waitFor(() => expect(screen.getByLabelText('文本')).toBeTruthy())
-  })
-
   it('中键拖拽：无论落点一律平移画布（页面铺满视口时的平移出口）', () => {
-    const { doc } = buildDoc(TWO_PAGES)
+    const doc = buildDoc(TWO_PAGES)
     render(<DesignCanvas doc={doc} />)
     const surface = screen.getByTestId('design-canvas-surface')
     const page = document.querySelector('[data-pen-id="page-1"]') as HTMLElement
@@ -255,69 +198,7 @@ describe('DesignCanvas 无限画布', () => {
     expect(surface.style.transform).toContain('translate(60px, 30px)')
   })
 
-  it('删除选中页并写回；撤销恢复内容并再次写回', async () => {
-    const { doc, rawJson } = buildDoc(TWO_PAGES)
-    render(<DesignCanvas doc={doc} rawJson={rawJson} sha256="sha-1" onWritten={() => undefined} />)
-    tapNode(document.querySelector('[data-pen-id="page-2"]') as HTMLElement)
-    fireEvent.click(screen.getByText('删除'))
-    await waitFor(() => expect(writeDesignDocument).toHaveBeenCalledTimes(1))
-    expect(decodeWrite(0).json.children).toHaveLength(1)
-    expect(decodeWrite(0).json.children[0]).toMatchObject({ id: 'page-1' })
-    const undo = screen.getByLabelText('撤销')
-    fireEvent.click(undo)
-    await waitFor(() => expect(writeDesignDocument).toHaveBeenCalledTimes(2))
-    expect(decodeWrite(1).json.children).toHaveLength(2)
-  })
-
-  it('检查器可编辑文本内容（blur 提交并写回）', async () => {
-    const { doc, rawJson } = buildDoc({
-      children: [{
-        type: 'frame', id: 'page-1', name: '首页', x: 0, y: 0, width: 200, height: 120,
-        children: [{ type: 'text', id: 'text-1', content: 'hello', x: 10, y: 10, layoutPosition: 'absolute' }],
-      }],
-    })
-    render(<DesignCanvas doc={doc} rawJson={rawJson} sha256="sha-1" onWritten={() => undefined} />)
-    tapNode(document.querySelector('[data-pen-id="text-1"]') as HTMLElement)
-    const content = screen.getByLabelText('文本') as HTMLTextAreaElement
-    expect(content.value).toBe('hello')
-    fireEvent.change(content, { target: { value: 'world' } })
-    fireEvent.blur(content)
-    await waitFor(() => expect(writeDesignDocument).toHaveBeenCalledTimes(1))
-    const page = decodeWrite(0).json.children[0] as { children: { id: string; content: string }[] }
-    expect(page.children[0]).toMatchObject({ id: 'text-1', content: 'world' })
-  })
-
-  it('ref 实例内部节点只读：删除按钮禁用且不产生写回', () => {
-    const { doc, rawJson } = buildDoc({
-      children: [
-        {
-          type: 'frame', id: 'page-1', name: '首页', x: 0, y: 0, width: 200, height: 120,
-          children: [{ type: 'ref', id: 'inst-1', ref: 'comp-1' }],
-        },
-        { type: 'frame', id: 'comp-1', reusable: true, children: [{ type: 'text', id: 'comp-inner', content: 'body' }] },
-      ],
-    })
-    render(<DesignCanvas doc={doc} rawJson={rawJson} sha256="sha-1" onWritten={() => undefined} />)
-    tapNode(document.querySelector('[data-pen-id="comp-inner"]') as HTMLElement)
-    expect(screen.getByText('组件实例内部只读：请编辑组件定义')).toBeTruthy()
-    expect((screen.getByText('删除') as HTMLButtonElement).disabled).toBe(true)
-    expect(screen.queryByLabelText('文本')).toBeNull()
-  })
-
-  it('写盘失败（CAS 冲突）时显式报错、回滚本地并触发 reload', async () => {
-    vi.mocked(writeDesignDocument).mockRejectedValueOnce(new Error('changed on disk'))
-    const onReload = vi.fn()
-    const { doc, rawJson } = buildDoc(TWO_PAGES)
-    render(<DesignCanvas doc={doc} rawJson={rawJson} sha256="sha-1" onWritten={() => undefined} onReload={onReload} />)
-    tapNode(document.querySelector('[data-pen-id="page-2"]') as HTMLElement)
-    fireEvent.click(screen.getByText('删除'))
-    expect(await screen.findByText(/保存失败：changed on disk/)).toBeTruthy()
-    await waitFor(() => expect(onReload).toHaveBeenCalled())
-    // 回滚后本地内容恢复：撤销写回不发生（失败组已出栈），重做按钮保持禁用。
-    expect(screen.getByLabelText('重做')).toHaveProperty('disabled', true)
-  })
-
-  it('外部内容换代（sha256 变化）后整体采纳，撤销栈清空', () => {
+  it('外部内容换代（sha256 变化）后整体采纳', () => {
     const first = buildDoc(TWO_PAGES)
     const second = buildDoc({
       children: [
@@ -325,20 +206,14 @@ describe('DesignCanvas 无限画布', () => {
         { type: 'frame', id: 'page-3', name: '关于', x: 640, y: 0, width: 200, height: 120 },
       ],
     })
-    const { rerender } = render(
-      <DesignCanvas doc={first.doc} rawJson={first.rawJson} sha256="sha-1" onWritten={() => undefined} />,
-    )
+    const { rerender } = render(<DesignCanvas doc={first} sha256="sha-1" />)
     expect(document.querySelectorAll('[data-page-wrapper]')).toHaveLength(2)
-    rerender(
-      <DesignCanvas doc={second.doc} rawJson={second.rawJson} sha256="sha-2" onWritten={() => undefined} />,
-    )
+    rerender(<DesignCanvas doc={second} sha256="sha-2" />)
     expect(document.querySelectorAll('[data-page-wrapper]')).toHaveLength(3)
-    // 新内容即新基线：撤销被清空（不可撤销到外部已覆盖的历史）。
-    expect(screen.getByLabelText('撤销')).toHaveProperty('disabled', true)
   })
 
   it('缩放按钮与重置视图在上下限内取值', () => {
-    const { doc } = buildDoc(TWO_PAGES)
+    const doc = buildDoc(TWO_PAGES)
     render(<DesignCanvas doc={doc} />)
     expect(screen.getByText('100%')).toBeTruthy()
     fireEvent.click(screen.getByLabelText('放大'))
@@ -351,7 +226,7 @@ describe('DesignCanvas 无限画布', () => {
   })
 
   it('滚轮平移画布，ctrl 滚轮缩放', () => {
-    const { doc } = buildDoc(TWO_PAGES)
+    const doc = buildDoc(TWO_PAGES)
     render(<DesignCanvas doc={doc} />)
     const surface = screen.getByTestId('design-canvas-surface')
     const viewport = surface.parentElement as HTMLElement
@@ -363,7 +238,7 @@ describe('DesignCanvas 无限画布', () => {
   })
 
   it('解析诊断去重分组后可在状态栏展开', () => {
-    const { doc } = buildDoc({ children: [{ type: 'browser', id: 'b1' }, { type: 'script', id: 's1' }] })
+    const doc = buildDoc({ children: [{ type: 'browser', id: 'b1' }, { type: 'script', id: 's1' }] })
     render(<DesignCanvas doc={doc} />)
     const toggle = screen.getByText(/诊断：/)
     expect(toggle.textContent).toContain('0 错误')
@@ -372,7 +247,7 @@ describe('DesignCanvas 无限画布', () => {
   })
 
   it('导出选中页：先选中才可用，光栅化后交 Rust 保存并回显路径', async () => {
-    const { doc } = buildDoc(TWO_PAGES)
+    const doc = buildDoc(TWO_PAGES)
     render(<DesignCanvas doc={doc} />)
     const exportButton = screen.getByText('导出 PNG')
     expect((exportButton as HTMLButtonElement).disabled).toBe(true)
@@ -386,7 +261,7 @@ describe('DesignCanvas 无限画布', () => {
   })
 
   it('选中页内元素时导出其所属顶层页', async () => {
-    const { doc } = buildDoc({
+    const doc = buildDoc({
       children: [{
         type: 'frame', id: 'page-1', name: '首页', x: 0, y: 0, width: 200, height: 120,
         children: [{ type: 'text', id: 'text-1', content: 'hi', x: 5, y: 5, layoutPosition: 'absolute' }],
@@ -399,7 +274,7 @@ describe('DesignCanvas 无限画布', () => {
   })
 
   it('页码按文档序稳定编号，不随视口可见集合变化', () => {
-    const { doc } = buildDoc({
+    const doc = buildDoc({
       children: [
         { type: 'frame', id: 'a', name: 'A', x: 0, y: 0, width: 200, height: 120 },
         { type: 'frame', id: 'b', name: 'B', x: 400, y: 0, width: 200, height: 120 },
@@ -422,7 +297,7 @@ describe('DesignCanvas 无限画布', () => {
   })
 
   it('无高度的组织性 frame（Section / 组件展示区）不铺页底、不画卡片框、不臆造尺寸', () => {
-    const { doc } = buildDoc({
+    const doc = buildDoc({
       children: [
         { type: 'frame', id: 'page-1', name: '会话', x: 0, y: 160, width: 200, height: 120 },
         { type: 'frame', id: 'section-1', name: 'Section — 会话', x: 0, y: 0, width: 900 },
@@ -442,8 +317,97 @@ describe('DesignCanvas 无限画布', () => {
     expect(sectionLabel?.querySelector('.design-canvas__page-label-index')?.textContent).toBe('2')
   })
 
+  it('智能分组：声明 group 的无坐标页按组排成多行，组头带在页层展示组名与页数', () => {
+    const parsed = buildDoc({
+      version: '1.1',
+      children: [
+        { type: 'frame', id: 'p1', name: '会话 / 已完成', width: 200, height: 120 },
+        { type: 'frame', id: 'p2', name: '会话 / 失败', width: 200, height: 120 },
+        { type: 'frame', id: 'p3', name: '设置 / 模型', width: 200, height: 120 },
+        { type: 'frame', id: 'p4', name: '设置 / 常规', width: 200, height: 120 },
+      ],
+    }, '.pen/design.ax')
+    const doc: PenDocument = {
+      ...parsed,
+      pageMetadata: {
+        p1: { group: 'session' }, p2: { group: 'session' },
+        p3: { group: 'settings' }, p4: { group: 'settings' },
+      },
+    }
+    render(<DesignCanvas doc={doc} />)
+    const bands = [...document.querySelectorAll('.design-canvas__group-band')]
+    expect(bands).toHaveLength(2)
+    expect(bands[0]?.textContent).toContain('会话')
+    expect(bands[0]?.textContent).toContain('2 页')
+    expect(bands[1]?.textContent).toContain('设置')
+    // 组内页同一行（y 相同），下一组换行（y 更大）。
+    const top = (id: string) =>
+      Number.parseFloat((document.querySelector(`[data-page-wrapper="${id}"]`) as HTMLElement).style.top)
+    expect(top('p1')).toBe(top('p2'))
+    expect(top('p3')).toBeGreaterThan(top('p1'))
+    // 组头带在屏幕空间页层（不随缩放变形）；纯展示类（pointer-events 由样式表关闭）。
+    expect(screen.getByTestId('design-canvas-page-layer').contains(bands[0] as Node)).toBe(true)
+    // 垂直层级：页标签占行上缘上方 24px，组头带在其上（48px 处）——两层文字不打架。
+    // 默认 scale=1 / offset=0，首行 y=120：带 72..92，页标签 96..116。
+    expect((bands[0] as HTMLElement).style.top).toBe('72px')
+    const rowLabel = [...document.querySelectorAll('.design-canvas__page-label')]
+      .find((el) => el.textContent?.includes('会话 / 已完成')) as HTMLElement
+    expect(rowLabel.style.top).toBe(`${120 - 24}px`)
+  })
+
+  it('智能分组：名称前缀推导（无声明 group）也产出组头带', () => {
+    const doc = buildDoc({
+      version: '1.1',
+      children: [
+        { type: 'frame', id: 'p1', name: '设计稿 — 会话 / 已完成', width: 200, height: 120 },
+        { type: 'frame', id: 'p2', name: '设计稿 — 会话 / 失败', width: 200, height: 120 },
+        { type: 'frame', id: 'p3', name: '设计稿 — 反馈弹窗 / 提交', width: 200, height: 120 },
+        { type: 'frame', id: 'p4', name: '设计稿 — 反馈弹窗 / 失败', width: 200, height: 120 },
+      ],
+    }, '.pen/design.ax')
+    render(<DesignCanvas doc={doc} />)
+    const bands = [...document.querySelectorAll('.design-canvas__group-band')]
+    expect(bands.map((band) => band.textContent)).toEqual([
+      expect.stringContaining('会话'),
+      expect.stringContaining('反馈弹窗'),
+    ])
+  })
+
+  it('.ax 评审面拖页后可一键重置摆放：回到分组基准位、按钮随之消失', () => {
+    window.localStorage.removeItem('axiom.design.page-layout.v2')
+    const doc = buildDoc(
+      { version: '1.1', children: [
+        { type: 'frame', id: 'page-1', name: '会话', width: 200, height: 120, children: [
+          { type: 'text', id: 'inner-1', content: '内容' },
+        ] },
+        { type: 'frame', id: 'page-2', name: '设置', width: 200, height: 120 },
+      ] },
+      '.pen/design.ax',
+    )
+    render(<DesignCanvas doc={doc} />)
+    // 无手动摆放时不展示重置按钮。
+    expect(screen.queryByText('重置摆放')).toBeNull()
+    const wrapper = document.querySelector('[data-page-wrapper="page-1"]') as HTMLElement
+    const inner = document.querySelector('[data-pen-id="inner-1"]') as HTMLElement
+    fireEvent.pointerDown(inner, { button: 0, pointerId: 1, clientX: 0, clientY: 0 })
+    fireEvent.pointerMove(inner, { pointerId: 1, clientX: 60, clientY: 30 })
+    fireEvent.pointerUp(inner, { pointerId: 1, clientX: 60, clientY: 30 })
+    const baseLeft = Number.parseFloat(wrapper.style.left) - 60
+    const baseTop = Number.parseFloat(wrapper.style.top) - 30
+    fireEvent.click(screen.getByText('重置摆放'))
+    // 重置后回到分组基准位，按钮消失，localStorage 同步清空。
+    expect(wrapper.style.left).toBe(`${baseLeft}px`)
+    expect(wrapper.style.top).toBe(`${baseTop}px`)
+    expect(screen.queryByText('重置摆放')).toBeNull()
+    const stored = JSON.parse(window.localStorage.getItem('axiom.design.page-layout.v2') ?? '{}') as {
+      [key: string]: Record<string, { x: number; y: number }>
+    }
+    expect(stored[JSON.stringify([null, '.pen/design.ax'])]?.['page-1']).toBeUndefined()
+    window.localStorage.removeItem('axiom.design.page-layout.v2')
+  })
+
   it('选中节点可转为实现提示词（结构化结构树注入 Composer）', () => {
-    const { doc } = buildDoc(TWO_PAGES)
+    const doc = buildDoc(TWO_PAGES)
     render(<DesignCanvas doc={doc} />)
     tapNode(document.querySelector('[data-pen-id="page-1"]') as HTMLElement)
     fireEvent.click(screen.getByText('转为实现提示词'))
@@ -451,6 +415,21 @@ describe('DesignCanvas 无限画布', () => {
     expect(inserted).toContain('从 .pen 设计稿提取的界面结构')
     expect(inserted).toContain('.pen/axiom.pen')
     expect(inserted).toContain('- frame "首页"')
+  })
+
+  it('引用到会话只插入定位，不内联选中子树', () => {
+    const doc = buildDoc(TWO_PAGES)
+    render(<DesignCanvas doc={doc} />)
+    tapNode(document.querySelector('[data-pen-id="page-1"]') as HTMLElement)
+    fireEvent.click(screen.getByText('引用到会话'))
+    const inserted = requestComposerInsertion.mock.calls.at(-1)?.[0] as string
+    expect(inserted).toContain('pageId: page-1')
+    expect(inserted).toContain('页「首页」')
+    expect(inserted).toContain('design_query')
+    expect(inserted).toContain('discover_agent_tools')
+    // 轻量引用：不把 authored 子树 / 结构 JSON 塞进会话。
+    expect(inserted).not.toContain('"authored"')
+    expect(inserted.length).toBeLessThan(500)
   })
 })
 
@@ -493,7 +472,7 @@ describe('DesignCanvas 扫描验证面板', () => {
       distinctColors: 64,
       topColorFraction: 0.5,
     }))
-    const { doc } = buildDoc(SCAN_PAGES)
+    const doc = buildDoc(SCAN_PAGES)
     render(<DesignCanvas doc={doc} />)
     fireEvent.click(screen.getByText('扫描验证'))
     const panel = await waitFor(() => {
@@ -523,7 +502,7 @@ describe('DesignCanvas 扫描验证面板', () => {
 
   it('渲染失败页标红并给出可读原因（画布红色描边）', async () => {
     setDesignScanPageRenderProvider(async () => ({ ok: false as const, reason: '光栅化失败：无法创建画布上下文' }))
-    const { doc } = buildDoc(SCAN_PAGES)
+    const doc = buildDoc(SCAN_PAGES)
     render(<DesignCanvas doc={doc} />)
     fireEvent.click(screen.getByText('扫描验证'))
     const panel = (await waitFor(() => {
@@ -556,7 +535,7 @@ describe('DesignCanvas 扫描验证面板', () => {
         topColorFraction: 0.5,
       }
     })
-    const { doc } = buildDoc(SCAN_PAGES)
+    const doc = buildDoc(SCAN_PAGES)
     render(<DesignCanvas doc={doc} />)
     fireEvent.click(screen.getByText('扫描验证'))
     // 第一页在途：光束落在页 1 上；报告未出。
@@ -580,7 +559,7 @@ describe('DesignCanvas .ax 页级删除', () => {
     onDeletePage?: (pageId: string) => Promise<{ ok: boolean; message: string | null }>,
     raw: RawFixture = AX_TWO_PAGES,
   ) => {
-    const { doc } = buildDoc(raw, '.pen/design.ax')
+    const doc = buildDoc(raw, '.pen/design.ax')
     return render(<DesignCanvas doc={doc} onDeletePage={onDeletePage} />)
   }
 
@@ -604,7 +583,7 @@ describe('DesignCanvas .ax 页级删除', () => {
     expect(onDeletePage).toHaveBeenCalledWith('page-2')
   })
 
-  it('选中的是页内节点时删除禁用，提示评审面只读', () => {
+  it('选中的是页内节点时删除禁用，提示只读', () => {
     const onDeletePage = vi.fn(async () => ({ ok: true, message: null }))
     renderAx(
       onDeletePage,
@@ -619,7 +598,7 @@ describe('DesignCanvas .ax 页级删除', () => {
     tapNode(inner)
     const button = screen.getByRole('button', { name: '删除' }) as HTMLButtonElement
     expect(button.disabled).toBe(true)
-    expect(button.title).toContain('评审面只读')
+    expect(button.title).toContain('只读')
     fireEvent.click(button)
     expect(onDeletePage).not.toHaveBeenCalled()
   })
@@ -709,8 +688,8 @@ describe('computePageSnap（页面拖动吸附）', () => {
 
 describe('画布拖动吸附集成', () => {
   it('.ax 评审面拖页接近其它页边缘时吸附到精确对齐，参考线拖动中出现、松手消失', () => {
-    window.localStorage.removeItem('axiom.design.page-layout.v1')
-    const { doc } = buildDoc(
+    window.localStorage.removeItem('axiom.design.page-layout.v2')
+    const doc = buildDoc(
       { version: '1.1', children: [
         { type: 'frame', id: 'page-1', name: '会话', width: 200, height: 120, children: [
           { type: 'text', id: 'inner-1', content: '内容' },
@@ -734,30 +713,13 @@ describe('画布拖动吸附集成', () => {
     expect(document.querySelector('.design-canvas__snap-guide')).not.toBeNull()
     fireEvent.pointerUp(inner, { pointerId: 1, clientX: 0, clientY: dragDy })
     // 提交坐标是吸附后的（上缘精确贴合 120），不是自由落点的 baseTop-rawDy+... 。
-    expect(writeDesignDocument).not.toHaveBeenCalled()
     expect(wrapper.style.top).toBe(`${target}px`)
     expect(document.querySelector('.design-canvas__snap-guide')).toBeNull()
-    const stored = JSON.parse(window.localStorage.getItem('axiom.design.page-layout.v1') ?? '{}') as {
-      '.pen/design.ax'?: Record<string, { x: number; y: number }>
+    const stored = JSON.parse(window.localStorage.getItem('axiom.design.page-layout.v2') ?? '{}') as {
+      [key: string]: Record<string, { x: number; y: number }>
     }
-    expect(stored['.pen/design.ax']?.['page-1']?.y).toBe(target)
-    window.localStorage.removeItem('axiom.design.page-layout.v1')
+    expect(stored[JSON.stringify([null, '.pen/design.ax'])]?.['page-1']?.y).toBe(target)
+    window.localStorage.removeItem('axiom.design.page-layout.v2')
   })
 
-  it('.pen 编辑态拖页同样吸附（页根 x/y 写回吸附后坐标）', async () => {
-    const { doc, rawJson } = buildDoc({
-      children: [
-        { type: 'frame', id: 'page-1', name: '首页', x: 0, y: 0, width: 200, height: 120, children: [] },
-        { type: 'frame', id: 'page-2', name: '设置', x: 210, y: 0, width: 200, height: 120 },
-      ],
-    })
-    render(<DesignCanvas doc={doc} rawJson={rawJson} sha256="sha-1" onWritten={() => undefined} />)
-    const page = document.querySelector('[data-pen-id="page-1"]') as HTMLElement
-    fireEvent.pointerDown(page, { button: 0, pointerId: 1, clientX: 100, clientY: 100 })
-    fireEvent.pointerMove(page, { pointerId: 1, clientX: 114, clientY: 100 })
-    fireEvent.pointerUp(page, { pointerId: 1, clientX: 114, clientY: 100 })
-    await waitFor(() => expect(writeDesignDocument).toHaveBeenCalledTimes(1))
-    // 右缘 214 吸附到 210 → x = 10。
-    expect(decodeWrite(0).json.children[0]).toMatchObject({ id: 'page-1', x: 10, y: 0 })
-  })
 })

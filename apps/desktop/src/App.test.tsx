@@ -46,7 +46,6 @@ vi.mock('@/stores/uiStore', async (importOriginal) => {
       sidebarCompact: mocks.sidebarCompact,
       sidebarOverlayOpen: mocks.sidebarOverlayOpen,
       runtimeRailOpen: false,
-      accessMode: 'standard',
       summaryRequest: mocks.summaryRequest,
     }),
   }

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { AgentEnvironment } from '@/agent/environment/AgentEnvironment'
 import type { DesignDocumentContent } from '@/platform/designDocument'
 import type { JsonValue } from '@/agent/core/types'
@@ -7,26 +7,14 @@ import { createDesignQueryTool } from './designQueryTool'
 import { setDesignPageRenderProvider, setPngDecodeProvider, setDesignScanPageRenderProvider } from '@/agent/design/designRenderHost'
 import { setDesignComponentDetailProvider } from '@/agent/design/componentInventoryHost'
 import { AX_FORMAT_VERSION } from '@/agent/design/axSchema'
+import { executeAxCompareMode } from '@/agent/design/designQueryVisual'
+import { axKindHistogram } from '@/agent/design/designQueryProjection'
+import { parseAxDocument } from '@/agent/design/axParser'
+import { setDesignBrowserCommandProvider } from '@/agent/design/designBrowserHost'
 
-const PEN_SOURCE = JSON.stringify({
-  variables: {},
-  children: [
-    { type: 'frame', id: 'page-1', name: '首页', children: [
-      { type: 'text', id: 't-1', content: 'hello', fontSize: 16 },
-      { type: 'frame', id: 'f-1', children: [{ type: 'icon', id: 'i-1', icon: 'trash' }] },
-    ] },
-    { type: 'frame', id: 'page-2', name: '设置' },
-    { type: 'frame', id: 'comp-1', name: 'Card', reusable: true, children: [{ type: 'text', id: 'ct-1', content: 'Card' }] },
-  ],
-})
+const browserCommandMock = vi.fn()
 
-const documentContent: DesignDocumentContent = {
-  contentBase64: Buffer.from(PEN_SOURCE, 'utf-8').toString('base64'),
-  sha256: 'a'.repeat(64),
-  sizeBytes: PEN_SOURCE.length,
-  modifiedMs: null,
-  unchanged: false,
-}
+type BrowserCommand = import('@/platform/projectDesignPreview').ProjectPreviewBrowserCommand
 
 const environmentWith = (
   readDocument: (path: string) => Promise<DesignDocumentContent>,
@@ -34,11 +22,6 @@ const environmentWith = (
   ({
     design: { readDocument },
   }) as unknown as AgentEnvironment
-
-const tool = createDesignQueryTool(environmentWith((path) => {
-  if (path === '.pen/axiom.pen') return Promise.resolve(documentContent)
-  return Promise.reject(new Error('not found'))
-}))
 
 const AX_SOURCE = JSON.stringify({
   ax: '1.0',
@@ -102,7 +85,44 @@ const axTool = createDesignQueryTool(
 const run = (input: JsonValue, tool = axTool, context: Record<string, unknown> = {}) =>
   tool.execute(input, { signal: new AbortController().signal, ...context } as never)
 
+describe('design_query tool：按模式判别的输入契约', () => {
+  it('九种模式各自声明必需参数，不再暴露无类型大对象', () => {
+    expect(axTool.runtimeVersion).toBe('24')
+    const variants = axTool.inputSchema.anyOf
+    if (!Array.isArray(variants)) throw new Error('design_query schema must use anyOf')
+    const modes = variants.map((variant) => {
+      if (typeof variant !== 'object' || variant === null || Array.isArray(variant)) return null
+      const properties = variant.properties
+      if (typeof properties !== 'object' || properties === null || Array.isArray(properties)) return null
+      const mode = properties.mode
+      if (typeof mode !== 'object' || mode === null || Array.isArray(mode) || !Array.isArray(mode.enum)) return null
+      return mode.enum[0]
+    })
+    expect(modes).toEqual(['summary', 'page', 'node', 'component', 'render', 'code', 'scan', 'reconcile', 'compare'])
+  })
+})
+
 describe('design_query tool：.ax 三层读取', () => {
+  it.each(['react', 'vue'] as const)('项目组件目录覆盖同名内置详单，生成 %s 默认导入与类型化回调', async (framework) => {
+    const sourcePath = framework === 'vue' ? 'src/Card.vue' : 'src/Card.tsx'
+    const importSource = framework === 'vue' ? '@/Card.vue' : '@/Card'
+    const catalog = JSON.stringify({ version: 1, components: [{ name: 'ApprovalCard', framework, kind: 'presentational', sourcePath, sourceSha256: 'a'.repeat(64),
+      importSource, exportName: 'default', props: [{ name: 'command', type: 'string', required: true, description: 'string' }], statics: ['onClick'], fixtures: { 'pending-command': { command: 'project-command' } } }] })
+    const environment = {
+      ...environmentWith(() => Promise.resolve(axDocumentContent)),
+      workspace: {
+        list: async (path?: string) => ({ entries: [{ name: path === '.' ? '.axiom' : path === '.axiom' ? 'design' : 'components.json', kind: path === '.axiom/design' ? 'file' : 'directory' }], truncated: false }),
+        readText: async () => ({ content: catalog, sha256: 'a'.repeat(64), truncated: false }),
+      },
+    } as unknown as AgentEnvironment
+    const tool = createDesignQueryTool(environment)
+    const detail = await run({ mode: 'component', component: 'ApprovalCard' }, tool)
+    expect(JSON.parse(detail.content).component).toMatchObject({ summary: { origin: 'project', sourcePath }, statics: ['onClick'] })
+    const code = await run({ mode: 'code', file: '.pen/axiom.ax', page: 1 }, tool)
+    expect(code.content).toContain(`import ApprovalCard from '${importSource}'`)
+    expect(code.content).toContain(framework === 'vue' ? "InstanceType<typeof ApprovalCard>['$props']['onClick']" : "ComponentProps<typeof ApprovalCard>['onClick']")
+    expect(code.content).not.toContain('components/session/ApprovalCard')
+  })
   it('摘要：页清单（含分组/状态/节点数/用到组件）+ 组件清单 + token 清单', async () => {
     const result = await run({ file: '.pen/axiom.ax' })
     const parsed = JSON.parse(result.content) as {
@@ -461,25 +481,7 @@ describe('design_query tool：scan 模式（逐页渲染扫描验证）', () => 
     }
   })
 
-  it('.pen 扫描：无高度顶层 frame 按组织性 frame 跳过渲染（不发起渲染调用）', async () => {
-    const scanStub = vi.fn(async () => {
-      throw new Error('组织性 frame 不应触发渲染')
-    })
-    setDesignScanPageRenderProvider(scanStub)
-    try {
-      const result = await run({ file: '.pen/axiom.pen', mode: 'scan' }, tool)
-      const parsed = JSON.parse(result.content) as {
-        rendered: boolean
-        pages: Array<{ render: string; status: string; issues: Array<{ check: string }> }>
-      }
-      expect(scanStub).not.toHaveBeenCalled()
-      expect(parsed.pages).toHaveLength(2)
-      expect(parsed.pages.every((page) => page.render === 'skipped' && page.status === 'warn')).toBe(true)
-      expect(parsed.pages.every((page) => page.issues.some((issue) => issue.check === 'size'))).toBe(true)
-    } finally {
-      setDesignScanPageRenderProvider(null)
-    }
-  })
+
 })
 
 describe('design_query tool：code 模式（生成骨架）', () => {
@@ -492,7 +494,7 @@ describe('design_query tool：code 模式（生成骨架）', () => {
     // 该页有一条 $bind 文本 → 未映射清单必须列出「需接线数据源」（不静默）。
     expect(result.content).toContain('未映射（需人工接线）：')
     expect(result.content).toContain('session.title')
-    expect(result.content).toContain('{/* $bind: session.title */}')
+    expect(result.content).toContain("{bindings['n3.text']}")
     const details = result.details as { componentName: string; counts: { nodes: number } }
     // 非 ASCII 页名加 Page 前缀（中文标识符合法，但前缀更易读、不与宿主标签混淆）。
     expect(details.componentName).toBe('Page会话')
@@ -505,120 +507,30 @@ describe('design_query tool：code 模式（生成骨架）', () => {
   })
 })
 
-describe('design_query tool', () => {
-  it('lists pages when no page or nodeId is given', async () => {
-    const result = await tool.execute({ file: '.pen/axiom.pen' }, { signal: new AbortController().signal } as never)
-    const parsed = JSON.parse(result.content) as { pages: Array<{ index: number; name: string }> }
-    expect(parsed.pages).toEqual([
-      { index: 1, name: '首页' },
-      { index: 2, name: '设置' },
-    ])
+describe('design_query 的唯一设计稿规范', () => {
+  it('旧 .pen 输入在读取前被拒绝，并提示先迁移', async () => {
+    const read = vi.fn(async () => axDocumentContent)
+    const tool = createDesignQueryTool(environmentWith(read))
+    expect(tool.validate({ file: '.pen/axiom.pen' }).ok).toBe(false)
+    await expect(run({ file: '.pen/axiom.pen' }, tool)).rejects.toThrow('design_import')
+    expect(read).not.toHaveBeenCalled()
   })
 
-  it('returns a page subtree by 1-based index', async () => {
-    const result = await tool.execute({ file: '.pen/axiom.pen', page: 1 }, { signal: new AbortController().signal } as never)
-    expect(result.content).toContain('"page-1"')
-    expect(result.content).toContain('hello')
-    expect((result.details as { pageIndex: number }).pageIndex).toBe(1)
+  it('禁止非设计稿、越界路径、未知字段与超出预算的输入', () => {
+    expect(axTool.validate({ file: 'notes.txt' }).ok).toBe(false)
+    expect(axTool.validate({ file: '../escape.ax' }).ok).toBe(false)
+    expect(axTool.validate({ file: '.pen/axiom.ax', extra: 1 }).ok).toBe(false)
+    expect(axTool.validate({ file: '.pen/axiom.ax', maxBytes: 100000 }).ok).toBe(false)
+    expect(axTool.validate({ file: '.pen/axiom.ax', page: '会话' }).ok).toBe(true)
   })
 
-  it('returns a page subtree by name and rejects unknown names', async () => {
-    const byName = await tool.execute({ file: '.pen/axiom.pen', page: '设置' }, { signal: new AbortController().signal } as never)
-    expect(byName.content).toContain('"page-2"')
-    const missing = await tool.execute({ file: '.pen/axiom.pen', page: '不存在' }, { signal: new AbortController().signal } as never)
-    expect(missing.content).toContain('not found')
-    expect(missing.content).toContain('1:首页')
-  })
-
-  it('locates a node by id across pages and reusable components', async () => {
-    const byId = await tool.execute({ file: '.pen/axiom.pen', nodeId: 'i-1' }, { signal: new AbortController().signal } as never)
-    expect(byId.content).toContain('"i-1"')
-    expect((byId.details as { found: boolean }).found).toBe(true)
-    const byComp = await tool.execute({ file: '.pen/axiom.pen', nodeId: 'comp-1' }, { signal: new AbortController().signal } as never)
-    expect(byComp.content).toContain('"Card"')
-    const missing = await tool.execute({ file: '.pen/axiom.pen', nodeId: 'nope' }, { signal: new AbortController().signal } as never)
-    expect(missing.content).toContain('node "nope" not found')
-  })
-
-  it('nodeId 查询不走原型链（constructor 等 id 不命中 Object.prototype）', async () => {
-    const result = await tool.execute(
-      { file: '.pen/axiom.pen', nodeId: 'constructor' },
-      { signal: new AbortController().signal } as never,
-    )
-    expect(result.content).toContain('node "constructor" not found')
+  it('nodeId 不命中原型链', async () => {
+    const result = await run({ file: '.pen/axiom.ax', nodeId: 'constructor' })
     expect((result.details as { found: boolean }).found).toBe(false)
   })
 
-  it('截断按 UTF-8 字节预算且在码点边界（CJK 不超预算、无替换符）', async () => {
-    const cjk = createDesignQueryTool(environmentWith(() => Promise.resolve({
-      ...documentContent,
-      contentBase64: Buffer.from(JSON.stringify({
-        children: [{ type: 'frame', id: 'page-cjk', name: '界面', children: [
-          { type: 'text', id: 't-cjk', content: '界面设计稿内容界面设计稿内容界面设计稿内容' },
-        ] }],
-      }), 'utf-8').toString('base64'),
-    })))
-    const result = await cjk.execute(
-      { file: '.pen/axiom.pen', page: 1, maxBytes: 64 },
-      { signal: new AbortController().signal } as never,
-    )
-    expect((result.details as { truncated: boolean }).truncated).toBe(true)
-    const suffix = '\n...[truncated at 64 bytes]'
-    expect(result.content.endsWith(suffix)).toBe(true)
-    const body = result.content.slice(0, -suffix.length)
-    // 正文不超过字节预算，且截断点不切断多字节字符（无 U+FFFD）。
-    expect(new TextEncoder().encode(body).length).toBeLessThanOrEqual(64)
-    expect(body).not.toContain('�')
-  })
-
-  it('returns parser diagnostics when the document is malformed', async () => {
-    const bad = createDesignQueryTool(environmentWith(() => Promise.resolve({
-      ...documentContent,
-      contentBase64: Buffer.from('{ broken json', 'utf-8').toString('base64'),
-    })))
-    const result = await bad.execute({ file: '.pen/axiom.pen' }, { signal: new AbortController().signal } as never)
-    expect(result.content).toContain('failed to parse')
-    expect((result.details as { parsed: boolean }).parsed).toBe(false)
-  })
-
-  it('truncates oversized output to the byte budget', async () => {
-    const result = await tool.execute(
-      { file: '.pen/axiom.pen', page: 1, maxBytes: 64 },
-      { signal: new AbortController().signal } as never,
-    )
-    expect(result.content).toContain('[truncated at 64 bytes]')
-    expect((result.details as { truncated: boolean }).truncated).toBe(true)
-  })
-
-  it('validates the input schema', () => {
-    expect(tool.validate({ file: 'notes.txt' }).ok).toBe(false)
-    expect(tool.validate({ file: '../escape.pen' }).ok).toBe(false)
-    expect(tool.validate({ file: '.pen/axiom.pen', extra: 1 }).ok).toBe(false)
-    expect(tool.validate({ file: '.pen/axiom.pen', maxBytes: 100000 }).ok).toBe(false)
-    expect(tool.validate({ file: '.pen/axiom.pen', page: '首页' }).ok).toBe(true)
-  })
-
-  it('computes a deterministic idempotency key', () => {
-    // v3 起键里带 mode 段：同一 file+page 的 scan/render/page 结果形状不同，
-    // 不能互为幂等回放。v4 追加 component 段（mode=component 的载荷随组件名变化）。
-    // v6 追加 implementation 段（reconcile 的对账结果随实现文件集变化）。
-    expect(tool.idempotencyKey?.({ file: '.pen/axiom.pen', page: 1 }))
-      .toBe('design_query:.pen/axiom.pen::1:::')
-    expect(tool.idempotencyKey?.({ file: '.pen/axiom.pen', nodeId: 'f-1' }))
-      .toBe('design_query:.pen/axiom.pen:::f-1::')
-    expect(tool.idempotencyKey?.({ file: '.pen/axiom.pen', mode: 'scan', page: 1 }))
-      .toBe('design_query:.pen/axiom.pen:scan:1:::')
-    expect(tool.idempotencyKey?.({ file: '.pen/axiom.pen', mode: 'render', page: 1 }))
-      .toBe('design_query:.pen/axiom.pen:render:1:::')
-    expect(tool.idempotencyKey?.({ mode: 'component', component: 'ApprovalCard' }))
-      .toBe('design_query::component:::ApprovalCard:')
-  })
-
-  it('propagates environment read failures', async () => {
-    await expect(tool.execute(
-      { file: 'other.pen' },
-      { signal: new AbortController().signal } as never,
-    )).rejects.toThrow('not found')
+  it('读取失败保持原始错误', async () => {
+    await expect(run({ file: 'missing.ax' })).rejects.toThrow('not found')
   })
 })
 
@@ -727,6 +639,7 @@ describe('design_query tool：scan 的 token ↔ tokens.css 一致性（v4，建
       ? Promise.resolve(axDocumentContent)
       : Promise.reject(new Error('not found')) },
     workspace: {
+      list: async () => ({ entries: [], truncated: false }),
       readText: () => css === null
         ? Promise.reject(new Error('未授权或不存在'))
         : Promise.resolve({ content: css, truncated: false }),
@@ -793,7 +706,7 @@ describe('design_query tool：mode=reconcile（设计 ↔ 实现结构对账，v
       : Promise.reject(new Error('not found')) },
     workspace: {
       // 目录递归：src/components 一个目录 → SessionView.tsx + README.md（非 ts 跳过）。
-      list: (path?: string) => path === 'src/components'
+      list: (path?: string) => path === '.' ? Promise.resolve({ entries: [], truncated: false }) : path === 'src/components'
         ? Promise.resolve({
           entries: [
             { path: 'src/components/SessionView.tsx', name: 'SessionView.tsx', kind: 'file' as const, sizeBytes: 1 },
@@ -910,15 +823,12 @@ describe('design_query tool：compare 模式（设计 ↔ 实现像素对拍）'
   oneRed2x2.data[1] = 0
   oneRed2x2.data[2] = 255
 
-  const browserEnv = (
-    browserCommand: AgentEnvironment['browser']['command'],
-  ): AgentEnvironment =>
+  const browserEnv = (): AgentEnvironment =>
     ({
       design: { readDocument: () => Promise.resolve(axDocumentContent) },
-      browser: { command: browserCommand },
     }) as unknown as AgentEnvironment
 
-  const goodBrowser: AgentEnvironment['browser']['command'] = async (request) => {
+  const goodBrowser: BrowserCommand = async (request) => {
     if (request.action === 'newTab') {
       return { type: 'tabOpened', tab: { tabId: 't-1', url: request.url ?? '', title: '会话实现', active: true, hasDialog: false } }
     }
@@ -931,9 +841,15 @@ describe('design_query tool：compare 模式（设计 ↔ 实现像素对拍）'
     return { type: 'done' }
   }
 
+  beforeEach(() => {
+    setDesignBrowserCommandProvider(browserCommandMock)
+  })
+
   afterEach(() => {
     setDesignPageRenderProvider(null)
     setPngDecodeProvider(null)
+    setDesignBrowserCommandProvider(null)
+    browserCommandMock.mockReset()
   })
 
   it('成功路径：浏览器按设计页尺寸截屏，输出差异占比与包围盒（advisory）', async () => {
@@ -947,12 +863,11 @@ describe('design_query tool：compare 模式（设计 ↔ 实现像素对拍）'
     }))
     setPngDecodeProvider(async (base64) => (base64 === 'DESIGN' ? white2x2 : oneRed2x2))
     const calls: string[] = []
-    const browser = goodBrowser
-    const env = browserEnv(async (request) => {
+    browserCommandMock.mockImplementation(async (request: { action: string }) => {
       calls.push(request.action)
-      return browser(request)
+      return goodBrowser(request as never)
     })
-    const tool = createDesignQueryTool(env)
+    const tool = createDesignQueryTool(browserEnv())
     const result = await run(
       { file: '.pen/axiom.ax', mode: 'compare', page: '会话', url: 'http://localhost:5173/session' },
       tool,
@@ -973,6 +888,16 @@ describe('design_query tool：compare 模式（设计 ↔ 实现像素对拍）'
     expect((result.details as { mode: string }).mode).toBe('compare')
   })
 
+  it('截图宽高比不同不得拉伸成相同尺寸后假报匹配', async () => {
+    setDesignPageRenderProvider(async () => ({ base64: 'DESIGN', mediaType: 'image/png', width: 20, height: 20, scale: 1, pageName: '会话' }))
+    setPngDecodeProvider(async (source) => source === 'DESIGN'
+      ? { width: 20, height: 20, data: buildCompareSolid(20, 20, [255, 255, 255]) }
+      : { width: 20, height: 40, data: buildCompareSolid(20, 40, [255, 255, 255]) })
+    const result = await run({ file: '.pen/axiom.ax', mode: 'compare', page: 1, url: 'http://localhost:5173' }, (browserCommandMock.mockImplementation(goodBrowser as never), createDesignQueryTool(browserEnv())))
+    expect(JSON.parse(result.content)).toMatchObject({ available: false, stage: 'geometry' })
+    expect(result.content).toContain('宽高比不一致')
+  })
+
   it('浏览器不可用（未启用/子 Agent 封死）→ available:false 带设置与前置指引', async () => {
     setDesignPageRenderProvider(async () => ({
       base64: 'DESIGN',
@@ -982,10 +907,10 @@ describe('design_query tool：compare 模式（设计 ↔ 实现像素对拍）'
       scale: 1,
       pageName: '会话',
     }))
-    const env = browserEnv(async () => {
+    browserCommandMock.mockImplementation(async () => {
       throw new Error('浏览器能力未启用：请在 设置 → 浏览器 打开开关并保存')
     })
-    const tool = createDesignQueryTool(env)
+    const tool = createDesignQueryTool(browserEnv())
     const result = await run(
       { file: '.pen/axiom.ax', mode: 'compare', page: '会话', url: 'http://localhost:5173/session' },
       tool,
@@ -995,6 +920,27 @@ describe('design_query tool：compare 模式（设计 ↔ 实现像素对拍）'
     expect(parsed.stage).toBe('browser')
     expect(parsed.reason).toContain('设置 → 浏览器')
     expect(parsed.reason).toContain('dev server')
+  })
+
+  it('浏览器宿主接缝未注入时 fail-closed', async () => {
+    setDesignPageRenderProvider(async () => ({
+      base64: 'DESIGN',
+      mediaType: 'image/png' as const,
+      width: 2,
+      height: 2,
+      scale: 1,
+      pageName: '会话',
+    }))
+    setDesignBrowserCommandProvider(null)
+    const result = await run(
+      { file: '.pen/axiom.ax', mode: 'compare', page: '会话', url: 'http://localhost:5173/session' },
+      createDesignQueryTool(browserEnv()),
+    )
+    expect(JSON.parse(result.content)).toMatchObject({
+      available: false,
+      stage: 'browser',
+      reason: expect.stringContaining('宿主接缝未注入'),
+    })
   })
 
   it('无 PNG 解码能力（Node/接缝未注入）→ available:false 而非假装成功', async () => {
@@ -1007,7 +953,7 @@ describe('design_query tool：compare 模式（设计 ↔ 实现像素对拍）'
       pageName: '会话',
     }))
     setPngDecodeProvider(null)
-    const tool = createDesignQueryTool(browserEnv(goodBrowser))
+    const tool = (browserCommandMock.mockImplementation(goodBrowser as never), createDesignQueryTool(browserEnv()))
     const result = await run(
       { file: '.pen/axiom.ax', mode: 'compare', page: '会话', url: 'http://localhost:5173/session' },
       tool,
@@ -1027,6 +973,41 @@ describe('design_query tool：compare 模式（设计 ↔ 实现像素对拍）'
     expect(axTool.validate?.({ file: '.pen/axiom.ax', mode: 'compare', page: 1, url: 'http://localhost:5173', waitMs: 800 } as never)?.ok).toBe(true)
   })
 
+  it('校验：via 只属于 compare 且只接受 preview', () => {
+    expect(axTool.validate?.({ file: '.pen/axiom.ax', mode: 'render', page: 1, via: 'preview' } as never)?.ok).toBe(false)
+    expect(axTool.validate?.({ file: '.pen/axiom.ax', mode: 'compare', page: 1, url: 'http://localhost:5173', via: 'chromium' } as never)?.ok).toBe(false)
+    expect(axTool.validate?.({ file: '.pen/axiom.ax', mode: 'compare', page: 1, url: 'http://localhost:5173', via: 'preview' } as never)?.ok).toBe(true)
+  })
+
+  it('幂等键：via 进键（同 file+page+url 不同档位不互为回放）', () => {
+    expect(axTool.idempotencyKey?.({ file: '.pen/axiom.ax', mode: 'compare', page: 1, url: 'http://l:1/a', via: 'preview' } as never))
+      .toBe('design_query:.pen/axiom.ax:compare:1::::http://l:1/a:preview')
+  })
+
+  it('via=preview 但未配置预览服务：回落跨引擎档并在结果注明档位', async () => {
+    setDesignPageRenderProvider(async () => ({
+      base64: 'DESIGN',
+      mediaType: 'image/png' as const,
+      width: 2,
+      height: 2,
+      scale: 1,
+      pageName: '会话',
+    }))
+    setPngDecodeProvider(async (base64) => (base64 === 'DESIGN' ? white2x2 : oneRed2x2))
+    browserCommandMock.mockImplementation(goodBrowser as never)
+    // browserEnv 无 workspace → 项目目录缺失 → preview 服务未配置，必须回落 cross 档。
+    const tool = createDesignQueryTool(browserEnv())
+    const result = await run(
+      { file: '.pen/axiom.ax', mode: 'compare', page: '会话', url: 'http://localhost:5173/session', via: 'preview' },
+      tool,
+    )
+    const parsed = JSON.parse(result.content) as { engine: string; fallback: string; diff: { passRatio: number }; via: string }
+    expect(parsed.via).toBe('preview')
+    expect(parsed.engine).toBe('cross')
+    expect(parsed.fallback).toContain('design:preview')
+    expect(parsed.diff.passRatio).toBe(5)
+  })
+
   it('幂等键：compare 的 url/waitMs 进键，既有键形状不变', () => {
     expect(axTool.idempotencyKey?.({ file: '.pen/axiom.ax', mode: 'compare', page: 1, url: 'http://l:1/a' } as never))
       .toBe('design_query:.pen/axiom.ax:compare:1::::http://l:1/a')
@@ -1034,6 +1015,121 @@ describe('design_query tool：compare 模式（设计 ↔ 实现像素对拍）'
       .toBe('design_query:.pen/axiom.ax:compare:1::::http://l:1/a:1500')
     expect(axTool.idempotencyKey?.({ file: '.pen/axiom.pen', page: 1 } as never))
       .toBe('design_query:.pen/axiom.pen::1:::')
+  })
+})
+
+describe('compare via=preview 同引擎档（design:preview 隔离 Chromium）', () => {
+  beforeEach(() => {
+    setDesignBrowserCommandProvider(browserCommandMock)
+  })
+
+  // 实现侧截屏桩：与 compare 主套件的 goodBrowser 同形（本 describe 独立成套，不复用闭包）。
+  const stubBrowser = async (request: { action: string }) => {
+    if (request.action === 'newTab') {
+      return { type: 'tabOpened', tab: { tabId: 't-1', url: '', title: '会话实现', active: true, hasDialog: false } }
+    }
+    if (request.action === 'screenshot') {
+      return { type: 'screenshot', imageBase64: 'IMPL', mimeType: 'image/png', width: 2, height: 2, resized: false }
+    }
+    if (request.action === 'setViewport') {
+      return { type: 'viewportApplied', width: (request as { width?: number }).width, height: (request as { height?: number }).height }
+    }
+    return { type: 'done' }
+  }
+
+  const buildSolid = (width: number, height: number, color: [number, number, number]): Uint8ClampedArray => {
+    const data = new Uint8ClampedArray(width * height * 4)
+    for (let i = 0; i < width * height; i++) {
+      data[i * 4] = color[0]
+      data[i * 4 + 1] = color[1]
+      data[i * 4 + 2] = color[2]
+      data[i * 4 + 3] = 255
+    }
+    return data
+  }
+
+  afterEach(() => {
+    setDesignPageRenderProvider(null)
+    setPngDecodeProvider(null)
+    setDesignBrowserCommandProvider(null)
+    browserCommandMock.mockReset()
+  })
+
+  it('预览服务已配置：设计侧强制走 preview 渲染，阈值收紧到 0.5%', async () => {
+    browserCommandMock.mockImplementation(stubBrowser as never)
+    const parsed = parseAxDocument(AX_SOURCE)
+    if (!parsed.document) throw new Error('fixture parse failed')
+    let forced: boolean | undefined
+    setDesignPageRenderProvider(async (request) => {
+      forced = request.forceProjectPreview
+      return { base64: 'DESIGN', mediaType: 'image/png' as const, width: 2, height: 2, scale: 1, pageName: '会话' }
+    })
+    // 单通道差 1 会被 pixelmatch 的 per-pixel 阈值吞掉，用整像素差锁定 warn 分支。
+    setPngDecodeProvider(async (base64) => base64 === 'DESIGN'
+      ? { width: 2, height: 2, data: buildSolid(2, 2, [255, 255, 255]) }
+      : { width: 2, height: 2, data: buildSolid(2, 2, [0, 0, 255]) })
+    const result = await executeAxCompareMode({
+      file: '.pen/axiom.ax',
+      sha256: 'b'.repeat(64),
+      source: AX_SOURCE,
+      axDoc: parsed.document,
+      diagnostics: parsed.diagnostics,
+      inventory: inventoryStub(),
+      projectPreview: { url: 'http://127.0.0.1:4174/__axiom_design_preview', catalogSha256: 'c'.repeat(64) },
+      projectComponents: [{ summary: { name: 'Panel', kind: 'presentational' as const, sourcePath: 'src/Panel.tsx', props: [], fixtures: [] }, statics: [], fixtures: {} }],
+      maxBytes: 16384,
+    }, { page: '会话', url: 'http://localhost:5173/session', via: 'preview' })
+    const payload = JSON.parse(result.content) as {
+      via: string
+      engine: string
+      diff: { passRatio: number }
+      verdict: string
+      fallback?: string
+      note: string
+    }
+    expect(forced).toBe(true)
+    expect(payload.engine).toBe('same')
+    expect(payload.diff.passRatio).toBe(0.5)
+    expect(payload.fallback).toBeUndefined()
+    expect(payload.note).toContain('0.5%')
+    // 1/4 像素差（25%）：同引擎档 0.5% 阈值下判 warn——档位收紧后布局级差异仍可判。
+    expect(payload.verdict).toBe('warn')
+  })
+
+  it('同引擎档下微小差异（≤0.5%）判 pass（跨引擎档会 warn）', async () => {
+    browserCommandMock.mockImplementation(stubBrowser as never)
+    const parsed = parseAxDocument(AX_SOURCE)
+    if (!parsed.document) throw new Error('fixture parse failed')
+    setDesignPageRenderProvider(async () => ({
+      base64: 'DESIGN',
+      mediaType: 'image/png' as const,
+      width: 400,
+      height: 400,
+      scale: 1,
+      pageName: '会话',
+    }))
+    // 400x400 = 160000 像素，差异 700 像素 ≈ 0.44% ≤ 0.5% → pass（跨引擎 5% 也 pass，
+    // 用阈值字段本身锁定档位：passRatio 必须是 0.5 而不是 5）。
+    const impl = buildSolid(400, 400, [255, 255, 255])
+    for (let i = 0; i < 700; i++) impl[i * 4 + 2] = 0
+    setPngDecodeProvider(async (base64) => base64 === 'DESIGN'
+      ? { width: 400, height: 400, data: buildSolid(400, 400, [255, 255, 255]) }
+      : { width: 400, height: 400, data: impl })
+    const result = await executeAxCompareMode({
+      file: '.pen/axiom.ax',
+      sha256: 'b'.repeat(64),
+      source: AX_SOURCE,
+      axDoc: parsed.document,
+      diagnostics: parsed.diagnostics,
+      inventory: inventoryStub(),
+      projectPreview: { url: 'http://127.0.0.1:4174/__axiom_design_preview', catalogSha256: 'c'.repeat(64) },
+      projectComponents: [{ summary: { name: 'Panel', kind: 'presentational' as const, sourcePath: 'src/Panel.tsx', props: [], fixtures: [] }, statics: [], fixtures: {} }],
+      maxBytes: 16384,
+    }, { page: '会话', url: 'http://localhost:5173/session', via: 'preview' })
+    const payload = JSON.parse(result.content) as { engine: string; diff: { passRatio: number; ratio: number }; verdict: string }
+    expect(payload.engine).toBe('same')
+    expect(payload.diff.passRatio).toBe(0.5)
+    expect(payload.verdict).toBe('pass')
   })
 })
 
@@ -1047,3 +1143,216 @@ function buildCompareSolid(width: number, height: number, color: [number, number
   }
   return data
 }
+
+describe('design_query tool：.ax symbols（1.4 局部组件）', () => {
+  const SYMBOL_SOURCE = JSON.stringify({
+    ax: '1.4',
+    tokens: { 'text-md': { $type: 'dimension', $value: '13px' } },
+    components: {},
+    symbols: {
+      TableRow: {
+        props: { c1: 'string', c2: 'string' },
+        body: [{
+          id: 'sym-row', kind: 'frame', layout: 'horizontal', gap: 8, children: [
+            { id: 'sym-cell-a', kind: 'text', text: { $param: 'c1' }, wrap: 'nowrap' },
+            { id: 'sym-cell-b', kind: 'text', text: { $param: 'c2' }, wrap: 'nowrap' },
+          ],
+        }],
+      },
+    },
+    pages: [{
+      id: 'p-table', name: '订单表', width: 720, height: 480, tree: [
+        { id: 'r1', kind: 'component', name: 'TableRow', props: { c1: '订单 A', c2: '已支付' } },
+        { id: 'r2', kind: 'component', name: 'TableRow', props: { c1: '订单 B', c2: '待发货' } },
+      ],
+    }],
+  })
+  const symbolContent: DesignDocumentContent = {
+    contentBase64: Buffer.from(SYMBOL_SOURCE, 'utf-8').toString('base64'),
+    sha256: 'c'.repeat(64),
+    sizeBytes: SYMBOL_SOURCE.length,
+    modifiedMs: null,
+    unchanged: false,
+  }
+  const tool = createDesignQueryTool(
+    environmentWith((path) => {
+      if (path === '.pen/symbol.ax') return Promise.resolve(symbolContent)
+      return Promise.reject(new Error('not found'))
+    }),
+    { componentInventory: () => [] },
+  )
+
+  it('summary：symbols 段给出契约/body 规模/实例数；页条目列出使用的 symbol 名', async () => {
+    const result = await run({ file: '.pen/symbol.ax' }, tool)
+    const parsed = JSON.parse(result.content) as {
+      pages: Array<{ id: string; symbols: string[] }>
+      symbols: Array<{ name: string; props: Record<string, string>; bodyNodes: number; instances: number }>
+    }
+    expect(parsed.pages[0]).toMatchObject({ id: 'p-table', symbols: ['TableRow'] })
+    expect(parsed.symbols).toEqual([
+      { name: 'TableRow', props: { c1: 'string', c2: 'string' }, bodyNodes: 3, instances: 2 },
+    ])
+  })
+
+  it('node：nodeId 可直接寻址 symbol body 子树并标注所属 symbol', async () => {
+    const result = await run({ file: '.pen/symbol.ax', nodeId: 'sym-cell-a' }, tool)
+    const parsed = JSON.parse(result.content) as { symbol: string; node: { id: string; text: { $param: string } } }
+    expect(parsed.symbol).toBe('TableRow')
+    expect(parsed.node).toMatchObject({ id: 'sym-cell-a', text: { $param: 'c1' } })
+  })
+
+  it('code：symbol 实例发射为局部组件引用（React 输出）', async () => {
+    const result = await run({ file: '.pen/symbol.ax', mode: 'code', page: 1 }, tool)
+    expect(result.content).toContain('const TableRow = ({ c1, c2 }: { c1: string; c2: string }) => (')
+    expect(result.content).toContain("<TableRow c1={'订单 A'} c2={'已支付'} />")
+  })
+})
+
+describe('design_query tool：mode=reconcile 与 symbols（1.4）', () => {
+  // 最小稿：1 个 symbol（TableRow）+ 1 个注册表组件（ApprovalCard），2 个实例。
+  const SYMBOL_RECONCILE_SOURCE = JSON.stringify({
+    ax: '1.4',
+    tokens: {},
+    components: { ApprovalCard: { props: { command: 'string' } } },
+    symbols: { TableRow: { props: { c1: 'string' }, body: [
+      { id: 'row', kind: 'frame', layout: 'horizontal', children: [
+        { id: 'cell', kind: 'text', text: { $param: 'c1' }, wrap: 'nowrap' },
+      ] },
+    ] } },
+    pages: [{
+      id: 'p', name: '页', width: 800, height: 600, tree: [
+        { id: 'r1', kind: 'component', name: 'TableRow', props: { c1: '订单 A' } },
+        { id: 'r2', kind: 'component', name: 'TableRow', props: { c1: '订单 B' } },
+        { id: 'c1', kind: 'component', name: 'ApprovalCard', props: { command: 'run' } },
+      ],
+    }],
+  })
+  const symbolContent: DesignDocumentContent = {
+    contentBase64: Buffer.from(SYMBOL_RECONCILE_SOURCE, 'utf-8').toString('base64'),
+    sha256: 'd'.repeat(64),
+    sizeBytes: SYMBOL_RECONCILE_SOURCE.length,
+    modifiedMs: null,
+    unchanged: false,
+  }
+  const inventory = () => [{ name: 'ApprovalCard', kind: 'presentational' as const, sourcePath: 'components/session/ApprovalCard.tsx', props: [{ name: 'command', type: 'string', required: false, description: '' }], fixtures: [], fixtureProps: {} }]
+
+  // impl 含 TableRow 与 ApprovalCard 两份文件，符号与注册表名都该被识别。
+  // workspace.list 是递归入口：根目录列出 src/ 子目录 + 顶层文件，src 目录再列文件。
+  const withSymbolFiles = (fileNames: string[]) => {
+    const tableRowPath = 'src/OrderTable.tsx'
+    const approvalPath = 'src/ApprovalCard.tsx'
+    return {
+      list: async (path?: string) => {
+        if (!path || path === '.') {
+          return { entries: [{ name: 'src', kind: 'directory' as const, path: 'src', size: 0, modifiedMs: 0 }], truncated: false }
+        }
+        if (path === 'src') {
+          return {
+            entries: fileNames.map((name) => ({ name, kind: 'file' as const, path: `src/${name}`, size: 100, modifiedMs: 0 })),
+            truncated: false,
+          }
+        }
+        return { entries: [], truncated: false }
+      },
+      readText: async (file: string) => {
+        if (file === tableRowPath) {
+          return { content: "import { TableRow } from './TableRow'\nexport const Page = () => <TableRow c1='x' />", sha256: 'e'.repeat(64), truncated: false }
+        }
+        if (file === approvalPath) {
+          return { content: "import { ApprovalCard } from '@/components/ApprovalCard'\nexport const X = () => <ApprovalCard command='go' />", sha256: 'f'.repeat(64), truncated: false }
+        }
+        return Promise.reject(new Error('not found'))
+      },
+    }
+  }
+
+  const buildTool = (fileNames: string[]) => createDesignQueryTool(
+    {
+      ...environmentWith((path) => {
+        if (path === '.pen/symbol-reconcile.ax') return Promise.resolve(symbolContent)
+        return Promise.reject(new Error('not found'))
+      }),
+      workspace: withSymbolFiles(fileNames) as unknown as AgentEnvironment['workspace'],
+    } as unknown as AgentEnvironment,
+    { componentInventory: inventory },
+  )
+
+  it('symbol 实例在 impl 有同名：进 symbols[].present=true，不进 missingInImplementation', async () => {
+    const tool = buildTool(['OrderTable.tsx', 'ApprovalCard.tsx'])
+    const result = await run({ file: '.pen/symbol-reconcile.ax', mode: 'reconcile', implementation: ['src'] }, tool)
+    const parsed = JSON.parse(result.content) as {
+      symbols: Array<{ name: string; present: boolean; files: string[] }>
+      missingInImplementation: Array<{ component: string }>
+      matched: Array<{ component: string }>
+    }
+    const tableRowSymbol = parsed.symbols.find((entry) => entry.name === 'TableRow')
+    expect(tableRowSymbol).toMatchObject({ name: 'TableRow', present: true, files: ['src/OrderTable.tsx'] })
+    expect(parsed.missingInImplementation.find((entry) => entry.component === 'TableRow')).toBeUndefined()
+    expect(parsed.matched.find((entry) => entry.component === 'ApprovalCard')).toBeDefined()
+  })
+
+  it('symbol 实例在 impl 无同名：symbols[].present=false，不进 missingInImplementation（默认不验证符号实现）', async () => {
+    const tool = buildTool(['ApprovalCard.tsx'])
+    const result = await run({ file: '.pen/symbol-reconcile.ax', mode: 'reconcile', implementation: ['src'] }, tool)
+    const parsed = JSON.parse(result.content) as {
+      symbols: Array<{ name: string; present: boolean; files: string[] }>
+      missingInImplementation: Array<{ component: string }>
+    }
+    const tableRowSymbol = parsed.symbols.find((entry) => entry.name === 'TableRow')
+    expect(tableRowSymbol).toMatchObject({ name: 'TableRow', present: false, files: [] })
+    // symbol 默认「不验证 impl 必有同名 import」——避免双向误报
+    expect(parsed.missingInImplementation.find((entry) => entry.component === 'TableRow')).toBeUndefined()
+  })
+
+  it('无 symbols 的稿：payload 不出 symbols 段（保持旧契约）', async () => {
+    const noSymbolSource = JSON.stringify({
+      ax: '1.4', tokens: {}, components: { ApprovalCard: { props: { command: 'string' } } },
+      pages: [{ id: 'p', width: 400, height: 300, tree: [
+        { id: 'c1', kind: 'component', name: 'ApprovalCard', props: { command: 'go' } },
+      ] }],
+    })
+    const noSymbolContent: DesignDocumentContent = {
+      contentBase64: Buffer.from(noSymbolSource, 'utf-8').toString('base64'),
+      sha256: 'a'.repeat(64), sizeBytes: noSymbolSource.length, modifiedMs: null, unchanged: false,
+    }
+    const tool = createDesignQueryTool(
+      {
+        ...environmentWith((path) => path === '.pen/no-symbol.ax' ? Promise.resolve(noSymbolContent) : Promise.reject(new Error('not found'))),
+        workspace: {
+          list: async () => ({ entries: [{ name: 'ApprovalCard.tsx', kind: 'file', path: 'src/ApprovalCard.tsx', size: 100, modifiedMs: 0 }], truncated: false }),
+          readText: async () => ({ content: "export const X = () => null", sha256: 'b'.repeat(64), truncated: false }),
+        },
+      } as unknown as AgentEnvironment,
+      { componentInventory: inventory },
+    )
+    const result = await run({ file: '.pen/no-symbol.ax', mode: 'reconcile', implementation: ['src'] }, tool)
+    const parsed = JSON.parse(result.content) as { symbols?: unknown }
+    expect(parsed.symbols).toBeUndefined()
+  })
+})
+
+describe('axKindHistogram（summary 的 per-page 密度直方图）', () => {
+  it('覆盖全部节点种类并递归 children/slot', () => {
+    const nodes = [
+      { id: 'a', kind: 'frame', children: [{ id: 'b', kind: 'icon', name: 'x', size: 16 }] },
+      { id: 'c', kind: 'text', text: 'x', wrap: 'nowrap' },
+      { id: 'd', kind: 'rect', width: 1, height: 1 },
+      { id: 'e', kind: 'ellipse', width: 1, height: 1 },
+      { id: 'f', kind: 'path', geometry: 'M0 0h1v1z' },
+      { id: 'g', kind: 'image', asset: 'a.png' },
+      { id: 'h', kind: 'component', name: 'X' },
+      { id: 'i', kind: 'part', part: 'divider' },
+      { id: 'j', kind: 'overlay', anchor: 'center', children: [] },
+      { id: 'k', kind: 'frame', slot: [{ id: 'l', kind: 'text', text: 'y', wrap: 'nowrap' }] },
+    ]
+    expect(axKindHistogram(nodes as never)).toEqual({
+      text: 2, frame: 2, icon: 1, rect: 1, ellipse: 1, path: 1, image: 1, component: 1, part: 1, overlay: 1,
+    })
+  })
+
+  it('summary 的 pages 项带 density 字段（模型可读的 per-page 形态）', async () => {
+    const result = await run({ file: '.pen/axiom.ax' })
+    const parsed = JSON.parse(result.content) as { pages: Array<{ density?: Record<string, number> }> }
+    expect(parsed.pages[0]?.density).toMatchObject({ text: expect.any(Number), frame: expect.any(Number), component: expect.any(Number) })
+  })
+})

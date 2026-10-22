@@ -9,6 +9,8 @@ import type {
   ToolCall,
 } from './types'
 import {
+  executePreparedToolCall,
+  executeToolCalls,
   applyAfterToolCall,
   prepareToolCall,
   ToolExecutionTimeoutError,
@@ -74,14 +76,18 @@ describe('waitForApproval', () => {
   it('approves a tool that does not require approval when no handler exists', async () => {
     const noApproval = { ...prepared, tool: makeTool({ requiresApproval: false }) }
     const result = await waitForApproval(noApproval, makeAssistant(), makeContext([], []), 'r', new AbortController().signal, undefined)
-    expect(result).toEqual({ approved: true })
+    expect(result).toEqual({ approved: true, approvalSource: 'not_required' })
   })
 
   it('surfaces the approval decision and lease', async () => {
     const beforeToolCall: BeforeToolCall = async () => ({ decision: 'approved', approvalLease: 'lease-1' })
     const spy = vi.fn(beforeToolCall)
     const result = await waitForApproval(prepared, makeAssistant(), makeContext([], []), 'r', new AbortController().signal, spy)
-    expect(result).toEqual({ approved: true, approvalLease: 'lease-1' })
+    expect(result).toEqual({
+      approved: true,
+      approvalLease: 'lease-1',
+      approvalSource: 'interactive',
+    })
     expect(spy).toHaveBeenCalledTimes(1)
     expect(spy.mock.calls[0]?.[0].toolCallId).toBe('call-1')
   })
@@ -293,5 +299,162 @@ describe('ToolExecutionTimeoutError / executePreparedToolCall', () => {
       ))
     expect(outcome.isError).toBe(true)
     expect(outcome.result.content).toContain('新增工具无效')
+  })
+})
+
+
+describe('父工具调用取消作用域', () => {
+  it('硬超时中止本次委托信号，不取消父会话与另一次调用', async () => {
+    const parent = new AbortController()
+    let childSignal: AbortSignal | undefined
+    const delegate = vi.fn(async (_request, context) => {
+      childSignal = context.signal
+      return await new Promise<never>(() => undefined)
+    })
+    const tool = makeTool({ execute: async (_input, context) => {
+      if (!context.delegateAgent) throw new Error('缺委托端口')
+      await context.delegateAgent({ kind: 'explore', task: 'x' })
+      return { content: 'late' }
+    } })
+    const outcome = await executePreparedToolCall(
+      { call: makeCall(), tool, input: {}, approvalState: 'not_required' },
+      makeAssistant(), makeContext([tool]), 'run', parent.signal, sink().emit, undefined, 10, delegate,
+    )
+    expect(outcome.isError).toBe(true)
+    expect(outcome.result.content).toContain(new ToolExecutionTimeoutError('echo').message)
+    expect(childSignal?.aborted).toBe(true)
+    expect(parent.signal.aborted).toBe(false)
+    const nextTool = makeTool()
+    const next = await executePreparedToolCall(
+      { call: makeCall('echo', 'call-2'), tool: nextTool, input: {}, approvalState: 'not_required' },
+      makeAssistant(), makeContext([nextTool]), 'run', parent.signal, sink().emit, undefined, 100,
+    )
+    expect(next.isError).toBe(false)
+  })
+})
+
+describe('executeToolCalls · state guard（design §8.4）', () => {
+  const uiTool = (name: string, executed: string[], overrides: Partial<AgentTool> = {}): AgentTool =>
+    makeTool({
+      name,
+      label: name,
+      execute: async () => {
+        executed.push(name)
+        return { content: `${name} ok` }
+      },
+      ...overrides,
+    })
+
+  // 批次执行模式刻意给 'parallel'：截断必须在"并发执行整批"的路径上也生效。
+  const runBatch = async (
+    tools: AgentTool[],
+    calls: ToolCall[],
+    signal: AbortSignal = new AbortController().signal,
+  ) => {
+    const { emit, events } = sink()
+    const batch = await executeToolCalls(
+      { ...makeAssistant(), toolCalls: calls },
+      makeContext(tools, tools.map((tool) => tool.name)),
+      'run',
+      signal,
+      emit,
+      'parallel',
+      1024 * 1024,
+      undefined,
+      undefined,
+    )
+    return { batch, events }
+  }
+
+  it('写动作之后的调用被截断为错误结果，并如实报告跳过数量', async () => {
+    const executed: string[] = []
+    const tools = [
+      uiTool('ui_snapshot', executed),
+      uiTool('ui_click', executed, { invalidatesPageState: true }),
+    ]
+    const calls = [makeCall('ui_snapshot', 'c1'), makeCall('ui_click', 'c2'), makeCall('ui_snapshot', 'c3')]
+    const { batch } = await runBatch(tools, calls)
+
+    expect(executed).toEqual(['ui_snapshot', 'ui_click'])
+    // 不变量：每个 tool_call 仍有且只有一个 tool_result，顺序与调用一致。
+    expect(batch.messages.map((message) => message.toolCallId)).toEqual(['c1', 'c2', 'c3'])
+    expect(batch.messages[0]?.isError).toBe(false)
+    expect(batch.messages[1]?.isError).toBe(false)
+    const truncated = batch.messages[2]
+    expect(truncated?.isError).toBe(true)
+    expect(truncated?.content).toContain('ui_click')
+    expect(truncated?.content).toContain('被截断')
+    expect(truncated?.content).toContain('跳过 1 个后续调用')
+    expect(truncated?.content).toContain('重新')
+    expect(batch.allTerminate).toBe(false)
+  })
+
+  it('同一响应连发两个写动作时只执行第一个', async () => {
+    const executed: string[] = []
+    const tools = [
+      uiTool('ui_click', executed, { invalidatesPageState: true, executionMode: 'sequential' }),
+    ]
+    const calls = [makeCall('ui_click', 'c1'), makeCall('ui_click', 'c2')]
+    const { batch } = await runBatch(tools, calls)
+
+    expect(executed).toEqual(['ui_click'])
+    expect(batch.messages).toHaveLength(2)
+    expect(batch.messages[1]?.isError).toBe(true)
+    expect(batch.messages[1]?.content).toContain('ui_click')
+    expect(batch.messages[1]?.content).toContain('跳过 1 个后续调用')
+  })
+
+  it('截断覆盖写动作之后的全部调用', async () => {
+    const executed: string[] = []
+    const tools = [
+      uiTool('ui_snapshot', executed),
+      uiTool('ui_click', executed, { invalidatesPageState: true }),
+    ]
+    const calls = [
+      makeCall('ui_snapshot', 'c1'),
+      makeCall('ui_click', 'c2'),
+      makeCall('ui_snapshot', 'c3'),
+      makeCall('ui_click', 'c4'),
+    ]
+    const { batch } = await runBatch(tools, calls)
+
+    expect(executed).toEqual(['ui_snapshot', 'ui_click'])
+    expect(batch.messages).toHaveLength(4)
+    expect(batch.messages[2]?.content).toContain('跳过 2 个后续调用')
+    expect(batch.messages[3]?.content).toContain('跳过 2 个后续调用')
+    expect(batch.messages[3]?.isError).toBe(true)
+  })
+
+  it('不含写动作的批次不做任何截断', async () => {
+    const executed: string[] = []
+    const tools = [uiTool('ui_snapshot', executed), uiTool('ui_find', executed)]
+    const calls = [makeCall('ui_snapshot', 'c1'), makeCall('ui_find', 'c2')]
+    const { batch } = await runBatch(tools, calls)
+
+    expect(executed).toEqual(['ui_snapshot', 'ui_find'])
+    expect(batch.messages).toHaveLength(2)
+    expect(batch.messages.every((message) => message.isError === false)).toBe(true)
+    expect(batch.messages.some((message) => message.content.includes('被截断'))).toBe(false)
+  })
+
+  it('运行在写动作之前就被取消时按中断记账，不谎报页面已改变', async () => {
+    const executed: string[] = []
+    const tools = [
+      uiTool('ui_snapshot', executed),
+      uiTool('ui_click', executed, { invalidatesPageState: true }),
+    ]
+    const calls = [makeCall('ui_snapshot', 'c1'), makeCall('ui_click', 'c2'), makeCall('ui_snapshot', 'c3')]
+    const controller = new AbortController()
+    controller.abort()
+    const { batch } = await runBatch(tools, calls, controller.signal)
+
+    expect(executed).toEqual([])
+    expect(batch.messages).toHaveLength(3)
+    expect(
+      batch.messages
+        .filter((message) => message.content.includes('已取消或中断'))
+        .map((message) => message.toolCallId),
+    ).toEqual(['c2', 'c3'])
+    expect(batch.messages.some((message) => message.content.includes('被截断'))).toBe(false)
   })
 })

@@ -30,10 +30,11 @@ export const createToolError = (message: string): AgentToolResult => ({ content:
  * 失败关闭，而 assistant(tool_calls) 已先行落库，持久历史从此缺少对应 tool 消息，
  * 后续所有模型请求都会被 Provider 以 400（insufficient tool messages）拒绝。
  * contentBlocks 的图片（browser/computer 截图的 base64）不受 256 KiB 文本内联上限
- * 约束，是唯一能把单条消息顶破持久化上限的载荷，必须在此收口。取 1.5 MiB，
- * 为 Rust DTO 信封与 JSON 编码差异留足余量。
+ * 约束，是唯一能把单条消息顶破持久化上限的载荷，必须在此收口。Rust 侧单条消息
+ * content_json 上限为 1 MiB（session_repository/mod.rs MAX_MESSAGE_BYTES），
+ * 因此取 960 KiB，为 codecVersion 信封留余量；不得高于 Rust 单条上限。
  */
-const MAX_TOOL_RESULT_MESSAGE_BYTES = 1536 * 1024
+const MAX_TOOL_RESULT_MESSAGE_BYTES = 960 * 1024
 
 const messageByteLength = (message: ToolResultMessage): number =>
   byteLength(JSON.stringify(message))
@@ -184,10 +185,12 @@ export const emitToolResultMessages = async (
 /**
  * 为"未执行/已跳过"的工具调用批量生成失败结果消息，
  * 维护"每个 tool_call 必须有对应 tool_result"的 Provider 上下文不变量。
+ * reason 可以是统一文案，也可以按调用逐条生成：state guard 截断只覆盖首个页面写
+ * 动作之后的调用，同一批次里更早被取消的调用仍按"已取消或中断"记账。
  */
 export const failToolCalls = async (
   calls: ToolCall[],
-  reason: string,
+  reason: string | ((call: ToolCall) => string),
   runId: string,
   emit: AgentEventSink,
   maxInlineToolResultBytes: number,
@@ -205,7 +208,7 @@ export const failToolCalls = async (
       approvalState: 'not_required',
       recoveryPolicy: 'never',
     })
-    const result = createToolError(reason)
+    const result = createToolError(typeof reason === 'function' ? reason(call) : reason)
     await emit({
       type: 'tool_execution_end',
       runId,

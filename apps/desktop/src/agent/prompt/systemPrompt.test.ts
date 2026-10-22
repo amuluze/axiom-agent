@@ -96,23 +96,43 @@ describe('systemPromptSections', () => {
       expect(buildCapabilitySection('subagent:review')).toContain('inspect_subagent')
     })
 
+    it('ui-test:read 段声明只读边界与 discover 激活路径', () => {
+      const section = buildCapabilitySection('ui-test:read')
+      expect(section).toContain('# 安全边界')
+      expect(section).toContain('discover_agent_tools')
+      expect(section).toContain('ui_snapshot')
+      expect(section).toContain('全程只读')
+      expect(section).toContain('不取第一个候选')
+    })
+
+    it('ui-test:write 段声明写动作边界、逐次审批与 ref 失效', () => {
+      const section = buildCapabilitySection('ui-test:write')
+      expect(section).toContain('# 安全边界')
+      expect(section).toContain('discover_agent_tools')
+      expect(section).toContain('ui_navigate')
+      expect(section).toContain('逐次批准')
+      expect(section).toContain('旧 ref')
+      expect(section).toContain('不承担正式回归')
+    })
+
+    it('api-test:request 段声明逐次审批、出网策略与 Secret 引用', () => {
+      const section = buildCapabilitySection('api-test:request')
+      expect(section).toContain('# 安全边界')
+      expect(section).toContain('discover_agent_tools')
+      expect(section).toContain('api_request')
+      expect(section).toContain('逐次批准')
+      expect(section).toContain('公网明文 HTTP 恒拒')
+      expect(section).toContain('私网')
+      expect(section).toContain('secretId')
+      expect(section).toContain('响应正文不回灌会话')
+    })
+
     it('subagent:explore 段指引预算中止处理：partial 收口或收窄 scope 重试', () => {
       const section = buildCapabilitySection('subagent:explore')
       expect(section).toContain('探索子 Agent 有固定预算')
       expect(section).toContain('把 scope 收窄到未覆盖部分后重新委派')
     })
 
-    it('web:browser 段含调度指引：视觉/交互验证优先内置 browser，排除替代通道', () => {
-      const section = buildCapabilitySection('web:browser')
-      expect(section).toContain('优先使用内置 browser')
-      // 替代通道的排除要点名：curl 看不到渲染、web_fetch 够不到 localhost、
-      // computer 是用户真实桌面、验证责任不得交还用户。
-      expect(section).toContain('curl 只拿得到 HTML 文本')
-      expect(section).toContain('web_fetch 只达公网够不到 localhost')
-      expect(section).toContain('不要让用户自己打开浏览器查看')
-      // 未启用时不许用 curl 伪装验证完成。
-      expect(section).toContain('不要转用 curl 伪装验证完成')
-    })
 
     it('subagent:review 段指引预算中止处理：partial 收口或收窄 scope 重审', () => {
       const section = buildCapabilitySection('subagent:review', ['subagent:review', 'workspace:execute'])
@@ -292,6 +312,85 @@ describe('systemPromptSections', () => {
       expect(prompt).toContain('# 工具发现')
     })
 
+    // 标准模式不注入访问模式段：写/执行能力段已覆盖逐次审批语义，且标准会话的
+    // 提示词须与历史版本逐字节一致（SPV 指纹绑定）。
+    it('omits the access-mode section in standard mode', () => {
+      expect(buildSessionBasePrompt({ capabilities: ['workspace:read'] }))
+        .not.toContain('# 访问模式')
+      expect(buildSessionBasePrompt({
+        capabilities: ['workspace:read'],
+        accessMode: 'standard',
+      })).not.toContain('# 访问模式')
+    })
+
+    it('states the four full-access consequences the model would otherwise guess wrong', () => {
+      const prompt = buildSessionBasePrompt({
+        capabilities: ['workspace:write', 'workspace:execute'],
+        workspacePath: '/repo/demo',
+        accessMode: 'no-approval',
+      })
+      const section = prompt.slice(prompt.indexOf('# 访问模式'))
+      expect(section).toContain('完全访问')
+      // 不再询问、不经沙箱、可写工作区外、结构化写与 Bash 的保护边界不同。
+      expect(section).toContain('不再弹出审批卡片')
+      expect(section).toContain('OS 沙箱外运行')
+      expect(section).toContain('绝对路径')
+      expect(section).toContain('结构化写工具仍拒绝凭据与 Axiom 数据路径')
+      expect(section).toContain('bash 不受该路径保护')
+      expect(section).toContain('这不是完整安全边界')
+      // 汇报口径：不得臆造「已获批准」，也不得因无卡片判定失败。
+      expect(section).toContain('不要提及「已获批准」')
+      expect(section).toContain('不要因为没有看到审批卡片就判定调用失败')
+      expect(prompt.indexOf('# 访问模式')).toBeGreaterThan(prompt.indexOf('# 安全边界'))
+      expect(prompt.indexOf('# 授权上下文')).toBeGreaterThan(prompt.indexOf('# 访问模式'))
+    })
+
+    // 能力段的「必须逐次批准」在完全访问下与事实相反，且「不得声称未获批准的写入
+    // 已经完成」会诱发模型把已成功落盘的写入误报为失败。两条措辞都必须按档分化。
+    it('phases the write and execute boundaries by access mode instead of asserting approval', () => {
+      const prompt = buildSessionBasePrompt({
+        capabilities: ['workspace:write', 'workspace:execute'],
+        accessMode: 'standard',
+      })
+      expect(prompt).toContain('标准模式下每次写入都需用户逐次批准')
+      expect(prompt).toContain('完全访问模式下写入自动生效')
+      expect(prompt).toContain('标准模式下每次命令都需用户逐次批准')
+      expect(prompt).toContain('语法减速带而非安全边界')
+      expect(prompt).not.toContain('不得声称未获批准的写入已经完成')
+    })
+
+    it('injects <available_agents> right after the AGENTS.md body, before skills and docs', () => {
+      const prompt = buildSessionBasePrompt({
+        capabilities: ['workspace:read'],
+        projectContext: '## 约定\n使用 pnpm',
+        projectAgents: { entries: ['apps/desktop/AGENTS.md'], truncated: false },
+        projectSkills: projectSkillsSnapshot(),
+        projectDocs: {
+          entries: [{ role: 'domain', title: '领域约束', relativePath: '.specs/domain/a.md', revision: 'a'.repeat(64) }],
+          diagnostics: [],
+          truncatedEntryCount: 0, truncatedRootCount: 0, archivedCount: 0, nestedDirCount: 0,
+      failedRootCount: 0,
+        },
+      })
+      const agentsBody = prompt.indexOf('## 约定')
+      const agentsBlock = prompt.indexOf('<available_agents>')
+      const skillsBlock = prompt.indexOf('<available_skills>')
+      const docsBlock = prompt.indexOf('<available_docs>')
+      // 索引是根 AGENTS.md「子目录索引」一节的机器可读形态，必须紧贴正文读。
+      expect(agentsBlock).toBeGreaterThan(agentsBody)
+      expect(skillsBlock).toBeGreaterThan(agentsBlock)
+      expect(docsBlock).toBeGreaterThan(skillsBlock)
+      expect(prompt).toContain('<agents-file path="apps/desktop/AGENTS.md"/>')
+    })
+
+    it('omits <available_agents> when the inventory is empty', () => {
+      const prompt = buildSessionBasePrompt({
+        capabilities: ['workspace:read'],
+        projectAgents: { entries: [], truncated: false },
+      })
+      expect(prompt).not.toContain('<available_agents>')
+    })
+
     it('renders builtin skills in 项目上下文 even when no AGENTS.md is loaded', () => {
       const prompt = buildSessionBasePrompt({ capabilities: ['workspace:read'] })
       expect(prompt).toContain('# 项目上下文')
@@ -347,8 +446,10 @@ describe('systemPromptSections', () => {
         projectContext: '## 约定\n使用 pnpm',
         projectSkills: projectSkillsSnapshot(),
         projectDocs: {
-          entries: [{ role: 'domain', title: '领域约束', relativePath: '.specs/domain/a.md' }],
-          truncatedEntryCount: 0, truncatedRootCount: 0, archivedCount: 0,
+          entries: [{ role: 'domain', title: '领域约束', relativePath: '.specs/domain/a.md', revision: 'a'.repeat(64) }],
+          diagnostics: [],
+          truncatedEntryCount: 0, truncatedRootCount: 0, archivedCount: 0, nestedDirCount: 0,
+      failedRootCount: 0,
         },
       })
       const skillsBlock = prompt.indexOf('<available_skills>')
@@ -362,8 +463,10 @@ describe('systemPromptSections', () => {
       const prompt = buildSessionBasePrompt({
         capabilities: ['workspace:read'],
         projectDocs: {
-          entries: [{ role: 'doc', title: '实现现状', relativePath: '.docs/a.md' }],
-          truncatedEntryCount: 0, truncatedRootCount: 0, archivedCount: 0,
+          entries: [{ role: 'doc', title: '实现现状', relativePath: '.docs/a.md', revision: 'a'.repeat(64) }],
+          diagnostics: [],
+          truncatedEntryCount: 0, truncatedRootCount: 0, archivedCount: 0, nestedDirCount: 0,
+      failedRootCount: 0,
         },
       })
       expect(prompt).toContain('# 项目上下文')
@@ -373,7 +476,7 @@ describe('systemPromptSections', () => {
     it('omits <available_docs> when the inventory is empty', () => {
       const prompt = buildSessionBasePrompt({
         capabilities: ['workspace:read'],
-        projectDocs: { entries: [], truncatedEntryCount: 0, truncatedRootCount: 0, archivedCount: 0 },
+        projectDocs: { entries: [], diagnostics: [], truncatedEntryCount: 0, truncatedRootCount: 0, archivedCount: 0, nestedDirCount: 0, failedRootCount: 0 },
       })
       expect(prompt).not.toContain('<available_docs>')
     })
@@ -432,6 +535,7 @@ describe('systemPromptSections', () => {
   it('exposes a version number and a discovery notice', () => {
     expect(typeof SYSTEM_PROMPT_VERSION).toBe('number')
     expect(TOOL_DISCOVERY_NOTICE).toContain('discover_agent_tools')
+    expect(TOOL_DISCOVERY_NOTICE).toContain('read/ls/grep/find 默认可用')
     expect(TOOL_DISCOVERY_NOTICE).toContain('# 工具发现')
   })
 

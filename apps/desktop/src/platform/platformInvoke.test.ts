@@ -149,16 +149,16 @@ describe('platform artifacts (content-addressed storage IPC)', () => {
 describe('platform runtime info', () => {
   it('reads native runtime info when hosted by Tauri', async () => {
     mocks.isTauriRuntime.mockReturnValue(true)
-    mocks.invoke.mockResolvedValueOnce({ appName: 'Axiom', appVersion: '0.1.0', operatingSystem: 'macos', architecture: 'aarch64' })
+    mocks.invoke.mockResolvedValueOnce({ appName: 'Axiom', appVersion: '0.1.0', operatingSystem: 'macos', architecture: 'aarch64', sandboxAvailable: true })
     await expect(getRuntimeInfo()).resolves.toEqual({
-      appName: 'Axiom', appVersion: '0.1.0', operatingSystem: 'macos', architecture: 'aarch64',
+      appName: 'Axiom', appVersion: '0.1.0', operatingSystem: 'macos', architecture: 'aarch64', sandboxAvailable: true,
     })
     expect(mocks.invoke).toHaveBeenCalledWith('get_runtime_info')
   })
 
   it('falls back to browser demo metadata outside the desktop runtime', async () => {
     mocks.isTauriRuntime.mockReturnValue(false)
-    await expect(getRuntimeInfo()).resolves.toMatchObject({ appName: 'Axiom', appVersion: 'browser-dev' })
+    await expect(getRuntimeInfo()).resolves.toMatchObject({ appName: 'Axiom', appVersion: 'browser-dev', sandboxAvailable: false })
     expect(mocks.invoke).not.toHaveBeenCalled()
   })
 })

@@ -40,6 +40,10 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
+use crate::browser_locator::{
+    resolve_locator, test_id_selector, AxCandidate, LocatorResolution, LocatorSpec,
+};
+use crate::ui_test::{UiElementFacts, UiReadSnapshot};
 use crate::workspace_access::WorkspaceAccessState;
 
 use base64::Engine as _;
@@ -69,6 +73,8 @@ const WAIT_POLL_INTERVAL_MS: u64 = 250;
 /// find 默认/最大返回行数与单行截断（行内含角色与状态注记，300 字符足够）。
 const DEFAULT_FIND_LIMIT: usize = 20;
 const MAX_FIND_LIMIT: usize = 50;
+/// DOM 查询单次最多回取的节点数。超过即按上限计数：歧义结论不变（已 ≥ 2），只是 total 被截断。
+const MAX_DOM_LOCATOR_NODES: usize = 50;
 const MAX_FIND_LINE_CHARS: usize = 300;
 
 const MAX_DOWNLOAD_LIST: usize = 50;
@@ -80,7 +86,20 @@ const MAX_DOWNLOAD_CONTENT_BYTES: usize = 200 * 1024;
 /// 模型/IDE/系统服务共跑时 Chrome 首次初始化可达 20s+。25s 覆盖后重试成本
 /// 可接受（复用运行时返回零等待，失败路径只多等）。
 const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(25);
+/// 浏览器命令的分段标记。只在 e2e 构建里输出，且走 **stdout**（不是 IPC）——
+/// 这一点是关键：主线程被阻塞时，连同步 Tauri 命令写的标记都落不下来，只有 stdout 还能说话。
+#[cfg(feature = "e2e")]
+fn trace_phase(label: &str) {
+    println!("[browser] {label}");
+}
+
+#[cfg(not(feature = "e2e"))]
+fn trace_phase(_label: &str) {}
+
 const CDP_COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
+/// DevTools WebSocket 握手超时：引擎接受了 TCP 但握手不完成时，缺这条边界会让
+/// `browser_command` **永不返回**（命令卡住、面板无错可报）。与命令超时同档。
+const CDP_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 const NAVIGATE_LOAD_TIMEOUT: Duration = Duration::from_secs(15);
 const TERMINATION_GRACE_MS: u64 = 500;
 /// 残留实例清理宽限：SIGTERM 后给 Chrome 落盘 profile 的时间（秒退自愈路径）。
@@ -97,14 +116,23 @@ const TABS_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const STATUS_WATCH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Chromium 系浏览器 bundle 名（macOS 可执行文件名与 bundle 名一致的约定）。
-const BROWSER_EXECUTABLE_NAMES: &[&str] = &["Google Chrome", "Chromium", "Microsoft Edge", "Brave Browser"];
+const BROWSER_EXECUTABLE_NAMES: &[&str] = &[
+    "Google Chrome",
+    "Chromium",
+    "Microsoft Edge",
+    "Brave Browser",
+];
 
 /// display 名 → Linux 二进制名集合（auto 探测按此序取第一个已安装者；路径
 /// 前缀与 /opt vendor 落点见 `engine_candidate_paths` 的 linux 分支）。
 #[cfg(target_os = "linux")]
 fn linux_engine_binaries(display_name: &str) -> &'static [&'static str] {
     match display_name {
-        "Google Chrome" => &["google-chrome-stable", "google-chrome-beta", "google-chrome"],
+        "Google Chrome" => &[
+            "google-chrome-stable",
+            "google-chrome-beta",
+            "google-chrome",
+        ],
         "Chromium" => &["chromium", "chromium-browser"],
         "Microsoft Edge" => &["microsoft-edge-stable", "microsoft-edge"],
         "Brave Browser" => &["brave-browser", "brave"],
@@ -116,8 +144,8 @@ fn linux_engine_binaries(display_name: &str) -> &'static [&'static str] {
 // 请求 / 响应契约（TS 侧 platform/browserSession.ts 逐字镜像）
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BrowserSpawnConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -136,31 +164,50 @@ fn default_headless() -> bool {
     true
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, specta::Type)]
 // rename_all 重命名变体名（action 判别值），rename_all_fields 重命名变体字段
 // （tabId/imageBase64 等）——枚举级 rename_all 不会作用于字段，漏掉会让 TS 侧
 // camelCase 载荷反序列化直接失败。
-#[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "action",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum BrowserCommandRequest {
     Detect,
-    ValidateExecutable { path: String },
+    ValidateExecutable {
+        path: String,
+    },
     Status,
-    EnsureRunning { config: BrowserSpawnConfig },
+    EnsureRunning {
+        config: BrowserSpawnConfig,
+    },
     Shutdown,
     /// 清理隔离 profile 的数据（设置页操作，不暴露给模型）：cache 档删 HTTP
     /// 缓存/Cache Storage/Service Worker，保留 Cookie 与站点登录态；all 档删除
     /// 整个 profile 重建（不可撤销）。浏览器运行中拒绝——文件级清理必须先关闭。
-    ClearProfileData { mode: String },
+    ClearProfileData {
+        mode: String,
+    },
     Tabs,
     NewTab {
         #[serde(default)]
         url: Option<String>,
     },
-    CloseTab { tab_id: String },
-    ActivateTab { tab_id: String },
+    CloseTab {
+        tab_id: String,
+    },
+    ActivateTab {
+        tab_id: String,
+    },
     /// 双击：与 click 同一坐标注入管线（getBoxModel 中心点），第二段
     /// Input.dispatchMouseEvent 携带 clickCount=2。
-    DblClick { tab_id: String, r#ref: i64 },
+    DblClick {
+        tab_id: String,
+        #[specta(type = specta_typescript::Number)]
+        r#ref: i64,
+    },
     /// 视口覆盖（响应式/设备尺寸测试）：width+height 同时给出 = 设置
     /// Emulation.setDeviceMetricsOverride；同时缺省 = 清除覆盖回自然视口。
     SetViewport {
@@ -174,19 +221,37 @@ pub enum BrowserCommandRequest {
     /// 下载落盘（下载动作无需先武装，点击下载链接触发即可）。
     Downloads {
         #[serde(default)]
+        #[specta(type = Option<specta_typescript::Number>)]
         limit: Option<usize>,
     },
     /// 下载文件文本读回（仅 UTF-8 文本，200 KiB 截断；路径钉死在下载目录内）。
-    ReadDownload { name: String },
-    Navigate { tab_id: String, url: String },
-    Snapshot { tab_id: String },
-    Click { tab_id: String, r#ref: i64 },
-    Fill { tab_id: String, r#ref: i64, text: String },
+    ReadDownload {
+        name: String,
+    },
+    Navigate {
+        tab_id: String,
+        url: String,
+    },
+    Snapshot {
+        tab_id: String,
+    },
+    Click {
+        tab_id: String,
+        #[specta(type = specta_typescript::Number)]
+        r#ref: i64,
+    },
+    Fill {
+        tab_id: String,
+        #[specta(type = specta_typescript::Number)]
+        r#ref: i64,
+        text: String,
+    },
     /// 原生 `<select>` 的显式选择：focus + 逐字符 type-ahead（关闭态 select 的
     /// 既有 Chrome 行为，前缀累积选中并发 change），选后回读 AX 值自校验。
     /// fill 的 focus+insertText 管线对 select 无效，这是补齐的表单原语。
     SelectOption {
         tab_id: String,
+        #[specta(type = specta_typescript::Number)]
         r#ref: i64,
         text: String,
     },
@@ -194,12 +259,14 @@ pub enum BrowserCommandRequest {
     /// 已授权工作区内——模型不能把宿主任意文件（密钥库/凭据）喂给页面输入。
     UploadFile {
         tab_id: String,
+        #[specta(type = specta_typescript::Number)]
         r#ref: i64,
         path: String,
     },
     TypeText {
         tab_id: String,
         #[serde(default)]
+        #[specta(type = Option<specta_typescript::Number>)]
         r#ref: Option<i64>,
         text: String,
     },
@@ -207,11 +274,13 @@ pub enum BrowserCommandRequest {
         tab_id: String,
         key: String,
         #[serde(default)]
+        #[specta(type = Option<specta_typescript::Number>)]
         r#ref: Option<i64>,
     },
     Scroll {
         tab_id: String,
         #[serde(default)]
+        #[specta(type = Option<specta_typescript::Number>)]
         r#ref: Option<i64>,
         #[serde(default)]
         delta_x: Option<f64>,
@@ -222,11 +291,16 @@ pub enum BrowserCommandRequest {
         tab_id: String,
         /// 可选元素锚点：截取该 ref 节点的边界区域而非整页（视觉验证元素状态）。
         #[serde(default)]
+        #[specta(type = Option<specta_typescript::Number>)]
         r#ref: Option<i64>,
     },
     /// 悬停在 ref 节点上（触发菜单/tooltip 后再 snapshot）。与 click 同一
     /// ref→坐标管线，只是 mouseMoved 不携带按键。
-    Hover { tab_id: String, r#ref: i64 },
+    Hover {
+        tab_id: String,
+        #[specta(type = specta_typescript::Number)]
+        r#ref: i64,
+    },
     /// 等待页面就绪：text（轮询 AX 树做子串匹配）与 duration_ms（固定等待）
     /// 至少给一个；都给时先等文本、未命中再耗满时长。SPA 点击后过早 snapshot
     /// 会拿到陈旧树，wait 是对齐 zcode/ChatGPT 浏览器控制的节奏原语。
@@ -235,6 +309,7 @@ pub enum BrowserCommandRequest {
         #[serde(default)]
         text: Option<String>,
         #[serde(default)]
+        #[specta(type = Option<specta_typescript::Number>)]
         duration_ms: Option<u64>,
     },
     /// 服务端 AX 树检索：按子串（大小写不敏感）过滤快照行并返回带 ref 的
@@ -244,13 +319,30 @@ pub enum BrowserCommandRequest {
         tab_id: String,
         text: String,
         #[serde(default)]
+        #[specta(type = Option<specta_typescript::Number>)]
         limit: Option<usize>,
     },
-    Back { tab_id: String },
-    Forward { tab_id: String },
-    NavigationHistory { tab_id: String },
-    Reload { tab_id: String },
-    Dialog { tab_id: String },
+    /// 结构化定位（U1-1）：testId/css 走 DOM 域，role/name/label/text 走 AX 全树，
+    /// 结果只返回 backend node ref。歧义时不取第一个，由调用方决定如何处理。
+    ResolveLocator {
+        tab_id: String,
+        locator: LocatorSpec,
+    },
+    Back {
+        tab_id: String,
+    },
+    Forward {
+        tab_id: String,
+    },
+    NavigationHistory {
+        tab_id: String,
+    },
+    Reload {
+        tab_id: String,
+    },
+    Dialog {
+        tab_id: String,
+    },
     RespondDialog {
         tab_id: String,
         accept: bool,
@@ -266,17 +358,24 @@ pub enum BrowserCommandRequest {
         #[serde(default)]
         max_height: Option<u32>,
     },
-    StopScreencast { tab_id: String },
+    StopScreencast {
+        tab_id: String,
+    },
     /// 读取页面 console 输出与运行时错误（dev server 验证的主要观测面）。
     Console {
         tab_id: String,
         #[serde(default)]
+        #[specta(type = Option<specta_typescript::Number>)]
         limit: Option<usize>,
     },
     /// 面板预览上的用户手势点击（视口坐标）。与 click（ref 锚点）是两个入口：
     /// 坐标来自用户在预览上的真实点击，不进 Agent 工具 schema——用户亲手操作
     /// 通道，类比终端 stdin 不属于逐次审批命令面。
-    ClickAt { tab_id: String, x: f64, y: f64 },
+    ClickAt {
+        tab_id: String,
+        x: f64,
+        y: f64,
+    },
     ScrollAt {
         tab_id: String,
         x: f64,
@@ -288,7 +387,7 @@ pub enum BrowserCommandRequest {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserEngineInfo {
     pub engine: String,
@@ -296,7 +395,7 @@ pub struct BrowserEngineInfo {
     pub available: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserTabInfo {
     pub tab_id: String,
@@ -306,18 +405,27 @@ pub struct BrowserTabInfo {
     pub has_dialog: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct JsDialogInfo {
     pub kind: String,
     pub message: String,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[derive(Debug, Serialize, specta::Type)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum BrowserCommandResponse {
-    Detected { engines: Vec<BrowserEngineInfo> },
-    ExecutableValid { path: String, engine: String },
+    Detected {
+        engines: Vec<BrowserEngineInfo>,
+    },
+    ExecutableValid {
+        path: String,
+        engine: String,
+    },
     Status {
         running: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -329,11 +437,19 @@ pub enum BrowserCommandResponse {
         #[serde(skip_serializing_if = "Option::is_none")]
         version: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[specta(type = Option<specta_typescript::Number>)]
         tabs: Option<usize>,
     },
-    Tabs { tabs: Vec<BrowserTabInfo> },
-    TabOpened { tab: BrowserTabInfo },
-    Navigated { url: String, title: String },
+    Tabs {
+        tabs: Vec<BrowserTabInfo>,
+    },
+    TabOpened {
+        tab: BrowserTabInfo,
+    },
+    Navigated {
+        url: String,
+        title: String,
+    },
     Snapshot {
         url: String,
         title: String,
@@ -356,13 +472,18 @@ pub enum BrowserCommandResponse {
     Waited {
         /// text 等待是否命中（false = 超时未出现，由模型决定下一步）。
         text_matched: bool,
+        #[specta(type = specta_typescript::Number)]
         waited_ms: u64,
+    },
+    LocatorResolved {
+        resolution: LocatorResolution,
     },
     Found {
         url: String,
         title: String,
         matches: Vec<String>,
         /// 命中总行数（可能超过 matches 长度，由 limit 截断）。
+        #[specta(type = specta_typescript::Number)]
         total: usize,
         truncated: bool,
     },
@@ -371,7 +492,9 @@ pub enum BrowserCommandResponse {
         can_go_forward: bool,
     },
     ScreencastStarted,
-    ConsoleLog { entries: Vec<ConsoleEntry> },
+    ConsoleLog {
+        entries: Vec<ConsoleEntry>,
+    },
     /// 视口覆盖结果：width/height 为 None 表示已清除覆盖（回自然视口）。
     ViewportApplied {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -390,6 +513,7 @@ pub enum BrowserCommandResponse {
     DownloadContent {
         name: String,
         path: String,
+        #[specta(type = specta_typescript::Number)]
         size_bytes: u64,
         truncated: bool,
         content: String,
@@ -398,13 +522,15 @@ pub enum BrowserCommandResponse {
 }
 
 /// 下载目录条目（recent-first，.crdownload 未完成文件被跳过）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DownloadEntry {
     pub name: String,
     pub path: String,
+    #[specta(type = specta_typescript::Number)]
     pub size_bytes: u64,
     /// Unix 毫秒时间戳。
+    #[specta(type = specta_typescript::Number)]
     pub modified_at: u64,
 }
 
@@ -433,12 +559,13 @@ pub struct BrowserFrameEvent {
 
 /// console/运行时错误条目。level：error/warning/info/log/debug；source：
 /// console（console.* 调用）/ exception（未捕获异常）/ network 等日志来源。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ConsoleEntry {
     pub level: String,
     pub text: String,
     pub source: String,
+    #[specta(type = specta_typescript::Number)]
     pub timestamp: u64,
 }
 
@@ -563,7 +690,10 @@ fn detect_engines(home: Option<&Path>) -> Vec<BrowserEngineInfo> {
 /// vendor 布局的已知二进制（见下方平台分派的 `validate_browser_executable_layout`）。
 /// allowlist 而非签名校验：spawn 面等价命令执行通道，收口到「用户可见安装的
 /// 浏览器」即可阻断受陷渲染进程注入任意二进制。
-fn validate_browser_executable(raw: &str, home: Option<&Path>) -> Result<(PathBuf, String), String> {
+fn validate_browser_executable(
+    raw: &str,
+    home: Option<&Path>,
+) -> Result<(PathBuf, String), String> {
     let raw = raw.trim();
     if raw.is_empty() {
         return Err("浏览器可执行文件路径为空".into());
@@ -579,12 +709,12 @@ fn validate_browser_executable(raw: &str, home: Option<&Path>) -> Result<(PathBu
 /// 仅校验路径布局（bundle 名/目录结构/安装位置），不触文件系统——单测用
 /// 纯函数形态锁定 allowlist 矩阵，不依赖机器上是否真的装了浏览器。
 #[cfg(not(target_os = "linux"))]
-fn validate_browser_executable_layout(
-    path: &Path,
-    home: Option<&Path>,
-) -> Result<String, String> {
+fn validate_browser_executable_layout(path: &Path, home: Option<&Path>) -> Result<String, String> {
     let path_str = path.to_string_lossy();
-    let parts: Vec<&str> = path_str.split('/').filter(|part| !part.is_empty()).collect();
+    let parts: Vec<&str> = path_str
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
     if parts.len() < 5 {
         return Err(format!(
             "浏览器路径必须是 /Applications 或 ~/Applications 下 .app bundle 内的可执行文件：{path_str}"
@@ -617,10 +747,7 @@ fn validate_browser_executable_layout(
 /// /opt 布局。集合即 allowlist（受陷渲染进程不可向系统包管理器目录写入），
 /// 与 macOS 的 bundle 布局约束同一安全语义。
 #[cfg(target_os = "linux")]
-fn validate_browser_executable_layout(
-    path: &Path,
-    _home: Option<&Path>,
-) -> Result<String, String> {
+fn validate_browser_executable_layout(path: &Path, _home: Option<&Path>) -> Result<String, String> {
     for name in BROWSER_EXECUTABLE_NAMES {
         if engine_candidate_paths(None, name).contains(&path.to_path_buf()) {
             return Ok((*name).to_string());
@@ -633,7 +760,10 @@ fn validate_browser_executable_layout(
 }
 
 /// 解析最终可执行文件：空串走 auto 探测，否则走 allowlist 校验。
-fn resolve_executable(explicit: &str, home: Option<&Path>) -> Result<(PathBuf, String), String> {
+pub(crate) fn resolve_executable(
+    explicit: &str,
+    home: Option<&Path>,
+) -> Result<(PathBuf, String), String> {
     if explicit.trim().is_empty() {
         for name in BROWSER_EXECUTABLE_NAMES {
             if let Some(candidate) = engine_candidate_paths(home, name)
@@ -673,7 +803,12 @@ fn validate_navigation_url(raw: &str) -> Result<String, String> {
 
 /// Chrome 启动参数（纯函数供单测锁定）。安全要点：不加 `--remote-allow-origins`
 /// （页面 JS 带 Origin 的 WS 无法连 DevTools）；user-data-dir 由调用方注入。
-fn chrome_args(port: u16, user_data_dir: &Path, headless: bool, ignore_certificate_errors: bool) -> Vec<String> {
+fn chrome_args(
+    port: u16,
+    user_data_dir: &Path,
+    headless: bool,
+    ignore_certificate_errors: bool,
+) -> Vec<String> {
     let mut args = Vec::new();
     if headless {
         args.push("--headless=new".into());
@@ -713,8 +848,8 @@ fn configure_browser_environment(command: &mut Command) {
 }
 
 fn pick_loopback_port() -> Result<u16, String> {
-    let listener =
-        TcpListener::bind(("127.0.0.1", 0)).map_err(|error| format!("分配回环端口失败：{error}"))?;
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|error| format!("分配回环端口失败：{error}"))?;
     listener
         .local_addr()
         .map(|addr| addr.port())
@@ -723,7 +858,8 @@ fn pick_loopback_port() -> Result<u16, String> {
 
 fn browser_profile_dir(data_root: &Path) -> Result<PathBuf, String> {
     let dir = data_root.join("browser").join("profile");
-    std::fs::create_dir_all(&dir).map_err(|error| format!("创建浏览器 profile 目录失败：{error}"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("创建浏览器 profile 目录失败：{error}"))?;
     crate::storage_paths::set_directory_permissions(&dir)?;
     Ok(dir)
 }
@@ -754,11 +890,15 @@ fn prepare_download_prefs(profile_dir: &Path, download_dir: &Path) -> Result<(),
     }
     prefs["download"]["default_directory"] = Value::String(download_dir.display().to_string());
     prefs["download"]["prompt_for_download"] = Value::Bool(false);
-    let bytes = serde_json::to_vec(&prefs).map_err(|error| format!("序列化下载偏好失败：{error}"))?;
+    let bytes =
+        serde_json::to_vec(&prefs).map_err(|error| format!("序列化下载偏好失败：{error}"))?;
     std::fs::write(&prefs_path, bytes).map_err(|error| format!("写入下载偏好失败：{error}"))
 }
 
-async fn list_downloads(download_dir: &Path, limit: usize) -> Result<BrowserCommandResponse, String> {
+async fn list_downloads(
+    download_dir: &Path,
+    limit: usize,
+) -> Result<BrowserCommandResponse, String> {
     let dir = download_dir.to_path_buf();
     tokio::task::spawn_blocking(move || -> Result<BrowserCommandResponse, String> {
         let mut entries: Vec<DownloadEntry> = std::fs::read_dir(&dir)
@@ -884,8 +1024,8 @@ async fn clear_profile_data(
     let profile_dir = browser_profile_dir(data_root)?;
     let canonical = std::fs::canonicalize(&profile_dir)
         .map_err(|error| format!("解析 profile 目录失败：{error}"))?;
-    let data_root_canonical = std::fs::canonicalize(data_root)
-        .map_err(|error| format!("解析数据根目录失败：{error}"))?;
+    let data_root_canonical =
+        std::fs::canonicalize(data_root).map_err(|error| format!("解析数据根目录失败：{error}"))?;
     if !canonical.starts_with(&data_root_canonical) {
         return Err("profile 目录位置异常（指向数据根之外），已拒绝清理".into());
     }
@@ -901,9 +1041,7 @@ async fn clear_profile_data(
                 Ok(()) => {}
                 // 未产生过对应缓存的全新 profile：目标本就不存在，幂等成功。
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(format!("删除缓存目录 {} 失败：{error}", path.display()))
-                }
+                Err(error) => return Err(format!("删除缓存目录 {} 失败：{error}", path.display())),
             }
         }
         Ok(())
@@ -930,7 +1068,12 @@ fn spawn_browser_process_sync(
     prepare_download_prefs(profile_dir, download_dir)?;
     let mut command = Command::new(executable);
     command
-        .args(chrome_args(port, profile_dir, headless, ignore_certificate_errors))
+        .args(chrome_args(
+            port,
+            profile_dir,
+            headless,
+            ignore_certificate_errors,
+        ))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -954,19 +1097,23 @@ async fn spawn_browser_process(
     headless: bool,
     ignore_certificate_errors: bool,
     download_dir: &Path,
-) -> Result<Child, String> {
+) -> Result<BrowserLaunchChild, String> {
     let executable = executable.to_path_buf();
     let profile_dir = profile_dir.to_path_buf();
     let download_dir = download_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        spawn_browser_process_sync(
-            &executable,
-            port,
-            &profile_dir,
-            headless,
-            ignore_certificate_errors,
-            &download_dir,
-        )
+        let spawn = || {
+            spawn_browser_process_sync(
+                &executable,
+                port,
+                &profile_dir,
+                headless,
+                ignore_certificate_errors,
+                &download_dir,
+            )
+            .map(|child| BrowserLaunchChild(Some(child)))
+        };
+        spawn()
     })
     .await
     .map_err(|error| format!("浏览器启动任务失败：{error}"))?
@@ -999,23 +1146,23 @@ fn find_stale_profile_holders_sync(profile_dir: &Path) -> Vec<i32> {
     #[cfg(not(windows))]
     {
         let Ok(output) = std::process::Command::new("/bin/ps")
-        .arg("axww")
-        .arg("-o")
-        .arg("pid=,command=")
-        .output()
-    else {
-        return Vec::new();
-    };
-    let needle = format!("--user-data-dir={}", profile_dir.display());
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.trim_start().splitn(2, char::is_whitespace);
-            let pid = fields.next()?.parse::<i32>().ok()?;
-            let command = fields.next().unwrap_or("");
-            command.contains(needle.as_str()).then_some(pid)
-        })
-        .collect()
+            .arg("axww")
+            .arg("-o")
+            .arg("pid=,command=")
+            .output()
+        else {
+            return Vec::new();
+        };
+        let needle = format!("--user-data-dir={}", profile_dir.display());
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.trim_start().splitn(2, char::is_whitespace);
+                let pid = fields.next()?.parse::<i32>().ok()?;
+                let command = fields.next().unwrap_or("");
+                command.contains(needle.as_str()).then_some(pid)
+            })
+            .collect()
     }
 }
 
@@ -1127,13 +1274,21 @@ impl CdpTab {
         let deadline = tokio::time::Instant::now() + timeout;
         while *receiver.borrow_and_update() <= after {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() || tokio::time::timeout(remaining, receiver.changed()).await.is_err() {
+            if remaining.is_zero()
+                || tokio::time::timeout(remaining, receiver.changed())
+                    .await
+                    .is_err()
+            {
                 return;
             }
         }
     }
 
     async fn send(&self, method: &str, params: Value) -> Result<Value, String> {
+        self.send_unchecked(method, params).await
+    }
+
+    async fn send_unchecked(&self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         {
@@ -1144,11 +1299,24 @@ impl CdpTab {
             pending.insert(id, tx);
         }
         let payload = json!({"id": id, "method": method, "params": params});
-        if self.outgoing.send(payload.to_string()).await.is_err() {
-            if let Ok(mut pending) = self.pending.lock() {
-                pending.remove(&id);
+        // 写通道是有界 mpsc（容量 32）：socket 写任务被对端挂住时，队列满会让
+        // `send().await` **永久等待**——这里给它与命令同档的 deadline，避免命令级静默挂起。
+        match tokio::time::timeout(CDP_COMMAND_TIMEOUT, self.outgoing.send(payload.to_string()))
+            .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                if let Ok(mut pending) = self.pending.lock() {
+                    pending.remove(&id);
+                }
+                return Err("CDP 连接已关闭".into());
             }
-            return Err("CDP 连接已关闭".into());
+            Err(_) => {
+                if let Ok(mut pending) = self.pending.lock() {
+                    pending.remove(&id);
+                }
+                return Err(format!("CDP 命令发送超时（写通道拥塞）：{method}"));
+            }
         }
         match tokio::time::timeout(CDP_COMMAND_TIMEOUT, rx).await {
             Ok(Ok(result)) => result,
@@ -1163,13 +1331,12 @@ impl CdpTab {
     }
 
     fn dialog_info(&self) -> Option<JsDialogInfo> {
-        self.dialog
-            .lock()
-            .ok()
-            .and_then(|slot| slot.as_ref().map(|state| JsDialogInfo {
+        self.dialog.lock().ok().and_then(|slot| {
+            slot.as_ref().map(|state| JsDialogInfo {
                 kind: state.kind.clone(),
                 message: state.message.clone(),
-            }))
+            })
+        })
     }
 }
 
@@ -1322,7 +1489,9 @@ fn handle_screencast_frame(tab: &CdpTab, value: &Value) {
 fn enqueue_screencast_ack(tab: &CdpTab, session_id: i64) {
     let id = tab.next_id.fetch_add(1, Ordering::Relaxed);
     {
-        let Ok(mut pending) = tab.pending.lock() else { return };
+        let Ok(mut pending) = tab.pending.lock() else {
+            return;
+        };
         let (tx, _rx) = oneshot::channel();
         pending.insert(id, tx);
     }
@@ -1460,16 +1629,24 @@ fn truncate_chars(raw: &str, max_chars: usize) -> String {
 }
 
 async fn run_cdp_socket(
-    mut ws: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    mut ws: tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
     mut outgoing: mpsc::Receiver<String>,
     tab: Arc<CdpTab>,
 ) {
     loop {
         tokio::select! {
+            biased;
+            _ = std::future::pending::<()>() => break,
             message = outgoing.recv() => {
                 match message {
                     Some(text) => {
-                        if ws.send(Message::Text(text.into())).await.is_err() {
+                        let result = ws
+                            .send(Message::Text(text.into()))
+                            .await
+                            .map_err(|error| error.to_string());
+                        if result.is_err() {
                             break;
                         }
                     }
@@ -1503,9 +1680,18 @@ async fn connect_tab(
     app: Option<&AppHandle>,
     tab_id: &str,
 ) -> Result<Arc<CdpTab>, String> {
-    let (stream, _response) = tokio_tungstenite::connect_async(ws_url)
-        .await
-        .map_err(|error| format!("连接浏览器调试通道失败：{error}"))?;
+    let (stream, _response) = tokio::time::timeout(
+        CDP_CONNECT_TIMEOUT,
+        tokio_tungstenite::connect_async(ws_url),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "连接浏览器调试通道超时（{}s）：{ws_url}",
+            CDP_CONNECT_TIMEOUT.as_secs()
+        )
+    })?
+    .map_err(|error| format!("连接浏览器调试通道失败：{error}"))?;
     let (outgoing_tx, outgoing_rx) = mpsc::channel(32);
     let (load_tx, _) = watch::channel(0u64);
     let tab = Arc::new(CdpTab {
@@ -1570,13 +1756,11 @@ async fn list_targets(port: u16) -> Result<Vec<DevtoolsTarget>, String> {
         .text()
         .await
         .map_err(|error| format!("读取浏览器 tab 列表失败：{error}"))?;
-    let targets: Vec<DevtoolsTarget> = serde_json::from_str(&text)
-        .map_err(|error| format!("解析浏览器 tab 列表失败：{error}"))?;
+    let targets: Vec<DevtoolsTarget> =
+        serde_json::from_str(&text).map_err(|error| format!("解析浏览器 tab 列表失败：{error}"))?;
     Ok(targets
         .into_iter()
-        .filter(|target| {
-            target.target_type == "page" && !target.url.starts_with("devtools://")
-        })
+        .filter(|target| target.target_type == "page" && !target.url.starts_with("devtools://"))
         .collect())
 }
 
@@ -1584,9 +1768,17 @@ async fn new_target(port: u16) -> Result<DevtoolsTarget, String> {
     let client = loopback_client()?;
     let url = format!("http://127.0.0.1:{port}/json/new?about:blank");
     // 新版 Chrome 要求 PUT（GET 返回 405）；对旧版做一次回退。
-    let mut response = client.put(&url).send().await.map_err(|error| format!("新建 tab 失败：{error}"))?;
+    let mut response = client
+        .put(&url)
+        .send()
+        .await
+        .map_err(|error| format!("新建 tab 失败：{error}"))?;
     if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
-        response = client.get(&url).send().await.map_err(|error| format!("新建 tab 失败：{error}"))?;
+        response = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|error| format!("新建 tab 失败：{error}"))?;
     }
     if !response.status().is_success() {
         return Err(format!("新建 tab 失败：HTTP {}", response.status()));
@@ -1685,6 +1877,49 @@ struct BrowserRuntime {
 #[derive(Default)]
 pub struct BrowserSessionState(StdMutex<Option<BrowserRuntime>>);
 
+impl Drop for BrowserSessionState {
+    fn drop(&mut self) {
+        let slot = self
+            .0
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(mut runtime) = slot.take() {
+            if let Some(pid) = runtime.child.id() {
+                crate::platform_process::signal_process_tree_best_effort(
+                    pid,
+                    crate::platform_process::TreeSignal::Force,
+                );
+            }
+            let _ = runtime.child.start_kill();
+        }
+    }
+}
+
+struct BrowserLaunchChild(Option<Child>);
+
+impl BrowserLaunchChild {
+    fn child_mut(&mut self) -> Result<&mut Child, String> {
+        self.0.as_mut().ok_or_else(|| "浏览器启动进程已移交".into())
+    }
+    fn take(&mut self) -> Result<Child, String> {
+        self.0.take().ok_or_else(|| "浏览器启动进程已移交".into())
+    }
+}
+
+impl Drop for BrowserLaunchChild {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            if let Some(pid) = child.id() {
+                crate::platform_process::signal_process_tree_best_effort(
+                    pid,
+                    crate::platform_process::TreeSignal::Force,
+                );
+            }
+            let _ = child.start_kill();
+        }
+    }
+}
+
 struct RuntimeInfoSnapshot {
     port: u16,
     engine: String,
@@ -1705,12 +1940,13 @@ fn runtime_info(runtime: &BrowserRuntime) -> RuntimeInfoSnapshot {
 
 /// 启动（或复用）浏览器。子进程已死时清状态重建（崩溃自愈）。app 提供事件
 /// 出口与面板同步轮询器的拉起（None = 测试路径）。
-async fn ensure_running(
+pub(crate) async fn ensure_running(
     app: Option<&AppHandle>,
     data_root: &Path,
     state: &BrowserSessionState,
     config: &BrowserSpawnConfig,
 ) -> Result<BrowserCommandResponse, String> {
+    trace_phase("ensure_running:enter");
     if !config.enabled {
         return Err("浏览器能力未启用：请在 设置 → 浏览器 打开开关并保存".into());
     }
@@ -1720,24 +1956,32 @@ async fn ensure_running(
             .lock()
             .map_err(|_| "browser state lock poisoned".to_string())?;
         if let Some(runtime) = guard.as_mut() {
-            if runtime.child.try_wait().map_err(|error| error.to_string())?.is_none() {
+            if runtime
+                .child
+                .try_wait()
+                .map_err(|error| error.to_string())?
+                .is_none()
+            {
                 let info = runtime_info(runtime);
                 return Ok(status_response(true, Some(info)));
             }
         }
     }
+    trace_phase("ensure_running:not-alive");
     let home = home_path();
     let (executable, engine) = resolve_executable(&config.executable_path, home.as_deref())?;
     let profile_dir = browser_profile_dir(data_root)?;
     // 无活体时清掉崩溃残留的单实例锁：省掉 Chrome 新实例的接管博弈
     // （崩溃/强杀不走 reap_browser_for_exit，锁会原地残留）。
+    trace_phase("ensure_running:cleanup-stale-locks");
     cleanup_stale_locks_if_unheld(&profile_dir).await;
+    trace_phase("ensure_running:cleanup-stale-locks-done");
     // 秒退自愈：Chrome 单实例机制会把命令转交给持有同一 profile 的存活实例
     // （上次应用异常退出遗留的孤儿）后立即退出。首航秒退时终止残留实例、
     // 清单实例标记并重试一次；重试仍秒退才把手动修复指引交给用户。
     let mut cleanup_attempted = false;
     let mut killed_stale = false;
-    let (child, port, version) = loop {
+    let (mut child, port, version) = loop {
         let port = pick_loopback_port()?;
         let download_dir = browser_downloads_dir(data_root)?;
         let mut child = spawn_browser_process(
@@ -1749,8 +1993,12 @@ async fn ensure_running(
             &download_dir,
         )
         .await?;
-        match wait_ready_or_exit(port, &mut child).await {
-            SpawnWaitOutcome::Ready(version) => break (child, port, version),
+        trace_phase("ensure_running:spawned");
+        match wait_ready_or_exit(port, child.child_mut()?).await {
+            SpawnWaitOutcome::Ready(version) => {
+                trace_phase("ensure_running:ready");
+                break (child, port, version);
+            }
             SpawnWaitOutcome::TimedOut => {
                 // 高负载（IDE/系统服务共跑）或首次初始化慢都会打穿 10s 档；
                 // 直接重试是首选动作，反复超时才需要排查系统策略/杀软。
@@ -1775,7 +2023,7 @@ async fn ensure_running(
             }
         }
     };
-    let info = {
+    let mut install = || {
         let mut guard = state
             .0
             .lock()
@@ -1783,7 +2031,7 @@ async fn ensure_running(
         // 覆盖旧运行时（崩溃残留）：旧 child 由 drop 的 kill_on_drop 回收。
         let tabs = HashMap::new();
         let runtime = BrowserRuntime {
-            child,
+            child: child.take()?,
             port,
             engine: engine.clone(),
             headless: config.headless,
@@ -1793,8 +2041,9 @@ async fn ensure_running(
         };
         let info = runtime_info(&runtime);
         *guard = Some(runtime);
-        info
+        Ok(info)
     };
+    let info = install().map_err(|error: String| error)?;
     if let Some(app) = app {
         // 面板同步：tabs 轮询器 + 进程存活监视 + 启动成功事件。端口是本次
         // 运行时的身份，被替换/关闭后这两个任务自行退出。
@@ -1927,6 +2176,10 @@ pub fn reap_browser_for_exit(state: &BrowserSessionState) {
             Ok(Some(_)) | Err(_) => break,
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
+                    crate::platform_process::signal_process_tree_best_effort(
+                        pid,
+                        crate::platform_process::TreeSignal::Force,
+                    );
                     let _ = runtime.child.start_kill();
                     break;
                 }
@@ -1936,7 +2189,7 @@ pub fn reap_browser_for_exit(state: &BrowserSessionState) {
     }
 }
 
-async fn shutdown_browser(
+pub(crate) async fn shutdown_browser(
     app: Option<&AppHandle>,
     state: &BrowserSessionState,
 ) -> Result<BrowserCommandResponse, String> {
@@ -1959,6 +2212,10 @@ async fn shutdown_browser(
                 runtime.child.wait(),
             )
             .await;
+            crate::platform_process::signal_process_tree_best_effort(
+                pid,
+                crate::platform_process::TreeSignal::Force,
+            );
         }
         let _ = runtime.child.start_kill();
     }
@@ -1990,7 +2247,9 @@ fn take_connected_tab(
     let tab = runtime
         .tabs
         .get(tab_id)
-        .ok_or_else(|| format!("tab 不存在：{tab_id}（请先 browser {{action: \"tabs\"}} 查看当前 tab）"))?
+        .ok_or_else(|| {
+            format!("tab 不存在：{tab_id}（请先 browser {{action: \"tabs\"}} 查看当前 tab）")
+        })?
         .clone();
     Ok((tab, runtime.port))
 }
@@ -2012,7 +2271,9 @@ async fn take_tab(
     let target = targets
         .iter()
         .find(|target| target.id == tab_id)
-        .ok_or_else(|| format!("tab 不存在：{tab_id}（请先 browser {{action: \"tabs\"}} 查看当前 tab）"))?;
+        .ok_or_else(|| {
+            format!("tab 不存在：{tab_id}（请先 browser {{action: \"tabs\"}} 查看当前 tab）")
+        })?;
     let ws_url = target
         .web_socket_debugger_url
         .clone()
@@ -2033,7 +2294,11 @@ fn require_runtime_port(state: &BrowserSessionState) -> Result<u16, String> {
         .ok_or("浏览器未运行：请先在 设置 → 浏览器 启用并通过 newTab 打开页面".into())
 }
 
-fn register_tab(state: &BrowserSessionState, target_id: &str, tab: Arc<CdpTab>) -> Result<(), String> {
+fn register_tab(
+    state: &BrowserSessionState,
+    target_id: &str,
+    tab: Arc<CdpTab>,
+) -> Result<(), String> {
     let mut guard = state
         .0
         .lock()
@@ -2042,7 +2307,9 @@ fn register_tab(state: &BrowserSessionState, target_id: &str, tab: Arc<CdpTab>) 
         return Err("浏览器未运行".into());
     };
     if !runtime.tabs.contains_key(target_id) && runtime.tabs.len() >= MAX_TABS {
-        return Err(format!("浏览器 tab 数已达上限（{MAX_TABS}），请先关闭不再使用的 tab"));
+        return Err(format!(
+            "浏览器 tab 数已达上限（{MAX_TABS}），请先关闭不再使用的 tab"
+        ));
     }
     runtime.tabs.insert(target_id.to_string(), tab);
     Ok(())
@@ -2053,6 +2320,52 @@ fn set_active_tab(state: &BrowserSessionState, tab_id: &str) {
     if let Ok(mut guard) = state.0.lock() {
         if let Some(runtime) = guard.as_mut() {
             runtime.active_tab_id = Some(tab_id.to_string());
+        }
+    }
+}
+
+/// 授权前取 tab 当前 URL（只读，经 CDP /json/list，不执行页面脚本）。
+pub(crate) async fn current_tab_url(
+    state: &BrowserSessionState,
+    tab_id: &str,
+) -> Result<String, String> {
+    let port = require_runtime_port(state)?;
+    Ok(tab_info(state, port, tab_id).await?.url)
+}
+
+pub(crate) async fn apply_tab_viewport(
+    state: &BrowserSessionState,
+    tab_id: &str,
+    width: Option<u32>,
+    height: Option<u32>,
+) -> Result<(Option<u32>, Option<u32>), String> {
+    if width.is_some() != height.is_some() {
+        return Err("视口设置需要 width 与 height 同时给出（或同时缺省以清除覆盖）".into());
+    }
+    let (tab, _) = take_tab(None, state, tab_id).await?;
+    match (width, height) {
+        (Some(width), Some(height)) => {
+            if width == 0 || height == 0 || width > 10_000 || height > 10_000 {
+                return Err("视口尺寸需在 1-10000 像素之间".into());
+            }
+            tab.send(
+                "Emulation.setDeviceMetricsOverride",
+                json!({
+                    "width": width,
+                    "height": height,
+                    "deviceScaleFactor": 0,
+                    "mobile": false,
+                }),
+            )
+            .await
+            .map_err(|error| format!("设置视口失败：{error}"))?;
+            Ok((Some(width), Some(height)))
+        }
+        _ => {
+            tab.send("Emulation.clearDeviceMetricsOverride", json!({}))
+                .await
+                .map_err(|error| format!("清除视口覆盖失败：{error}"))?;
+            Ok((None, None))
         }
     }
 }
@@ -2105,21 +2418,27 @@ async fn open_new_tab(
     url: Option<String>,
 ) -> Result<BrowserCommandResponse, String> {
     let port = require_runtime_port(state)?;
+    trace_phase("new_tab:runtime-port-ready");
     let target = new_target(port).await?;
+    trace_phase("new_tab:target-created");
     let ws_url = target
         .web_socket_debugger_url
         .clone()
         .ok_or("新建 tab 未返回调试通道地址")?;
     let tab = connect_tab(&ws_url, app, &target.id).await?;
+    trace_phase("new_tab:cdp-connected");
     register_tab(state, &target.id, tab)?;
     // 新建即激活：后续 list/preview 都以它为 active。
     set_active_tab(state, &target.id);
     if let Some(raw_url) = url {
         let url = validate_navigation_url(&raw_url)?;
         let tab = take_tab(app, state, &target.id).await?.0;
+        trace_phase("new_tab:navigating");
         navigate_tab(state, &tab, port, &target.id, &url).await?;
+        trace_phase("new_tab:navigated");
     }
     let info = tab_info(state, port, &target.id).await?;
+    trace_phase("new_tab:done");
     Ok(BrowserCommandResponse::TabOpened { tab: info })
 }
 
@@ -2186,7 +2505,10 @@ async fn collect_tab_infos(
                     .map(|(id, tab)| {
                         (
                             id.clone(),
-                            tab.dialog.lock().map(|slot| slot.is_some()).unwrap_or(false),
+                            tab.dialog
+                                .lock()
+                                .map(|slot| slot.is_some())
+                                .unwrap_or(false),
                         )
                     })
                     .collect::<HashMap<String, bool>>(),
@@ -2440,7 +2762,8 @@ fn format_ax_tree(nodes: &[AxNode]) -> (String, bool) {
     }
     // 渲染顺序稳定：按输入顺序而非 HashMap 迭代序（可复现快照）。
     let order: Vec<&str> = nodes.iter().map(|node| node.node_id.as_str()).collect();
-    let sort_children = |ids: &mut Vec<&str>| ids.sort_by_key(|id| order.iter().position(|x| x == id));
+    let sort_children =
+        |ids: &mut Vec<&str>| ids.sort_by_key(|id| order.iter().position(|x| x == id));
     let mut roots_sorted = roots;
     sort_children(&mut roots_sorted);
 
@@ -2636,7 +2959,10 @@ async fn focus_ref(tab: &Arc<CdpTab>, backend_node_id: i64) -> Result<(), String
 
 /// ref（backendDOMNodeId）→ 视口裁剪盒 (x, y, width, height)，供元素区域截图。
 /// border quad 是四个角点（CSS 像素），取包围盒并向上取整到像素边界。
-async fn ref_clip_box(tab: &Arc<CdpTab>, backend_node_id: i64) -> Result<(f64, f64, f64, f64), String> {
+async fn ref_clip_box(
+    tab: &Arc<CdpTab>,
+    backend_node_id: i64,
+) -> Result<(f64, f64, f64, f64), String> {
     let box_result = tab
         .send("DOM.getBoxModel", json!({"backendNodeId": backend_node_id}))
         .await
@@ -2651,8 +2977,18 @@ async fn ref_clip_box(tab: &Arc<CdpTab>, backend_node_id: i64) -> Result<(f64, f
     }
     let min_x = numbers.iter().step_by(2).copied().fold(f64::MAX, f64::min);
     let max_x = numbers.iter().step_by(2).copied().fold(f64::MIN, f64::max);
-    let min_y = numbers.iter().skip(1).step_by(2).copied().fold(f64::MAX, f64::min);
-    let max_y = numbers.iter().skip(1).step_by(2).copied().fold(f64::MIN, f64::max);
+    let min_y = numbers
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .copied()
+        .fold(f64::MAX, f64::min);
+    let max_y = numbers
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .copied()
+        .fold(f64::MIN, f64::max);
     let width = (max_x - min_x).ceil();
     let height = (max_y - min_y).ceil();
     if width < 1.0 || height < 1.0 {
@@ -2674,7 +3010,10 @@ async fn ax_tree_text(tab: &Arc<CdpTab>) -> Result<(String, bool), String> {
 
 /// ref（backendDOMNodeId）→ 当前 AX 值（value 优先，name 兜底）。select_option
 /// 的自校验用：select 的 AX 值即当前选中项的可见文本。
-async fn ax_node_value_by_ref(tab: &Arc<CdpTab>, backend_node_id: i64) -> Result<Option<String>, String> {
+async fn ax_node_value_by_ref(
+    tab: &Arc<CdpTab>,
+    backend_node_id: i64,
+) -> Result<Option<String>, String> {
     let result = tab
         .send("Accessibility.getFullAXTree", json!({}))
         .await
@@ -2698,11 +3037,190 @@ async fn ax_node_value_by_ref(tab: &Arc<CdpTab>, backend_node_id: i64) -> Result
 /// upload_file 的路径门：只接受「已授权工作区内」的真实文件。canonicalize 先行
 /// （消解 symlink/相对段，与 read 工具同一坐标系），工作区 containment 把
 /// ~/.axiom 数据根、凭据文件等宿主敏感路径整体排除在外。
+/// UI 读步骤的单次只读取样：URL、可选定位结果与唯一命中元素的事实。不执行页面脚本。
+pub(crate) async fn read_ui_snapshot(
+    app: &AppHandle,
+    state: &BrowserSessionState,
+    tab_id: &str,
+    locator: Option<&LocatorSpec>,
+) -> Result<UiReadSnapshot, String> {
+    let (tab, port) = take_tab(Some(app), state, tab_id).await?;
+    let url = tab_info(state, port, tab_id).await?.url;
+    let Some(locator) = locator else {
+        return Ok(UiReadSnapshot {
+            url,
+            resolution: None,
+            element: None,
+        });
+    };
+    locator.validate()?;
+    let dom_hits = if locator.has_dom_criteria() {
+        Some(dom_locator_hits(&tab, locator).await?)
+    } else {
+        None
+    };
+    let result = tab
+        .send("Accessibility.getFullAXTree", json!({}))
+        .await
+        .map_err(|error| format!("获取页面快照失败：{error}"))?;
+    let tree: AxTreeResponse =
+        serde_json::from_value(result).map_err(|error| format!("解析页面快照失败：{error}"))?;
+    let resolution = resolve_locator(locator, &ax_candidates(&tree.nodes), dom_hits.as_ref())?;
+    let element = match &resolution {
+        LocatorResolution::Unique { candidate } => {
+            Some(element_facts(&tree.nodes, candidate.ref_id))
+        }
+        LocatorResolution::NotFound | LocatorResolution::Ambiguous { .. } => None,
+    };
+    Ok(UiReadSnapshot {
+        url,
+        resolution: Some(resolution),
+        element,
+    })
+}
+
+fn ax_flag(node: &AxNode, name: &str) -> bool {
+    node.properties
+        .iter()
+        .any(|property| property.name == name && property.value.value == Value::Bool(true))
+}
+
+fn element_facts(nodes: &[AxNode], backend_node_id: i64) -> UiElementFacts {
+    let Some(node) = nodes
+        .iter()
+        .find(|node| node.backend_dom_node_id == Some(backend_node_id))
+    else {
+        return UiElementFacts::default();
+    };
+    let value = ax_value_str(&node.value);
+    UiElementFacts {
+        role: ax_value_str(&node.role),
+        name: ax_value_str(&node.name),
+        text: subtree_text(nodes, node),
+        value: (!value.is_empty()).then_some(value),
+        disabled: ax_flag(node, "disabled"),
+        hidden: ax_flag(node, "hidden"),
+    }
+}
+
+/// 子树内静态文本按文档序拼接；没有静态文本后代时退回节点自身名称（如按钮的可访问名）。
+/// 显式栈 + visited 集合：不依赖递归深度，也不会因异常树的环而死循环。
+fn subtree_text(nodes: &[AxNode], root: &AxNode) -> String {
+    let mut children: HashMap<&str, Vec<&AxNode>> = HashMap::new();
+    for node in nodes {
+        if let Some(parent) = node.parent_id.as_deref() {
+            children.entry(parent).or_default().push(node);
+        }
+    }
+    let mut texts = Vec::new();
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if !visited.insert(node.node_id.as_str()) {
+            continue;
+        }
+        if !node.ignored && ax_value_str(&node.role) == "StaticText" {
+            let name = ax_value_str(&node.name);
+            if !name.is_empty() {
+                texts.push(name);
+            }
+        }
+        if let Some(kids) = children.get(node.node_id.as_str()) {
+            for kid in kids.iter().rev() {
+                stack.push(*kid);
+            }
+        }
+    }
+    if texts.is_empty() {
+        return ax_value_str(&root.name);
+    }
+    texts.join(" ")
+}
+
+/// AX 节点 → 定位候选。被忽略的节点与没有 DOM 映射的节点不可操作，直接剔除。
+fn ax_candidates(nodes: &[AxNode]) -> Vec<AxCandidate> {
+    nodes
+        .iter()
+        .filter(|node| !node.ignored)
+        .filter_map(|node| {
+            let backend_node_id = node.backend_dom_node_id?;
+            let value = ax_value_str(&node.value);
+            Some(AxCandidate {
+                backend_node_id,
+                role: ax_value_str(&node.role),
+                name: ax_value_str(&node.name),
+                value: (!value.is_empty()).then_some(value),
+                disabled: node.properties.iter().any(|property| {
+                    property.name == "disabled" && property.value.value == Value::Bool(true)
+                }),
+            })
+        })
+        .collect()
+}
+
+/// testId/css 经 DOM 域解析为 backend node 集合；多个 DOM 条件取交集。
+async fn dom_locator_hits(
+    tab: &Arc<CdpTab>,
+    locator: &LocatorSpec,
+) -> Result<HashSet<i64>, String> {
+    let selectors: Vec<String> = [
+        locator
+            .test_id
+            .as_deref()
+            .map(test_id_selector)
+            .transpose()?,
+        locator.css.clone(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let document = tab
+        .send("DOM.getDocument", json!({"depth": 0}))
+        .await
+        .map_err(|error| format!("读取页面 DOM 失败：{error}"))?;
+    let root_id = document["root"]["nodeId"]
+        .as_i64()
+        .ok_or_else(|| "无法读取页面 DOM 根节点".to_string())?;
+
+    let mut combined: Option<HashSet<i64>> = None;
+    for selector in selectors {
+        let found = tab
+            .send(
+                "DOM.querySelectorAll",
+                json!({"nodeId": root_id, "selector": selector}),
+            )
+            .await
+            .map_err(|error| format!("DOM 定位失败（选择器无效或页面异常）：{error}"))?;
+        let mut hits = HashSet::new();
+        for node_id in found["nodeIds"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(MAX_DOM_LOCATOR_NODES)
+            .filter_map(Value::as_i64)
+        {
+            let described = tab
+                .send("DOM.describeNode", json!({"nodeId": node_id}))
+                .await
+                .map_err(|error| format!("读取 DOM 节点失败：{error}"))?;
+            if let Some(backend_node_id) = described["node"]["backendNodeId"].as_i64() {
+                hits.insert(backend_node_id);
+            }
+        }
+        combined = Some(match combined {
+            None => hits,
+            Some(previous) => previous.intersection(&hits).copied().collect(),
+        });
+    }
+    combined.ok_or_else(|| "缺少 DOM 定位字段".to_string())
+}
+
 fn validate_upload_path(app: &AppHandle, raw: &str) -> Result<PathBuf, String> {
     if raw.len() > MAX_URL_CHARS {
         return Err(format!("上传路径不得超过 {MAX_URL_CHARS} 字符"));
     }
-    let canonical = std::fs::canonicalize(raw).map_err(|_| "上传文件不存在或无法访问".to_string())?;
+    let canonical =
+        std::fs::canonicalize(raw).map_err(|_| "上传文件不存在或无法访问".to_string())?;
     if !canonical.is_file() {
         return Err("上传路径不是文件".into());
     }
@@ -2710,6 +3228,10 @@ fn validate_upload_path(app: &AppHandle, raw: &str) -> Result<PathBuf, String> {
     let in_workspace = roots.iter().any(|root| canonical.starts_with(root));
     if !in_workspace {
         return Err("上传文件必须位于已授权的工作目录内（防止宿主任意文件外传）".into());
+    }
+    let policy = crate::sandbox::SensitivePathPolicy::new(&crate::sandbox::policy_home()?, &roots);
+    if policy.read_denied(&canonical) {
+        return Err("上传文件位于受保护的凭据或隐私路径".into());
     }
     Ok(canonical)
 }
@@ -2719,8 +3241,14 @@ fn validate_upload_path(app: &AppHandle, raw: &str) -> Result<PathBuf, String> {
 async fn viewport_box(tab: &Arc<CdpTab>) -> (f64, f64, f64, f64) {
     if let Ok(metrics) = tab.send("Page.getLayoutMetrics", json!({})).await {
         if let Some(viewport) = metrics.pointer("/cssVisualViewport") {
-            let width = viewport.get("width").and_then(Value::as_f64).unwrap_or(1280.0);
-            let height = viewport.get("height").and_then(Value::as_f64).unwrap_or(800.0);
+            let width = viewport
+                .get("width")
+                .and_then(Value::as_f64)
+                .unwrap_or(1280.0);
+            let height = viewport
+                .get("height")
+                .and_then(Value::as_f64)
+                .unwrap_or(800.0);
             let x = viewport.get("x").and_then(Value::as_f64).unwrap_or(0.0);
             let y = viewport.get("y").and_then(Value::as_f64).unwrap_or(0.0);
             return (x, y, width, height);
@@ -2738,7 +3266,10 @@ async fn viewport_center(tab: &Arc<CdpTab>) -> (f64, f64) {
 /// 视口外元素的点击热区。
 async fn clamp_to_viewport(tab: &Arc<CdpTab>, x: f64, y: f64) -> (f64, f64) {
     let (vx, vy, width, height) = viewport_box(tab).await;
-    (x.clamp(vx, vx + width - 1.0), y.clamp(vy, vy + height - 1.0))
+    (
+        x.clamp(vx, vx + width - 1.0),
+        y.clamp(vy, vy + height - 1.0),
+    )
 }
 
 /// 截图体积守卫：超过 4 MiB 时降采样重编码（最多 3 轮），返回最终 PNG 与尺寸。
@@ -2749,8 +3280,8 @@ pub(crate) fn ensure_screenshot_within_cap(
     let mut current = bytes;
     let mut resized = false;
     for _ in 0..3 {
-        let image = image::load_from_memory(&current)
-            .map_err(|error| format!("截图解码失败：{error}"))?;
+        let image =
+            image::load_from_memory(&current).map_err(|error| format!("截图解码失败：{error}"))?;
         let (width, height) = (image.width(), image.height());
         if current.len() <= MAX_SCREENSHOT_BYTES && width > 0 && height > 0 {
             return Ok((current, width, height, resized));
@@ -2775,12 +3306,23 @@ pub(crate) fn ensure_screenshot_within_cap(
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
+#[specta::specta]
 pub async fn browser_command(
     app: AppHandle,
     state: State<'_, BrowserSessionState>,
     request: BrowserCommandRequest,
 ) -> Result<BrowserCommandResponse, String> {
     let data_root = crate::storage_paths::axiom_data_root(&app)?;
+    dispatch_browser_command(&app, &state, request, &data_root, Some(&app)).await
+}
+
+pub(crate) async fn dispatch_browser_command(
+    app: &AppHandle,
+    state: &BrowserSessionState,
+    request: BrowserCommandRequest,
+    data_root: &Path,
+    events: Option<&AppHandle>,
+) -> Result<BrowserCommandResponse, String> {
     let home = home_path();
     match request {
         BrowserCommandRequest::Detect => Ok(BrowserCommandResponse::Detected {
@@ -2800,35 +3342,40 @@ pub async fn browser_command(
                 .map_err(|_| "browser state lock poisoned".to_string())?;
             // 模式守卫里不能取可变借用：先判定存活，再读信息。
             let alive = match guard.as_mut() {
-                Some(runtime) => {
-                    runtime.child.try_wait().map_err(|e| e.to_string())?.is_none()
-                }
+                Some(runtime) => runtime
+                    .child
+                    .try_wait()
+                    .map_err(|e| e.to_string())?
+                    .is_none(),
                 None => false,
             };
             if alive {
                 let info = guard.as_ref().map(runtime_info);
-                Ok(status_response(true, Some(info.expect("alive implies runtime"))))
+                Ok(status_response(
+                    true,
+                    Some(info.expect("alive implies runtime")),
+                ))
             } else {
                 Ok(status_response(false, None))
             }
         }
         BrowserCommandRequest::EnsureRunning { config } => {
-            ensure_running(Some(&app), &data_root, &state, &config).await
+            ensure_running(events, data_root, state, &config).await
         }
-        BrowserCommandRequest::Shutdown => shutdown_browser(Some(&app), &state).await,
+        BrowserCommandRequest::Shutdown => shutdown_browser(events, state).await,
         BrowserCommandRequest::ClearProfileData { mode } => {
-            clear_profile_data(&data_root, &state, &mode).await
+            clear_profile_data(data_root, state, &mode).await
         }
-        BrowserCommandRequest::Tabs => list_browser_tabs(&state).await,
+        BrowserCommandRequest::Tabs => list_browser_tabs(state).await,
         BrowserCommandRequest::NewTab { url } => {
             let validated = match url {
                 Some(raw) => Some(validate_navigation_url(&raw)?),
                 None => None,
             };
-            open_new_tab(Some(&app), &state, validated).await
+            open_new_tab(events, state, validated).await
         }
         BrowserCommandRequest::CloseTab { tab_id } => {
-            let port = require_runtime_port(&state)?;
+            let port = require_runtime_port(state)?;
             close_target(port, &tab_id).await?;
             if let Ok(mut guard) = state.0.lock() {
                 if let Some(runtime) = guard.as_mut() {
@@ -2840,22 +3387,22 @@ pub async fn browser_command(
             }
             Ok(BrowserCommandResponse::Done)
         }
-        BrowserCommandRequest::ActivateTab { tab_id } => activate_tab(Some(&app), &state, &tab_id).await,
+        BrowserCommandRequest::ActivateTab { tab_id } => activate_tab(events, state, &tab_id).await,
         BrowserCommandRequest::Navigate { tab_id, url } => {
             let url = validate_navigation_url(&url)?;
-            let (tab, port) = take_tab(Some(&app), &state, &tab_id).await?;
-            navigate_tab(&state, &tab, port, &tab_id, &url).await
+            let (tab, port) = take_tab(events, state, &tab_id).await?;
+            navigate_tab(state, &tab, port, &tab_id, &url).await
         }
         BrowserCommandRequest::Snapshot { tab_id } => {
-            let (tab, port) = take_tab(Some(&app), &state, &tab_id).await?;
+            let (tab, port) = take_tab(events, state, &tab_id).await?;
             let result = tab
                 .send("Accessibility.getFullAXTree", json!({}))
                 .await
                 .map_err(|error| format!("获取页面快照失败：{error}"))?;
-            let tree: AxTreeResponse =
-                serde_json::from_value(result).map_err(|error| format!("解析页面快照失败：{error}"))?;
+            let tree: AxTreeResponse = serde_json::from_value(result)
+                .map_err(|error| format!("解析页面快照失败：{error}"))?;
             let (text, truncated) = format_ax_tree(&tree.nodes);
-            let info = tab_info(&state, port, &tab_id).await?;
+            let info = tab_info(state, port, &tab_id).await?;
             Ok(BrowserCommandResponse::Snapshot {
                 url: info.url,
                 title: info.title,
@@ -2865,74 +3412,46 @@ pub async fn browser_command(
             })
         }
         BrowserCommandRequest::Click { tab_id, r#ref } => {
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
             let (x, y) = ref_box_center(&tab, r#ref).await?;
             dispatch_mouse(&tab, "mousePressed", x, y, 1).await?;
             dispatch_mouse(&tab, "mouseReleased", x, y, 1).await?;
             Ok(BrowserCommandResponse::Done)
         }
         BrowserCommandRequest::DblClick { tab_id, r#ref } => {
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
             let (x, y) = ref_box_center(&tab, r#ref).await?;
             dispatch_double_click(&tab, x, y).await?;
             Ok(BrowserCommandResponse::Done)
         }
-        BrowserCommandRequest::SetViewport { tab_id, width, height } => {
-            if width.is_some() != height.is_some() {
-                return Err(
-                    "视口设置需要 width 与 height 同时给出（或同时缺省以清除覆盖）".into(),
-                );
-            }
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
-            match (width, height) {
-                (Some(w), Some(h)) => {
-                    if w == 0 || h == 0 || w > 10_000 || h > 10_000 {
-                        return Err("视口尺寸需在 1-10000 像素之间".into());
-                    }
-                    // deviceScaleFactor 0 = 使用自然缩放；Emulation 域无需 enable。
-                    tab.send(
-                        "Emulation.setDeviceMetricsOverride",
-                        json!({
-                            "width": w,
-                            "height": h,
-                            "deviceScaleFactor": 0,
-                            "mobile": false,
-                        }),
-                    )
-                    .await
-                    .map_err(|error| format!("设置视口失败：{error}"))?;
-                    Ok(BrowserCommandResponse::ViewportApplied {
-                        width: Some(w),
-                        height: Some(h),
-                    })
-                }
-                _ => {
-                    tab.send("Emulation.clearDeviceMetricsOverride", json!({}))
-                        .await
-                        .map_err(|error| format!("清除视口覆盖失败：{error}"))?;
-                    Ok(BrowserCommandResponse::ViewportApplied {
-                        width: None,
-                        height: None,
-                    })
-                }
-            }
+        BrowserCommandRequest::SetViewport {
+            tab_id,
+            width,
+            height,
+        } => {
+            let (width, height) = apply_tab_viewport(state, &tab_id, width, height).await?;
+            Ok(BrowserCommandResponse::ViewportApplied { width, height })
         }
         BrowserCommandRequest::Downloads { limit } => {
             let resolved_limit = limit
                 .unwrap_or(DEFAULT_DOWNLOAD_LIST)
                 .clamp(1, MAX_DOWNLOAD_LIST);
-            let download_dir = browser_downloads_dir(&data_root)?;
+            let download_dir = browser_downloads_dir(data_root)?;
             list_downloads(&download_dir, resolved_limit).await
         }
         BrowserCommandRequest::ReadDownload { name } => {
-            let download_dir = browser_downloads_dir(&data_root)?;
+            let download_dir = browser_downloads_dir(data_root)?;
             read_download(&download_dir, &name).await
         }
-        BrowserCommandRequest::Fill { tab_id, r#ref, text } => {
+        BrowserCommandRequest::Fill {
+            tab_id,
+            r#ref,
+            text,
+        } => {
             if text.chars().count() > MAX_TEXT_INPUT_CHARS {
                 return Err(format!("输入文本不得超过 {MAX_TEXT_INPUT_CHARS} 字符"));
             }
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
             focus_ref(&tab, r#ref).await?;
             // 清空既有内容：全选 → Backspace（Input 域原语，不执行页面 JS）。
             if let Some(select_all) = key_definition("a") {
@@ -2946,12 +3465,16 @@ pub async fn browser_command(
                 .map_err(|error| format!("输入文本失败：{error}"))?;
             Ok(BrowserCommandResponse::Done)
         }
-        BrowserCommandRequest::SelectOption { tab_id, r#ref, text } => {
+        BrowserCommandRequest::SelectOption {
+            tab_id,
+            r#ref,
+            text,
+        } => {
             let target = text.trim().to_string();
             if target.is_empty() {
                 return Err("select_option 需要非空的 text（目标选项的可见文本）".into());
             }
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
             focus_ref(&tab, r#ref).await?;
             // 关闭态 select 的 type-ahead：逐字符 keyDown/keyUp 累积前缀，Chrome
             // 按前缀匹配移动选中项并对每次变化发 change。ASCII 走 key_definition
@@ -2968,9 +3491,7 @@ pub async fn browser_command(
                 }
             }
             // 自校验：回读 ref 节点的 AX 值（= 当前选中项文本），双向包含视为命中。
-            let actual = ax_node_value_by_ref(&tab, r#ref)
-                .await?
-                .unwrap_or_default();
+            let actual = ax_node_value_by_ref(&tab, r#ref).await?.unwrap_or_default();
             let actual_lower = actual.to_lowercase();
             let target_lower = target.to_lowercase();
             let matched = !actual_lower.is_empty()
@@ -2982,9 +3503,13 @@ pub async fn browser_command(
             }
             Ok(BrowserCommandResponse::Done)
         }
-        BrowserCommandRequest::UploadFile { tab_id, r#ref, path } => {
-            let canonical = validate_upload_path(&app, &path)?;
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+        BrowserCommandRequest::UploadFile {
+            tab_id,
+            r#ref,
+            path,
+        } => {
+            let canonical = validate_upload_path(app, &path)?;
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
             tab.send(
                 "DOM.setFileInputFiles",
                 json!({
@@ -2993,14 +3518,20 @@ pub async fn browser_command(
                 }),
             )
             .await
-            .map_err(|error| format!("设置上传文件失败：{error}（ref 必须指向文件输入框，请重新 snapshot）"))?;
+            .map_err(|error| {
+                format!("设置上传文件失败：{error}（ref 必须指向文件输入框，请重新 snapshot）")
+            })?;
             Ok(BrowserCommandResponse::Done)
         }
-        BrowserCommandRequest::TypeText { tab_id, r#ref, text } => {
+        BrowserCommandRequest::TypeText {
+            tab_id,
+            r#ref,
+            text,
+        } => {
             if text.chars().count() > MAX_TEXT_INPUT_CHARS {
                 return Err(format!("输入文本不得超过 {MAX_TEXT_INPUT_CHARS} 字符"));
             }
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
             if let Some(r#ref) = r#ref {
                 focus_ref(&tab, r#ref).await?;
             }
@@ -3010,7 +3541,7 @@ pub async fn browser_command(
             Ok(BrowserCommandResponse::Done)
         }
         BrowserCommandRequest::Press { tab_id, key, r#ref } => {
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
             if let Some(r#ref) = r#ref {
                 focus_ref(&tab, r#ref).await?;
             }
@@ -3022,8 +3553,13 @@ pub async fn browser_command(
             dispatch_key(&tab, &def, 0).await?;
             Ok(BrowserCommandResponse::Done)
         }
-        BrowserCommandRequest::Scroll { tab_id, r#ref, delta_x, delta_y } => {
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+        BrowserCommandRequest::Scroll {
+            tab_id,
+            r#ref,
+            delta_x,
+            delta_y,
+        } => {
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
             let (x, y) = match r#ref {
                 Some(r#ref) => ref_box_center(&tab, r#ref).await?,
                 None => viewport_center(&tab).await,
@@ -3043,7 +3579,7 @@ pub async fn browser_command(
             Ok(BrowserCommandResponse::Done)
         }
         BrowserCommandRequest::Screenshot { tab_id, r#ref } => {
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
             // 带 ref 时裁剪到元素边界盒（captureBeyondViewport 让视口外区域也可截）。
             let params = if let Some(r#ref) = r#ref {
                 let (x, y, width, height) = ref_clip_box(&tab, r#ref).await?;
@@ -3075,19 +3611,29 @@ pub async fn browser_command(
                 resized,
             })
         }
-        BrowserCommandRequest::Back { tab_id } => history_navigate(Some(&app), &state, &tab_id, -1).await,
+        BrowserCommandRequest::Back { tab_id } => {
+            history_navigate(events, state, &tab_id, -1).await
+        }
         BrowserCommandRequest::Hover { tab_id, r#ref } => {
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
             let (x, y) = ref_box_center(&tab, r#ref).await?;
             dispatch_mouse_move(&tab, x, y).await?;
             Ok(BrowserCommandResponse::Done)
         }
-        BrowserCommandRequest::Wait { tab_id, text, duration_ms } => {
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+        BrowserCommandRequest::Wait {
+            tab_id,
+            text,
+            duration_ms,
+        } => {
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
             let started = std::time::Instant::now();
             let duration_ms = duration_ms.unwrap_or(0).min(MAX_WAIT_DURATION_MS);
             let mut text_matched = false;
-            if let Some(needle) = text.as_deref().map(str::trim).filter(|text| !text.is_empty()) {
+            if let Some(needle) = text
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+            {
                 let needle_lower = needle.to_lowercase();
                 loop {
                     let (ax_text, _) = ax_tree_text(&tab).await?;
@@ -3108,26 +3654,35 @@ pub async fn browser_command(
                 tokio::time::sleep(Duration::from_millis(duration_ms)).await;
             }
             let waited_ms = started.elapsed().as_millis() as u64;
-            Ok(BrowserCommandResponse::Waited { text_matched, waited_ms })
+            Ok(BrowserCommandResponse::Waited {
+                text_matched,
+                waited_ms,
+            })
         }
-        BrowserCommandRequest::Find { tab_id, text, limit } => {
+        BrowserCommandRequest::Find {
+            tab_id,
+            text,
+            limit,
+        } => {
             let needle = text.trim();
             if needle.is_empty() {
                 return Err("find 需要非空的 text 检索词".into());
             }
-            let (tab, port) = take_tab(Some(&app), &state, &tab_id).await?;
+            let (tab, port) = take_tab(events, state, &tab_id).await?;
             let result = tab
                 .send("Accessibility.getFullAXTree", json!({}))
                 .await
                 .map_err(|error| format!("获取页面快照失败：{error}"))?;
-            let tree: AxTreeResponse =
-                serde_json::from_value(result).map_err(|error| format!("解析页面快照失败：{error}"))?;
+            let tree: AxTreeResponse = serde_json::from_value(result)
+                .map_err(|error| format!("解析页面快照失败：{error}"))?;
             let limit = limit.unwrap_or(DEFAULT_FIND_LIMIT).clamp(1, MAX_FIND_LIMIT);
             let needle_lower = needle.to_lowercase();
             let mut matches: Vec<String> = Vec::new();
             let mut total = 0usize;
             for node in &tree.nodes {
-                let Some(role) = ax_role_display(node) else { continue };
+                let Some(role) = ax_role_display(node) else {
+                    continue;
+                };
                 let mut line = String::new();
                 render_ax_node(node, &role, 0, &mut line);
                 let line = line.trim_end().to_string();
@@ -3144,7 +3699,7 @@ pub async fn browser_command(
                 }
             }
             let truncated = total > matches.len();
-            let info = tab_info(&state, port, &tab_id).await?;
+            let info = tab_info(state, port, &tab_id).await?;
             Ok(BrowserCommandResponse::Found {
                 url: info.url,
                 title: info.title,
@@ -3153,12 +3708,32 @@ pub async fn browser_command(
                 truncated,
             })
         }
-        BrowserCommandRequest::Forward { tab_id } => history_navigate(Some(&app), &state, &tab_id, 1).await,
+        BrowserCommandRequest::ResolveLocator { tab_id, locator } => {
+            locator.validate()?;
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
+            let dom_hits = if locator.has_dom_criteria() {
+                Some(dom_locator_hits(&tab, &locator).await?)
+            } else {
+                None
+            };
+            let result = tab
+                .send("Accessibility.getFullAXTree", json!({}))
+                .await
+                .map_err(|error| format!("获取页面快照失败：{error}"))?;
+            let tree: AxTreeResponse = serde_json::from_value(result)
+                .map_err(|error| format!("解析页面快照失败：{error}"))?;
+            let candidates = ax_candidates(&tree.nodes);
+            let resolution = resolve_locator(&locator, &candidates, dom_hits.as_ref())?;
+            Ok(BrowserCommandResponse::LocatorResolved { resolution })
+        }
+        BrowserCommandRequest::Forward { tab_id } => {
+            history_navigate(events, state, &tab_id, 1).await
+        }
         BrowserCommandRequest::NavigationHistory { tab_id } => {
-            navigation_bounds(Some(&app), &state, &tab_id).await
+            navigation_bounds(events, state, &tab_id).await
         }
         BrowserCommandRequest::Reload { tab_id } => {
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
             let base = tab.load_generation();
             tab.send("Page.reload", json!({}))
                 .await
@@ -3167,13 +3742,17 @@ pub async fn browser_command(
             Ok(BrowserCommandResponse::Done)
         }
         BrowserCommandRequest::Dialog { tab_id } => {
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
             Ok(BrowserCommandResponse::DialogState {
                 dialog: tab.dialog_info(),
             })
         }
-        BrowserCommandRequest::RespondDialog { tab_id, accept, prompt_text } => {
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+        BrowserCommandRequest::RespondDialog {
+            tab_id,
+            accept,
+            prompt_text,
+        } => {
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
             let mut params = json!({"accept": accept});
             if let Some(prompt_text) = prompt_text {
                 if prompt_text.chars().count() > MAX_TEXT_INPUT_CHARS {
@@ -3190,33 +3769,43 @@ pub async fn browser_command(
             }
             Ok(BrowserCommandResponse::Done)
         }
-        BrowserCommandRequest::StartScreencast { tab_id, max_width, max_height } => {
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+        BrowserCommandRequest::StartScreencast {
+            tab_id,
+            max_width,
+            max_height,
+        } => {
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
             start_screencast(&tab, max_width, max_height).await
         }
         BrowserCommandRequest::StopScreencast { tab_id } => {
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
             stop_screencast(&tab).await
         }
         BrowserCommandRequest::Console { tab_id, limit } => {
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
             Ok(read_console(&tab, limit))
         }
         BrowserCommandRequest::ClickAt { tab_id, x, y } => {
             if !x.is_finite() || !y.is_finite() {
                 return Err("点击坐标必须是有限数值".into());
             }
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
             let (x, y) = clamp_to_viewport(&tab, x, y).await;
             dispatch_mouse(&tab, "mousePressed", x, y, 1).await?;
             dispatch_mouse(&tab, "mouseReleased", x, y, 1).await?;
             Ok(BrowserCommandResponse::Done)
         }
-        BrowserCommandRequest::ScrollAt { tab_id, x, y, delta_x, delta_y } => {
+        BrowserCommandRequest::ScrollAt {
+            tab_id,
+            x,
+            y,
+            delta_x,
+            delta_y,
+        } => {
             if !x.is_finite() || !y.is_finite() {
                 return Err("滚动坐标必须是有限数值".into());
             }
-            let (tab, _) = take_tab(Some(&app), &state, &tab_id).await?;
+            let (tab, _) = take_tab(events, state, &tab_id).await?;
             let (x, y) = clamp_to_viewport(&tab, x, y).await;
             tab.send(
                 "Input.dispatchMouseEvent",
@@ -3279,18 +3868,13 @@ async fn stop_screencast(tab: &Arc<CdpTab>) -> Result<BrowserCommandResponse, St
 /// 读取 console 环形缓冲的最近条目（时间正序）。仅连接过的 tab 有缓冲；
 /// 未连接的冷 tab 会先经 take_tab 补建连接，从连接时刻起开始收集。
 fn read_console(tab: &Arc<CdpTab>, limit: Option<usize>) -> BrowserCommandResponse {
-    let limit = limit.unwrap_or(DEFAULT_CONSOLE_LIMIT).clamp(1, MAX_CONSOLE_ENTRIES);
+    let limit = limit
+        .unwrap_or(DEFAULT_CONSOLE_LIMIT)
+        .clamp(1, MAX_CONSOLE_ENTRIES);
     let mut entries = tab
         .console
         .lock()
-        .map(|buffer| {
-            buffer
-                .iter()
-                .rev()
-                .take(limit)
-                .cloned()
-                .collect::<Vec<_>>()
-        })
+        .map(|buffer| buffer.iter().rev().take(limit).cloned().collect::<Vec<_>>())
         .unwrap_or_default();
     entries.reverse();
     BrowserCommandResponse::ConsoleLog { entries }
@@ -3307,14 +3891,21 @@ async fn history_navigate(
         .send("Page.getNavigationHistory", json!({}))
         .await
         .map_err(|error| format!("读取导航历史失败：{error}"))?;
-    let index = history.get("currentIndex").and_then(Value::as_i64).unwrap_or(0);
+    let index = history
+        .get("currentIndex")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     let entries = history
         .get("entries")
         .and_then(Value::as_array)
         .ok_or("导航历史数据异常")?;
     let target_index = index + delta;
     if target_index < 0 || target_index >= entries.len() as i64 {
-        return Err(if delta < 0 { "没有上一页可返回".into() } else { "没有下一页可前进".into() });
+        return Err(if delta < 0 {
+            "没有上一页可返回".into()
+        } else {
+            "没有下一页可前进".into()
+        });
     }
     let entry_id = entries[target_index as usize]
         .get("id")
@@ -3364,8 +3955,11 @@ mod tests {
         {
             // 标准布局通过（只查结构，不依赖机器是否真的安装）。
             assert_eq!(
-                layout("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", None)
-                    .expect("standard chrome layout"),
+                layout(
+                    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                    None
+                )
+                .expect("standard chrome layout"),
                 "Google Chrome"
             );
             assert_eq!(
@@ -3380,8 +3974,16 @@ mod tests {
             assert!(layout("/usr/bin/curl", None).is_err());
             assert!(layout("/bin/sh", None).is_err());
             assert!(layout("/Applications/Safari.app/Contents/MacOS/Safari", None).is_err());
-            assert!(layout("/Applications/Google Chrome.app/Contents/MacOS/helper", None).is_err());
-            assert!(layout("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", None).is_ok());
+            assert!(layout(
+                "/Applications/Google Chrome.app/Contents/MacOS/helper",
+                None
+            )
+            .is_err());
+            assert!(layout(
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                None
+            )
+            .is_ok());
             let stranger = "/Users/other/Applications/Chromium.app/Contents/MacOS/Chromium";
             assert!(
                 layout(stranger, Some(Path::new("/Users/test"))).is_err(),
@@ -3438,7 +4040,9 @@ mod tests {
         assert_eq!(headless[0], "--headless=new");
         assert!(headless.contains(&"--remote-debugging-port=9222".to_string()));
         assert!(headless.contains(&format!("--user-data-dir={}", dir.display())));
-        assert!(!headless.iter().any(|arg| arg.starts_with("--remote-allow-origins")));
+        assert!(!headless
+            .iter()
+            .any(|arg| arg.starts_with("--remote-allow-origins")));
         let headed = chrome_args(9223, dir, false, false);
         assert!(!headed.iter().any(|arg| arg.starts_with("--headless")));
     }
@@ -3449,7 +4053,9 @@ mod tests {
         let ignoring = chrome_args(9224, dir, true, true);
         assert!(ignoring.contains(&"--ignore-certificate-errors".to_string()));
         let strict = chrome_args(9225, dir, true, false);
-        assert!(!strict.iter().any(|arg| arg.starts_with("--ignore-certificate-errors")));
+        assert!(!strict
+            .iter()
+            .any(|arg| arg.starts_with("--ignore-certificate-errors")));
     }
 
     #[test]
@@ -3460,21 +4066,33 @@ mod tests {
         prepare_download_prefs(profile.path(), download_dir.path()).expect("seed prefs");
         let prefs_path = profile.path().join("Default").join("Preferences");
         let seeded: Value =
-            serde_json::from_str(&std::fs::read_to_string(&prefs_path).expect("read prefs")).expect("parse prefs");
+            serde_json::from_str(&std::fs::read_to_string(&prefs_path).expect("read prefs"))
+                .expect("parse prefs");
         assert_eq!(
             seeded.pointer("/download/default_directory"),
             Some(&Value::String(download_dir.path().display().to_string()))
         );
-        assert_eq!(seeded.pointer("/download/prompt_for_download"), Some(&Value::Bool(false)));
+        assert_eq!(
+            seeded.pointer("/download/prompt_for_download"),
+            Some(&Value::Bool(false))
+        );
 
         // 第二次：Chrome 已写回的其它键必须保留，download 键被重新补齐。
         let mut existing = seeded.clone();
         existing["session"] = json!({"restore_on_startup": 4});
-        std::fs::write(&prefs_path, serde_json::to_vec(&existing).expect("serialize")).expect("write prefs");
+        std::fs::write(
+            &prefs_path,
+            serde_json::to_vec(&existing).expect("serialize"),
+        )
+        .expect("write prefs");
         prepare_download_prefs(profile.path(), download_dir.path()).expect("merge prefs");
         let merged: Value =
-            serde_json::from_str(&std::fs::read_to_string(&prefs_path).expect("read prefs")).expect("parse prefs");
-        assert_eq!(merged.pointer("/session/restore_on_startup"), Some(&json!(4)));
+            serde_json::from_str(&std::fs::read_to_string(&prefs_path).expect("read prefs"))
+                .expect("parse prefs");
+        assert_eq!(
+            merged.pointer("/session/restore_on_startup"),
+            Some(&json!(4))
+        );
         assert_eq!(
             merged.pointer("/download/default_directory"),
             Some(&Value::String(download_dir.path().display().to_string()))
@@ -3493,14 +4111,28 @@ mod tests {
         // old 早于 new：用 FileTimes 显式设定 modified 时间保证排序可断言。
         {
             use std::fs::FileTimes;
-            let file = std::fs::File::options().write(true).open(&old_path).expect("open old");
-            file.set_times(FileTimes::new().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000)))
-                .expect("set times old");
-            let file = std::fs::File::options().write(true).open(&new_path).expect("open new");
-            file.set_times(FileTimes::new().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000)))
-                .expect("set times new");
+            let file = std::fs::File::options()
+                .write(true)
+                .open(&old_path)
+                .expect("open old");
+            file.set_times(
+                FileTimes::new()
+                    .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000)),
+            )
+            .expect("set times old");
+            let file = std::fs::File::options()
+                .write(true)
+                .open(&new_path)
+                .expect("open new");
+            file.set_times(
+                FileTimes::new()
+                    .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000)),
+            )
+            .expect("set times new");
         }
-        let response = list_downloads(dir.path(), 20).await.expect("list downloads");
+        let response = list_downloads(dir.path(), 20)
+            .await
+            .expect("list downloads");
         let BrowserCommandResponse::DownloadList { directory, entries } = response else {
             panic!("expected download list");
         };
@@ -3514,10 +4146,19 @@ mod tests {
     async fn read_download_returns_text_and_rejects_binary_and_traversal() {
         let dir = tempfile::tempdir().expect("download root");
         std::fs::write(dir.path().join("report.json"), b"{\"ok\":true}").expect("write text");
-        std::fs::write(dir.path().join("blob.bin"), [0xFF, 0xFE, 0x00, 0x01]).expect("write binary");
+        std::fs::write(dir.path().join("blob.bin"), [0xFF, 0xFE, 0x00, 0x01])
+            .expect("write binary");
 
-        let response = read_download(dir.path(), "report.json").await.expect("read text");
-        let BrowserCommandResponse::DownloadContent { name, content, truncated, .. } = response else {
+        let response = read_download(dir.path(), "report.json")
+            .await
+            .expect("read text");
+        let BrowserCommandResponse::DownloadContent {
+            name,
+            content,
+            truncated,
+            ..
+        } = response
+        else {
             panic!("expected download content");
         };
         assert_eq!(name, "report.json");
@@ -3532,7 +4173,8 @@ mod tests {
     #[test]
     fn request_contract_new_actions_deserialize() {
         let request: BrowserCommandRequest =
-            serde_json::from_str(r#"{"action":"dblClick","tabId":"t1","ref":7}"#).expect("dblClick");
+            serde_json::from_str(r#"{"action":"dblClick","tabId":"t1","ref":7}"#)
+                .expect("dblClick");
         match request {
             BrowserCommandRequest::DblClick { tab_id, r#ref } => {
                 assert_eq!(tab_id, "t1");
@@ -3540,11 +4182,16 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
-        let request: BrowserCommandRequest =
-            serde_json::from_str(r#"{"action":"setViewport","tabId":"t1","width":375,"height":667}"#)
-                .expect("setViewport");
+        let request: BrowserCommandRequest = serde_json::from_str(
+            r#"{"action":"setViewport","tabId":"t1","width":375,"height":667}"#,
+        )
+        .expect("setViewport");
         match request {
-            BrowserCommandRequest::SetViewport { tab_id, width, height } => {
+            BrowserCommandRequest::SetViewport {
+                tab_id,
+                width,
+                height,
+            } => {
                 assert_eq!(tab_id, "t1");
                 assert_eq!(width, Some(375));
                 assert_eq!(height, Some(667));
@@ -3552,7 +4199,8 @@ mod tests {
             _ => panic!("wrong variant"),
         }
         let request: BrowserCommandRequest =
-            serde_json::from_str(r#"{"action":"setViewport","tabId":"t1"}"#).expect("clear viewport");
+            serde_json::from_str(r#"{"action":"setViewport","tabId":"t1"}"#)
+                .expect("clear viewport");
         match request {
             BrowserCommandRequest::SetViewport { width, height, .. } => {
                 assert_eq!(width, None);
@@ -3567,14 +4215,21 @@ mod tests {
             _ => panic!("wrong variant"),
         }
         let request: BrowserCommandRequest =
-            serde_json::from_str(r#"{"action":"readDownload","name":"report.json"}"#).expect("readDownload");
+            serde_json::from_str(r#"{"action":"readDownload","name":"report.json"}"#)
+                .expect("readDownload");
         match request {
             BrowserCommandRequest::ReadDownload { name } => assert_eq!(name, "report.json"),
             _ => panic!("wrong variant"),
         }
-        let response = BrowserCommandResponse::ViewportApplied { width: Some(375), height: Some(667) };
+        let response = BrowserCommandResponse::ViewportApplied {
+            width: Some(375),
+            height: Some(667),
+        };
         let encoded = serde_json::to_value(&response).expect("serialize viewportApplied");
-        assert_eq!(encoded.get("type").and_then(Value::as_str), Some("viewportApplied"));
+        assert_eq!(
+            encoded.get("type").and_then(Value::as_str),
+            Some("viewportApplied")
+        );
         assert_eq!(encoded.get("width"), Some(&json!(375)));
     }
 
@@ -3582,11 +4237,17 @@ mod tests {
     async fn clear_profile_data_cache_keeps_login_data_and_is_idempotent() {
         let data_root = tempfile::tempdir().expect("temp data root");
         let profile = browser_profile_dir(data_root.path()).expect("profile dir");
-        for sub in ["Cache", "Code Cache", "Service Worker", "Cookies", "Local Storage"] {
+        for sub in [
+            "Cache",
+            "Code Cache",
+            "Service Worker",
+            "Cookies",
+            "Local Storage",
+        ] {
             std::fs::create_dir_all(profile.join(sub)).expect("seed subdir");
         }
         std::fs::write(profile.join("Cookies").join("cookies.sqlite"), "x").expect("seed cookie");
-        let state = BrowserSessionState(StdMutex::new(None));
+        let state = BrowserSessionState::default();
         let response = clear_profile_data(data_root.path(), &state, "cache")
             .await
             .expect("cache clear succeeds");
@@ -3607,7 +4268,7 @@ mod tests {
         let data_root = tempfile::tempdir().expect("temp data root");
         let profile = browser_profile_dir(data_root.path()).expect("profile dir");
         std::fs::create_dir_all(profile.join("Cookies")).expect("seed cookies");
-        let state = BrowserSessionState(StdMutex::new(None));
+        let state = BrowserSessionState::default();
         assert!(clear_profile_data(data_root.path(), &state, "wipe")
             .await
             .is_err());
@@ -3642,11 +4303,20 @@ mod tests {
         let (text, truncated) = format_ax_tree(&tree.nodes);
         assert!(!truncated);
         // 泛型容器被剪，heading 上提一级；Ignored/InlineTextBox 不出现。
-        assert!(text.contains("[ref=12] heading(level 2) \"Welcome\""), "{text}");
+        assert!(
+            text.contains("[ref=12] heading(level 2) \"Welcome\""),
+            "{text}"
+        );
         assert!(text.contains("[ref=40] button \"Sign in\""), "{text}");
-        assert!(text.contains("[ref=50] textbox \"Search\" = \"current query\""), "{text}");
+        assert!(
+            text.contains("[ref=50] textbox \"Search\" = \"current query\""),
+            "{text}"
+        );
         // 状态注记：真值布尔属性进入快照行，false 不注记（缺省态不占预算）。
-        assert!(text.contains("[ref=70] button \"Submit\" [已禁用]"), "{text}");
+        assert!(
+            text.contains("[ref=70] button \"Submit\" [已禁用]"),
+            "{text}"
+        );
         assert!(!text.contains("[焦点中]"), "{text}");
         assert!(text.contains("page \"Test Page\""), "{text}");
         assert!(!text.contains("generic"));
@@ -3667,8 +4337,12 @@ mod tests {
             backend_dom_node_id: Some(1),
             parent_id: None,
             ignored: false,
-            role: AxValue { value: Value::String("WebArea".into()) },
-            name: AxValue { value: Value::String("Big".into()) },
+            role: AxValue {
+                value: Value::String("WebArea".into()),
+            },
+            name: AxValue {
+                value: Value::String("Big".into()),
+            },
             value: AxValue::default(),
             properties: Vec::new(),
         });
@@ -3678,8 +4352,14 @@ mod tests {
                 backend_dom_node_id: Some(i + 2),
                 parent_id: Some("root".into()),
                 ignored: false,
-                role: AxValue { value: Value::String("staticText".into()) },
-                name: AxValue { value: Value::String(format!("段落文本第{i}行，包含足够长的内容以触发截断保护逻辑")) },
+                role: AxValue {
+                    value: Value::String("staticText".into()),
+                },
+                name: AxValue {
+                    value: Value::String(format!(
+                        "段落文本第{i}行，包含足够长的内容以触发截断保护逻辑"
+                    )),
+                },
                 value: AxValue::default(),
                 properties: Vec::new(),
             });
@@ -3708,9 +4388,10 @@ mod tests {
 
     #[test]
     fn request_response_serde_round_trip() {
-        let request: BrowserCommandRequest =
-            serde_json::from_str(r#"{"action":"navigate","tabId":"t1","url":"https://example.com"}"#)
-                .expect("deserialize navigate");
+        let request: BrowserCommandRequest = serde_json::from_str(
+            r#"{"action":"navigate","tabId":"t1","url":"https://example.com"}"#,
+        )
+        .expect("deserialize navigate");
         match request {
             BrowserCommandRequest::Navigate { tab_id, url } => {
                 assert_eq!(tab_id, "t1");
@@ -3741,7 +4422,10 @@ mod tests {
             can_go_forward: false,
         };
         let encoded = serde_json::to_value(&response).expect("serialize navigationState");
-        assert_eq!(encoded.get("type").and_then(Value::as_str), Some("navigationState"));
+        assert_eq!(
+            encoded.get("type").and_then(Value::as_str),
+            Some("navigationState")
+        );
         assert_eq!(encoded.get("canGoBack"), Some(&Value::Bool(true)));
         assert_eq!(encoded.get("canGoForward"), Some(&Value::Bool(false)));
         let request: BrowserCommandRequest =
@@ -3762,7 +4446,10 @@ mod tests {
             dialog: None,
         };
         let encoded = serde_json::to_value(&response).expect("serialize snapshot");
-        assert_eq!(encoded.get("type").and_then(Value::as_str), Some("snapshot"));
+        assert_eq!(
+            encoded.get("type").and_then(Value::as_str),
+            Some("snapshot")
+        );
         assert_eq!(
             encoded.get("image_base64"),
             None,
@@ -3793,11 +4480,16 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
-        let request: BrowserCommandRequest =
-            serde_json::from_str(r#"{"action":"wait","tabId":"t1","text":"登录成功","durationMs":1500}"#)
-                .expect("deserialize wait");
+        let request: BrowserCommandRequest = serde_json::from_str(
+            r#"{"action":"wait","tabId":"t1","text":"登录成功","durationMs":1500}"#,
+        )
+        .expect("deserialize wait");
         match request {
-            BrowserCommandRequest::Wait { tab_id, text, duration_ms } => {
+            BrowserCommandRequest::Wait {
+                tab_id,
+                text,
+                duration_ms,
+            } => {
                 assert_eq!(tab_id, "t1");
                 assert_eq!(text.as_deref(), Some("登录成功"));
                 assert_eq!(duration_ms, Some(1500));
@@ -3808,7 +4500,11 @@ mod tests {
             serde_json::from_str(r#"{"action":"find","tabId":"t1","text":"提交","limit":5}"#)
                 .expect("deserialize find");
         match request {
-            BrowserCommandRequest::Find { tab_id, text, limit } => {
+            BrowserCommandRequest::Find {
+                tab_id,
+                text,
+                limit,
+            } => {
                 assert_eq!(tab_id, "t1");
                 assert_eq!(text, "提交");
                 assert_eq!(limit, Some(5));
@@ -3836,24 +4532,32 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
-        let request: BrowserCommandRequest =
-            serde_json::from_str(r#"{"action":"selectOption","tabId":"t1","ref":31,"text":"北京"}"#)
-                .expect("deserialize selectOption");
+        let request: BrowserCommandRequest = serde_json::from_str(
+            r#"{"action":"selectOption","tabId":"t1","ref":31,"text":"北京"}"#,
+        )
+        .expect("deserialize selectOption");
         match request {
-            BrowserCommandRequest::SelectOption { tab_id, r#ref, text } => {
+            BrowserCommandRequest::SelectOption {
+                tab_id,
+                r#ref,
+                text,
+            } => {
                 assert_eq!(tab_id, "t1");
                 assert_eq!(r#ref, 31);
                 assert_eq!(text, "北京");
             }
             _ => panic!("wrong variant"),
         }
-        let request: BrowserCommandRequest =
-            serde_json::from_str(
-                r#"{"action":"uploadFile","tabId":"t1","ref":88,"path":"/repo/fixtures/a.png"}"#,
-            )
-            .expect("deserialize uploadFile");
+        let request: BrowserCommandRequest = serde_json::from_str(
+            r#"{"action":"uploadFile","tabId":"t1","ref":88,"path":"/repo/fixtures/a.png"}"#,
+        )
+        .expect("deserialize uploadFile");
         match request {
-            BrowserCommandRequest::UploadFile { tab_id, r#ref, path } => {
+            BrowserCommandRequest::UploadFile {
+                tab_id,
+                r#ref,
+                path,
+            } => {
                 assert_eq!(tab_id, "t1");
                 assert_eq!(r#ref, 88);
                 assert_eq!(path, "/repo/fixtures/a.png");
@@ -3866,7 +4570,10 @@ mod tests {
         })
         .expect("serialize waited");
         assert_eq!(waited.get("type").and_then(Value::as_str), Some("waited"));
-        assert_eq!(waited.get("textMatched").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            waited.get("textMatched").and_then(Value::as_bool),
+            Some(false)
+        );
         let found = serde_json::to_value(BrowserCommandResponse::Found {
             url: "https://example.com".into(),
             title: "Example".into(),
@@ -3883,7 +4590,10 @@ mod tests {
     #[test]
     fn detect_engines_reports_known_bundles_only() {
         let engines = detect_engines(home().as_deref());
-        let names: Vec<&str> = engines.iter().map(|engine| engine.engine.as_str()).collect();
+        let names: Vec<&str> = engines
+            .iter()
+            .map(|engine| engine.engine.as_str())
+            .collect();
         assert_eq!(names, BROWSER_EXECUTABLE_NAMES.to_vec());
     }
 
@@ -3908,11 +4618,16 @@ mod tests {
 
     #[test]
     fn new_request_variants_serde_round_trip() {
-        let request: BrowserCommandRequest =
-            serde_json::from_str(r#"{"action":"startScreencast","tabId":"t1","maxWidth":640,"maxHeight":480}"#)
-                .expect("deserialize startScreencast");
+        let request: BrowserCommandRequest = serde_json::from_str(
+            r#"{"action":"startScreencast","tabId":"t1","maxWidth":640,"maxHeight":480}"#,
+        )
+        .expect("deserialize startScreencast");
         match request {
-            BrowserCommandRequest::StartScreencast { tab_id, max_width, max_height } => {
+            BrowserCommandRequest::StartScreencast {
+                tab_id,
+                max_width,
+                max_height,
+            } => {
                 assert_eq!(tab_id, "t1");
                 assert_eq!(max_width, Some(640));
                 assert_eq!(max_height, Some(480));
@@ -3923,11 +4638,21 @@ mod tests {
         let request: BrowserCommandRequest =
             serde_json::from_str(r#"{"action":"startScreencast","tabId":"t1"}"#)
                 .expect("deserialize startScreencast without size");
-        assert!(matches!(request, BrowserCommandRequest::StartScreencast { max_width: None, max_height: None, .. }));
+        assert!(matches!(
+            request,
+            BrowserCommandRequest::StartScreencast {
+                max_width: None,
+                max_height: None,
+                ..
+            }
+        ));
         let request: BrowserCommandRequest =
             serde_json::from_str(r#"{"action":"console","tabId":"t1"}"#)
                 .expect("deserialize console");
-        assert!(matches!(request, BrowserCommandRequest::Console { limit: None, .. }));
+        assert!(matches!(
+            request,
+            BrowserCommandRequest::Console { limit: None, .. }
+        ));
         let request: BrowserCommandRequest =
             serde_json::from_str(r#"{"action":"clickAt","tabId":"t1","x":10.5,"y":20.0}"#)
                 .expect("deserialize clickAt");
@@ -3942,7 +4667,9 @@ mod tests {
             serde_json::from_str(r#"{"action":"scrollAt","tabId":"t1","x":1,"y":2,"deltaY":-240}"#)
                 .expect("deserialize scrollAt");
         match request {
-            BrowserCommandRequest::ScrollAt { delta_x, delta_y, .. } => {
+            BrowserCommandRequest::ScrollAt {
+                delta_x, delta_y, ..
+            } => {
                 assert_eq!(delta_x, None);
                 assert_eq!(delta_y, Some(-240.0));
             }
@@ -3963,9 +4690,20 @@ mod tests {
             }],
         })
         .expect("serialize consoleLog");
-        assert_eq!(response.get("type").and_then(Value::as_str), Some("consoleLog"));
-        assert_eq!(response.pointer("/entries/0/level").and_then(Value::as_str), Some("error"));
-        assert_eq!(response.pointer("/entries/0/timestamp").and_then(Value::as_i64), Some(1700000000));
+        assert_eq!(
+            response.get("type").and_then(Value::as_str),
+            Some("consoleLog")
+        );
+        assert_eq!(
+            response.pointer("/entries/0/level").and_then(Value::as_str),
+            Some("error")
+        );
+        assert_eq!(
+            response
+                .pointer("/entries/0/timestamp")
+                .and_then(Value::as_i64),
+            Some(1700000000)
+        );
     }
 
     #[test]
@@ -4000,7 +4738,10 @@ mod tests {
             }),
         );
         // 空文本条目不入缓冲。
-        handle_log_entry(&tab, &json!({"method": "Log.entryAdded", "params": {"entry": {"level": "info", "source": "network", "text": ""}}}));
+        handle_log_entry(
+            &tab,
+            &json!({"method": "Log.entryAdded", "params": {"entry": {"level": "info", "source": "network", "text": ""}}}),
+        );
         match read_console(&tab, None) {
             BrowserCommandResponse::ConsoleLog { entries } => {
                 assert_eq!(entries.len(), 3);
@@ -4008,7 +4749,11 @@ mod tests {
                 assert_eq!(entries[0].source, "console");
                 assert_eq!(entries[0].text, "boom Error: x undefined");
                 assert_eq!(entries[1].source, "exception");
-                assert!(entries[1].text.contains("Uncaught：TypeError: null"), "{}", entries[1].text);
+                assert!(
+                    entries[1].text.contains("Uncaught：TypeError: null"),
+                    "{}",
+                    entries[1].text
+                );
                 assert_eq!(entries[2].source, "network");
                 assert_eq!(entries[2].text, "Failed to load resource");
             }
@@ -4027,11 +4772,19 @@ mod tests {
                 // 超限 limit clamp 到缓冲容量；环形淘汰后只剩最近 200 条。
                 assert_eq!(entries.len(), MAX_CONSOLE_ENTRIES);
                 assert_eq!(entries.first().unwrap().text, "line 20");
-                assert_eq!(entries.last().unwrap().text, format!("line {}", MAX_CONSOLE_ENTRIES + 19));
+                assert_eq!(
+                    entries.last().unwrap().text,
+                    format!("line {}", MAX_CONSOLE_ENTRIES + 19)
+                );
             }
             _ => panic!("expected consoleLog"),
         }
-        push_console_entry(&tab, "log", "console", &"x".repeat(MAX_CONSOLE_ENTRY_CHARS + 10));
+        push_console_entry(
+            &tab,
+            "log",
+            "console",
+            &"x".repeat(MAX_CONSOLE_ENTRY_CHARS + 10),
+        );
         match read_console(&tab, Some(1)) {
             BrowserCommandResponse::ConsoleLog { entries } => {
                 // 截断 = 上限字符 + 省略标记。
@@ -4075,7 +4828,8 @@ mod tests {
         assert!(ack.contains("Page.screencastFrameAck"));
         handle_screencast_frame(&tab, &frame);
         assert_eq!(
-            tab.screencast.lock().unwrap().last_emit, first_emit,
+            tab.screencast.lock().unwrap().last_emit,
+            first_emit,
             "节流窗口内的帧不得刷新锚点"
         );
     }
@@ -4083,7 +4837,8 @@ mod tests {
     #[tokio::test]
     #[cfg(unix)]
     async fn cleans_stale_locks_only_when_no_live_holder() {
-        let dir = std::env::temp_dir().join(format!("axiom-lock-cleanup-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("axiom-lock-cleanup-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let marker_exists = |name: &str| dir.join(name).exists();
         for marker in ["SingletonLock", "SingletonSocket", "SingletonCookie"] {
@@ -4099,61 +4854,23 @@ mod tests {
         use std::os::unix::process::CommandExt;
         let mut command = std::process::Command::new("/bin/sleep");
         command.arg("30").process_group(0);
-        command.arg0(format!("AxiomTestBrowser --user-data-dir={}", dir.display()));
+        command.arg0(format!(
+            "AxiomTestBrowser --user-data-dir={}",
+            dir.display()
+        ));
         let mut holder = command.spawn().expect("spawn fake holder");
         for marker in ["SingletonLock", "SingletonSocket", "SingletonCookie"] {
             let _ = std::fs::write(dir.join(marker), b"x");
         }
         cleanup_stale_locks_if_unheld(&dir).await;
-        assert!(marker_exists("SingletonLock"), "有活体持有者时锁不得清理（防并发写口）");
+        assert!(
+            marker_exists("SingletonLock"),
+            "有活体持有者时锁不得清理（防并发写口）"
+        );
         let _ = holder.kill();
         let _ = holder.wait();
         let _ = std::fs::remove_dir_all(&dir);
     }
-
-    #[tokio::test]
-    #[cfg(unix)]
-    async fn terminates_stale_profile_holder_process() {
-        use std::os::unix::process::CommandExt;
-        let dir = std::env::temp_dir().join(format!("axiom-stale-holder-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("mkdir");
-        // arg0 伪装浏览器命令行（ps 扫描按 --user-data-dir=<profile> 匹配），
-        // process_group(0) 对齐真实浏览器 spawn 形态，让组信号精确命中。
-        let spawn_fake = |carry_marker: bool| {
-            let mut command = std::process::Command::new("/bin/sleep");
-            command.arg("30").process_group(0);
-            if carry_marker {
-                command.arg0(format!("AxiomTestBrowser --user-data-dir={}", dir.display()));
-            }
-            command.spawn().expect("spawn fake holder")
-        };
-        let mut unrelated = spawn_fake(false);
-        let mut fake = spawn_fake(true);
-        let pid = fake.id() as i32;
-        assert!(
-            find_stale_profile_holders_sync(&dir).contains(&pid),
-            "扫描必须发现持有 profile 的进程"
-        );
-        assert!(
-            !find_stale_profile_holders_sync(&dir).contains(&(unrelated.id() as i32)),
-            "不携带 --user-data-dir 的进程不得命中"
-        );
-        assert!(terminate_stale_profile_holders(&dir).await, "应报告已清理");
-        let _ = fake.wait();
-        assert!(
-            !find_stale_profile_holders_sync(&dir).contains(&pid),
-            "清理后残留进程应已退出"
-        );
-        let _ = unrelated.kill();
-        let _ = unrelated.wait();
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    // -----------------------------------------------------------------
-    // 真链路集成测试：本机存在 Chromium 系浏览器时跑完整 spawn→navigate→
-    // snapshot→click→screenshot→shutdown；无浏览器时显式跳过（CI 无 Chrome
-    // 不红，本机开发可跑）。
-    // -----------------------------------------------------------------
 
     fn spawn_fixture_http_server() -> (String, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture server");
@@ -4161,20 +4878,25 @@ mod tests {
         let handle = std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
-                let mut buffer = [0u8; 4096];
-                let _ = std::io::Read::read(&mut stream, &mut buffer);
-                let body = concat!(
+                std::thread::spawn(move || {
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
+                    let mut buffer = [0u8; 4096];
+                    if std::io::Read::read(&mut stream, &mut buffer).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let body = concat!(
                     "<!doctype html><html><head><title>Browser Test</title></head><body>",
                     "<h1>Fixture Heading</h1>",
                     "<button id=\"b\" onclick=\"document.getElementById('out').textContent='clicked-mark'\">Click Source</button>",
                     "<div id=\"out\"></div></body></html>"
                 );
-                let response = format!(
+                    let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     body.len(),
                     body
                 );
-                let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+                    let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+                });
             }
         });
         (format!("http://{addr}/"), handle)
@@ -4196,7 +4918,9 @@ mod tests {
             ignore_certificate_errors: false,
         };
         // 未启用的配置必须 fail-closed。
-        assert!(ensure_running(None, data_root.path(), &state, &config).await.is_err());
+        assert!(ensure_running(None, data_root.path(), &state, &config)
+            .await
+            .is_err());
 
         let config = BrowserSpawnConfig {
             enabled: true,
@@ -4204,15 +4928,22 @@ mod tests {
             headless: true,
             ignore_certificate_errors: false,
         };
-        let response = ensure_running(None, data_root.path(), &state, &config).await.expect("browser starts");
-        let BrowserCommandResponse::Status { running, version, .. } = response else {
+        let response = ensure_running(None, data_root.path(), &state, &config)
+            .await
+            .expect("browser starts");
+        let BrowserCommandResponse::Status {
+            running, version, ..
+        } = response
+        else {
             panic!("expected status response");
         };
         assert!(running);
         assert!(version.unwrap_or_default().starts_with("Chrome/"));
 
         let (base_url, _server) = spawn_fixture_http_server();
-        let opened = open_new_tab(None, &state, Some(base_url.clone())).await.expect("new tab + navigate");
+        let opened = open_new_tab(None, &state, Some(base_url.clone()))
+            .await
+            .expect("new tab + navigate");
         let BrowserCommandResponse::TabOpened { tab } = opened else {
             panic!("expected tab opened");
         };
@@ -4237,9 +4968,15 @@ mod tests {
             .and_then(|rest| rest.split(']').next())
             .and_then(|value| value.parse::<i64>().ok())
             .expect("button ref in snapshot");
-        let (x, y) = ref_box_center(&tab_handle, button_ref).await.expect("box center");
-        dispatch_mouse(&tab_handle, "mousePressed", x, y, 1).await.expect("press");
-        dispatch_mouse(&tab_handle, "mouseReleased", x, y, 1).await.expect("release");
+        let (x, y) = ref_box_center(&tab_handle, button_ref)
+            .await
+            .expect("box center");
+        dispatch_mouse(&tab_handle, "mousePressed", x, y, 1)
+            .await
+            .expect("press");
+        dispatch_mouse(&tab_handle, "mouseReleased", x, y, 1)
+            .await
+            .expect("release");
 
         // 点击效果轮询（JS 执行是异步的）。
         let mut clicked = false;
@@ -4262,8 +4999,13 @@ mod tests {
             .send("Page.captureScreenshot", json!({"format": "png"}))
             .await
             .expect("screenshot");
-        let data = screenshot.get("data").and_then(Value::as_str).expect("screenshot data");
-        let bytes = base64::engine::general_purpose::STANDARD.decode(data).expect("decode png");
+        let data = screenshot
+            .get("data")
+            .and_then(Value::as_str)
+            .expect("screenshot data");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .expect("decode png");
         assert_eq!(&bytes[0..8], b"\x89PNG\r\n\x1a\n", "PNG magic");
 
         let tabs = list_browser_tabs(&state).await.expect("list tabs");
@@ -4321,5 +5063,70 @@ mod tests {
         shutdown_browser(None, &state).await.expect("shutdown");
         let _ = stale.start_kill();
         let _ = stale.wait().await;
+    }
+}
+
+#[cfg(test)]
+mod ui_snapshot_tests {
+    use super::*;
+
+    fn ax(json: Value) -> AxNode {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn subtree_text_joins_static_text_descendants_in_document_order() {
+        let nodes = vec![
+            ax(
+                json!({"nodeId": "1", "backendDOMNodeId": 10, "role": {"value": "generic"}, "name": {"value": ""}}),
+            ),
+            ax(
+                json!({"nodeId": "2", "parentId": "1", "role": {"value": "StaticText"}, "name": {"value": "应付金额"}}),
+            ),
+            ax(
+                json!({"nodeId": "3", "parentId": "1", "role": {"value": "StaticText"}, "name": {"value": "¥240.00"}}),
+            ),
+        ];
+        assert_eq!(subtree_text(&nodes, &nodes[0]), "应付金额 ¥240.00");
+    }
+
+    #[test]
+    fn subtree_text_falls_back_to_the_node_name_without_text_children() {
+        let nodes = vec![ax(json!({
+            "nodeId": "1", "backendDOMNodeId": 11,
+            "role": {"value": "button"}, "name": {"value": "提交"}
+        }))];
+        assert_eq!(subtree_text(&nodes, &nodes[0]), "提交");
+    }
+
+    #[test]
+    fn subtree_text_survives_a_cyclic_parent_reference() {
+        let nodes = vec![
+            ax(
+                json!({"nodeId": "1", "parentId": "2", "role": {"value": "StaticText"}, "name": {"value": "a"}}),
+            ),
+            ax(
+                json!({"nodeId": "2", "parentId": "1", "role": {"value": "StaticText"}, "name": {"value": "b"}}),
+            ),
+        ];
+        assert_eq!(subtree_text(&nodes, &nodes[0]), "a b");
+    }
+
+    #[test]
+    fn element_facts_reads_hidden_disabled_and_value_flags() {
+        let nodes = vec![ax(json!({
+            "nodeId": "1", "backendDOMNodeId": 12,
+            "role": {"value": "textbox"}, "name": {"value": "优惠券"},
+            "value": {"value": "SHOPAIM10"},
+            "properties": [
+                {"name": "disabled", "value": {"type": "boolean", "value": true}},
+                {"name": "hidden", "value": {"type": "boolean", "value": false}}
+            ]
+        }))];
+        let facts = element_facts(&nodes, 12);
+        assert_eq!(facts.value.as_deref(), Some("SHOPAIM10"));
+        assert!(facts.disabled);
+        assert!(!facts.hidden);
+        assert_eq!(element_facts(&nodes, 99), UiElementFacts::default());
     }
 }

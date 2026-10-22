@@ -23,6 +23,12 @@ export const ApprovalCard = () => {
   if (!pendingApproval) return null
   const presentation = pendingApproval.presentation
   const isCommand = presentation.category === 'workspace-command'
+  const title = presentation.titleKey
+    ? t(presentation.titleKey, presentation.titleParams)
+    : presentation.title
+  const description = presentation.descriptionKey
+    ? t(presentation.descriptionKey, presentation.descriptionParams)
+    : presentation.description
   return (
     <aside
       aria-describedby="approval-card-description"
@@ -37,8 +43,8 @@ export const ApprovalCard = () => {
         </span>
         <span className="approval-card__tag">{pendingApproval.toolName}</span>
       </header>
-      <h2 className="approval-card__title" id="approval-card-title">{presentation.title}</h2>
-      <p className="approval-card__description" id="approval-card-description">{presentation.description}</p>
+      <h2 className="approval-card__title" id="approval-card-title">{title}</h2>
+      <p className="approval-card__description" id="approval-card-description">{description}</p>
       {presentation.path && (
         <div className="approval-card__path">
           <span>{isCommand ? t('app.approval.workingDir') : t('app.approval.targetPath')}</span>
@@ -46,19 +52,19 @@ export const ApprovalCard = () => {
         </div>
       )}
       {presentation.preview && (
-        <pre aria-label={isCommand ? t('app.approval.commandAria') : t('app.approval.changeAria')} className="approval-card__command">
+        <section aria-label={isCommand ? t('app.approval.commandAria') : t('app.approval.changeAria')} className="approval-card__command">
           {presentation.preview}
-        </pre>
+        </section>
       )}
       {presentation.changes && presentation.changes.length > 0 && (
-        <div aria-label={t('app.approval.filesAria')} className="approval-card__changes">
+        <section aria-label={t('app.approval.filesAria')} className="approval-card__changes">
           {presentation.changes.map((change, index) => (
             <details key={`${change.path}-${index}`} open>
               <summary>{change.path}</summary>
               <pre className="approval-card__command">{change.preview}</pre>
             </details>
           ))}
-        </div>
+        </section>
       )}
       <p className="approval-card__scope-note">
         {isCommand ? t('app.approval.scopeNote.command') : t('app.approval.scopeNote.tool')}

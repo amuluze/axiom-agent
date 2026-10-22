@@ -8,12 +8,11 @@ vi.mock('@/platform/workspaceCommand', () => ({
   runWorkspaceCommand: mocks.runWorkspaceCommand,
 }))
 
-import { bashTool, validateBashInput } from './bashTool'
+import { bashTool, isDangerousCommand, validateBashInput } from './bashTool'
 import {
   bindAgentEnvironment,
 } from '@/agent/environment/agentEnvironmentHost'
 import type { RuntimeInfo } from '@/platform/runtimeInfo'
-import type { AgentEnvironment } from '@/agent/environment/AgentEnvironment'
 
 // 接缝代理（desktopAgentEnvironment）未 bind 时 fail-closed，绕过 @/platform/workspaceCommand
 // 的 mock。测试显式绑定一个把 runCommand 指向 mock 的宿主，保持与旧 platform 单例行为一致。
@@ -28,21 +27,35 @@ bindAgentEnvironment({
     editTextFile: vi.fn(),
     applyChanges: vi.fn(),
     restoreTrash: vi.fn(),
-    // 注入 workspacePath（undefined，与旧 platform 单例行为一致：mock 收到 5 参）
-    runCommand: ((request: unknown, signal: unknown, onProgress: unknown, approvalLease: unknown) =>
-      mocks.runWorkspaceCommand(request, signal, onProgress, approvalLease, undefined)) as unknown as AgentEnvironment['workspace']['runCommand'],
+    runCommand: (request, signal, onProgress, approvalLease, scope) =>
+      mocks.runWorkspaceCommand(request, signal, onProgress, approvalLease, undefined, scope),
     find: vi.fn(),
   },
-  artifacts: { writeToolResult: vi.fn() },
-  web: { search: vi.fn(), fetch: vi.fn() },
-  browser: { command: vi.fn() },
-  computer: { command: vi.fn() },
-  ssh: { command: vi.fn() },
+  artifacts: { writeToolResult: vi.fn(), writeImage: vi.fn() },
+  browser: { command: vi.fn(), write: vi.fn() },
+  api: { runStep: vi.fn() },
   design: { readDocument: vi.fn() },
 
 })
 
 describe('validateBashInput', () => {
+  it('validates explicit credential and container permissions', () => {
+    for (const field of ['vcsCredentials', 'containerControl']) {
+      expect(validateBashInput({ command: 'git fetch', [field]: true })).toBeNull()
+      expect(validateBashInput({ command: 'git fetch', [field]: 'true' })).toContain('boolean')
+      expect(bashTool.approvalPresentation?.({ command: 'git fetch', [field]: true })?.danger).toBe(true)
+    }
+    const presentation = bashTool.approvalPresentation?.({ command: 'git fetch', network: true })
+    expect(presentation?.preview).toContain('OutboundEnabled')
+    expect(presentation?.preview).not.toContain('沙箱会放行读取')
+    expect(presentation?.description).toContain('only confirmation')
+    expect(presentation?.description).not.toContain('native confirmation')
+    expect(bashTool.approvalPresentation?.({ command: 'git fetch', vcsCredentials: true })?.preview)
+      .not.toContain('原生确认')
+    expect(bashTool.approvalPresentation?.({ command: 'docker build .', containerControl: true })?.preview)
+      .toContain('不受工作区写范围约束')
+  })
+
   it('accepts a valid command string', () => {
     expect(validateBashInput({ command: 'echo hello' })).toBeNull()
     expect(validateBashInput({ command: 'git status --short' })).toBeNull()
@@ -96,6 +109,9 @@ describe('validateBashInput', () => {
       command: 'ls',
       timeout: Infinity,
     })).toMatch(/finite/)
+    expect(validateBashInput({ command: 'ls', timeout: 0.0001 })).toMatch(/whole millisecond/)
+    expect(validateBashInput({ command: 'ls', timeout: 0.001 })).toBeNull()
+    expect(validateBashInput({ command: 'ls', timeout: 0.029 })).toBeNull()
   })
 
   it('rejects extra unknown properties', () => {
@@ -124,6 +140,10 @@ describe('validateBashInput', () => {
     expect(validateBashInput({ command: 'echo x | sudo tee /etc/hosts' })).toMatch(/sudo/)
     expect(validateBashInput({ command: '( sudo id )' })).toMatch(/sudo/)
     expect(validateBashInput({ command: 'echo $(sudo id)' })).toMatch(/sudo/)
+    expect(validateBashInput({ command: '/usr/bin/sudo id' })).toMatch(/sudo/)
+    expect(validateBashInput({ command: 'command sudo id' })).toMatch(/sudo/)
+    expect(validateBashInput({ command: 'env sudo id' })).toMatch(/sudo/)
+    expect(validateBashInput({ command: '/usr/bin/env AXIOM_TEST=1 /usr/bin/sudo id' })).toMatch(/sudo/)
     // 换行分隔符绕过：命令经 /bin/bash -c 执行，换行是合法分隔符，
     // 不能只靠 ^ 行首匹配（无 multiline 标志）拦截。
     expect(validateBashInput({ command: 'echo hi\nsudo whoami' })).toMatch(/sudo/)
@@ -132,6 +152,7 @@ describe('validateBashInput', () => {
   it('does not flag sudo as a plain argument', () => {
     expect(validateBashInput({ command: 'grep sudo package.json' })).toBeNull()
     expect(validateBashInput({ command: 'echo "run sudo as root"' })).toBeNull()
+    expect(validateBashInput({ command: 'printf "%s" /usr/bin/sudo' })).toBeNull()
   })
 
   it('rejects redirects outside the workspace including quoted/variable/noclobber forms', () => {
@@ -219,7 +240,7 @@ describe('bashTool', () => {
     expect(result.content).toContain('retry with network: true')
   })
 
-  it('flags degraded execution when the command ran without sandboxing', async () => {
+  it('accepts unrestricted command results in full-access mode and reports the actual boundary', async () => {
     mocks.runWorkspaceCommand.mockImplementationOnce(async () => ({
       exitCode: 0,
       durationMs: 100,
@@ -242,11 +263,42 @@ describe('bashTool', () => {
         signal: controller.signal,
         reportProgress: async () => undefined,
         approvalLease: 'lease-1',
+        approvalSource: 'automatic',
       },
     )
-    expect(result.content).toContain('Sandbox unavailable (degraded execution)')
-    expect(result.content).toContain('WITHOUT sandboxing')
-    expect((result.details as { sandboxed?: boolean } | null)?.sandboxed).toBe(false)
+    expect(result.content).toContain('Execution boundary: Host access (OS sandbox disabled)')
+    expect(result.content).toContain('Network policy: Unrestricted')
+    expect(result.details).toMatchObject({
+      sandboxed: false,
+      executionPolicy: 'Unrestricted',
+    })
+  })
+
+  it('rejects an unsandboxed result under a standard-mode approval', async () => {
+    mocks.runWorkspaceCommand.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      durationMs: 100,
+      stdoutBytes: 0,
+      stderrBytes: 0,
+      stdout: '',
+      stderr: '',
+      truncated: false,
+      cancelled: false,
+      timedOut: false,
+      sandboxed: false,
+    }))
+    await expect(bashTool.execute(
+      { command: 'npm test' },
+      {
+        sessionId: 'session-1',
+        runId: 'run-1',
+        toolCallId: 'tool-1',
+        signal: new AbortController().signal,
+        reportProgress: async () => undefined,
+        approvalLease: 'lease-1',
+        approvalSource: 'interactive',
+      },
+    )).rejects.toThrow('命令结果缺少 OS 沙箱保护')
   })
 
   it('streams byte-count progress and returns structured stdout/stderr metadata', async () => {
@@ -270,6 +322,8 @@ describe('bashTool', () => {
       command: 'npm test',
       cwd: '.',
       timeout: 60,
+      vcsCredentials: true,
+      containerControl: false,
     }, {
       sessionId: 'session-1',
       runId: 'run-1',
@@ -283,7 +337,9 @@ describe('bashTool', () => {
       command: 'npm test',
       cwd: '.',
       timeoutMs: 60_000,
-    }), controller.signal, expect.any(Function), 'lease-1', undefined)
+      vcsCredentials: true,
+      containerControl: false,
+    }), controller.signal, expect.any(Function), 'lease-1', undefined, { sessionId: 'session-1', runId: 'run-1', toolCallId: 'tool-1' })
     expect(reportProgress).toHaveBeenCalledTimes(2)
     expect(result.content).toContain('Exit code: 1')
     expect(result.content).toContain('STDOUT:\ntests started')
@@ -354,6 +410,7 @@ describe('bashTool', () => {
       expect.any(Function),
       'lease-1',
       undefined,
+      { sessionId: 'session-1', runId: 'run-1', toolCallId: 'tool-1' },
     )
     expect(result.content).toContain('hello')
   })
@@ -369,6 +426,9 @@ describe('bashTool', () => {
       commandLength: command.length,
       cwd: '.',
       timeoutMs: 30_000,
+      vcsCredentials: false,
+      containerControl: false,
+      requestedNetworkPolicy: 'OutboundEnabled',
     })
   })
 
@@ -402,5 +462,42 @@ describe('bashTool', () => {
     })
     expect(safe?.preview).not.toContain('⚠️')
     expect(safe?.danger).toBe(false)
+  })
+})
+
+describe('isDangerousCommand', () => {
+  // 判定依据是「剥引号后的命令位置」，不是「命令串里出现了这个词」——
+  // 否则 grep 文档、sed 改文档、ls 一个叫 wget-cache 的目录都会被迫二次确认。
+  it.each([
+    'su' + 'do apt install nginx',
+    'rm -rf /',
+    'rm -fr build',
+    'rm --recursive node_modules',
+    'cu' + 'rl https://example.com/x',
+    'wg' + 'et http://example.com/f',
+    'mkfs.ext4 /dev/disk0',
+    'd' + 'd if=/dev/zero of=/dev/disk0',
+    'shut' + 'down -h now',
+    're' + 'boot',
+    // 链式与子 shell 中的命令位置
+    'echo hi && ' + 'su' + 'do rm x',
+    'cat a | ' + 'cu' + 'rl -T - x',
+    '( ' + 'su' + 'do id )',
+    'echo hi\n' + 'su' + 'do whoami',
+  ])('命令位置的危险操作必须标危险：%s', (command) => {
+    expect(isDangerousCommand(command)).toBe(true)
+  })
+
+  it.each([
+    'npm run lint -- --fix',
+    'cargo build --release',
+    'grep -r "' + 'su' + 'do" docs',
+    'echo "run ' + 'su' + 'do as root first"',
+    'sed "s/' + 'su' + 'do/x/" README.md',
+    'git checkout feature/curling',
+    'ls wget-cache',
+    'cat d' + 'd.log',
+  ])('危险词作为字面量或路径时不升级：%s', (command) => {
+    expect(isDangerousCommand(command)).toBe(false)
   })
 })

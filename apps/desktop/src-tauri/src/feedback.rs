@@ -94,9 +94,9 @@ pub(crate) async fn submit_feedback(
     let app_version = app.package_info().version.to_string();
     let body = build_payload(kind, title, description, contact, &app_version);
     // 密钥经构建期注入：缺失（源码构建/开发态）时 fail-closed，不发起无签名请求。
-    let (endpoint, hook_secret) = FEEDBACK_ENDPOINT.zip(HOOK_SECRET).ok_or_else(|| {
-        "反馈服务未随此构建配置：请使用官网发布的正式版本".to_string()
-    })?;
+    let (endpoint, hook_secret) = FEEDBACK_ENDPOINT
+        .zip(HOOK_SECRET)
+        .ok_or_else(|| "反馈服务未随此构建配置：请使用官网发布的正式版本".to_string())?;
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| format!("系统时钟异常，无法签名反馈：{error}"))?
@@ -135,8 +135,19 @@ pub(crate) async fn submit_feedback(
             .collect::<String>();
         let detail = serde_json::from_str::<serde_json::Value>(&body)
             .ok()
-            .and_then(|value| value.get("error").and_then(|error| error.as_str()).map(String::from))
-            .unwrap_or_else(|| if body.is_empty() { "无响应体".into() } else { body });
+            .and_then(|value| {
+                value
+                    .get("error")
+                    .and_then(|error| error.as_str())
+                    .map(String::from)
+            })
+            .unwrap_or_else(|| {
+                if body.is_empty() {
+                    "无响应体".into()
+                } else {
+                    body
+                }
+            });
         return Err(format!("反馈服务返回 {status}：{detail}"));
     }
 
@@ -144,7 +155,10 @@ pub(crate) async fn submit_feedback(
         .json()
         .await
         .map_err(|error| format!("反馈服务响应无法解析：{error}"))?;
-    let ok = payload.get("ok").and_then(|value| value.as_bool()).unwrap_or(false);
+    let ok = payload
+        .get("ok")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
     if !ok {
         return Err("反馈服务返回了异常结果，请稍后重试".into());
     }
@@ -310,7 +324,10 @@ mod tests {
         assert_eq!(first.len(), 64);
         // 内容任一字段变化都产生不同哈希。
         assert_ne!(first, event_hash("bug", "标题", "描述", "a@example.com"));
-        assert_ne!(first, event_hash("feature", "标题", "描述", "b@example.com"));
+        assert_ne!(
+            first,
+            event_hash("feature", "标题", "描述", "b@example.com")
+        );
     }
 
     #[test]

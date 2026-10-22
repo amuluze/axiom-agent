@@ -19,7 +19,7 @@ import type { AxDocument, AxNode } from '@/agent/design/axSchema'
 import { axOverlaySourceId, isAxOverlayWrapperId } from '@/agent/design/axSchema'
 import { importPenDocument, penInstanceTexts } from './importPen'
 import { axInstanceOfPenComponent } from './axComponentMap'
-import { exportAxToPenDocument } from './exportPen'
+import { exportAxToPenDocument } from './__fixtures__/exportPen'
 
 const PEN_FILES = ['.pen/axiom.pen', '.pen/website.pen', '.pen/axiom-website.pen']
 

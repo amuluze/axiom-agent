@@ -2,6 +2,7 @@ import type { AgentMessage } from '@/agent/core/types'
 import { canBranchThrough } from '@/agent/session/branch'
 import { utf8ByteLength } from './budget'
 import { hashContextSummary, SUMMARY_PROMPT_VERSION } from './compaction'
+import { MAX_LOADED_SKILL_ENTRIES, MAX_SDD_REVIEW_ENTRIES } from './ledger'
 import type { ContextCheckpoint, ContextCheckpointFacts } from './types'
 
 const MAX_PERSISTED_CHECKPOINT_BYTES = 256 * 1024
@@ -70,6 +71,39 @@ export const assertCheckpointLedgerIntegrity = (
       if (path !== null && path !== undefined && typeof path !== 'string') {
         throw new Error('上下文检查点工具账本路径无效')
       }
+    }
+  }
+  if (facts.loadedSkills !== undefined) {
+    if (!Array.isArray(facts.loadedSkills) || facts.loadedSkills.length > MAX_LOADED_SKILL_ENTRIES) {
+      throw new Error('上下文检查点已加载 Skill 事实无效')
+    }
+    const names = new Set<string>()
+    for (const entry of facts.loadedSkills) {
+      if (!isJsonObject(entry)
+        || typeof entry.name !== 'string' || !entry.name.trim() || entry.name.length > 128
+        || names.has(entry.name)
+        || typeof entry.source !== 'string' || !entry.source.trim() || entry.source.length > 128) {
+        throw new Error('上下文检查点已加载 Skill 事实无效')
+      }
+      names.add(entry.name)
+    }
+  }
+  if (facts.sddReviews !== undefined) {
+    if (!Array.isArray(facts.sddReviews) || facts.sddReviews.length > MAX_SDD_REVIEW_ENTRIES) {
+      throw new Error('上下文检查点 SDD 审查事实无效')
+    }
+    const reviewers = new Set<string>()
+    const allowedReviewers = new Set([
+      'explore_subagent', 'inspect_subagent', 'examine_subagent', 'review_subagent',
+    ])
+    for (const entry of facts.sddReviews) {
+      if (!isJsonObject(entry)
+        || typeof entry.reviewer !== 'string' || !allowedReviewers.has(entry.reviewer)
+        || reviewers.has(entry.reviewer)
+        || (entry.verdict !== 'pass' && entry.verdict !== 'fail' && entry.verdict !== 'unknown')) {
+        throw new Error('上下文检查点 SDD 审查事实无效')
+      }
+      reviewers.add(entry.reviewer)
     }
   }
 }

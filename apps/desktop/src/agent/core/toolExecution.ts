@@ -82,6 +82,7 @@ export interface PreparedToolCall {
   input: JsonValue
   approvalState: 'approved' | 'not_required'
   approvalLease?: string
+  approvalSource?: 'not_required' | 'interactive' | 'automatic'
 }
 
 /**
@@ -95,11 +96,11 @@ export const waitForApproval = async (
   runId: string,
   signal: AbortSignal,
   beforeToolCall: BeforeToolCall | undefined,
-): Promise<{ approved: boolean; reason?: string; approvalLease?: string }> => {
+): Promise<{ approved: boolean; reason?: string; approvalLease?: string; approvalSource?: 'not_required' | 'interactive' | 'automatic' }> => {
   if (!beforeToolCall) {
     return prepared.tool.requiresApproval
       ? { approved: false, reason: '没有可用的用户审批处理器' }
-      : { approved: true }
+      : { approved: true, approvalSource: 'not_required' }
   }
   if (signal.aborted) return { approved: false, reason: 'Agent 运行已取消' }
 
@@ -163,7 +164,11 @@ export const waitForApproval = async (
       aborted,
     ])
     return result.decision === 'approved'
-      ? { approved: true, ...(result.approvalLease ? { approvalLease: result.approvalLease } : {}) }
+      ? {
+          approved: true,
+          approvalSource: result.approvalSource ?? (prepared.tool.requiresApproval ? 'interactive' : 'not_required'),
+          ...(result.approvalLease ? { approvalLease: result.approvalLease } : {}),
+        }
       : { approved: false, reason: result.reason ?? '用户拒绝了本次工具调用' }
   } catch (error) {
     return {
@@ -232,6 +237,10 @@ export const executePreparedToolCall = async (
   const progressEvents: Promise<void>[] = []
   let acceptingProgress = true
   let outcome: ToolCallOutcome
+  const controller = new AbortController()
+  const onAbort = (): void => controller.abort(signal.reason)
+  signal.addEventListener('abort', onAbort, { once: true })
+  if (signal.aborted) onAbort()
   try {
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
     const deadlineMs = timeoutMs !== undefined && timeoutMs > 0
@@ -255,7 +264,8 @@ export const executePreparedToolCall = async (
       runId,
       toolCallId: prepared.call.id,
       ...(prepared.approvalLease ? { approvalLease: prepared.approvalLease } : {}),
-      signal,
+      ...(prepared.approvalSource ? { approvalSource: prepared.approvalSource } : {}),
+      signal: controller.signal,
       modelAcceptsImage: context.model.input?.includes('image') ?? false,
       ...(deadlineMs !== undefined ? { deadlineMs } : {}),
       reportProgress,
@@ -265,7 +275,7 @@ export const executePreparedToolCall = async (
               runDelegate(request, {
                 parentRunId: runId,
                 parentToolCallId: prepared.call.id,
-                signal,
+                signal: controller.signal,
                 ...(deadlineMs !== undefined ? { deadlineMs } : {}),
                 reportProgress,
               }),
@@ -278,7 +288,11 @@ export const executePreparedToolCall = async (
       ? await withHardTimeout(
           executePromise,
           timeoutMs,
-          () => new ToolExecutionTimeoutError(prepared.call.name),
+          () => {
+            const error = new ToolExecutionTimeoutError(prepared.call.name)
+            controller.abort(error)
+            return error
+          },
         )
       : await executePromise
     acceptingProgress = false
@@ -297,6 +311,9 @@ export const executePreparedToolCall = async (
           : `工具 ${prepared.call.name} 执行失败：${error instanceof Error ? error.message : String(error)}`,
     )
     outcome = { call: prepared.call, result, isError: true }
+  } finally {
+    signal.removeEventListener('abort', onAbort)
+    controller.abort()
   }
 
   outcome = await applyAfterToolCall(
@@ -330,6 +347,7 @@ export const executePreparedToolCall = async (
     result: outcome.result,
     isError: outcome.isError,
     approvalState: prepared.approvalState,
+    approvalSource: prepared.approvalSource ?? (prepared.approvalState === 'approved' ? 'interactive' : 'not_required'),
   })
   return outcome
 }
@@ -446,7 +464,7 @@ export const prepareToolCall = async (
     recoveryPolicy,
     ...(idempotencyKey ? { idempotencyKey } : {}),
   })
-  const prepared = { call, tool, input: validatedInput } satisfies Omit<PreparedToolCall, 'approvalState'>
+  const prepared = { call, tool, input: validatedInput } satisfies Omit<PreparedToolCall, 'approvalState' | 'approvalSource'>
   const approval = await waitForApproval(
     prepared,
     assistantMessage,
@@ -475,6 +493,7 @@ export const prepareToolCall = async (
   return {
     ...prepared,
     approvalState: tool.requiresApproval ? 'approved' : 'not_required',
+    approvalSource: approval.approvalSource ?? (tool.requiresApproval ? 'interactive' : 'not_required'),
     ...(approval.approvalLease ? { approvalLease: approval.approvalLease } : {}),
   }
 }
@@ -482,6 +501,10 @@ export const prepareToolCall = async (
 /**
  * 执行一轮工具调用。按 executionMode 与工具自身模式决定串行或并行；
  * 被中断时未开始的调用也会被 failToolCalls 生成结果，维护上下文不变量。
+ *
+ * state guard（design §8.4）：模型可能在一条响应里连发多个 UI 调用，执行到本批次
+ * 首个声明 `invalidatesPageState` 的调用后必须截断其余调用——它们携带的定位与快照
+ * 都已随页面变更失效。截断只属于 Agent 探索；确定性 Runner 逐步执行，不走本函数。
  */
 export const executeToolCalls = async (
   assistantMessage: AssistantMessage,
@@ -498,14 +521,23 @@ export const executeToolCalls = async (
   runDelegate?: RunDelegatePort,
 ): Promise<ToolBatchResult> => {
   const calls = assistantMessage.toolCalls
+  const activeTools = activeToolsForContext(context)
+  // 首个页面写动作：只认工具声明，不在核心循环里硬编码工具名。
+  const guardIndex = calls.findIndex(
+    (call) => activeTools.find((tool) => tool.name === call.name)?.invalidatesPageState === true,
+  )
+  const guardCall: ToolCall | undefined = guardIndex >= 0 ? calls[guardIndex] : undefined
+  // 截断后的调用根本不进执行层，因此不会产生审批与执行副作用。
+  const executionCalls = guardCall ? calls.slice(0, guardIndex + 1) : calls
   const resultSlots = new Map<string, ToolCallOutcome>()
   const forceSequential =
     executionMode === 'sequential'
-    || calls.some((call) =>
-      activeToolsForContext(context).find((tool) => tool.name === call.name)?.executionMode === 'sequential')
+    || executionCalls.some(
+      (call) => activeTools.find((tool) => tool.name === call.name)?.executionMode === 'sequential',
+    )
 
   if (forceSequential) {
-    for (const call of calls) {
+    for (const call of executionCalls) {
       const prepared = await prepareToolCall(
         call,
         assistantMessage,
@@ -536,7 +568,7 @@ export const executeToolCalls = async (
     }
   } else {
     const preparedCalls: PreparedToolCall[] = []
-    for (const call of calls) {
+    for (const call of executionCalls) {
       const prepared = await prepareToolCall(
         call,
         assistantMessage,
@@ -570,14 +602,38 @@ export const executeToolCalls = async (
     .map((call) => resultSlots.get(call.id))
     .filter((outcome): outcome is ToolCallOutcome => Boolean(outcome))
   const skippedCalls = calls.filter((call) => !resultSlots.has(call.id))
-  const activeNames = new Set(activeToolsForContext(context).map((tool) => tool.name))
+  const activeNames = new Set(activeTools.map((tool) => tool.name))
+  // 只有当写动作真的被送进执行层（产生了结果，含被拒绝/失败）时才谈得上"页面已
+  // 改变"；若运行在它之前就被取消，后续调用仍按中断记账，不能谎报状态失效。
+  const truncatedCalls = guardCall && resultSlots.has(guardCall.id)
+    ? calls.slice(guardIndex + 1)
+    : []
+  const truncatedIds = new Set(truncatedCalls.map((call) => call.id))
+  const truncationReason = guardCall && truncatedCalls.length > 0
+    ? `未执行工具：同一响应在首个页面写动作（${guardCall.name}）后被截断，本消息跳过 `
+      + `${truncatedCalls.length} 个后续调用；页面已改变，旧定位/快照失效，请重新 `
+      + 'ui_snapshot / 解析后再继续。'
+    : undefined
+  // 先 emit 已执行的结果，再 emit 被跳过（截断/中断）的结果：runAgentLoop 的
+  // message_end 屏障按 emit 顺序登记 runtime history，倒序 emit 会让持久历史与
+  // assistant 消息里的 tool_call 顺序错位。
+  const executedMessages = await emitToolResultMessages(
+    runId,
+    executed,
+    emit,
+    maxInlineToolResultBytes,
+    externalizeToolResult,
+    activeNames,
+  )
   // 中断时尚未开始执行的调用也必须生成结果，否则 assistant 消息会带着
   // "有 tool_call 无 tool_result"的悬空调用进入后续模型上下文（与
   // streamAssistantMessage 的剥离策略维护同一不变量）。
   const skipped = skippedCalls.length > 0
     ? await failToolCalls(
         skippedCalls,
-        '未执行工具：Agent 运行已取消或中断',
+        (call) => truncatedIds.has(call.id) && truncationReason
+          ? truncationReason
+          : '未执行工具：Agent 运行已取消或中断',
         runId,
         emit,
         maxInlineToolResultBytes,
@@ -585,17 +641,7 @@ export const executeToolCalls = async (
         activeNames,
       )
     : { messages: [] as ToolResultMessage[] }
-  const messages = [
-    ...await emitToolResultMessages(
-      runId,
-      executed,
-      emit,
-      maxInlineToolResultBytes,
-      externalizeToolResult,
-      activeNames,
-    ),
-    ...skipped.messages,
-  ]
+  const messages = [...executedMessages, ...skipped.messages]
   return {
     messages,
     allTerminate: executed.length > 0 && executed.every((outcome) => outcome.result.terminate === true),

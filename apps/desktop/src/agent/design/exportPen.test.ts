@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest'
 import { parseAxDocument } from './axParser'
 import type { AxDocument } from './axSchema'
-import { exportAxToPenDocument } from './exportPen'
+import { exportAxToPenDocument } from './__fixtures__/exportPen'
 
 type PenRaw = Record<string, unknown>
 
@@ -71,5 +71,22 @@ describe('exportAxToPenDocument：shadow（1.3 外阴影）', () => {
     // 单顶层节点即页根：pages[0] 就是导出的帧本身。
     const frame = reparsed.document?.pages[0] as { shadow?: unknown } | undefined
     expect(frame?.shadow).toEqual({ color: '$shadow-color', x: 0, y: 4, blur: 12 })
+  })
+})
+
+describe('.ax → .pen：symbols 拒绝导出（fail-closed）', () => {
+  it('含 symbol 的稿直接抛错并列出 symbol 名，不产出降级 .pen', () => {
+    const source = JSON.stringify({
+      ax: '1.4',
+      tokens: {},
+      components: {},
+      symbols: { TableRow: { props: { c1: 'string' }, body: [{ id: 'a', kind: 'text', text: { $param: 'c1' }, wrap: 'nowrap' }] } },
+      pages: [{ id: 'p1', width: 100, height: 100, tree: [
+        { id: 'r1', kind: 'component', name: 'TableRow', props: { c1: 'x' } },
+      ] }],
+    })
+    const parsed = parseAxDocument(source).document as AxDocument
+    expect(() => exportAxToPenDocument(parsed)).toThrow(/TableRow/)
+    expect(() => exportAxToPenDocument(parsed)).toThrow(/symbol/)
   })
 })

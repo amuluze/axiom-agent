@@ -38,6 +38,29 @@ export default defineConfig({
           functions: 64,
           branches: 55,
         },
+        // 高风险集成模块不能被全局聚合稀释：这些文件承载会话激活、队列/发送、
+        // SQLite 编解码与远程输入，单点回归代价高。阈值取 2026-10-19 实测值
+        // 下探约 1–2 个点，只防退化，不把当前基线伪装成更高目标。
+        'src/stores/agentStore.ts': {
+          statements: 60,
+          functions: 56,
+          branches: 50,
+        },
+        'src/stores/sessionActions.ts': {
+          statements: 56,
+          functions: 60,
+          branches: 47,
+        },
+        'src/persistence/SqliteSessionRepository.ts': {
+          statements: 53,
+          functions: 51,
+          branches: 40,
+        },
+        'src/stores/services/connectService.ts': {
+          statements: 51,
+          functions: 52,
+          branches: 39,
+        },
       },
     },
   },

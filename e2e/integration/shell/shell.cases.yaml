@@ -1,0 +1,18 @@
+resource: app.shell
+operation: boot
+cases:
+  - id: shell-boots-with-scripted-provider
+    desc: 应用壳启动完成，输入框可用且未落入初始化回退分支
+    verifies: [CE-E2E-SHELL-001]
+    input:
+      scenario: shell_boot
+  - id: runtime-info-binds-os
+    desc: 宿主上报的运行时信息落在 html[data-os]（平台分支渲染的前提）
+    verifies: [CE-E2E-SHELL-002]
+    input:
+      scenario: runtime_info
+  - id: workspace-empty-state
+    desc: 未授权工作区时侧栏提供「添加工作目录」空态入口
+    verifies: [CE-E2E-SHELL-003]
+    input:
+      scenario: workspace_empty

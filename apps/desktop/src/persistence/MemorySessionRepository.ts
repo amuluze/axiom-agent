@@ -24,7 +24,7 @@ import {
   normalizeSessionTitle,
 } from '@/agent/session/branch'
 import { promptSessionTitle } from '@/agent/session/title'
-import { createSessionMutationEffectIdentity } from '@/platform/sessionMutations'
+import { createSessionMutationEffectIdentity } from './sessionMutationPayload'
 import { createInterruptedToolResult, type InterruptedExecutionState } from './interruptedToolRecovery'
 import type {
   SessionBranchRequest,
@@ -34,10 +34,12 @@ import type {
   SessionRepository,
   SessionSnapshot,
   RuntimeRecoveryResult,
+  RecoverySummary,
   ProviderProfilePersistenceMigration,
   StorageStats,
   StoredAgentSession,
 } from './types'
+import { EMPTY_RECOVERY_SUMMARY } from './types'
 
 interface MemoryRun {
   sessionId: string
@@ -185,12 +187,16 @@ export class MemorySessionRepository implements SessionRepository {
 
   private async recoverRuntimeStateInPlace(): Promise<RuntimeRecoveryResult> {
     this.pendingToolCompletions.clear()
-    let recoveredRuns = 0
-    for (const run of this.runs.values()) {
-      if (run.status === 'running') {
-        run.status = 'interrupted'
-        recoveredRuns += 1
-      }
+    const interruptedRunIds = [...this.runs]
+      .filter(([, run]) => run.status === 'running')
+      .map(([runId]) => runId)
+    const summary = this.summarizeInterruptedRuns(interruptedRunIds)
+    let interruptedToolExecutions = 0
+    for (const execution of this.tools.values()) {
+      if (execution.status === 'running') interruptedToolExecutions += 1
+    }
+    for (const [, run] of this.runs) {
+      if (run.status === 'running') run.status = 'interrupted'
     }
     for (const request of this.providerRequests.values()) {
       if (request.status === 'running') {
@@ -319,7 +325,37 @@ export class MemorySessionRepository implements SessionRepository {
       })
       this.journal.set(sessionId, recovered)
     }
-    return { recoveredRuns }
+    return { ...summary, interruptedToolExecutions }
+  }
+
+  /** 按持久化状态给中断 run 定性（completed / failed / unknown），并汇总受影响
+   *  会话与"已执行但结果未保存"的工具调用（对齐 Rust 恢复摘要）。 */
+  private summarizeInterruptedRuns(runIds: readonly string[]): RecoverySummary {
+    const summary: RecoverySummary = { ...EMPTY_RECOVERY_SUMMARY, recoveredSessions: [] }
+    if (runIds.length === 0) return summary
+    const targets = new Set(runIds)
+    const sessions = new Set<string>()
+    for (const runId of runIds) {
+      const run = this.runs.get(runId)
+      if (!run) continue
+      sessions.add(run.sessionId)
+      const completed = [...this.providerRequests.values()].some(
+        (request) => request.runId === runId && request.status === 'response_received',
+      )
+      const failed = !completed && [...this.tools.values()].some(
+        (execution) => execution.runId === runId && execution.status === 'error',
+      )
+      if (completed) summary.completedRuns += 1
+      else if (failed) summary.failedRuns += 1
+      else summary.unknownRuns += 1
+    }
+    summary.recoveredRuns = runIds.length
+    summary.recoveredSessions = [...sessions].sort()
+    summary.possiblyExecutedToolExecutions = [...this.tools.values()].filter(
+      (execution) => targets.has(execution.runId)
+        && (execution.status === 'completed' || execution.status === 'error'),
+    ).length
+    return summary
   }
 
   /**
@@ -330,12 +366,18 @@ export class MemorySessionRepository implements SessionRepository {
    * 用于 send 失败恢复路径：其他会话仍在运行时，避免全局恢复干扰它们。
    */
   async recoverRuntimeStateForSession(sessionId: string): Promise<RuntimeRecoveryResult> {
-    let recoveredRuns = 0
-    for (const run of this.runs.values()) {
-      if (run.sessionId === sessionId && run.status === 'running') {
-        run.status = 'interrupted'
-        recoveredRuns += 1
+    const interruptedRunIds = [...this.runs]
+      .filter(([, run]) => run.sessionId === sessionId && run.status === 'running')
+      .map(([runId]) => runId)
+    const summary = this.summarizeInterruptedRuns(interruptedRunIds)
+    let interruptedToolExecutions = 0
+    for (const execution of this.tools.values()) {
+      if (execution.sessionId === sessionId && execution.status === 'running') {
+        interruptedToolExecutions += 1
       }
+    }
+    for (const [, run] of this.runs) {
+      if (run.sessionId === sessionId && run.status === 'running') run.status = 'interrupted'
     }
     for (const request of this.providerRequests.values()) {
       if (request.sessionId === sessionId && request.status === 'running') {
@@ -353,11 +395,12 @@ export class MemorySessionRepository implements SessionRepository {
     for (const [key, pending] of this.pendingToolCompletions) {
       if (pending.sessionId === sessionId) this.pendingToolCompletions.delete(key)
     }
-    return { recoveredRuns }
+    return { ...summary, interruptedToolExecutions }
   }
 
   async initialize(defaults: SessionDefaults): Promise<SessionInitialization> {
-    const { recoveredRuns } = await this.recoverRuntimeState()
+    for (const session of this.sessions.values()) session.accessMode = 'standard'
+    const recoverySummary = await this.recoverRuntimeState()
     if (defaults.providerConfig) {
       for (const session of this.sessions.values()) {
         if (session.providerConfig === null
@@ -380,7 +423,12 @@ export class MemorySessionRepository implements SessionRepository {
     const active = sessions[0]
       ? await this.loadSession(sessions[0].id)
       : await this.createSession(defaults)
-    return { sessions: await this.listSessions(), active, recoveredRuns }
+    return {
+      sessions: await this.listSessions(),
+      active,
+      recoveredRuns: recoverySummary.recoveredRuns,
+      recoverySummary,
+    }
   }
 
   async createSession(defaults: SessionDefaults): Promise<SessionSnapshot> {
@@ -396,6 +444,7 @@ export class MemorySessionRepository implements SessionRepository {
       providerConfig: defaults.providerConfig ? structuredClone(defaults.providerConfig) : null,
       runtimeManifest: defaults.runtimeManifest ? structuredClone(defaults.runtimeManifest) : null,
       status: 'idle',
+      accessMode: 'standard',
       createdAt: now,
       updatedAt: now,
       messageCount: 0,
@@ -445,6 +494,7 @@ export class MemorySessionRepository implements SessionRepository {
         ? structuredClone(request.defaults.runtimeManifest)
         : null,
       status: 'idle',
+      accessMode: 'standard',
       createdAt: now,
       updatedAt: now,
       messageCount: branchMessages.length,
@@ -514,6 +564,13 @@ export class MemorySessionRepository implements SessionRepository {
       runtimeManifest: defaults.runtimeManifest ? structuredClone(defaults.runtimeManifest) : null,
       updatedAt: Date.now(),
     })
+  }
+
+  async updateSessionAccessMode(sessionId: string, mode: NonNullable<StoredAgentSession['accessMode']>): Promise<void> {
+    const session = this.sessions.get(sessionId)
+    if (!session) throw new Error('会话不存在或已被删除')
+    session.accessMode = mode
+    session.updatedAt = Date.now()
   }
 
   async commitMutationBatch(
@@ -773,6 +830,7 @@ export class MemorySessionRepository implements SessionRepository {
     const session = this.sessions.get(sessionId)
     if (!session) throw new Error('会话不存在或已被删除')
     session.archivedAt = archivedAt
+    session.accessMode = 'standard'
     session.updatedAt = Date.now()
   }
 
@@ -1154,6 +1212,7 @@ export class MemorySessionRepository implements SessionRepository {
     }
     session.title = '新会话'
     session.messageCount = 0
+    session.accessMode = 'standard'
     session.updatedAt = Date.now()
     for (const stored of this.sessions.values()) {
       if (stored.forkedFromMessageId && removedMessageIds.has(stored.forkedFromMessageId)) {
@@ -1200,6 +1259,7 @@ export class MemorySessionRepository implements SessionRepository {
       providerConfig: defaults.providerConfig ? structuredClone(defaults.providerConfig) : null,
       runtimeManifest: defaults.runtimeManifest ? structuredClone(defaults.runtimeManifest) : null,
       status: 'idle',
+      accessMode: 'standard',
       createdAt: now,
       updatedAt: now,
       messageCount: 0,

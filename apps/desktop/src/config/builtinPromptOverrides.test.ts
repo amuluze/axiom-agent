@@ -2,6 +2,9 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   EMPTY_BUILTIN_PROMPT_OVERRIDES,
+  EMPTY_BUILTIN_PROMPT_OVERRIDES as EMPTY,
+  MAX_BUILTIN_OVERRIDE_TEXT,
+  isValidOverrideText,
   applySkillOverrideEntry,
   applySubAgentOverrideEntry,
   clearSkillOverride,
@@ -20,6 +23,24 @@ describe('builtinPromptOverrides', () => {
   it('空载时返回空覆写（SSR/未存储 fail-safe）', () => {
     expect(loadBuiltinPromptOverrides()).toEqual(EMPTY_BUILTIN_PROMPT_OVERRIDES)
     expect(getBuiltinPromptOverrides()).toEqual(EMPTY_BUILTIN_PROMPT_OVERRIDES)
+  })
+
+  it('超长覆写在保存与加载两道都被丢弃（正文长度无上限会让误粘贴撑爆上下文）', () => {
+    const huge = 'x'.repeat(MAX_BUILTIN_OVERRIDE_TEXT + 1)
+    expect(isValidOverrideText(huge)).toBe(false)
+    expect(isValidOverrideText('')).toBe(true)
+    const state = applySkillOverrideEntry(
+      applySkillOverrideEntry(EMPTY, 'domain', 'zh-CN', { body: huge }),
+      'domain', 'zh-CN', { description: huge },
+    )
+    expect(state.skills.domain?.['zh-CN']?.body).toBeUndefined()
+    expect(state.skills.domain?.['zh-CN']?.description).toBeUndefined()
+    saveBuiltinPromptOverrides(state)
+    expect(getBuiltinPromptOverrides().skills.domain?.['zh-CN']).toBeUndefined()
+    // 子智能体 prompt 同样受限
+    const sub = applySubAgentOverrideEntry(EMPTY, 'review', 'zh-CN', { prompt: huge })
+    expect(getBuiltinPromptOverrides().subagents.review?.['zh-CN']).toBeUndefined()
+    expect(sub.subagents.review?.['zh-CN']).toBeUndefined()
   })
 
   it('save → get/live binding 与 load（重新读 storage）往返一致', () => {

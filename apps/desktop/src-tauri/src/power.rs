@@ -179,7 +179,9 @@ mod tests {
     #[test]
     fn toggling_is_idempotent_and_releases_the_assertion() {
         let state = PowerManagementState::default();
-        state.set_prevent_idle_sleep(true).expect("enable must succeed");
+        state
+            .set_prevent_idle_sleep(true)
+            .expect("enable must succeed");
         // 重复开启为 no-op（不泄漏第二个 assertion）。
         state
             .set_prevent_idle_sleep(true)

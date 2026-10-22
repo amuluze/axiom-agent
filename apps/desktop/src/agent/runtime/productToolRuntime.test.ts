@@ -1,5 +1,7 @@
 import type { ModelRequest, ModelStreamEvent, ModelTransport } from '@/agent/core/types'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { createFakeAgentEnvironment } from '../tools/__fixtures__/fakeAgentEnvironment'
+import { setDesignPageRenderProvider } from '../design/designRenderHost'
 import { AgentSession } from './AgentSession'
 import { createProductRuntimeHooks } from './productRuntimeHooks'
 import { createProductToolRuntime } from './productToolRuntime'
@@ -44,6 +46,42 @@ class RestoredTransport implements ModelTransport {
 }
 
 describe('product tool runtime', () => {
+  it('keeps .ax queries available while denying browser calls through design comparison in coding mode', async () => {
+    const host = createFakeAgentEnvironment()
+    const source = JSON.stringify({
+      ax: '1.0', name: 'fixture', tokens: {}, components: {},
+      pages: [{ id: 'page', name: '页面', width: 320, height: 240, tree: [] }],
+    })
+    host.design.readDocument = vi.fn(async () => ({
+      contentBase64: Buffer.from(source).toString('base64'), sha256: 'b'.repeat(64),
+      sizeBytes: Buffer.byteLength(source), modifiedMs: null, unchanged: false,
+    }))
+    const runtime = createProductToolRuntime(['workspace:read', 'workspace:write'], host)
+    const query = runtime.tools.find((tool) => tool.name === 'design_query')
+    if (!query) throw new Error('missing design_query')
+    setDesignPageRenderProvider(async () => ({
+      base64: 'iVBORw0KGgo=', mediaType: 'image/png', width: 320, height: 240, scale: 1,
+      pageName: '页面',
+    }))
+    const context = {
+      sessionId: 'coding', runId: 'run', toolCallId: 'compare',
+      signal: new AbortController().signal, reportProgress: async () => undefined,
+    }
+    try {
+      const summary = await query.execute({ file: 'design.ax', mode: 'summary' }, context)
+      expect(JSON.parse(summary.content).pages).toHaveLength(1)
+      const comparison = await query.execute({
+        file: 'design.ax', mode: 'compare', page: 1, url: 'http://localhost:5173',
+      }, context)
+      expect(JSON.parse(comparison.content)).toMatchObject({
+        available: false, stage: 'browser',
+      })
+      expect(runtime.tools.map((tool) => tool.name)).not.toContain('browser')
+    } finally {
+      setDesignPageRenderProvider(null)
+    }
+  })
+
   it('discovers a real product tool, activates it next turn, and restores it from history', async () => {
     const runtime = createProductToolRuntime(['workspace:execute'])
     const transport = new DiscoveryTransport()

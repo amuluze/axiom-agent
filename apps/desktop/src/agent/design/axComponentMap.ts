@@ -190,6 +190,16 @@ const AX_PEN_COMPONENT_MAP: Record<string, (context: AxPenInstanceContext) => Ax
    * 侧栏：store 绑定组件（agent/ui/connect 三 store 切片接缝，见 registry.tsx），
    * 数据全部来自预览态切片，props 只留组件自身的渲染形态开关。
    */
+  'Top Right Bar': ({ variant }) => !variant || ['default', 'zh-CN', 'en'].includes(variant)
+    ? { component: 'WindowActions', decl: {}, fixture: 'default' }
+    : { component: 'WindowActions', defer: `未登记右上角状态：${variant}` },
+  'Settings Nav': ({ variant }) => !variant || ['default', 'general', 'models', 'skills', 'setup'].includes(variant)
+    ? { component: 'SettingsNavigation', decl: { props: { section: 'string' } }, fixture: variant === 'general' ? 'default' : variant ?? 'default' }
+    : { component: 'SettingsNavigation', defer: `必须明确设置导航的当前分区：${variant}` },
+  'Settings Top Bar': () => ({ component: 'SettingsTopBar', decl: {}, fixture: 'default' }),
+  'Feedback Dialog': () => ({ component: 'FeedbackDialog', defer: '需人工确认反馈类型、输入内容与提交状态，并选择对应真实 fixture，不能从几何或文案猜测' }),
+  'Summary Instructions Dialog': () => ({ component: 'SummaryInstructionsDialog', defer: '必须明确总结或分支模式及输入草稿，不能用空 fixture 替换旧稿内容' }),
+  'Builtin Prompt Editor Dialog': () => ({ component: 'BuiltinPromptEditorDialog', defer: '必须明确编辑目标与提示词草稿，不能从几何结构猜测' }),
   Sidebar: () => ({
     component: 'Sidebar',
     decl: { props: { variant: "'default' | 'overlay'" } },
@@ -208,17 +218,9 @@ const AX_PEN_COMPONENT_MAP: Record<string, (context: AxPenInstanceContext) => Ax
  * 每条都是「差什么就能解锁」，不是「暂时不做」——改动时同步 docs/ax-format.md §6 P2。
  *
  * 历史：Sidebar/Composer 曾因「跨 store 读取点无预览接缝」在此延后，多 store 切片
- * 接缝（registry.tsx 的 storePreview）落地后已升级；目前剩余的都是「实现侧尚未抽成
- * 可独立实例化的组件」与「画布浮层容纳未做」两类。
+ * 接缝（registry.tsx 的 storePreview）落地后已升级；原生组件现均可独立预览；旧稿实例无法确定业务状态时，由各映射返回具体 defer。
  */
-export const AX_DEFERRED_PEN_COMPONENTS: Record<string, string> = {
-  'Top Right Bar': '注册表暂无对应条目：该横条是会话头部的一部分，尚未抽成可独立实例化的真实组件',
-  'Settings Nav': '注册表暂无对应条目：设置页导航尚未抽成可独立实例化的真实组件',
-  'Settings Top Bar': '注册表暂无对应条目：设置页顶栏尚未抽成可独立实例化的真实组件',
-  'Feedback Dialog': '画布容纳未做：真实组件根是 `position: fixed; inset: 0` 全屏 backdrop，直接进页会盖住整个画布视口（需要浮层容纳语义，见 docs/ax-format.md §6 P1）',
-  'Summary Instructions Dialog': '画布容纳未做：真实组件根是 `position: fixed` 全屏 backdrop，需要浮层容纳语义',
-  'Builtin Prompt Editor Dialog': '画布容纳未做：真实组件根是 `position: fixed; inset: 0` 全屏 backdrop，需要浮层容纳语义',
-}
+export const AX_DEFERRED_PEN_COMPONENTS: Record<string, string> = {}
 
 /** 该 pen 组件的升级实例内容；未登记或变体不认识时返回 null。 */
 export const axInstanceOfPenComponent = (

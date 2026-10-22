@@ -12,8 +12,20 @@
  */
 import type { PenDocument } from './penParser'
 import type { RgbaImage } from './visualCompare'
+import type { DesignComponentSummary, DesignComponentDetail } from './componentInventoryHost'
 
 export interface DesignPageRenderRequest {
+  projectBrowserCommand?: import('@/platform/projectDesignPreview').ProjectPreviewBrowserCommand
+  componentInventory?: readonly DesignComponentSummary[]
+  projectPreview?: import('./projectPreview').ProjectDesignPreview
+  projectComponents?: DesignComponentDetail[]
+  workspacePath?: string
+  /**
+   * 强制走 design:preview 隔离 Chromium 渲染（compare via=preview 的同引擎档）：
+   * 即使页面不含项目组件也不落 WKWebView/foreignObject 管线。服务未配置时由
+   * 调用方先判定回落（宿主侧只负责按旗标路由），配置了但运行失败返回 ok:false。
+   */
+  forceProjectPreview?: boolean
   /** `.ax` 原文（工具已读取，避免二次 IO）。 */
   source: string
   /** 原始文件相对路径（诊断与页面名回显用）。 */
@@ -77,6 +89,7 @@ export const renderDesignPage = async (
  * pageIdOrIndex 挂载对应页——不做二次解析。
  */
 export interface DesignScanPageRenderRequest {
+  projectBrowserCommand?: import('@/platform/projectDesignPreview').ProjectPreviewBrowserCommand
   doc: PenDocument
   pageIdOrIndex: string | number
   /** 缩略图字节预算（base64 字符数上限）。 */

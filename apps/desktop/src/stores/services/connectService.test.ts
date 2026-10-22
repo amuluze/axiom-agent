@@ -260,3 +260,92 @@ describe('connectService 执行结果回传', () => {
     expect(replies.some((text) => text.includes('已允许该操作'))).toBe(true)
   })
 })
+
+// 远程输入不享受完全访问：本通道可能无人值守，而 held Automatic 只能由本地原生
+// 对话框建立。不降级则远程可让既有完全访问会话免审批执行写命令与 bash。
+describe('远程输入的访问模式门', () => {
+  const replyTexts: string[] = []
+
+  const inbound = (): Parameters<typeof connectServiceInternals.enforceRemoteStandardMode>[0] => ({
+    platform: 'feishu',
+    chatId: 'oc_mode',
+    userId: 'ou_mode',
+    userName: '测试',
+    messageId: 'om_mode',
+    text: '帮我部署',
+  } as Parameters<typeof connectServiceInternals.enforceRemoteStandardMode>[0])
+
+  beforeEach(() => {
+    replyTexts.length = 0
+    vi.mocked(connectReplyMessage).mockImplementation(async (_platform, _chatId, _userId, text) => {
+      replyTexts.push(text)
+    })
+  })
+
+  const session = (accessMode: 'standard' | 'no-approval') => ({
+    id: 'session-mode',
+    title: 'Session',
+    createdAt: 1,
+    updatedAt: 1,
+    parentSessionId: null,
+    status: 'idle' as const,
+    accessMode,
+  })
+
+  it('downgrades a full-access session before the remote input lands', async () => {
+    const setAccessMode = vi.fn(async () => null)
+    useAgentStore.setState({
+      sessions: [session('no-approval')] as never,
+      activeSessionId: 'session-mode',
+      setAccessMode,
+    } as never)
+
+    await expect(connectServiceInternals.enforceRemoteStandardMode(inbound(), 'session-mode'))
+      .resolves.toBe(true)
+    expect(setAccessMode).toHaveBeenCalledWith('standard')
+    // 远程侧必须知道检查点回到了自己手里，否则会以为写操作已自动放行。
+    expect(replyTexts.some((text) => text.includes('已切换为标准模式'))).toBe(true)
+  })
+
+  it('leaves a standard-mode session untouched without extra IPC or notice', async () => {
+    const setAccessMode = vi.fn(async () => null)
+    useAgentStore.setState({
+      sessions: [session('standard')] as never,
+      activeSessionId: 'session-mode',
+      setAccessMode,
+    } as never)
+
+    await expect(connectServiceInternals.enforceRemoteStandardMode(inbound(), 'session-mode'))
+      .resolves.toBe(true)
+    expect(setAccessMode).not.toHaveBeenCalled()
+    expect(replyTexts).toEqual([])
+  })
+
+  // 降级失败必须拒绝本次远程输入而非放行——否则完全访问会话仍会被免审批驱动。
+  it('refuses the remote input when the downgrade fails', async () => {
+    useAgentStore.setState({
+      sessions: [session('no-approval')] as never,
+      activeSessionId: 'session-mode',
+      setAccessMode: vi.fn(async () => '切换访问模式失败：原生通道不可用'),
+    } as never)
+
+    await expect(connectServiceInternals.enforceRemoteStandardMode(inbound(), 'session-mode'))
+      .resolves.toBe(false)
+    expect(replyTexts.some((text) => text.includes('已阻止本次远程操作'))).toBe(true)
+  })
+
+  // setAccessMode 只作用于激活会话；目标非激活时无法安全降级 → 拒绝而非放行。
+  it('refuses rather than passing through when the target is not the active session', async () => {
+    const setAccessMode = vi.fn(async () => null)
+    useAgentStore.setState({
+      sessions: [session('no-approval')] as never,
+      activeSessionId: 'other-session',
+      setAccessMode,
+    } as never)
+
+    await expect(connectServiceInternals.enforceRemoteStandardMode(inbound(), 'session-mode'))
+      .resolves.toBe(false)
+    expect(setAccessMode).not.toHaveBeenCalled()
+    expect(replyTexts.some((text) => text.includes('状态异常'))).toBe(true)
+  })
+})

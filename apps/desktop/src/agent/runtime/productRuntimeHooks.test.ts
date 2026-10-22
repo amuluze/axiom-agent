@@ -114,6 +114,22 @@ const hooks = () => createProductRuntimeHooks({
 })
 
 describe('productRuntimeHooks', () => {
+  it('blocks a stale capability snapshot before any model request', async () => {
+    const transport = new DesktopCompactionTransport()
+    const harness = new AgentHarness({
+      sessionId: 'guarded', systemPrompt: 'system',
+      model: { provider: 'provider', model: 'model' }, transport, tools: [],
+    })
+    harness.addCleanup(registerProductRuntimeHooks(harness.hooks, {
+      sessionId: 'guarded', discoveryToolName: DISCOVER, getBasePrompt: () => BASE_PROMPT,
+      validateCapabilities: async () => { throw new Error('授权已经到期') },
+    }))
+    harness.hooks.seal()
+    await expect(harness.prompt('do not send')).rejects.toThrow('授权已经到期')
+    expect(transport.requests).toEqual([])
+    await harness.dispose()
+  })
+
   it('derives the sealed dependency set from identified registrations', async () => {
     const harness = new AgentHarness({
       sessionId: 'session-hooks',

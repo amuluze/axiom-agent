@@ -1,9 +1,18 @@
+mod api_test;
+mod api_test_policy;
 mod artifacts;
+mod bash_policy_generated;
+mod browser_locator;
 mod browser_session;
 mod connect;
-mod computer_control;
 mod design_access;
 mod design_export;
+mod design_git_history;
+mod design_history;
+#[cfg(unix)]
+mod design_history_identity;
+mod docs_access;
+mod external_url;
 mod feedback;
 mod file_access;
 mod file_access_registry;
@@ -11,7 +20,9 @@ mod fuzzy_match;
 mod generated_provider_table;
 mod git_config;
 mod image_detect;
+mod model_egress;
 mod model_http;
+mod native_confirm;
 mod network_policy;
 mod platform_process;
 mod power;
@@ -21,24 +32,29 @@ mod runtime_fault;
 mod runtime_manifest;
 mod sandbox;
 mod secrets;
+mod session_authorization;
 mod session_mutations;
 mod session_repository;
 mod session_schema;
 mod session_state;
-mod ssh;
-mod ssh_agent;
-mod ssh_session;
 mod specta_bindings;
+mod ssh;
+mod ssh_session;
 mod storage_paths;
 mod terminal;
+mod test_approval;
+mod test_repository;
+mod test_target;
+mod ui_test;
+mod ui_write;
 mod usage_query;
+mod user_gesture;
+mod webview_capture;
 mod workspace_access;
 mod workspace_approval;
 mod workspace_changes;
 mod workspace_command;
 mod workspace_registry;
-mod web_access;
-mod webview_capture;
 
 use serde::Serialize;
 use std::sync::Arc;
@@ -51,66 +67,79 @@ use tauri::Manager;
 #[cfg(feature = "e2e")]
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
+use api_test::{cancel_api_test_run, issue_api_test_step_lease, run_api_test_step, ApiTestState};
 use artifacts::{
     get_artifact_storage_stats, read_artifact, reconcile_artifacts, trash_artifacts, write_artifact,
 };
 use browser_session::{browser_command, reap_browser_for_exit, BrowserSessionState};
-use computer_control::{computer_command, ComputerSessionState};
-use ssh::{ssh_command, SshState};
-use ssh_agent::{ssh_agent_command, SshAgentState};
-use ssh_session::{reap_ssh_sessions_for_exit, SshSessionState};
 use connect::{
     clear_connect_platform_config, connect_platform, connect_reply_message,
     create_connect_pairing_code, disconnect_platform, get_connect_config, poll_wechat_login,
     save_connect_platform_config, set_connect_workspace, start_wechat_login,
     unpair_connect_binding, ConnectState,
 };
+use design_access::{
+    delete_design_document_page, list_design_document_versions, read_design_document,
+    read_design_document_asset, read_design_document_version, restore_design_document_version,
+    unwatch_design_document, watch_design_document, DesignWatchState,
+};
+use design_export::export_design_png;
+use docs_access::{read_workspace_document, save_workspace_document};
+use external_url::open_external_url;
+use feedback::submit_feedback;
 use file_access::{
     list_authorized_read_files, pick_and_authorize_read_directory, pick_and_authorize_read_file,
     read_authorized_text, revoke_authorized_read_file, FileAccessState,
 };
-use feedback::submit_feedback;
-use design_access::{
-    read_design_document, read_design_document_asset, unwatch_design_document,
-    watch_design_document, write_design_document, DesignWatchState,
-};
-use design_export::export_design_png;
 use model_http::{cancel_model_http, probe_model_http, stream_model_http, ModelRequestState};
 use power::{set_prevent_idle_sleep, PowerManagementState};
-use web_access::{open_external_url, web_fetch, web_search};
-use webview_capture::capture_webview_viewport;
 use provider_profiles::{
     decode_provider_profile, is_known_legacy_provider_secret, is_legacy_provider_secret_compatible,
     is_provider_secret_compatible, normalize_provider_profile_draft,
 };
 #[cfg(feature = "e2e")]
-use runtime_fault::e2e_runtime_fault_checkpoint;
-#[cfg(feature = "e2e")]
-use workspace_access::e2e_register_workspace;
+use runtime_fault::{e2e_automation_log, e2e_runtime_fault_checkpoint};
 #[cfg(feature = "e2e")]
 use secrets::seed_e2e_legacy_provider_secret;
 use secrets::{
-    delete_secret, has_secret, load_provider_secret_cleanup_intent, migrate_secret,
-    persist_provider_secret_cleanup_intent, save_secret, SecretState,
+    delete_api_test_secret, delete_secret, has_api_test_secret, has_secret,
+    load_provider_secret_cleanup_intent, migrate_secret, persist_provider_secret_cleanup_intent,
+    save_api_test_secret, save_secret, SecretState,
 };
+use session_authorization::session_authorization_command;
 use session_mutations::commit_session_mutation_batch;
 use session_repository::{
     append_session_journal_entry, clear_session_repository, create_session_branch,
     delete_session_with_successor, delete_unreferenced_artifact_metadata,
-    execute_session_repository, finish_session_run, gc_artifacts,
-    initialize_session_repository, initialize_session_runtime_defaults,
-    load_session_repository_snapshot, migrate_session_provider_profiles, persist_session_message,
+    execute_session_repository, finish_session_run, gc_artifacts, initialize_session_repository,
+    initialize_session_runtime_defaults, load_session_repository_snapshot,
+    maintain_session_repository, migrate_session_provider_profiles, persist_session_message,
     query_session_repository, receive_provider_response, recover_session_repository,
-    recover_session_repository_session, save_session_checkpoint, save_session_turn_point,
-    settle_session_run, start_provider_request, start_session_run,
+    recover_session_repository_session, retire_session_authority_command, save_session_checkpoint,
+    save_session_turn_point, settle_session_run, start_provider_request, start_session_run,
     start_tool_execution, transition_session_journal_entries, update_session_runtime_config,
 };
 use session_state::SessionRepositoryState;
+use ssh::{ssh_command, SshState};
+use ssh_session::{reap_ssh_sessions_for_exit, SshSessionState};
 use terminal::{
     kill_terminal, resize_terminal, set_terminal_focus, spawn_terminal, write_terminal_stdin,
     TerminalGestureState, TerminalState,
 };
+use test_approval::issue_test_step_lease;
+use test_repository::{
+    create_test_run_record, delete_test_environment_record, get_test_run_record,
+    latest_test_batch_record, list_test_environment_records, list_test_run_records,
+    save_test_environment_record, transition_test_case_record, transition_test_run_record,
+    transition_test_step_record,
+};
+use test_target::{issue_test_target_grant, revoke_test_target_grant};
+use ui_test::{capture_ui_evidence, run_ui_read_step};
+use ui_write::run_ui_write_step;
 use usage_query::query_provider_usage;
+use webview_capture::capture_webview_viewport;
+#[cfg(feature = "e2e")]
+use workspace_access::e2e_register_workspace;
 use workspace_access::{
     activate_authorized_workspace, authorize_workspace, cancel_workspace_search,
     create_workspace_text_file, edit_workspace_text_file, find_workspace_files,
@@ -134,6 +163,7 @@ struct RuntimeInfo {
     app_version: String,
     operating_system: &'static str,
     architecture: &'static str,
+    sandbox_available: bool,
 }
 
 #[cfg(feature = "e2e")]
@@ -209,7 +239,6 @@ fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
             let state: tauri::State<SshSessionState> = app.state();
             reap_ssh_sessions_for_exit(&state);
             // Agent SSH 通道的 ControlPersist master 与 askpass 脚本同步收口。
-            ssh_agent::reap_ssh_agent_for_exit(app);
         }
         _ => {}
     }
@@ -217,21 +246,27 @@ fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
 
 #[tauri::command]
 #[specta::specta]
-fn get_runtime_info(app: tauri::AppHandle) -> RuntimeInfo {
-    RuntimeInfo {
+async fn get_runtime_info(app: tauri::AppHandle) -> Result<RuntimeInfo, String> {
+    let sandbox_available = tauri::async_runtime::spawn_blocking(sandbox::sandbox_available)
+        .await
+        .map_err(|error| format!("无法探测命令沙箱：{error}"))?;
+    Ok(RuntimeInfo {
         app_name: app.package_info().name.clone(),
         app_version: app.package_info().version.to_string(),
         operating_system: std::env::consts::OS,
         architecture: std::env::consts::ARCH,
-    }
+        sandbox_available,
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() -> Result<(), String> {
+    let session_authorizations = session_authorization::SessionAuthorizationState::default();
     let context = tauri::generate_context!();
     #[cfg(feature = "e2e")]
     assert_eq!(
-        context.config().identifier, "com.axiom.desktop.e2e",
+        context.config().identifier,
+        "com.axiom.desktop.e2e",
         "the e2e feature requires the isolated E2E bundle identifier"
     );
     // 密钥存储 worker（SQLite 唯一权威存储，无任何 Keychain 触点）。
@@ -257,6 +292,7 @@ pub fn run() -> Result<(), String> {
         .manage(FileAccessState::default())
         .manage(WorkspaceAccessState::default())
         .manage(WorkspaceApprovalState::default())
+        .manage(session_authorizations.clone())
         .manage(WorkspaceRecoveryState::default())
         .manage(WorkspaceCommandState::default())
         .manage(DesignWatchState::new())
@@ -264,10 +300,12 @@ pub fn run() -> Result<(), String> {
         .manage(PowerManagementState::default())
         .manage(TerminalState::default())
         .manage(BrowserSessionState::default())
-    .manage(ComputerSessionState::default())
+        .manage(test_target::TestTargetGrants::default())
+        .manage(test_approval::TestStepLeases::default())
+        .manage(Arc::new(user_gesture::UserGestureState::default()))
+        .manage(ApiTestState::default())
         .manage(SshState::default())
         .manage(SshSessionState::default())
-        .manage(SshAgentState::default())
         .manage(ConnectState::default())
         // 终端手势门状态以 Arc 托管，供原生 keyDown monitor 与命令共享同一实例
         // （stdin 输入来源校验，见 terminal.rs）。
@@ -286,119 +324,148 @@ pub fn run() -> Result<(), String> {
     } else {
         builder
     };
-    let builder = builder
-        .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![
-            get_runtime_info,
-            write_artifact,
-            read_artifact,
-            trash_artifacts,
-            reconcile_artifacts,
-            gc_artifacts,
-            get_artifact_storage_stats,
-            save_secret,
-            has_secret,
-            migrate_secret,
-            delete_secret,
-            load_provider_secret_cleanup_intent,
-            persist_provider_secret_cleanup_intent,
-            stream_model_http,
-            cancel_model_http,
-            probe_model_http,
-            query_provider_usage,
-            web_search,
-            web_fetch,
-            capture_webview_viewport,
-            open_external_url,
-            submit_feedback,
-            browser_command,
-            computer_command,
-            ssh_command,
-            ssh_agent_command,
-            get_connect_config,
-            save_connect_platform_config,
-            clear_connect_platform_config,
-            connect_platform,
-            disconnect_platform,
-            set_connect_workspace,
-            create_connect_pairing_code,
-            unpair_connect_binding,
-            connect_reply_message,
-            start_wechat_login,
-            poll_wechat_login,
-            decode_provider_profile,
-            normalize_provider_profile_draft,
-            is_provider_secret_compatible,
-            is_legacy_provider_secret_compatible,
-            is_known_legacy_provider_secret,
-            pick_and_authorize_read_file,
-            pick_and_authorize_read_directory,
-            list_authorized_read_files,
-            revoke_authorized_read_file,
-            read_authorized_text,
-            read_design_document,
-            read_design_document_asset,
-            watch_design_document,
-            unwatch_design_document,
-            write_design_document,
-            export_design_png,
-            authorize_workspace,
-            pick_and_authorize_workspace,
-            activate_authorized_workspace,
-            get_authorized_workspace,
-            get_authorized_workspaces,
-            revoke_workspace,
-            request_workspace_approval_lease,
-            set_workspace_approval_mode,
-            set_prevent_idle_sleep,
-            list_workspace,
-            read_workspace_text,
-            create_workspace_text_file,
-            edit_workspace_text_file,
-            search_workspace_text,
-            cancel_workspace_search,
-            find_workspace_files,
-            apply_workspace_changes,
-            restore_workspace_trash,
-            get_workspace_recovery_issue,
-            retry_workspace_recovery,
-            run_workspace_command,
-            cancel_workspace_command,
-            spawn_terminal,
-            write_terminal_stdin,
-            resize_terminal,
-            kill_terminal,
-            set_terminal_focus,
-            commit_session_mutation_batch,
-            initialize_session_repository,
-            recover_session_repository,
-            recover_session_repository_session,
-            initialize_session_runtime_defaults,
-            query_session_repository,
-            load_session_repository_snapshot,
-            execute_session_repository,
-            clear_session_repository,
-            delete_session_with_successor,
-            create_session_branch,
-            update_session_runtime_config,
-            migrate_session_provider_profiles,
-            append_session_journal_entry,
-            delete_unreferenced_artifact_metadata,
-            start_session_run,
-            start_provider_request,
-            receive_provider_response,
-            start_tool_execution,
-            finish_session_run,
-            persist_session_message,
-            save_session_checkpoint,
-            save_session_turn_point,
-            settle_session_run,
-            transition_session_journal_entries,
-            #[cfg(feature = "e2e")]
-            e2e_runtime_fault_checkpoint,
-            #[cfg(feature = "e2e")]
-            e2e_register_workspace,
-        ]);
+    let builder =
+        builder
+            .plugin(tauri_plugin_process::init())
+            .invoke_handler(tauri::generate_handler![
+                get_runtime_info,
+                session_authorization_command,
+                write_artifact,
+                read_artifact,
+                trash_artifacts,
+                reconcile_artifacts,
+                gc_artifacts,
+                maintain_session_repository,
+                get_artifact_storage_stats,
+                save_secret,
+                has_secret,
+                migrate_secret,
+                delete_secret,
+                save_api_test_secret,
+                has_api_test_secret,
+                delete_api_test_secret,
+                load_provider_secret_cleanup_intent,
+                persist_provider_secret_cleanup_intent,
+                stream_model_http,
+                cancel_model_http,
+                probe_model_http,
+                query_provider_usage,
+                capture_webview_viewport,
+                open_external_url,
+                submit_feedback,
+                browser_command,
+                issue_test_target_grant,
+                revoke_test_target_grant,
+                run_ui_read_step,
+                capture_ui_evidence,
+                issue_test_step_lease,
+                run_ui_write_step,
+                issue_api_test_step_lease,
+                run_api_test_step,
+                cancel_api_test_run,
+                create_test_run_record,
+                save_test_environment_record,
+                list_test_environment_records,
+                delete_test_environment_record,
+                transition_test_run_record,
+                transition_test_case_record,
+                transition_test_step_record,
+                list_test_run_records,
+                get_test_run_record,
+                latest_test_batch_record,
+                ssh_command,
+                get_connect_config,
+                save_connect_platform_config,
+                clear_connect_platform_config,
+                connect_platform,
+                disconnect_platform,
+                set_connect_workspace,
+                create_connect_pairing_code,
+                unpair_connect_binding,
+                connect_reply_message,
+                start_wechat_login,
+                poll_wechat_login,
+                decode_provider_profile,
+                normalize_provider_profile_draft,
+                is_provider_secret_compatible,
+                is_legacy_provider_secret_compatible,
+                is_known_legacy_provider_secret,
+                pick_and_authorize_read_file,
+                pick_and_authorize_read_directory,
+                list_authorized_read_files,
+                revoke_authorized_read_file,
+                read_authorized_text,
+                read_design_document,
+                read_design_document_asset,
+                watch_design_document,
+                unwatch_design_document,
+                delete_design_document_page,
+                list_design_document_versions,
+                read_design_document_version,
+                restore_design_document_version,
+                export_design_png,
+                read_workspace_document,
+                save_workspace_document,
+                authorize_workspace,
+                pick_and_authorize_workspace,
+                activate_authorized_workspace,
+                get_authorized_workspace,
+                get_authorized_workspaces,
+                revoke_workspace,
+                request_workspace_approval_lease,
+                set_workspace_approval_mode,
+                set_prevent_idle_sleep,
+                list_workspace,
+                read_workspace_text,
+                create_workspace_text_file,
+                edit_workspace_text_file,
+                search_workspace_text,
+                cancel_workspace_search,
+                find_workspace_files,
+                apply_workspace_changes,
+                restore_workspace_trash,
+                get_workspace_recovery_issue,
+                retry_workspace_recovery,
+                run_workspace_command,
+                cancel_workspace_command,
+                spawn_terminal,
+                write_terminal_stdin,
+                resize_terminal,
+                kill_terminal,
+                set_terminal_focus,
+                commit_session_mutation_batch,
+                initialize_session_repository,
+                recover_session_repository,
+                recover_session_repository_session,
+                initialize_session_runtime_defaults,
+                query_session_repository,
+                load_session_repository_snapshot,
+                execute_session_repository,
+                retire_session_authority_command,
+                clear_session_repository,
+                delete_session_with_successor,
+                create_session_branch,
+                update_session_runtime_config,
+                migrate_session_provider_profiles,
+                append_session_journal_entry,
+                delete_unreferenced_artifact_metadata,
+                start_session_run,
+                start_provider_request,
+                receive_provider_response,
+                start_tool_execution,
+                finish_session_run,
+                persist_session_message,
+                save_session_checkpoint,
+                save_session_turn_point,
+                settle_session_run,
+                transition_session_journal_entries,
+                #[cfg(feature = "e2e")]
+                e2e_runtime_fault_checkpoint,
+                #[cfg(feature = "e2e")]
+                e2e_automation_log,
+                #[cfg(feature = "e2e")]
+                e2e_register_workspace,
+            ]);
     let builder = builder.setup(move |app| {
         // 数据根迁移（~/.axiom/）：必须在所有数据消费者（SQLite 打开、
         // workspace 恢复）之前完成；数据库三件套迁移失败 fail-closed 阻止启动。
@@ -412,6 +479,9 @@ pub fn run() -> Result<(), String> {
             .bind_data_root(storage_paths::axiom_data_root(app.handle())?);
         // 终端原生键盘手势 monitor：在主线程捕获本 app 窗口按键，供 stdin 输入来源校验。
         terminal::install_gesture_monitor(app).map_err(std::io::Error::other)?;
+        // 用户手势 monitor：鼠标按下/回车/⌘S 授予单次消费配额，供测试步骤租约、
+        // 测试环境保存与文档保存消费（受陷渲染进程无法静默完成这些敏感写入）。
+        user_gesture::install_gesture_monitor(app).map_err(std::io::Error::other)?;
         initialize_workspace_recovery(app.handle()).map_err(std::io::Error::other)?;
         // 「连接」远程操控：加载配置并拉起上次启用的平台长连接（无配置时为空操作）。
         connect::initialize(app.handle()).map_err(std::io::Error::other)?;

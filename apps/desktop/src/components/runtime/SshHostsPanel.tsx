@@ -183,10 +183,10 @@ export const SshHostsPanel = ({ onBack }: SshHostsPanelProps) => {
           )}
           <label className="sshview__form-field">
             <span>{t('app.sshView.hosts.form.name')}</span>
-            <input
+            {/* biome-ignore lint/a11y/noAutofocus: 用户刚打开新增表单 */}
+            <input autoFocus
               value={form.name}
               placeholder={t('app.sshView.hosts.form.namePlaceholder')}
-              autoFocus
               onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
             />
           </label>

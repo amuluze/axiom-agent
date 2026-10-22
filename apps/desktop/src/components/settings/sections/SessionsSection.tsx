@@ -1,9 +1,14 @@
 import { useState, type CSSProperties } from 'react'
 import { Folder, GitBranch, Trash2, Edit3 } from 'lucide-react'
 import type { SessionsHook, SettingsSectionContext } from './types'
-import type { StorageStats } from '@/persistence/types'
+import type { RecoverySummary, StorageStats } from '@/persistence/types'
 import { gcArtifacts, type ArtifactGcResult } from '@/platform/artifacts'
+import {
+  maintainSessionRepository,
+  type SessionRepositoryMaintenanceResult,
+} from '@/platform/sessionDatabase'
 import { useT } from '@/i18n'
+import { confirmDialog, promptDialog } from '@/components/dialogService'
 import { displaySessionTitle } from '@/i18n/sessionTitle'
 
 interface SessionsSectionProps {
@@ -17,7 +22,7 @@ interface SessionsSectionProps {
   }>
   titleById: Map<string, string>
   storageStats: StorageStats | null
-  recoveredRuns: number
+  recoverySummary: RecoverySummary
   desktop: boolean
 }
 
@@ -34,7 +39,7 @@ export const SessionsSection = ({
   tree,
   titleById,
   storageStats,
-  recoveredRuns,
+  recoverySummary,
   desktop,
 }: SessionsSectionProps) => {
   const { t } = useT()
@@ -43,6 +48,20 @@ export const SessionsSection = ({
   const [gcResult, setGcResult] = useState<ArtifactGcResult | null>(null)
   const [gcing, setGcing] = useState(false)
   const [gcError, setGcError] = useState<string | null>(null)
+  const [maintaining, setMaintaining] = useState(false)
+  const [maintenanceResult, setMaintenanceResult] = useState<SessionRepositoryMaintenanceResult | null>(null)
+  const [maintenanceError, setMaintenanceError] = useState<string | null>(null)
+  const runMaintenance = async (): Promise<void> => {
+    setMaintaining(true)
+    setMaintenanceError(null)
+    try {
+      setMaintenanceResult(await maintainSessionRepository())
+    } catch (error) {
+      setMaintenanceError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setMaintaining(false)
+    }
+  }
   const runGc = async (): Promise<void> => {
     setGcing(true)
     setGcError(null)
@@ -115,8 +134,13 @@ export const SessionsSection = ({
                   aria-label={t('settings.sessions.renameAria', { title: stored.title })}
                   disabled={busy}
                   onClick={() => {
-                    const title = window.prompt(t('settings.sessions.renamePrompt'), stored.title)
-                    if (title !== null) void renameSession(stored.id, title)
+                    void promptDialog({
+                      title: t('app.dialog.renameTitle'),
+                      message: t('settings.sessions.renamePrompt'),
+                      defaultValue: stored.title,
+                    }).then((title) => {
+                      if (title !== null) void renameSession(stored.id, title)
+                    })
                   }}
                   type="button"
                 >
@@ -128,9 +152,12 @@ export const SessionsSection = ({
                   className="session-delete-button"
                   disabled={busy}
                   onClick={() => {
-                    if (window.confirm(t('settings.sessions.deleteConfirm', { title: stored.title }))) {
-                      void deleteSession(stored.id)
-                    }
+                    void confirmDialog({
+                      message: t('settings.sessions.deleteConfirm', { title: stored.title }),
+                      danger: true,
+                    }).then((confirmed) => {
+                      if (confirmed) void deleteSession(stored.id)
+                    })
                   }}
                   type="button"
                 >
@@ -165,9 +192,12 @@ export const SessionsSection = ({
             className="file-picker-button"
             disabled={busy || gcing}
             onClick={() => {
-              if (window.confirm(t('settings.sessions.gcConfirm'))) {
-                void runGc()
-              }
+              void confirmDialog({
+                message: t('settings.sessions.gcConfirm'),
+                danger: true,
+              }).then((confirmed) => {
+                if (confirmed) void runGc()
+              })
             }}
             type="button"
           >
@@ -181,8 +211,50 @@ export const SessionsSection = ({
           {gcError && <span className="artifact-gc-error" role="alert">{gcError}</span>}
         </div>
       )}
-      {recoveredRuns > 0 && (
-        <p className="recovery-note">{t('settings.sessions.recovered', { count: recoveredRuns })}</p>
+      {desktop && (
+        <div className="artifact-gc-row">
+          <button
+            className="file-picker-button"
+            disabled={busy || maintaining}
+            onClick={() => {
+              void confirmDialog({
+                message: t('settings.sessions.maintainConfirm'),
+              }).then((confirmed) => {
+                if (confirmed) void runMaintenance()
+              })
+            }}
+            type="button"
+          >
+            {maintaining ? t('settings.sessions.maintaining') : t('settings.sessions.maintain')}
+          </button>
+          {maintenanceResult && (
+            <span className="artifact-gc-result">
+              {t('settings.sessions.maintainResult', {
+                before: formatBytes(maintenanceResult.databaseBytesBefore),
+                after: formatBytes(maintenanceResult.databaseBytesAfter),
+                vacuumed: maintenanceResult.vacuumed
+                  ? t('settings.sessions.maintainVacuumed')
+                  : t('settings.sessions.maintainCheckpointOnly'),
+              })}
+            </span>
+          )}
+          {maintenanceError && <span className="artifact-gc-error" role="alert">{maintenanceError}</span>}
+        </div>
+      )}
+      {recoverySummary.recoveredRuns > 0 && (
+        <>
+          <p className="recovery-note">
+            {t('settings.sessions.recovered', { count: recoverySummary.recoveredRuns })}
+            {' '}
+            {t('settings.sessions.recoveryBreakdown', {
+              completed: recoverySummary.completedRuns,
+              failed: recoverySummary.failedRuns,
+              unknown: recoverySummary.unknownRuns,
+              interrupted: recoverySummary.interruptedToolExecutions,
+              possiblyExecuted: recoverySummary.possiblyExecutedToolExecutions,
+            })}
+          </p>
+        </>
       )}
     </section>
   )

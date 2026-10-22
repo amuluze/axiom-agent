@@ -35,9 +35,35 @@ env:
   SYFT_VERSION: v1.27.0
 
 jobs:
+  # ── 源码门禁：三平台构建前先过核心审计（tag 不能绕过防漂移检查）──
+  # 与 ci.yml 的完整 check 互补：release 只复述无 Rust 依赖的核心子集
+  # （类型 / lint / 测试 / 四源 capability / bash 策略 / 生成器防漂移），
+  # 保证「编译通过」不再等于「可直接发版」。
+  verify:
+    name: verify（源码门禁：类型 / 测试 / 防漂移审计）
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: 核心源码门禁（无 Rust 依赖）
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run generate:providers:check
+          npm run typecheck
+          npm run lint:ts
+          npm run test
+          npm run test:capabilities
+          npm run test:bash-policy
+
   # ── macOS：双架构 DMG + updater 工件（x86_64 在 arm64 runner 上交叉构建）──
   build-macos:
     name: build:macos (${{ matrix.target }})
+    needs: verify
     runs-on: macos-14
     timeout-minutes: 90
     strategy:
@@ -186,6 +212,7 @@ jobs:
   # ── Linux：debian:12 容器基线（glibc 2.36，与私仓 build/linux/Dockerfile 同源）──
   build-linux:
     name: build:linux（debian:12 基线 AppImage + deb）
+    needs: verify
     runs-on: ubuntu-latest
     container: node:22-bookworm
     timeout-minutes: 90
@@ -279,6 +306,7 @@ jobs:
   # ── Windows：NSIS 安装包（未签名 = SmartScreen 提示）──
   build-windows:
     name: build:windows（NSIS）
+    needs: verify
     runs-on: windows-latest
     timeout-minutes: 90
     env:
@@ -378,6 +406,8 @@ jobs:
           node scripts/generate-sbom.mjs --output-dir=artifacts/sbom
           cp artifacts/sbom/axiom-*.cdx.json artifacts/sbom/axiom-*.spdx.json artifacts/release-publish/
       - name: changelog.json + release notes + latest.json（updater 多平台清单）+ SHA256SUMS
+        env:
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
@@ -413,6 +443,13 @@ jobs:
           else
             echo '未检出 updater 工件（无 minisign 凭据），跳过 latest.json 生成。'
           fi
+          node scripts/generate-release-provenance.mjs \
+            --assets-dir artifacts/release-publish \
+            --source-manifest SOURCE_SNAPSHOT.json \
+            --public-commit "$GITHUB_SHA" \
+            --pubkey-config apps/desktop/src-tauri/tauri.release.conf.json \
+            --changelog CHANGELOG.md \
+            --out artifacts/release-publish/release-provenance.json
           cd artifacts/release-publish
           rm -f SHA256SUMS.txt
           find . -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' -print0 \

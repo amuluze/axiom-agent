@@ -3,12 +3,12 @@
   "components": [
     {
       "id": "hook:axiom.desktop.runtime-hooks",
-      "version": "9",
+      "version": "10",
       "sourceFiles": [
         "src/agent/runtime/RuntimeHookRegistry.ts",
         "src/agent/runtime/productRuntimeHooks.ts"
       ],
-      "semanticDigest": "4cef6e3407dd236185641d39e53d6a87aa3d099fb0952d92b10a13ecb470f0fe"
+      "semanticDigest": "ba9cc9f465faa72fac2f1f2ab354959ce2bfcdc71e948317598a495ecf319bb8"
     },
     {
       "id": "hook:axiom.runtime.harness-options-hooks",
@@ -27,155 +27,183 @@
         "src/agent/transport/DemoModelTransport.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "7d3018be73c2fad8213e27e32215d5f8bbbc6f7e568d60f2f4725f86d8dc43a9"
+      "semanticDigest": "b1e06e2a895381783b30ac200be8ea7c873a38f7935308c91d139bb0e5b97e0c"
     },
     {
       "id": "provider:generic-openai-compatible",
-      "version": "10",
+      "version": "11",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
-        "src/agent/transport/generatedProviderData.ts"
+        "src/agent/transport/generatedProviderData.ts",
+        "src/agent/core/providerError.ts",
+        "src/agent/core/streamAssistantMessage.ts"
       ],
-      "semanticDigest": "8c7998b94cd0d702fd1e30bd77ee37de06d4fca2d41fe477d30291edbf7c24a8"
+      "semanticDigest": "06dfa5a34ae1fe157bbc5e4b12cb3a276fa5821c87ba3f024e660d2c54a5505b"
     },
     {
       "id": "provider:custom-openai-compatible",
-      "version": "10",
+      "version": "11",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
-        "src/agent/transport/generatedProviderData.ts"
+        "src/agent/transport/generatedProviderData.ts",
+        "src/agent/core/providerError.ts",
+        "src/agent/core/streamAssistantMessage.ts"
       ],
-      "semanticDigest": "8c7998b94cd0d702fd1e30bd77ee37de06d4fca2d41fe477d30291edbf7c24a8"
+      "semanticDigest": "06dfa5a34ae1fe157bbc5e4b12cb3a276fa5821c87ba3f024e660d2c54a5505b"
     },
     {
       "id": "provider:openai",
-      "version": "10",
+      "version": "11",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAIResponsesTransport.ts",
         "src/agent/transport/sse.ts",
-        "src/agent/transport/generatedProviderData.ts"
+        "src/agent/transport/generatedProviderData.ts",
+        "src/agent/core/providerError.ts",
+        "src/agent/core/streamAssistantMessage.ts"
       ],
-      "semanticDigest": "37d37b506fd9a72a337a328665288d1463ebfd73e21890e027b88c6cd2465a9f"
+      "semanticDigest": "1dd6443a3a2b5df89977f41b5280e74f9a0d69bfbb94c557caa8b9bcc218088d"
     },
     {
       "id": "provider:generic-anthropic-compatible",
-      "version": "10",
+      "version": "11",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/AnthropicCompatibleTransport.ts",
         "src/agent/transport/sse.ts",
-        "src/agent/transport/generatedProviderData.ts"
+        "src/agent/transport/generatedProviderData.ts",
+        "src/agent/core/providerError.ts",
+        "src/agent/core/streamAssistantMessage.ts"
       ],
-      "semanticDigest": "0c9a37320847ad4f22c1b5dfd9e9bffeb51afc3f38de9857794d4c1356f03b67"
+      "semanticDigest": "18b1c066da6c432a8967bab5c6c33cb61569f1767e962cfa70aa64f19f215b36"
     },
     {
       "id": "provider:custom-anthropic-compatible",
-      "version": "10",
+      "version": "11",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/AnthropicCompatibleTransport.ts",
         "src/agent/transport/sse.ts",
-        "src/agent/transport/generatedProviderData.ts"
+        "src/agent/transport/generatedProviderData.ts",
+        "src/agent/core/providerError.ts",
+        "src/agent/core/streamAssistantMessage.ts"
       ],
-      "semanticDigest": "0c9a37320847ad4f22c1b5dfd9e9bffeb51afc3f38de9857794d4c1356f03b67"
+      "semanticDigest": "18b1c066da6c432a8967bab5c6c33cb61569f1767e962cfa70aa64f19f215b36"
     },
     {
       "id": "provider:zhipu-glm",
-      "version": "10",
+      "version": "11",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
-        "src/agent/transport/generatedProviderData.ts"
+        "src/agent/transport/generatedProviderData.ts",
+        "src/agent/core/providerError.ts",
+        "src/agent/core/streamAssistantMessage.ts"
       ],
-      "semanticDigest": "8c7998b94cd0d702fd1e30bd77ee37de06d4fca2d41fe477d30291edbf7c24a8"
+      "semanticDigest": "06dfa5a34ae1fe157bbc5e4b12cb3a276fa5821c87ba3f024e660d2c54a5505b"
     },
     {
       "id": "provider:deepseek",
-      "version": "10",
+      "version": "11",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
-        "src/agent/transport/generatedProviderData.ts"
+        "src/agent/transport/generatedProviderData.ts",
+        "src/agent/core/providerError.ts",
+        "src/agent/core/streamAssistantMessage.ts"
       ],
-      "semanticDigest": "8c7998b94cd0d702fd1e30bd77ee37de06d4fca2d41fe477d30291edbf7c24a8"
+      "semanticDigest": "06dfa5a34ae1fe157bbc5e4b12cb3a276fa5821c87ba3f024e660d2c54a5505b"
     },
     {
       "id": "provider:minimax-chat",
-      "version": "10",
+      "version": "11",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
-        "src/agent/transport/generatedProviderData.ts"
+        "src/agent/transport/generatedProviderData.ts",
+        "src/agent/core/providerError.ts",
+        "src/agent/core/streamAssistantMessage.ts"
       ],
-      "semanticDigest": "8c7998b94cd0d702fd1e30bd77ee37de06d4fca2d41fe477d30291edbf7c24a8"
+      "semanticDigest": "06dfa5a34ae1fe157bbc5e4b12cb3a276fa5821c87ba3f024e660d2c54a5505b"
     },
     {
       "id": "provider:ollama",
-      "version": "10",
+      "version": "11",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
-        "src/agent/transport/generatedProviderData.ts"
+        "src/agent/transport/generatedProviderData.ts",
+        "src/agent/core/providerError.ts",
+        "src/agent/core/streamAssistantMessage.ts"
       ],
-      "semanticDigest": "8c7998b94cd0d702fd1e30bd77ee37de06d4fca2d41fe477d30291edbf7c24a8"
+      "semanticDigest": "06dfa5a34ae1fe157bbc5e4b12cb3a276fa5821c87ba3f024e660d2c54a5505b"
     },
     {
       "id": "provider:gemini",
-      "version": "10",
+      "version": "11",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
-        "src/agent/transport/generatedProviderData.ts"
+        "src/agent/transport/generatedProviderData.ts",
+        "src/agent/core/providerError.ts",
+        "src/agent/core/streamAssistantMessage.ts"
       ],
-      "semanticDigest": "8c7998b94cd0d702fd1e30bd77ee37de06d4fca2d41fe477d30291edbf7c24a8"
+      "semanticDigest": "06dfa5a34ae1fe157bbc5e4b12cb3a276fa5821c87ba3f024e660d2c54a5505b"
     },
     {
       "id": "provider:kimi",
-      "version": "10",
+      "version": "11",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
-        "src/agent/transport/generatedProviderData.ts"
+        "src/agent/transport/generatedProviderData.ts",
+        "src/agent/core/providerError.ts",
+        "src/agent/core/streamAssistantMessage.ts"
       ],
-      "semanticDigest": "8c7998b94cd0d702fd1e30bd77ee37de06d4fca2d41fe477d30291edbf7c24a8"
+      "semanticDigest": "06dfa5a34ae1fe157bbc5e4b12cb3a276fa5821c87ba3f024e660d2c54a5505b"
     },
     {
       "id": "provider:kimi-coding",
-      "version": "10",
+      "version": "11",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/AnthropicCompatibleTransport.ts",
         "src/agent/transport/sse.ts",
-        "src/agent/transport/generatedProviderData.ts"
+        "src/agent/transport/generatedProviderData.ts",
+        "src/agent/core/providerError.ts",
+        "src/agent/core/streamAssistantMessage.ts"
       ],
-      "semanticDigest": "0c9a37320847ad4f22c1b5dfd9e9bffeb51afc3f38de9857794d4c1356f03b67"
+      "semanticDigest": "18b1c066da6c432a8967bab5c6c33cb61569f1767e962cfa70aa64f19f215b36"
     },
     {
       "id": "provider:orcarouter",
-      "version": "10",
+      "version": "11",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
-        "src/agent/transport/generatedProviderData.ts"
+        "src/agent/transport/generatedProviderData.ts",
+        "src/agent/core/providerError.ts",
+        "src/agent/core/streamAssistantMessage.ts"
       ],
-      "semanticDigest": "8c7998b94cd0d702fd1e30bd77ee37de06d4fca2d41fe477d30291edbf7c24a8"
+      "semanticDigest": "06dfa5a34ae1fe157bbc5e4b12cb3a276fa5821c87ba3f024e660d2c54a5505b"
     },
     {
       "id": "provider:opencode-go",
-      "version": "2",
+      "version": "3",
       "sourceFiles": [
+        "src/agent/core/providerError.ts",
+        "src/agent/core/streamAssistantMessage.ts",
         "src/agent/transport/AnthropicCompatibleTransport.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/OpenAIResponsesTransport.ts",
@@ -183,48 +211,88 @@
         "src/agent/transport/generatedProviderData.ts",
         "src/agent/transport/sse.ts"
       ],
-      "semanticDigest": "c3c34b05693c7e7de0edde22f015d1367f3a4b44466ef50ea5734332d6b24828"
+      "semanticDigest": "685c04c4df27c343c3073fd0399122641d91aaa08f6c14bdfcc7bbf1f4f346fb"
+    },
+    {
+      "id": "tool:api_request",
+      "version": "5",
+      "sourceFiles": [
+        "src/agent/tools/apiRequestTool.ts",
+        "src/agent/environment/AgentEnvironment.ts",
+        "src/agent/testing/approval/testStepApproval.ts",
+        "src/agent/testing/spec/types.ts",
+        "src/platform/desktopAgentEnvironment.ts",
+        "src/platform/apiTestAutomation.ts",
+        "src-tauri/src/api_test.rs",
+        "src-tauri/src/api_test_policy.rs",
+        "src-tauri/src/test_repository.rs"
+      ],
+      "semanticDigest": "18947230c05d7707a61c1a855a403cef8589c00a9cc37d77f102b3982eab41b4"
     },
     {
       "id": "tool:apply_changes",
-      "version": "5",
+      "version": "10",
       "sourceFiles": [
         "src/agent/tools/applyChangesTool.ts",
         "src/agent/tools/workspaceToolUtils.ts",
-        "src/agent/tools/toolDiff.ts"
+        "src/agent/tools/toolDiff.ts",
+        "src/agent/approval/ApprovalCoordinator.ts",
+        "src-tauri/src/workspace_approval.rs",
+        "src-tauri/src/session_authorization.rs",
+        "src/platform/desktopAgentEnvironment.ts",
+        "src/agent/core/approvalScope.ts",
+        "src/platform/workspace.ts",
+        "src-tauri/src/workspace_changes.rs",
+        "src/platform/workspaceApproval.ts"
       ],
-      "semanticDigest": "4ed63bb3b114aa69f98f64a220bc5f307d1ae899caeb09f4e9911b6100279e70"
+      "semanticDigest": "7c42f1c3d1f4e1a9cbe249adf9d224749bb1fe60715a8b25e25de6c299fa6f96"
     },
     {
       "id": "tool:bash",
-      "version": "17",
+      "version": "26",
       "sourceFiles": [
         "src/agent/tools/bashTool.ts",
-        "src/agent/tools/workspaceToolUtils.ts"
+        "src/agent/tools/workspaceToolUtils.ts",
+        "src/agent/approval/ApprovalCoordinator.ts",
+        "src-tauri/src/workspace_approval.rs",
+        "src-tauri/src/session_authorization.rs",
+        "src/platform/desktopAgentEnvironment.ts",
+        "src/agent/core/approvalScope.ts",
+        "src/platform/workspaceCommand.ts",
+        "src-tauri/src/workspace_command.rs",
+        "src/platform/workspaceApproval.ts"
       ],
-      "semanticDigest": "a2ac7d29ff1c397304a13d3a5352046dda3d3fb78bb7a7feadf9643fcdb5fd31"
+      "semanticDigest": "12706bf63cdceac514e13ce30f7d3640683822d045269a53a5a3584441342668"
     },
     {
       "id": "tool:discover_agent_tools",
-      "version": "4",
+      "version": "7",
       "sourceFiles": [
         "src/agent/tools/discoverAgentToolsTool.ts"
       ],
-      "semanticDigest": "63c000d91dabc2381d5d3216237862478fcaa5a0c8ab03fbfb54c9424a232f44"
+      "semanticDigest": "7b091079a0561f38ebf6560f6ad1f6721e27e520ff178078ff53f94341c15d97"
     },
     {
       "id": "tool:edit",
-      "version": "7",
+      "version": "12",
       "sourceFiles": [
         "src/agent/tools/editTool.ts",
         "src/agent/tools/workspaceToolUtils.ts",
-        "src/agent/tools/toolDiff.ts"
+        "src/agent/tools/toolDiff.ts",
+        "src/agent/approval/ApprovalCoordinator.ts",
+        "src-tauri/src/workspace_approval.rs",
+        "src-tauri/src/session_authorization.rs",
+        "src/platform/desktopAgentEnvironment.ts",
+        "src/agent/core/approvalScope.ts",
+        "src/platform/workspace.ts",
+        "src-tauri/src/workspace_access.rs",
+        "src/platform/workspaceApproval.ts"
       ],
-      "semanticDigest": "c7cd5543745dde33b0501979337aeb4b24631bada15620e6cfecf4657a55946d"
+      "semanticDigest": "ed963a1d498f3804054c01f8806bfc83af85200bfd6543146bd9341f7e0ffe03"
     },
     {
       "id": "tool:examine_subagent",
-      "version": "6",
+      "version": "11",
       "sourceFiles": [
         "src/agent/subagent/reviewers/createExamineSubAgentTool.ts",
         "src/agent/subagent/reviewers/createReviewerSubAgentTool.ts",
@@ -235,13 +303,19 @@
         "src/agent/subagent/scopedReadEnvironment.ts",
         "src/agent/subagent/contracts.ts",
         "src/agent/runtime/AgentSession.ts",
-        "src/stores/services/subAgentObservability.ts"
+        "src/stores/services/subAgentObservability.ts",
+        "src/agent/subagent/readonlyTools.ts",
+        "src/agent/subagent/scopeProbe.ts",
+        "src/agent/subagent/delegationLifetime.ts",
+        "src/agent/core/toolExecution.ts",
+        "src/agent/runtime/autoRetry.ts",
+        "src/agent/runtime/sessionRuntimeUpdates.ts"
       ],
-      "semanticDigest": "568ac415c3cc1f585085bd61160e1682190657ce3d8dbf11ac134845de2f4f0c"
+      "semanticDigest": "4085995510d59ba5f9415f29ead95b48cadb453dcd5f2a08a1bfd92279672881"
     },
     {
       "id": "tool:explore_subagent",
-      "version": "11",
+      "version": "16",
       "sourceFiles": [
         "src/agent/subagent/explore/createExploreSubAgentTool.ts",
         "src/agent/subagent/explore/buildExplorePrompt.ts",
@@ -250,51 +324,91 @@
         "src/agent/subagent/scopedReadEnvironment.ts",
         "src/agent/subagent/contracts.ts",
         "src/agent/runtime/AgentSession.ts",
-        "src/stores/services/subAgentObservability.ts"
+        "src/stores/services/subAgentObservability.ts",
+        "src/agent/subagent/readonlyTools.ts",
+        "src/agent/subagent/scopeProbe.ts",
+        "src/agent/subagent/delegationLifetime.ts",
+        "src/agent/core/toolExecution.ts",
+        "src/agent/runtime/autoRetry.ts",
+        "src/agent/runtime/sessionRuntimeUpdates.ts"
       ],
-      "semanticDigest": "9a9c6b65833c34de67ff2ecab5d531e3c788cc710fbcf47ae8ebc53f23ee834b"
+      "semanticDigest": "88cab04cd7ba48fe63b69d0cc75587da9889a167f3f20b6c1c8bb63b83893c1b"
     },
     {
       "id": "tool:design_query",
-      "version": "9",
+      "version": "24",
       "sourceFiles": [
         "src/agent/tools/designQueryTool.ts",
         "src/agent/tools/workspaceToolUtils.ts",
         "src/agent/design/implementationUsage.ts",
-        "src/agent/design/designQueryModes.ts"
+        "src/agent/design/designQueryProjection.ts",
+        "src/agent/design/designQueryContext.ts",
+        "src/agent/design/designQueryAxReads.ts",
+        "src/agent/design/designQueryReconcile.ts",
+        "src/agent/design/designQueryComponent.ts",
+        "src/agent/design/designQueryVisual.ts",
+        "src/agent/design/emitPage.ts",
+        "src/agent/design/componentInstance.ts",
+        "src/agent/design/axParser.ts",
+        "src/agent/design/visualCompare.ts",
+        "src/agent/design/projectComponentCatalog.ts",
+        "src/agent/design/componentInventoryHost.ts",
+        "src/agent/design/emitVuePage.ts",
+        "src/agent/design/projectPreview.ts",
+        "src/agent/design/designRenderHost.ts",
+        "src/platform/desktopAgentEnvironment.ts",
+        "src-tauri/src/browser_session.rs",
+        "src-tauri/src/session_authorization.rs",
+        "src/agent/design/designQueryLimits.ts",
+        "src/agent/design/axProjection.ts",
+        "src/agent/design/axAnchors.ts",
+        "src/agent/design/axSerialize.ts",
+        "src/agent/core/stripUnsupportedImages.ts"
       ],
-      "semanticDigest": "d2923674c8e6715ca9cb3aefb043efcbc0e52e91aa0088ada37330d910291553"
+      "semanticDigest": "239ce7f624c8790be73607027fd54790087842e0945f43cad0a4ec3123e109cf"
     },
     {
       "id": "tool:design_import",
-      "version": "3",
+      "version": "9",
       "sourceFiles": [
         "src/agent/tools/designImportTool.ts",
-        "src/agent/tools/workspaceToolUtils.ts"
+        "src/agent/tools/workspaceToolUtils.ts",
+        "src/agent/design/axComponentMap.ts",
+        "src/agent/design/importPen.ts",
+        "src/agent/approval/ApprovalCoordinator.ts",
+        "src-tauri/src/workspace_approval.rs",
+        "src-tauri/src/session_authorization.rs",
+        "src/platform/desktopAgentEnvironment.ts",
+        "src/agent/core/approvalScope.ts",
+        "src/platform/workspace.ts",
+        "src-tauri/src/workspace_access.rs",
+        "src/platform/workspaceApproval.ts"
       ],
-      "semanticDigest": "6ba965e049531999d7127125f970a630b03933d7a268230e3498f7d83389cd96"
+      "semanticDigest": "58c9c1dbfa48e27ecf1571a448974fea360f441ba76ba260c04321e7c2d080c1"
     },
     {
       "id": "tool:find",
-      "version": "5",
+      "version": "6",
       "sourceFiles": [
         "src/agent/tools/findTool.ts",
-        "src/agent/tools/workspaceToolUtils.ts"
+        "src/agent/tools/workspaceToolUtils.ts",
+        "src/agent/tools/truncate.ts"
       ],
-      "semanticDigest": "56a31f865954b4592be7a5831f57e9ec2cfb8cc6c9b2812d2f28ca5914c548ae"
+      "semanticDigest": "ff30ccf0805bc5515f33cac26bcc864f70979e92d2cce32952c80afe00f04efc"
     },
     {
       "id": "tool:grep",
-      "version": "5",
+      "version": "6",
       "sourceFiles": [
         "src/agent/tools/grepTool.ts",
-        "src/agent/tools/workspaceToolUtils.ts"
+        "src/agent/tools/workspaceToolUtils.ts",
+        "src/agent/tools/truncate.ts"
       ],
-      "semanticDigest": "d620b5e6f5de4bda9aa312d4f40a2d9730ce0cf20c663f8f7a646f154afee8c8"
+      "semanticDigest": "2634dd690f204be31a19a84e0ac6e39b197ae4575c931b0421f87e88839d8b0c"
     },
     {
       "id": "tool:inspect_subagent",
-      "version": "6",
+      "version": "11",
       "sourceFiles": [
         "src/agent/subagent/reviewers/createInspectSubAgentTool.ts",
         "src/agent/subagent/reviewers/createReviewerSubAgentTool.ts",
@@ -305,9 +419,15 @@
         "src/agent/subagent/scopedReadEnvironment.ts",
         "src/agent/subagent/contracts.ts",
         "src/agent/runtime/AgentSession.ts",
-        "src/stores/services/subAgentObservability.ts"
+        "src/stores/services/subAgentObservability.ts",
+        "src/agent/subagent/readonlyTools.ts",
+        "src/agent/subagent/scopeProbe.ts",
+        "src/agent/subagent/delegationLifetime.ts",
+        "src/agent/core/toolExecution.ts",
+        "src/agent/runtime/autoRetry.ts",
+        "src/agent/runtime/sessionRuntimeUpdates.ts"
       ],
-      "semanticDigest": "f852efc8744bb92419c7b770d94d5775db700562e3e89bde0acc67b84edc98e1"
+      "semanticDigest": "a7c9e7954444e58969c874f2a711959c63d8aacbc09261b6ec4eca10b76fd456"
     },
     {
       "id": "tool:load_skill",
@@ -318,38 +438,49 @@
         "src/agent/skills/parseSkillFile.ts",
         "src/agent/skills/builtinSkillBodies.ts"
       ],
-      "semanticDigest": "b8582379aa5100029692e5daa5a189a5e9fbb80f93fba8af681d41785b3bf1bd"
+      "semanticDigest": "5bd8c6c9455be3c3c47e0014cd05c5d4c18eacc35f3b689f0d38020d93b9020a"
     },
     {
       "id": "tool:ls",
-      "version": "4",
+      "version": "5",
       "sourceFiles": [
         "src/agent/tools/lsTool.ts",
-        "src/agent/tools/workspaceToolUtils.ts"
+        "src/agent/tools/workspaceToolUtils.ts",
+        "src/agent/tools/truncate.ts"
       ],
-      "semanticDigest": "e8f722da52145927ba214eb0425d52df44c4fe526a82d2e40a96fe3edfa663cd"
+      "semanticDigest": "14459895c3547fa80b2870e256b9960f36ab55f9cb672d316c67ba255ba52835"
     },
     {
       "id": "tool:read",
-      "version": "7",
+      "version": "8",
       "sourceFiles": [
         "src/agent/tools/readTool.ts",
-        "src/agent/tools/workspaceToolUtils.ts"
+        "src/agent/tools/workspaceToolUtils.ts",
+        "src/agent/tools/truncate.ts",
+        "src/agent/core/stripUnsupportedImages.ts"
       ],
-      "semanticDigest": "a0f7553dca055630adad7229ae5d91bacdd312c50b3d9e8969102f428f85283d"
+      "semanticDigest": "f1d865140c57b22825dbfdfb473d23e2f5ef7220bae7e34fe3f0ba7db6ab6f47"
     },
     {
       "id": "tool:restore_trash",
-      "version": "3",
+      "version": "7",
       "sourceFiles": [
         "src/agent/tools/restoreTrashTool.ts",
-        "src/agent/tools/workspaceToolUtils.ts"
+        "src/agent/tools/workspaceToolUtils.ts",
+        "src/agent/approval/ApprovalCoordinator.ts",
+        "src-tauri/src/workspace_approval.rs",
+        "src-tauri/src/session_authorization.rs",
+        "src/platform/desktopAgentEnvironment.ts",
+        "src/agent/core/approvalScope.ts",
+        "src/platform/workspace.ts",
+        "src-tauri/src/workspace_changes.rs",
+        "src/platform/workspaceApproval.ts"
       ],
-      "semanticDigest": "5140593d96333cd02337d3d34ba1e43d8a7adf7cb83e72df375e08e5065642b9"
+      "semanticDigest": "a2f776d21b07adb497a99de63da46e825cc7443b1e3bf6bae735105ad67283a3"
     },
     {
       "id": "tool:review_subagent",
-      "version": "8",
+      "version": "13",
       "sourceFiles": [
         "src/agent/subagent/reviewers/createReviewSubAgentTool.ts",
         "src/agent/subagent/reviewers/createReviewerSubAgentTool.ts",
@@ -360,74 +491,166 @@
         "src/agent/subagent/scopedReadEnvironment.ts",
         "src/agent/subagent/contracts.ts",
         "src/agent/runtime/AgentSession.ts",
-        "src/stores/services/subAgentObservability.ts"
+        "src/stores/services/subAgentObservability.ts",
+        "src/agent/subagent/readonlyTools.ts",
+        "src/agent/subagent/scopeProbe.ts",
+        "src/agent/subagent/delegationLifetime.ts",
+        "src/agent/core/toolExecution.ts",
+        "src/agent/runtime/autoRetry.ts",
+        "src/agent/runtime/sessionRuntimeUpdates.ts"
       ],
-      "semanticDigest": "f1ca695f6eafd7d71da04918b10f38df89d215614978e15ff93eb8dbc1ce7e2b"
-    },
-    {
-      "id": "tool:web_fetch",
-      "version": "1",
-      "sourceFiles": [
-        "src/agent/tools/webFetchTool.ts",
-        "src/agent/tools/workspaceToolUtils.ts"
-      ],
-      "semanticDigest": "4c9be9ecc4f24a8e2b98b06ab46fa0ef1fb2b4ee3967a85d4e2b153fe707d158"
-    },
-    {
-      "id": "tool:web_search",
-      "version": "1",
-      "sourceFiles": [
-        "src/agent/tools/webSearchTool.ts",
-        "src/agent/tools/workspaceToolUtils.ts"
-      ],
-      "semanticDigest": "e626d410b8d1bb1ea7d4852f9812e78f2eaf42a9715f8124d78df59361aae74e"
+      "semanticDigest": "b789b8c2de111dbc61c0150ecbb1f87a6417f6668f669eae87755527cecfe30e"
     },
     {
       "id": "tool:write",
-      "version": "6",
+      "version": "12",
       "sourceFiles": [
         "src/agent/tools/writeTool.ts",
         "src/agent/tools/workspaceToolUtils.ts",
-        "src/agent/tools/toolDiff.ts"
+        "src/agent/tools/toolDiff.ts",
+        "src/agent/approval/ApprovalCoordinator.ts",
+        "src-tauri/src/workspace_approval.rs",
+        "src-tauri/src/session_authorization.rs",
+        "src/platform/desktopAgentEnvironment.ts",
+        "src/agent/core/approvalScope.ts",
+        "src/platform/workspace.ts",
+        "src-tauri/src/workspace_access.rs",
+        "src/platform/workspaceApproval.ts"
       ],
-      "semanticDigest": "ff437c5f2824c0044c26e9375eb79de8e9ef27ec6261962a100a4e5f2d8d2ac2"
+      "semanticDigest": "fb22b8a312c7fe983bbdfcef5ac604379eee8d5f8bcddb5b8921269105722157"
     },
     {
-      "id": "tool:browser",
-      "version": "8",
+      "id": "tool:ui_snapshot",
+      "version": "1",
       "sourceFiles": [
-        "src/agent/tools/browserTool.ts",
-        "src/agent/tools/workspaceToolUtils.ts"
+        "src/agent/tools/uiSnapshotTool.ts",
+        "src/agent/tools/uiToolSupport.ts",
+        "src/agent/environment/AgentEnvironment.ts",
+        "src/platform/desktopAgentEnvironment.ts",
+        "src/platform/browserSession.ts",
+        "src-tauri/src/browser_session.rs"
       ],
-      "semanticDigest": "7b94e3280cea94abd6eded34208355fa8c3f6c7bc4348ce2b3fb9e98cbf107ec"
+      "semanticDigest": "336776acbae2129d52e35de51d955349ee45364ea595e29cbcdeecf0157b596b"
     },
     {
-      "id": "tool:computer",
-      "version": "3",
+      "id": "tool:ui_find",
+      "version": "1",
       "sourceFiles": [
-        "src/agent/tools/computerTool.ts",
-        "src/agent/tools/workspaceToolUtils.ts"
+        "src/agent/tools/uiFindTool.ts",
+        "src/agent/tools/uiToolSupport.ts",
+        "src/agent/environment/AgentEnvironment.ts",
+        "src/platform/desktopAgentEnvironment.ts",
+        "src/platform/browserSession.ts",
+        "src-tauri/src/browser_session.rs"
       ],
-      "semanticDigest": "9d46a78d28b2e02371d51579e2137fdb2fa50f7415fce8ad6e2af0a92f71cf87"
+      "semanticDigest": "172937c34f3c1e7cdfe9b45f3b1d9200725b7146c60ac9552efe90669de4a314"
     },
     {
-      "id": "tool:ssh",
+      "id": "tool:ui_wait",
+      "version": "1",
+      "sourceFiles": [
+        "src/agent/tools/uiWaitTool.ts",
+        "src/agent/tools/uiToolSupport.ts",
+        "src/agent/environment/AgentEnvironment.ts",
+        "src/platform/desktopAgentEnvironment.ts",
+        "src/platform/browserSession.ts",
+        "src-tauri/src/browser_session.rs"
+      ],
+      "semanticDigest": "8f629af17f286f9d065d4fa6343f7282c0962c8445e42481b084650ffe52aeb1"
+    },
+    {
+      "id": "tool:ui_assert",
+      "version": "1",
+      "sourceFiles": [
+        "src/agent/tools/uiAssertTool.ts",
+        "src/agent/tools/uiToolSupport.ts",
+        "src/agent/environment/AgentEnvironment.ts",
+        "src/platform/desktopAgentEnvironment.ts",
+        "src/platform/browserSession.ts",
+        "src-tauri/src/browser_session.rs",
+        "src-tauri/src/browser_locator.rs"
+      ],
+      "semanticDigest": "075eaa24e71d59186ddeda30989f0a9f8a29b04af75495d47502f0f027284d26"
+    },
+    {
+      "id": "tool:ui_screenshot",
+      "version": "1",
+      "sourceFiles": [
+        "src/agent/tools/uiScreenshotTool.ts",
+        "src/agent/tools/uiToolSupport.ts",
+        "src/agent/environment/AgentEnvironment.ts",
+        "src/platform/desktopAgentEnvironment.ts",
+        "src/platform/browserSession.ts",
+        "src/platform/artifacts.ts",
+        "src-tauri/src/browser_session.rs",
+        "src/agent/core/stripUnsupportedImages.ts"
+      ],
+      "semanticDigest": "2a15637354c4999673c369435a0d183f2fc6b6d4a1a6258b8121ac93f2c632ba"
+    },
+    {
+      "id": "tool:ui_navigate",
+      "version": "1",
+      "sourceFiles": [
+        "src/agent/tools/uiNavigateTool.ts",
+        "src/agent/tools/uiToolSupport.ts",
+        "src/agent/environment/AgentEnvironment.ts",
+        "src/platform/desktopAgentEnvironment.ts",
+        "src/platform/browserSession.ts",
+        "src-tauri/src/browser_session.rs"
+      ],
+      "semanticDigest": "e50c2f62186266f18c36a5ea8acc613da6f22a0df5dd05ffb24f11538cf276f0"
+    },
+    {
+      "id": "tool:ui_click",
       "version": "2",
       "sourceFiles": [
-        "src/agent/tools/sshTool.ts",
-        "src/agent/tools/bashTool.ts",
-        "src/agent/tools/workspaceToolUtils.ts"
+        "src/agent/tools/uiClickTool.ts",
+        "src/agent/tools/uiToolSupport.ts",
+        "src/agent/environment/AgentEnvironment.ts",
+        "src/platform/desktopAgentEnvironment.ts",
+        "src/platform/browserSession.ts",
+        "src-tauri/src/browser_session.rs"
       ],
-      "semanticDigest": "f198c51d352a870a95a2b78f117f4f7da6d067a2ad1f9d149ec24256e3b71bd0"
+      "semanticDigest": "f7f862de34f4bc18e7bc9f7b96be73496ed313982a13a30a506675e4ec100a46"
     },
     {
-      "id": "tool:ssh_hosts",
+      "id": "tool:ui_input",
       "version": "2",
       "sourceFiles": [
-        "src/agent/tools/sshHostsTool.ts",
-        "src/agent/tools/workspaceToolUtils.ts"
+        "src/agent/tools/uiInputTool.ts",
+        "src/agent/tools/uiToolSupport.ts",
+        "src/agent/environment/AgentEnvironment.ts",
+        "src/platform/desktopAgentEnvironment.ts",
+        "src/platform/browserSession.ts",
+        "src-tauri/src/browser_session.rs"
       ],
-      "semanticDigest": "e6ba6d4f418d94e20409289942454e0103069a134606f7c524145766ff4d44a2"
+      "semanticDigest": "45f696a194a039d5df03850bdf9ff8db2dd5c48bf972126fa7a57a6e73292792"
+    },
+    {
+      "id": "tool:ui_select",
+      "version": "2",
+      "sourceFiles": [
+        "src/agent/tools/uiSelectTool.ts",
+        "src/agent/tools/uiToolSupport.ts",
+        "src/agent/environment/AgentEnvironment.ts",
+        "src/platform/desktopAgentEnvironment.ts",
+        "src/platform/browserSession.ts",
+        "src-tauri/src/browser_session.rs"
+      ],
+      "semanticDigest": "197f6e0b13e93602069128afd8237c387dc7c36828e4036cb1a3b29764ae6944"
+    },
+    {
+      "id": "tool:ui_press",
+      "version": "1",
+      "sourceFiles": [
+        "src/agent/tools/uiPressTool.ts",
+        "src/agent/tools/uiToolSupport.ts",
+        "src/agent/environment/AgentEnvironment.ts",
+        "src/platform/desktopAgentEnvironment.ts",
+        "src/platform/browserSession.ts",
+        "src-tauri/src/browser_session.rs"
+      ],
+      "semanticDigest": "124d182afa7e43f6bcad4bab9a3a33784386026853f61d670fe387708a263541"
     }
   ]
 }

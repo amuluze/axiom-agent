@@ -1,6 +1,7 @@
 /**
  * 画布主题解析：UI 主题为 system 档时用 matchMedia 解出实际明暗模式。
- * DesignCanvas 与 DesignCompareView 共用（避免两份 matchMedia 订阅逻辑漂移）。
+ * DesignCanvas（画布）与 renderPageHost（组件页渲染宿主）共用，
+ * 避免两份 matchMedia 订阅逻辑漂移。
  */
 import { useEffect, useState } from 'react'
 import { useUiStore } from '@/stores/uiStore'

@@ -89,7 +89,7 @@ export const PROVIDER_DATA: readonly GeneratedProviderData[] = [
     id: 'generic-openai-compatible',
     label: 'OpenAI Compatible',
     apiFormat: 'openai-compatible',
-    transportVersion: '10',
+    transportVersion: '11',
     auth: {
       kind: 'api-key',
       defaultSecretId: 'provider.openai-compatible.api-key',
@@ -118,7 +118,7 @@ export const PROVIDER_DATA: readonly GeneratedProviderData[] = [
     id: 'custom-openai-compatible',
     label: '自定义（OpenAI）',
     apiFormat: 'openai-compatible',
-    transportVersion: '10',
+    transportVersion: '11',
     auth: {
       kind: 'api-key',
       defaultSecretId: 'provider.custom-openai-compatible.api-key',
@@ -147,7 +147,7 @@ export const PROVIDER_DATA: readonly GeneratedProviderData[] = [
     id: 'openai',
     label: 'OpenAI Responses',
     apiFormat: 'openai-responses',
-    transportVersion: '10',
+    transportVersion: '11',
     auth: {
       kind: 'api-key',
       defaultSecretId: 'provider.openai-responses.api-key',
@@ -176,7 +176,7 @@ export const PROVIDER_DATA: readonly GeneratedProviderData[] = [
     id: 'generic-anthropic-compatible',
     label: 'Anthropic Compatible',
     apiFormat: 'anthropic-compatible',
-    transportVersion: '10',
+    transportVersion: '11',
     auth: {
       kind: 'api-key',
       defaultSecretId: 'provider.generic-anthropic-compatible.api-key',
@@ -205,7 +205,7 @@ export const PROVIDER_DATA: readonly GeneratedProviderData[] = [
     id: 'custom-anthropic-compatible',
     label: '自定义（Anthropic）',
     apiFormat: 'anthropic-compatible',
-    transportVersion: '10',
+    transportVersion: '11',
     auth: {
       kind: 'api-key',
       defaultSecretId: 'provider.custom-anthropic-compatible.api-key',
@@ -234,7 +234,7 @@ export const PROVIDER_DATA: readonly GeneratedProviderData[] = [
     id: 'zhipu-glm',
     label: 'GLM',
     apiFormat: 'openai-compatible',
-    transportVersion: '10',
+    transportVersion: '11',
     auth: {
       kind: 'api-key',
       defaultSecretId: 'provider.zhipu-glm.api-key',
@@ -310,7 +310,7 @@ export const PROVIDER_DATA: readonly GeneratedProviderData[] = [
     id: 'deepseek',
     label: 'DeepSeek',
     apiFormat: 'openai-compatible',
-    transportVersion: '10',
+    transportVersion: '11',
     auth: {
       kind: 'api-key',
       defaultSecretId: 'provider.deepseek.api-key',
@@ -362,7 +362,7 @@ export const PROVIDER_DATA: readonly GeneratedProviderData[] = [
     id: 'minimax-chat',
     label: 'MiniMax',
     apiFormat: 'openai-compatible',
-    transportVersion: '10',
+    transportVersion: '11',
     auth: {
       kind: 'api-key',
       defaultSecretId: 'provider.minimax-chat.api-key',
@@ -414,7 +414,7 @@ export const PROVIDER_DATA: readonly GeneratedProviderData[] = [
     id: 'ollama',
     label: 'Ollama',
     apiFormat: 'openai-compatible',
-    transportVersion: '10',
+    transportVersion: '11',
     auth: { kind: 'none' },
     supportedCapabilities: {
       toolReferences: false,
@@ -486,7 +486,7 @@ export const PROVIDER_DATA: readonly GeneratedProviderData[] = [
     id: 'gemini',
     label: 'Google Gemini',
     apiFormat: 'openai-compatible',
-    transportVersion: '10',
+    transportVersion: '11',
     auth: {
       kind: 'api-key',
       defaultSecretId: 'provider.gemini.api-key',
@@ -546,7 +546,7 @@ export const PROVIDER_DATA: readonly GeneratedProviderData[] = [
     id: 'kimi',
     label: 'Kimi',
     apiFormat: 'openai-compatible',
-    transportVersion: '10',
+    transportVersion: '11',
     auth: {
       kind: 'api-key',
       defaultSecretId: 'provider.kimi.api-key',
@@ -598,7 +598,7 @@ export const PROVIDER_DATA: readonly GeneratedProviderData[] = [
     id: 'kimi-coding',
     label: 'Kimi Coding',
     apiFormat: 'anthropic-compatible',
-    transportVersion: '10',
+    transportVersion: '11',
     auth: {
       kind: 'api-key',
       defaultSecretId: 'provider.kimi-coding.api-key',
@@ -642,7 +642,7 @@ export const PROVIDER_DATA: readonly GeneratedProviderData[] = [
     id: 'orcarouter',
     label: 'OrcaRouter',
     apiFormat: 'openai-compatible',
-    transportVersion: '10',
+    transportVersion: '11',
     auth: {
       kind: 'api-key',
       defaultSecretId: 'provider.orcarouter.api-key',
@@ -718,7 +718,7 @@ export const PROVIDER_DATA: readonly GeneratedProviderData[] = [
     id: 'opencode-go',
     label: 'OpenCode Go',
     apiFormat: 'openai-compatible',
-    transportVersion: '2',
+    transportVersion: '3',
     auth: {
       kind: 'api-key',
       defaultSecretId: 'provider.opencode-go.api-key',

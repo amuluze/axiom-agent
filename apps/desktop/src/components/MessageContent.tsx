@@ -112,12 +112,16 @@ const markdownComponents: Components = {
   a({ node: _node, ref: _ref, ...props }) {
     const href = props.href
     const openable = isHttpUrl(href)
+    // Markdown 的 `a` 可能没有 href（例如只带 title 的锚点）；渲染成 a 会让
+    // 读屏把它当链接却不可跳转，退化为 span 保留内容。
+    if (href === undefined) return <span {...props} />
     // 外层 span 提供 hover 附属动作的定位锚（Markdown 内 a 本身是 inline，
     // 包 inline span 不改变排版）。
     return (
       <span className={openable ? 'message-link-wrap' : undefined}>
         <a
           {...props}
+          href={href}
           rel="noreferrer noopener"
           target="_blank"
           onClick={(event) => openLink(event, href)}

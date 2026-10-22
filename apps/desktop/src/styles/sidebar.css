@@ -11,6 +11,9 @@
    （App ShellLayout 在 shell 根上设置），与 grid 首列同源；顶部避开标题栏拖拽
    区。命中区 10px，视觉线仅 hover/聚焦时出现。 */
 .sidebar__resizer {
+  margin: 0;
+  border: 0;
+  background: transparent;
   position: fixed;
   top: var(--window-titlebar-height);
   bottom: 0;
@@ -42,6 +45,23 @@
 .sidebar--resizing * {
   cursor: col-resize !important;
   user-select: none;
+}
+
+.sidebar__overlay-backdrop {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.sidebar__overlay-panel {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-start;
 }
 
 .sidebar__overlay {
@@ -218,7 +238,26 @@
   width: 100%;
   min-width: 0;
   text-align: left;
+}
+
+.sidebar__project-activate {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
+}
+
+.sidebar__project-activate[aria-disabled='true'] {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .sidebar__project-row[aria-disabled='true'] {
@@ -351,6 +390,17 @@
   background: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
   flex-shrink: 0;
+}
+
+.sidebar__task-full-access {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border: 1px solid var(--warn-text);
+  border-radius: var(--radius-sm);
+  color: var(--warn-text);
+  font-size: 0.7692rem;
+  line-height: 1.4;
+  font-weight: 600;
 }
 
 /* 后台/前台会话等待用户审批的标记：并行会话时后台 run 会静默阻塞在审批上，

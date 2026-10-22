@@ -1,41 +1,46 @@
 /**
- * 单个设计稿（`.pen` 或 `.ax`）的加载/订阅（DesignView 单稿画布与对比视图共用）。
+ * 单个 `.ax` 设计稿的加载/订阅（DesignView 单稿画布的数据源）。
  *
  * 职责：读取（带 known_sha256 轮询短路）、notify 事件驱动 + 10s 慢轮询兜底、
  * 迟到响应守卫、内容换代时清理图片资产缓存。每调用一次对应一个文件的订阅，
- * 对比视图按列各挂一个实例——订阅生命周期与列的挂载/卸载对齐。
- * 画布编辑（§11 无限画布）额外消费 rawJson（原始 JSON 文本，供补丁式写回）
- * 与 markWritten（本地写盘成功后同步 sha256，轮询短路 + 防自回声重采纳）。
+ * 订阅生命周期与画布的挂载/卸载对齐。
  *
  * `.ax`（Axiom 自有格式，docs/ax-format.md）走同一订阅链，三处差别：
  * 1. 解析经 `parseAxDocument` 严格校验后投影为 `PenDocument`（复用画布渲染器）；
- * 2. **不返回 rawJson**——`.ax` 的作者是 LLM，画布是评审面，不接入手工编辑层，
- *    因此这里不提供补丁写回所需原文（结构上杜绝 `.ax` 被手势通道改写）；
+ * 2. **不返回原始文本**——画布不接手工编辑层，因此这里不提供补丁写回所需原文
+ *    （结构上杜绝 `.ax` 被手势通道改写）；
  * 3. 校验失败给带节点路径的诊断清单（fail-closed，错稿不进画布）。
  *
  * 4. **编辑期坏稿暂缓（last-good hold）**：作者是 LLM，多补丁写稿的中间态在盘上
  *    就是非法的——每次落盘都触发重读，若把每个中间态的校验错误立即铺满画布，
  *    用户看到的是编辑过程里不停闪烁的红色报错。因此坏稿按信号暂缓：`authorActive`
- *    （任一会话在运行，见 `useAuthorActive`）期间保持上一版合法渲染、错误挂起，
+ *    （当前文件已被运行会话的写工具命中，见 `useAuthorActive`）期间保持上一版合法渲染、错误挂起，
  *    作者收笔即呈现（那才是评审面该看见的最终态）；无作者在写时只给一个短暂
  *    静默窗（外部编辑的连发保存不闪错），窗停仍坏才呈现。合法中间态不受影响，
  *    依旧实时上画布。挂起的错误不丢弃——暂缓的是「呈现时机」，不是校验本身。
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { PenDocument } from '@/agent/design/penParser'
 import { useAgentStore } from '@/stores/agentStore'
 import {
+  deleteDesignDocumentPage,
   onDesignDocumentChanged,
   readDesignDocument,
   unwatchDesignDocument,
   watchDesignDocument,
-  writeDesignDocument,
 } from '@/platform/designDocument'
 import { decodeBase64ToBytes, encodeUtf8ToBase64 } from '@/platform/base64'
 import { parseAxDocument, projectAxToPenDocument } from '@/agent/design/axParser'
 import { useT } from '@/i18n'
-import { parsePenDocumentAsync } from './penParseAsync'
+import { loadDesignComponentCatalog } from '@/platform/designComponentCatalog'
+import { axComponentInventorySummary } from './ax/registry'
 import { invalidatePenAssetCache } from './penImageFill'
+import { removeRootJsonArrayItem } from './removeJsonArrayItem'
+import {
+  designMutationRevision,
+  isDesignMutationActive,
+  subscribeDesignMutations,
+} from '@/agent/design/designAuthorActivity'
 
 /** `.ax` 扩展名判定（大小写不敏感）。 */
 export const isAxPath = (path: string): boolean => /\.ax$/i.test(path)
@@ -63,8 +68,9 @@ export const CHANGE_DEBOUNCE_MS = 120
 export const TRANSIENT_ERROR_SETTLE_MS = 4_000
 
 export interface UseDesignDocumentOptions {
+  workspacePath?: string
   /**
-   * 作者可能正在写稿（任一会话运行中，`useAuthorActive`）。true 期间坏稿一律
+   * 作者可能正在写当前稿（该文件已被写工具命中，`useAuthorActive`）。true 期间坏稿一律
    * 暂缓呈现（保持上一版合法渲染），收笔（false 翻转）时挂起的坏稿立即呈现。
    */
   authorActive?: boolean
@@ -73,8 +79,6 @@ export interface UseDesignDocumentOptions {
 export interface LoadedDesignDocument {
   path: string
   document: PenDocument | null
-  /** 服务器返回的原始 JSON 文本（与 document 同源）；读取失败时为 null。 */
-  rawJson: string | null
   parseError: string | null
   sha256: string
   syncedAt: number
@@ -82,7 +86,7 @@ export interface LoadedDesignDocument {
   loadError: string | null
 }
 
-/** 整页删除的结果：失败时 message 已是可直接展示的文本。 */
+/** 整页删除的结果：`ok:false` 且 `message:null` 表示用户在原生确认框取消（未写入，不提示错误）。 */
 export interface DesignPageDeletionResult {
   ok: boolean
   message: string | null
@@ -98,27 +102,29 @@ export interface DesignDocumentSubscription {
   /** 挂起坏稿的错误文本（供提示的 hover 查看原因；未挂起时为 null）。 */
   heldError: string | null
   /**
-   * 本地写盘成功后同步新 sha256（不重读文件）：下一次轮询被 known_sha256
-   * 短路，且画布以 sha 判定「外部变更」时不会把自己的写回误判为他改。
-   */
-  markWritten: (sha256: string) => void
-  /** 立即重读（画布写盘失败/CAS 冲突时从磁盘收回权威内容）。 */
-  reload: () => void
-  /**
    * 整页删除（`.ax` 评审面唯一的写操作，docs/design-canvas.md 第十六轮）：
    * 读盘权威内容 → 摘除该页（保序最小 diff）→ 本地过 `.ax` 校验（fail-closed，
    * 手势通道也不落坏稿）→ CAS 写回 → 本地采纳新投影（不等 watch 回声）。
-   * `.pen` 的删除走画布编辑层（raw 补丁 + undo），不经此通道。
    */
   deletePage: (pageId: string) => Promise<DesignPageDeletionResult>
+  reload: () => Promise<void>
 }
 
 /**
- * 任一会话在运行（作者可能正在写设计稿）：编辑期坏稿暂缓的信号源。
- * 取「任一」而非「激活会话」——侧栏快捷发送的后台会话同样可能改这份稿。
+ * 当前设计文件已被某个运行会话的写工具命中：编辑期坏稿暂缓的信号源。
  */
-export const useAuthorActive = (): boolean =>
-  useAgentStore((state) => state.sessions.some((session) => session.status === 'running'))
+export const useAuthorActive = (workspacePath?: string, path?: string | null): boolean => {
+  const runningSessionIds = useAgentStore((state) => state.sessions
+    .filter((session) => session.status === 'running' && session.workspace?.path === workspacePath)
+    .map((session) => session.id)
+    .sort()
+    .join('\0'))
+  useSyncExternalStore(subscribeDesignMutations, designMutationRevision, designMutationRevision)
+  if (!path || !runningSessionIds) return false
+  return runningSessionIds.split('\0').some((sessionId) =>
+    isDesignMutationActive(sessionId, path, workspacePath),
+  )
+}
 
 const decodeContent = (base64: string): string => {
   const bytes = decodeBase64ToBytes(base64)
@@ -130,11 +136,15 @@ export const useDesignDocument = (
   options: UseDesignDocumentOptions = {},
 ): DesignDocumentSubscription => {
   const { t } = useT()
+  const workspacePath = options.workspacePath
   const [loaded, setLoaded] = useState<LoadedDesignDocument | null>(null)
   const loadedRef = useRef<LoadedDesignDocument | null>(null)
+  const catalogSignatureRef = useRef('')
   loadedRef.current = loaded
   // 加载序号：迟到响应（切换文件/连发轮询）不再覆盖更新的结果。
   const loadTokenRef = useRef(0)
+  const identityRef = useRef('')
+  identityRef.current = JSON.stringify([workspacePath ?? null, path])
   // 编辑期坏稿暂缓（文件头注 4）：lastGood 是最近一次采纳的合法内容（坏稿呈现后
   // 仍保留，作者下一轮再写坏时画布能退回上一版）；held 是待呈现的坏稿。
   const lastGoodRef = useRef<LoadedDesignDocument | null>(null)
@@ -144,6 +154,8 @@ export const useDesignDocument = (
   const settleTimerRef = useRef(0)
   const authorActiveRef = useRef(options.authorActive ?? false)
   authorActiveRef.current = options.authorActive ?? false
+  /** 页级删除的串行队列（不变量 6）：每次写入排在链尾，出队时才读盘算冲突。 */
+  const deleteQueueRef = useRef<Promise<unknown>>(Promise.resolve())
 
   const clearSettleTimer = useCallback(() => {
     window.clearTimeout(settleTimerRef.current)
@@ -198,32 +210,32 @@ export const useDesignDocument = (
     [clearSettleTimer, surfaceHeld],
   )
 
-  const markWritten = useCallback(
-    (sha256: string) => {
-      setLoaded((current) =>
-        current ? { ...current, sha256, syncedAt: Date.now(), loadError: null } : current,
-      )
-    },
-    [],
-  )
+  
 
   const load = useCallback(async (target: string): Promise<void> => {
     loadTokenRef.current += 1
     const token = loadTokenRef.current
+    let catalogReady = false
     try {
-      const known = loadedRef.current?.path === target ? loadedRef.current.sha256 : undefined
-      const content = await readDesignDocument(target, known)
+      const catalog = await loadDesignComponentCatalog(workspacePath)
+      if (loadTokenRef.current !== token) return
+      catalogReady = true
+      const signature = JSON.stringify(catalog)
+      const catalogChanged = signature !== catalogSignatureRef.current
+      const known = !catalogChanged && loadedRef.current?.path === target && loadedRef.current.document?.workspacePath === workspacePath ? loadedRef.current.sha256 : undefined
+      const content = await readDesignDocument(target, known, workspacePath)
       if (loadTokenRef.current !== token) return
       if (content.unchanged) {
         // 轮询短路：sha256 一致，Rust 未回传内容，仅刷新同步时间。
         setLoaded((current) =>
           current && current.path === target
-            ? { ...current, syncedAt: Date.now(), loadError: null }
+            ? { ...current, syncedAt: Date.now(), loadError: content.historyWarning ?? null }
             : current,
         )
         return
       }
-      if (loadedRef.current?.path === target && loadedRef.current.sha256 === content.sha256) return
+      if (!catalogChanged && loadedRef.current?.path === target && loadedRef.current.sha256 === content.sha256) return
+      catalogSignatureRef.current = signature
       // 内容换代：资产常与 .pen 同批改写，清掉图片填充缓存让新渲染重新取图。
       invalidatePenAssetCache()
       const rawText = decodeContent(content.contentBase64)
@@ -234,47 +246,51 @@ export const useDesignDocument = (
         adopt({
           path: target,
           document: null,
-          rawJson: null,
           parseError: t('app.design.emptyFile'),
           sha256: content.sha256,
           syncedAt: Date.now(),
-          loadError: null,
+          loadError: content.historyWarning ?? null,
         })
         return
       }
       // `.ax`：严格校验（fail-closed）后投影为画布视图模型；不保留原文（见文件头注 2）。
       if (isAxPath(target)) {
-        const parsed = parseAxDocument(rawText)
+        const parsed = parseAxDocument(rawText, { componentInventory: catalog ? catalog.components.map((entry) => entry.summary) : axComponentInventorySummary() })
         if (loadTokenRef.current !== token) return
         const projection = parsed.document
           ? projectAxToPenDocument(parsed.document, target).document
           : null
+        if (projection) {
+          projection.workspacePath = content.workspacePath ?? workspacePath
+          projection.projectComponents = catalog?.components
+          projection.projectPreview = catalog?.preview
+          projection.axDocument = parsed.document ?? undefined
+          projection.axSource = catalog ? rawText : undefined
+          projection.sha256 = content.sha256
+        }
         adopt({
           path: target,
           document: projection,
-          rawJson: null,
           parseError: parsed.error ?? (projection ? null : formatAxErrors(parsed.diagnostics)),
           sha256: content.sha256,
           syncedAt: Date.now(),
-          loadError: null,
+          loadError: content.historyWarning ?? null,
         })
         return
       }
-      // 解析可能在大文档下异步（worker）；期间序号变化则丢弃本次结果。
-      const parsed = await parsePenDocumentAsync(rawText, target)
-      if (loadTokenRef.current !== token) return
-      adopt({
-        path: target,
-        document: parsed.document,
-        rawJson: rawText,
-        parseError: parsed.error,
-        sha256: content.sha256,
-        syncedAt: Date.now(),
-        loadError: null,
-      })
+      throw new Error('设计画布仅支持 .ax，请先使用 design_import 迁移旧稿。')
     } catch (error) {
       if (loadTokenRef.current !== token) return
       const message = error instanceof Error ? error.message : String(error)
+      if (!catalogReady) {
+        lastGoodRef.current = null
+        heldRef.current = null
+        clearSettleTimer()
+        setHolding(false)
+        setHeldError(null)
+        setLoaded({ path: target, document: null, parseError: message, sha256: '', syncedAt: Date.now(), loadError: message })
+        return
+      }
       // 失败也要落一条（哪怕之前没成功过）：否则列/画布只剩空态，错误无从可见。
       setLoaded((current) =>
         current && current.path === target
@@ -282,7 +298,6 @@ export const useDesignDocument = (
           : {
               path: target,
               document: null,
-              rawJson: null,
               parseError: null,
               sha256: '',
               syncedAt: Date.now(),
@@ -290,9 +305,11 @@ export const useDesignDocument = (
             },
       )
     }
-  }, [adopt, t])
+  }, [adopt, clearSettleTimer, t, workspacePath])
 
   useEffect(() => {
+    loadTokenRef.current += 1
+    loadedRef.current = null
     if (!path) {
       setLoaded(null)
       return undefined
@@ -308,12 +325,12 @@ export const useDesignDocument = (
     void load(path)
     // 事件驱动为主：watch 当前文件，变更事件防抖后重读；轮询降为慢速兜底。
     // watcher 注册失败（如平台事件不可用）仅影响实时性，轮询仍会兜住。
-    void watchDesignDocument(path).catch(() => undefined)
+    const watching = watchDesignDocument(path, workspacePath).catch(() => undefined)
     const timer = window.setInterval(() => void load(path), POLL_INTERVAL_MS)
     let debounceTimer = 0
     let cancelled = false
-    const unlisten = onDesignDocumentChanged(({ path: changed }) => {
-      if (changed !== path) return
+    const unlisten = onDesignDocumentChanged(({ path: changed, workspacePath: changedWorkspace }) => {
+      if (changed !== path || (workspacePath && changedWorkspace !== workspacePath)) return
       window.clearTimeout(debounceTimer)
       debounceTimer = window.setTimeout(() => {
         if (!cancelled) void load(path)
@@ -321,13 +338,14 @@ export const useDesignDocument = (
     })
     return () => {
       cancelled = true
+      loadTokenRef.current += 1
       window.clearInterval(timer)
       window.clearTimeout(debounceTimer)
       clearSettleTimer()
       void unlisten.then((dispose) => dispose())
-      void unwatchDesignDocument(path).catch(() => undefined)
+      void watching.then(() => unwatchDesignDocument(path, workspacePath)).catch(() => undefined)
     }
-  }, [path, load, clearSettleTimer])
+  }, [path, workspacePath, load, clearSettleTimer])
 
   // 作者收笔（运行翻转）：挂起的坏稿就是这一轮的最终态，评审面必须看见；
   // 作者开写：撤掉静默窗——编辑期无论挂起多久都不落错误（由本效果收口呈现）。
@@ -339,13 +357,9 @@ export const useDesignDocument = (
     surfaceHeld()
   }, [options.authorActive, clearSettleTimer, surfaceHeld])
 
-  // 稳定身份：画布把它串进编辑回调的依赖里，避免每渲染重建订阅链。
-  const reload = useCallback(() => {
-    if (path) void load(path)
-  }, [path, load])
-
-  const deletePage = useCallback(
+  const performDelete = useCallback(
     async (pageId: string): Promise<DesignPageDeletionResult> => {
+      const identity = identityRef.current
       const target = path
       const current = loadedRef.current
       const unavailable = t('app.design.canvas.deletePageUnavailable')
@@ -356,7 +370,7 @@ export const useDesignDocument = (
         // 读盘权威内容（不带 known——删除始终需要完整字节）。CAS 预检：删除绑定
         // 「用户看到的那一版」，盘上比画布采纳的新（Agent/pen.dev 刚保存过）时
         // 旧快照不能盖上去——提示刷新重试，不静默覆盖。
-        const baseline = await readDesignDocument(target)
+        const baseline = await readDesignDocument(target, undefined, workspacePath)
         if (baseline.sha256 !== current.sha256) {
           return { ok: false, message: t('app.design.canvas.deletePageStale') }
         }
@@ -370,37 +384,67 @@ export const useDesignDocument = (
             )
           : -1
         if (!pages || index < 0) return { ok: false, message: unavailable }
-        pages.splice(index, 1)
-        // 保序最小 diff：只摘除该页的行，键序/缩进/尾换行保持文件原样——页级
-        // 手势不该把整份稿重排成规范序（git diff 应只剩「少了这一页」）。
-        const source = `${JSON.stringify(raw, null, 2)}${rawText.endsWith('\n') ? '\n' : ''}`
+        const source = removeRootJsonArrayItem(rawText, 'pages', index)
         // fail-closed：手势通道同样不落坏稿——摘除后整稿过一遍 `.ax` 校验再写。
-        const parsed = parseAxDocument(source)
+        const catalog = await loadDesignComponentCatalog(workspacePath)
+        const parsed = parseAxDocument(source, { componentInventory: catalog ? catalog.components.map((entry) => entry.summary) : axComponentInventorySummary() })
         if (!parsed.document) {
           return { ok: false, message: parsed.error ?? formatAxErrors(parsed.diagnostics) }
         }
-        const written = await writeDesignDocument(target, encodeUtf8ToBase64(source), current.sha256)
+        if (identityRef.current !== identity) return { ok: false, message: t('app.design.canvas.deletePageStale') }
+        const written = await deleteDesignDocumentPage(
+          target,
+          pageId,
+          encodeUtf8ToBase64(source),
+          current.sha256,
+          workspacePath,
+        )
+        // 原生确认框取消（命令返回 null）：什么都没发生，也不应该推进本地投影。
+        if (!written) return { ok: false, message: null }
         // 本地采纳新投影：不等 watch 回声（写盘 sha 已同步，下一次轮询被短路）；
         // bump 加载序号作废在途读取，避免旧内容迟到覆盖删除结果。
+        if (identityRef.current !== identity) return { ok: true, message: null }
         const projection = projectAxToPenDocument(parsed.document, target).document
+        if (projection) {
+          projection.workspacePath = baseline.workspacePath ?? workspacePath
+          projection.projectComponents = catalog?.components
+          projection.projectPreview = catalog?.preview
+          projection.axDocument = parsed.document
+          projection.axSource = catalog ? source : undefined
+          projection.sha256 = written.sha256
+        }
         loadTokenRef.current += 1
-        setLoaded({
+        adopt({
           path: target,
           document: projection,
-          rawJson: null,
           parseError: null,
           sha256: written.sha256,
           syncedAt: Date.now(),
           loadError: null,
         })
-        return { ok: true, message: null }
+        return { ok: true, message: written.historyWarning ?? null }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         return { ok: false, message }
       }
     },
-    [path, t],
+    [adopt, path, t, workspacePath],
   )
 
-  return { loaded, holding, heldError, markWritten, reload, deletePage }
+  /**
+   * 评审面的唯一写手势串行出队（不变量 6）：连点两次删除若并发执行，第二次会拿着
+   * 过期 sha 撞 CAS，用户看到的是「失败了」而不是「已经删了」。排队链只保证顺序，
+   * 冲突基准仍在请求真正执行时读盘（Rust 写锁内），排队期不做快照。
+   */
+  const deletePage = useCallback((pageId: string): Promise<DesignPageDeletionResult> => {
+    const run = deleteQueueRef.current.then(() => performDelete(pageId))
+    deleteQueueRef.current = run.catch(() => undefined)
+    return run
+  }, [performDelete])
+
+  const reload = useCallback(async (): Promise<void> => {
+    if (path) await load(path)
+  }, [load, path])
+
+  return { loaded, holding, heldError, deletePage, reload }
 }

@@ -2,6 +2,8 @@ import type { AgentHarness } from '@/agent/runtime/AgentHarness'
 import type { QueuedMessageSnapshot } from '@/agent/runtime/AgentSession'
 import type { AgentRunEndReason, JsonValue } from '@/agent/core/types'
 import type { ProviderProfile } from '@/agent/transport/provider'
+import type { ProjectAgentsInventory } from '@/agent/prompt/projectAgents'
+import type { ProjectDocInventory } from '@/agent/prompt/projectDocs'
 
 /**
  * 单个正在执行的工具调用（tool_execution_start/update 驱动）：
@@ -34,6 +36,14 @@ interface RuntimeProviderState {
   configuredKey: boolean
 }
 
+export interface RuntimeProjectContextSnapshot {
+  projectContext: string | null
+  projectAgents: ProjectAgentsInventory
+  projectDocs: ProjectDocInventory
+  /** 测试页会话上下文段（仅测试页激活时由页面发布）；镜像一致才能让回流重拼同值。 */
+  testingContext: string | null
+}
+
 /** 缓存的运行时会话上界：超限时逐出最久未用的非运行中会话（含完整消息历史的
  * AgentHarness 是主要内存占用，避免长期运行单调增长）。 */
 const MAX_CACHED_RUNTIME_SESSIONS = 8
@@ -47,6 +57,7 @@ const runtimeProjections = new Map<string, RuntimeProjection>()
 // （不同工作目录会话串台）。与 projection/provider 一样随 dropRuntimeCachesForSession
 // 统一清理，LRU 逐出时自动释放。
 const runtimeBasePrompts = new Map<string, string>()
+const runtimeProjectContexts = new Map<string, RuntimeProjectContextSnapshot>()
 // LRU 访问序：id → 单调递增访问计数。get/set 即刷新，溢出时逐出最小计数者。
 let runtimeAccessCounter = 0
 const runtimeAccessOrder = new Map<string, number>()
@@ -120,6 +131,18 @@ export const setRuntimeBasePrompt = (id: string, basePrompt: string): void => {
   runtimeBasePrompts.set(id, basePrompt)
 }
 
+export const getRuntimeProjectContext = (id: string): RuntimeProjectContextSnapshot | undefined => {
+  const snapshot = runtimeProjectContexts.get(id)
+  return snapshot ? structuredClone(snapshot) : undefined
+}
+
+export const setRuntimeProjectContext = (
+  id: string,
+  snapshot: RuntimeProjectContextSnapshot,
+): void => {
+  runtimeProjectContexts.set(id, structuredClone(snapshot))
+}
+
 /**
  * Whether any runtime other than `currentSessionId` is currently running.
  * Used by `send`'s failure recovery path to detect concurrent runtimes.
@@ -143,6 +166,7 @@ export const dropRuntimeCachesForSession = (id: string): AgentHarness | undefine
   runtimeProviders.delete(id)
   runtimeProjections.delete(id)
   runtimeBasePrompts.delete(id)
+  runtimeProjectContexts.delete(id)
   runtimeAccessOrder.delete(id)
   runtimeEvictionListener?.(id)
   return removed

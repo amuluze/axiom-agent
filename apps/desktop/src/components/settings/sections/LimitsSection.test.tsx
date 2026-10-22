@@ -2,6 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_AGENT_LIMITS_SETTINGS } from '@/agent/runtime/agentLimitsSettings'
+import { MAX_APPROVAL_TIMEOUT_MS, MIN_APPROVAL_TIMEOUT_MS } from '@/agent/approval/ApprovalCoordinator'
 import { LimitsSection } from './LimitsSection'
 import { buildAgentLimitsHook, stubContext } from './testFixtures'
 
@@ -36,6 +37,7 @@ describe('LimitsSection', () => {
     expect(html).toContain('最大轮次')
     expect(html).toContain('最大工具调用数')
     expect(html).toContain('Token 预算')
+    expect(html).toContain('审批等待上限')
   })
 
   it('renders the token budget input with the configured bounds and step', () => {
@@ -49,5 +51,17 @@ describe('LimitsSection', () => {
     expect(html).toContain('min="10000"')
     expect(html).toContain('max="64000000"')
     expect(html).toContain(DEFAULT_AGENT_LIMITS_SETTINGS.maxTotalTokens.toString())
+  })
+
+  it('renders the approval wait input in seconds with the configured bounds', () => {
+    const html = renderToStaticMarkup(createElement(LimitsSection, {
+      hook: buildAgentLimitsHook(),
+      context: stubContext,
+      isSaved: false,
+    }))
+    expect(html).toContain('审批等待上限（秒）')
+    expect(html).toContain(`min="${MIN_APPROVAL_TIMEOUT_MS / 1000}"`)
+    expect(html).toContain(`max="${MAX_APPROVAL_TIMEOUT_MS / 1000}"`)
+    expect(html).toContain(`value="${DEFAULT_AGENT_LIMITS_SETTINGS.approvalTimeoutMs / 1000}"`)
   })
 })

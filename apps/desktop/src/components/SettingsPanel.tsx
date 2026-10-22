@@ -42,7 +42,6 @@ import { SessionsSection } from '@/components/settings/sections/SessionsSection'
 import { GeneralSection } from '@/components/settings/sections/GeneralSection'
 import { AboutSection } from '@/components/settings/sections/AboutSection'
 import { BrowserSection } from '@/components/settings/sections/BrowserSection'
-import { ComputerSection } from '@/components/settings/sections/ComputerSection'
 import { UsageSection } from '@/components/settings/sections/UsageSection'
 import { ArchivedSection } from '@/components/settings/sections/ArchivedSection'
 import { SkillsSection } from '@/components/settings/sections/SkillsSection'
@@ -81,7 +80,7 @@ export const SettingsPanel = ({ open, onClose, inline = false, section }: Settin
   const sessions = useAgentStore((state) => state.sessions)
   const activeSessionId = useAgentStore((state) => state.activeSessionId)
   const sessionBusy = useAgentStore((state) => state.sessionBusy)
-  const recoveredRuns = useAgentStore((state) => state.recoveredRuns)
+  const recoverySummary = useAgentStore((state) => state.recoverySummary)
   const storageStats = useAgentStore((state) => state.storageStats)
   const contextPolicySettings = useAgentStore((state) => state.contextPolicySettings)
   const queueModeSettings = useAgentStore((state) => state.queueModeSettings)
@@ -331,7 +330,7 @@ export const SettingsPanel = ({ open, onClose, inline = false, section }: Settin
             <h2>{providerSetupRequired ? t('settings.panel.title.setup') : t('settings.panel.title.desktop')}</h2>
           </div>
           {!providerSetupRequired && (
-            <button aria-label={t('settings.panel.close')} className="icon-button" onClick={onClose}>×</button>
+            <button aria-label={t('settings.panel.close')} className="icon-button" onClick={onClose} type="button">×</button>
           )}
         </header>
       )}
@@ -371,18 +370,21 @@ export const SettingsPanel = ({ open, onClose, inline = false, section }: Settin
             />
           </>
         )}
-        {showSection('sessions') && (
-          <SessionsSection
-            hook={sessionsHook}
-            context={sectionContext}
-            tree={sessionTree}
-            titleById={titleById}
-            storageStats={storageStats}
-            recoveredRuns={recoveredRuns}
-            desktop={desktop}
-          />
+        {showSection('archived') && (
+          <>
+            <ArchivedSection />
+            {/* 会话与 SQLite（会话树/存储统计/GC）随存储管理并入已归档页，置于已归档卡片下方。 */}
+            <SessionsSection
+              hook={sessionsHook}
+              context={sectionContext}
+              tree={sessionTree}
+              titleById={titleById}
+              storageStats={storageStats}
+              recoverySummary={recoverySummary}
+              desktop={desktop}
+            />
+          </>
         )}
-        {showSection('archived') && <ArchivedSection />}
         {showSection('usage') && <UsageSection />}
         {showSection('skills') && <SkillsSection />}
         {showSection('subagents') && <SubAgentsSection />}
@@ -394,9 +396,6 @@ export const SettingsPanel = ({ open, onClose, inline = false, section }: Settin
         )}
         {showSection('browser') && (
           <BrowserSection />
-        )}
-        {showSection('computer') && (
-          <ComputerSection />
         )}
         {visibleSection && visibleSection !== 'models' && providerMessage && (
           <div className="settings-success" role="status">{providerMessage}</div>
@@ -434,7 +433,7 @@ export const SettingsPanel = ({ open, onClose, inline = false, section }: Settin
     <div
       className="settings-backdrop"
       role="presentation"
-      onMouseDown={() => {
+      onPointerDown={() => {
         if (!providerSetupRequired) onClose()
       }}
     >
@@ -445,6 +444,7 @@ export const SettingsPanel = ({ open, onClose, inline = false, section }: Settin
         role="dialog"
         ref={panelRef as React.RefObject<HTMLElement>}
         onMouseDown={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
       >
         {inner}
       </aside>

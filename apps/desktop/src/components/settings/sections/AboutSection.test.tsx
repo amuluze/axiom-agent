@@ -117,6 +117,18 @@ describe('AboutSection 更新状态', () => {
       .toContain('未启用自更新')
   })
 
+  it('安装失败后隐藏重复安装入口，保留重新检查入口', () => {
+    setUpdaterState({
+      updatePhase: 'error',
+      availableUpdate: { version: '0.3.0', notes: null, pubDate: null },
+      updateMessage: '更新在签名校验阶段失败：签名无效。未自动重启；重新检查后可手动重试。',
+    })
+    render(<AboutSection />)
+    expect(screen.queryByRole('button', { name: /下载并安装 v0.3.0/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /检查更新/ })).toBeTruthy()
+    expect(screen.getByRole('status', { name: '更新状态' }).textContent).toContain('签名校验阶段失败')
+  })
+
   it('检查动作失败时展示错误信息', async () => {
     mocks.checkForAppUpdateNow.mockRejectedValue(new Error('网络不可达'))
     render(<AboutSection />)

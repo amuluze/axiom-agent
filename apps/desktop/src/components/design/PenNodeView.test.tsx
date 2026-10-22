@@ -89,7 +89,7 @@ describe('PenNodeView 渲染映射', () => {
       id: 'f-local',
       fill: { type: 'image', url: 'assets/a.png' },
     })
-    await waitFor(() => expect(readDesignDocumentAsset).toHaveBeenCalledWith('.pen/axiom.pen', 'assets/a.png'))
+    await waitFor(() => expect(readDesignDocumentAsset).toHaveBeenCalledWith('.pen/axiom.pen', 'assets/a.png', undefined))
     await waitFor(() => expect(node.style.backgroundImage).toContain('data:image/png'))
   })
 

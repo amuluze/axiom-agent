@@ -63,6 +63,15 @@ describe('discoverAgentToolsTool', () => {
       error: 'limit must be an integer between 1 and 8.',
     })
   })
+
+
+  it('reports unavailable execution without suggesting discovery can bypass the sandbox', async () => {
+    const discovery = createDiscoverAgentToolsTool(registry.filter((tool) => tool.name !== 'bash'))
+    await expect(discovery.execute({ query: 'bash' }, {
+      sessionId: 'session', runId: 'run', toolCallId: 'call',
+      signal: new AbortController().signal, reportProgress: async () => undefined,
+    })).rejects.toThrow('系统沙箱；工具发现不能绕过此限制')
+  })
 })
 
 describe('discoverAgentToolsTool — load_skill discoverability', () => {

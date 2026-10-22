@@ -1,6 +1,6 @@
+use crate::runtime_manifest::validate_identifier;
 use serde_json::Value;
 use sqlx::SqliteConnection;
-use crate::runtime_manifest::validate_identifier;
 
 use super::*;
 

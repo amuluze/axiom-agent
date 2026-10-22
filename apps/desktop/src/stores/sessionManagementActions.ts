@@ -14,7 +14,6 @@ import {
   updateSessionMetadata,
 } from './services/sessionMetadata'
 import { sessionWorkspacePaths } from './workspaceActions'
-import { forgetSshApprovalGrants } from './services/sshApprovalGrants'
 import { activateAuthorizedWorkspace } from '@/platform/workspace'
 import type { AgentGet, AgentSet, StoreRuntimeDeps } from './sessionActions'
 import { useUiStore } from './uiStore'
@@ -231,9 +230,7 @@ export const deleteSession = async (
     if (!deletedWithSuccessor) await deps.getRepository().deleteSession(sessionId)
     removeSessionMetadata(sessionId)
     const deletedRuntime = dropRuntimeCachesForSession(sessionId)
-    sessionWorkspacePaths.delete(sessionId)
-    // 回收该会话的 SSH 远程主机授权（Rust 权威表 + TS 免卡片镜像；best-effort）。
-    forgetSshApprovalGrants(sessionId)
+    sessionWorkspacePaths.forget(sessionId)
     if (deletedRuntime) void deletedRuntime.dispose().catch(() => undefined)
     if (successorSnapshot) {
       successorSnapshot = {
@@ -317,7 +314,7 @@ export const archiveSession = async (
   updateSessionMetadata(sessionId, { archivedAt })
   set((state) => ({
     sessions: state.sessions.map((candidate) => candidate.id === sessionId
-      ? { ...candidate, archivedAt }
+      ? { ...candidate, archivedAt, accessMode: 'standard' }
       : candidate),
     settingsError: null,
     providerMessage: storeT('status.session.archived'),

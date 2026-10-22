@@ -287,4 +287,36 @@ describe('assertContextCheckpointIntegrity', () => {
       messages,
     )).resolves.toBe(true)
   })
+
+  it('validates deterministic SDD facts before restoring a checkpoint', async () => {
+    await expect(assertContextCheckpointIntegrity(
+      await buildCheckpoint({
+        facts: {
+          readFiles: [],
+          modifiedFiles: [],
+          loadedSkills: [
+            { name: 'implement', source: 'builtin' },
+            { name: 'implement', source: 'project' },
+          ],
+        },
+      }),
+      'session-1',
+      messages,
+    )).rejects.toThrow('Skill 事实无效')
+
+    await expect(assertContextCheckpointIntegrity(
+      await buildCheckpoint({
+        facts: {
+          readFiles: [],
+          modifiedFiles: [],
+          sddReviews: [{
+            reviewer: 'review_subagent',
+            verdict: 'skipped' as 'pass',
+          }],
+        },
+      }),
+      'session-1',
+      messages,
+    )).rejects.toThrow('SDD 审查事实无效')
+  })
 })

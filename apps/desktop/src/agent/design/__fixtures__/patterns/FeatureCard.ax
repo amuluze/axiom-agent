@@ -1,0 +1,46 @@
+{
+  "ax": "1.4",
+  "name": "FeatureCard",
+  "tokens": {},
+  "components": {},
+  "symbols": {
+    "FeatureCard": {
+      "props": { "title": "string", "description": "string" },
+      "body": [
+        {
+          "id": "fc-root",
+          "kind": "frame",
+          "layout": "vertical",
+          "gap": 12,
+          "padding": [24, 24, 24, 24],
+          "width": "fill_container",
+          "fill": "#FFFFFF",
+          "cornerRadius": 8,
+          "strokeWidth": 1,
+          "stroke": "#E7E4DE",
+          "children": [
+            { "id": "fc-icon", "kind": "icon", "name": "zap", "size": 24, "fill": "#3167FA" },
+            { "id": "fc-title", "kind": "text", "text": { "$param": "title" }, "wrap": "width", "fontSize": 18, "fill": "#1F1E1C" },
+            { "id": "fc-desc", "kind": "text", "text": { "$param": "description" }, "wrap": "width", "fontSize": 14, "fill": "#6B6862" }
+          ]
+        }
+      ]
+    }
+  },
+  "pages": [
+    {
+      "id": "feature-page",
+      "name": "FeatureCard 模式",
+      "width": 960,
+      "height": 240,
+      "layout": "horizontal",
+      "gap": 16,
+      "padding": [32, 32, 32, 32],
+      "tree": [
+        { "id": "f1", "kind": "component", "name": "FeatureCard", "props": { "title": "极速响应", "description": "从输入到执行，毫秒级反馈。" } },
+        { "id": "f2", "kind": "component", "name": "FeatureCard", "props": { "title": "端到端加密", "description": "本地优先架构，敏感数据不外发。" } },
+        { "id": "f3", "kind": "component", "name": "FeatureCard", "props": { "title": "可扩展工作流", "description": "插件与脚本钩子，按团队流程裁剪。" } }
+      ]
+    }
+  ]
+}

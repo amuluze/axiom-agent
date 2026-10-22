@@ -39,6 +39,9 @@
 /* 顶部拖拽把手：面板自身 overflow:hidden，命中区只能取面板内顶部 7px；
    视觉线仅在 hover/聚焦时出现，平时不占视觉噪音。 */
 .terminal-panel__resizer {
+  margin: 0;
+  border: 0;
+  background: transparent;
   position: absolute;
   top: 0;
   left: 0;

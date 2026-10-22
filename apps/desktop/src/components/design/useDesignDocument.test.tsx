@@ -2,13 +2,15 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  CHANGE_DEBOUNCE_MS,
   TRANSIENT_ERROR_SETTLE_MS,
   useDesignDocument,
 } from './useDesignDocument'
-import { readDesignDocument, writeDesignDocument } from '@/platform/designDocument'
+import { deleteDesignDocumentPage, readDesignDocument } from '@/platform/designDocument'
+import { loadDesignComponentCatalog } from '@/platform/designComponentCatalog'
 
 const mocks = vi.hoisted(() => ({
-  changeHandler: null as ((payload: { path: string }) => void) | null,
+  changeHandler: null as ((payload: { path: string; workspacePath?: string }) => void) | null,
 }))
 
 vi.mock('@/platform/designDocument', () => ({
@@ -19,14 +21,16 @@ vi.mock('@/platform/designDocument', () => ({
     modifiedMs: 1,
     unchanged: false,
   })),
-  writeDesignDocument: vi.fn(async () => ({ sha256: 'written-sha', sizeBytes: 32 })),
+  deleteDesignDocumentPage: vi.fn(async () => ({ sha256: 'written-sha', sizeBytes: 32 })),
   watchDesignDocument: vi.fn(async () => true),
   unwatchDesignDocument: vi.fn(async () => undefined),
-  onDesignDocumentChanged: vi.fn(async (handler: (payload: { path: string }) => void) => {
+  onDesignDocumentChanged: vi.fn(async (handler: (payload: { path: string; workspacePath?: string }) => void) => {
     mocks.changeHandler = handler
     return () => undefined
   }),
 }))
+
+vi.mock('@/platform/designComponentCatalog', () => ({ loadDesignComponentCatalog: vi.fn(async () => null) }))
 
 const PATH = '.pen/licensor.ax'
 
@@ -276,8 +280,8 @@ describe('useDesignDocument deletePage（.ax 页级删除通道）', () => {
     vi.useFakeTimers()
     mocks.changeHandler = null
     vi.mocked(readDesignDocument).mockReset()
-    vi.mocked(writeDesignDocument).mockClear()
-    vi.mocked(writeDesignDocument).mockResolvedValue({ sha256: 'written-sha', sizeBytes: 32 })
+    vi.mocked(deleteDesignDocumentPage).mockClear()
+    vi.mocked(deleteDesignDocumentPage).mockResolvedValue({ sha256: 'written-sha', sizeBytes: 32 })
   })
 
   afterEach(() => {
@@ -299,9 +303,10 @@ describe('useDesignDocument deletePage（.ax 页级删除通道）', () => {
     expect(result.current.loaded?.sha256).toBe('sha-base')
     const outcome = await act(async () => result.current.deletePage('p2'))
     expect(outcome.ok).toBe(true)
-    expect(vi.mocked(writeDesignDocument)).toHaveBeenCalledTimes(1)
-    const [path, base64, expected] = vi.mocked(writeDesignDocument).mock.calls[0]
+    expect(vi.mocked(deleteDesignDocumentPage)).toHaveBeenCalledTimes(1)
+    const [path, pageId, base64, expected] = vi.mocked(deleteDesignDocumentPage).mock.calls[0]
     expect(path).toBe(PATH)
+    expect(pageId).toBe('p2')
     expect(expected).toBe('sha-base')
     const written = JSON.parse(atob(base64)) as { pages: Array<{ id: string }> }
     expect(written.pages.map((page) => page.id)).toEqual(['p1'])
@@ -319,7 +324,7 @@ describe('useDesignDocument deletePage（.ax 页级删除通道）', () => {
     const outcome = await act(async () => result.current.deletePage('p2'))
     expect(outcome.ok).toBe(false)
     expect(outcome.message).toContain('外部修改')
-    expect(vi.mocked(writeDesignDocument)).not.toHaveBeenCalled()
+    expect(vi.mocked(deleteDesignDocumentPage)).not.toHaveBeenCalled()
   })
 
   it('摘除后整稿校验不过（pages 摘空）则不落盘（fail-closed）', async () => {
@@ -332,7 +337,7 @@ describe('useDesignDocument deletePage（.ax 页级删除通道）', () => {
     const outcome = await act(async () => result.current.deletePage('p1'))
     expect(outcome.ok).toBe(false)
     expect(outcome.message).toContain('非空')
-    expect(vi.mocked(writeDesignDocument)).not.toHaveBeenCalled()
+    expect(vi.mocked(deleteDesignDocumentPage)).not.toHaveBeenCalled()
   })
 
   it('未知页 id 返回失败', async () => {
@@ -343,10 +348,10 @@ describe('useDesignDocument deletePage（.ax 页级删除通道）', () => {
     await settle()
     const outcome = await act(async () => result.current.deletePage('nope'))
     expect(outcome.ok).toBe(false)
-    expect(vi.mocked(writeDesignDocument)).not.toHaveBeenCalled()
+    expect(vi.mocked(deleteDesignDocumentPage)).not.toHaveBeenCalled()
   })
 
-  it('.pen 路径不走该通道（.pen 删除走画布编辑层）', async () => {
+  it('.pen 路径不走该通道', async () => {
     const penRaw = JSON.stringify({
       version: '2.18',
       children: [{ type: 'frame', id: 'page-1', width: 100, height: 100 }],
@@ -356,6 +361,93 @@ describe('useDesignDocument deletePage（.ax 页级删除通道）', () => {
     await settle()
     const outcome = await act(async () => result.current.deletePage('page-1'))
     expect(outcome.ok).toBe(false)
-    expect(vi.mocked(writeDesignDocument)).not.toHaveBeenCalled()
+    expect(vi.mocked(deleteDesignDocumentPage)).not.toHaveBeenCalled()
+  })
+
+  it('连点两次删除串行出队：同一时刻只有一个写请求在飞', async () => {
+    vi.mocked(readDesignDocument)
+      .mockResolvedValueOnce(contentOf(axTwoPageDoc(), 'sha-base'))
+      .mockResolvedValueOnce(contentOf(axTwoPageDoc(), 'sha-base'))
+      .mockResolvedValue(contentOf(axTwoPageDoc(), 'sha-base'))
+    let inFlight = 0
+    let maxInFlight = 0
+    vi.mocked(deleteDesignDocumentPage).mockImplementation(async () => {
+      inFlight += 1
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      await Promise.resolve()
+      inFlight -= 1
+      return { sha256: 'written-sha', sizeBytes: 32 }
+    })
+    const { result } = renderHook(() => useDesignDocument(PATH))
+    await settle()
+    const outcomes = await act(async () => Promise.all([
+      result.current.deletePage('p2'),
+      result.current.deletePage('p2'),
+    ]))
+    // 不变量 6 的「串行出队」：并发发起也不能让两个写请求同时在飞——否则第二份
+    // 补丁基于同一份旧内容，只能靠 CAS 撞回来。这里直接观测并发度而非 CAS 结果。
+    expect(outcomes.map((item) => item.ok)).toEqual([true, true])
+    expect(maxInFlight).toBe(1)
+    expect(vi.mocked(deleteDesignDocumentPage)).toHaveBeenCalledTimes(2)
+  })
+
+  it('原生确认框取消（命令返回 null）时既不采纳新投影也不报错', async () => {
+    vi.mocked(readDesignDocument)
+      .mockResolvedValueOnce(contentOf(axTwoPageDoc(), 'sha-base'))
+      .mockResolvedValueOnce(contentOf(axTwoPageDoc(), 'sha-base'))
+    vi.mocked(deleteDesignDocumentPage).mockResolvedValueOnce(null)
+    const { result } = renderHook(() => useDesignDocument(PATH))
+    await settle()
+    const outcome = await act(async () => result.current.deletePage('p2'))
+    // 取消不是失败：message 为 null，画布仍停在同一份内容（sha 未推进）。
+    expect(outcome).toEqual({ ok: false, message: null })
+    expect(result.current.loaded?.sha256).toBe('sha-base')
+    expect(result.current.loaded?.document?.pages).toHaveLength(2)
+  })
+})
+
+describe('useDesignDocument 工作区隔离', () => {
+  it('同名稿切换工作区时迟到响应不能覆盖新稿，异工作区事件不触发重读', async () => {
+    let complete: ((value: ReturnType<typeof contentOf>) => void) | undefined
+    vi.mocked(readDesignDocument).mockReset()
+      .mockImplementationOnce(() => new Promise((resolve) => { complete = resolve }))
+      .mockResolvedValue({ ...contentOf(axDoc('width'), 'new-workspace'), workspacePath: '/project/b' })
+    const { result, rerender } = renderHook(({ workspace }) => useDesignDocument(PATH, { workspacePath: workspace }), {
+      initialProps: { workspace: '/project/a' },
+    })
+    await act(async () => {})
+    rerender({ workspace: '/project/b' })
+    await act(async () => {})
+    expect(result.current.loaded?.sha256).toBe('new-workspace')
+    await act(async () => { complete?.(contentOf(axDoc('nowrap'), 'late-old-workspace')) })
+    expect(result.current.loaded?.sha256).toBe('new-workspace')
+    const count = vi.mocked(readDesignDocument).mock.calls.length
+    await act(async () => { mocks.changeHandler?.({ path: PATH, workspacePath: '/project/a' }) })
+    expect(vi.mocked(readDesignDocument)).toHaveBeenCalledTimes(count)
+    expect(vi.mocked(readDesignDocument)).toHaveBeenLastCalledWith(PATH, undefined, '/project/b')
+    expect(result.current.loaded?.document?.workspacePath).toBe('/project/b')
+  })
+})
+
+describe('useDesignDocument 目录边界', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.mocked(readDesignDocument).mockReset().mockResolvedValue(contentOf(axDoc('width'), 'current-sha'))
+    vi.mocked(loadDesignComponentCatalog).mockReset().mockResolvedValue(null)
+  })
+  afterEach(() => { vi.useRealTimers() })
+  it('目录损坏时移除旧组件预览，不能继续使用内置契约', async () => {
+    mocks.changeHandler = null
+    const { result } = renderHook(() => useDesignDocument(PATH, { workspacePath: '/project/a' }))
+    await act(async () => {})
+    expect(result.current.loaded?.document).not.toBeNull()
+    vi.mocked(loadDesignComponentCatalog).mockRejectedValue(new Error('目录已过期'))
+    vi.mocked(readDesignDocument).mockResolvedValue(contentOf(axDoc('width'), 'next-sha'))
+    await act(async () => {
+      mocks.changeHandler?.({ path: PATH, workspacePath: '/project/a' })
+      await vi.advanceTimersByTimeAsync(CHANGE_DEBOUNCE_MS)
+    })
+    expect(result.current.loaded?.document).toBeNull()
+    expect(result.current.loaded?.parseError).toContain('过期')
   })
 })

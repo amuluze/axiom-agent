@@ -10,6 +10,7 @@ import {
   revokeAuthorizedReadFile,
   selectAndAuthorizeReadDirectory,
   selectAndAuthorizeReadFile,
+  type AuthorizedReadFile,
 } from '@/platform/authorizedFiles'
 import {
   hydrateSessionMetadata,
@@ -24,12 +25,31 @@ import type { AgentState } from './agentStateTypes'
 import { useUiStore } from './uiStore'
 import { getRuntimeSession } from './runtimeCaches'
 import { storeT } from '@/i18n/storeTranslate'
+import { resetSessionAccessMode } from './accessModeActions'
+import {
+  bindSessionWorkspace,
+  forgetSessionWorkspace,
+  forgetSessionsForWorkspace,
+  sessionWorkspaceBindings,
+  sessionWorkspacePath,
+  sessionsForWorkspace,
+} from './services/sessionWorkspaceRegistry'
 
 /**
  * 工作区路径 → 会话绑定的模块级镜像：createRuntimeSession（store 初始化阶段）
  * 与 workspace action（新增/撤销）都会读写它，因此独立成模块共享。
+ *
+ * 语义与三处同步约束见 {@link ./services/sessionWorkspaceRegistry} 的模块注释——
+ * 裸 Map 会让「忘记同步」变成静默的 stale path，故只暴露具名方法。
  */
-export const sessionWorkspacePaths = new Map<string, string>()
+export const sessionWorkspacePaths = {
+  bind: bindSessionWorkspace,
+  forget: forgetSessionWorkspace,
+  pathOf: sessionWorkspacePath,
+  forgetSessionsForWorkspace,
+  sessionsForWorkspace,
+  bindings: sessionWorkspaceBindings,
+}
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
@@ -49,6 +69,25 @@ const reusableUnboundActiveSession = (
   && stored.messageCount === 0
 ))
 
+const resetActiveFullAccessForWorkspaceSwitch = async (
+  set: AgentSet,
+  get: AgentGet,
+  deps: StoreRuntimeDeps,
+  path: string,
+): Promise<boolean> => {
+  const activeSessionId = get().activeSessionId
+  const activeSession = get().sessions.find((session) => session.id === activeSessionId)
+  if (
+    !activeSessionId
+    || activeSession?.workspace?.path === path
+    || activeSession?.accessMode !== 'no-approval'
+  ) return true
+  const ok = await resetSessionAccessMode(set, get, deps, activeSessionId)
+  // 切换工作区同样改变提示词里的访问模式段，需重建（run 进行中时内部跳过）。
+  if (ok) await deps.refreshSystemPromptForAccessMode()
+  return ok
+}
+
 export const authorizeWorkspace = async (
   set: AgentSet,
   get: AgentGet,
@@ -60,6 +99,7 @@ export const authorizeWorkspace = async (
   try {
     const workspace = await selectAndAuthorizeWorkspace()
     if (!workspace) return false
+    if (!await resetActiveFullAccessForWorkspaceSwitch(set, get, deps, workspace.path)) return false
     recordRecent(workspace.path)
     const activeSessionId = get().activeSessionId
     if (activeSessionId) updateSessionMetadata(activeSessionId, { workspace })
@@ -107,6 +147,7 @@ export const addWorkspace = async (
   try {
     const workspace = await selectAndAuthorizeWorkspace()
     if (!workspace) return false
+    if (!await resetActiveFullAccessForWorkspaceSwitch(set, get, deps, workspace.path)) return false
     recordRecent(workspace.path)
     const reusable = reusableUnboundActiveSession(get())
     const created = reusable
@@ -152,6 +193,7 @@ export const activateWorkspace = async (
   path: string,
 ): Promise<boolean> => {
   if (!isTauriRuntime()) return false
+  if (!await resetActiveFullAccessForWorkspaceSwitch(set, get, deps, path)) return false
   const matchingSession = get().sessions.find((stored) => (
     stored.workspace?.path === path && !stored.archivedAt
   ))
@@ -245,21 +287,53 @@ export const revokeWorkspace = async (
     removeWorkspaceSessionMetadataForSessions(affectedSessionIds)
     // 保留旧 path 比对调用作为兜底（覆盖某些 state.sessions 为空的边角场景）。
     removeWorkspaceSessionMetadata(target)
-    // 停止绑定被撤销工作区的运行中会话（含后台），并清理其工作区映射。
-    // 撤销后仍在后台运行的会话会在每次审批时撞 fail-closed 拒绝（提示「未授权」），
-    // 与其徒劳空转不如显式停止；映射清理后会话重新激活时经 createRuntimeSession /
-    // activateCachedRuntimeSession 重建条目（仍指向已撤销路径），审批继续 fail-closed，
-    // 不会因缺少映射而 fallback 到其他工作区。
+    // 停止绑定被撤销工作区的运行中会话（含后台），并解绑其工作区绑定。
+    //
+    // 路径**不保留**：`clearWorkspaceForPath` 已把 DB 的 session.workspace 清空，
+    // 本表随之解绑——两者同源，一并失效。该会话在重新绑定工作区前不可运行，由
+    // 工作区门而非审批挡住：激活时全局 `authorizedWorkspace` 由会话自己的工作区
+    // 推导（已为 null）→ Composer 的 workspaceReady 为假；后台 `sendToSession`
+    // 要求会话工作区非空且在授权集内。重新绑定（新建会话 / 切换工作区）时经
+    // createRuntimeSession / activateCachedRuntimeSession 按新快照重建绑定。
+    //
+    // 先取快照再解绑（forgetSessionsForWorkspace 内部已完成），不在遍历中改 Map。
+    const boundSessionIds = sessionWorkspacePaths.sessionsForWorkspace(target)
     let abortedRunningCount = 0
-    for (const [sessionId, workspacePath] of sessionWorkspacePaths) {
-      if (workspacePath !== target) continue
+    for (const sessionId of boundSessionIds) {
       const harness = getRuntimeSession(sessionId)
       if (harness && !harness.isDisposed && harness.isRunning) {
         harness.requestAbort()
         abortedRunningCount += 1
       }
-      sessionWorkspacePaths.delete(sessionId)
     }
+    sessionWorkspacePaths.forgetSessionsForWorkspace(target)
+    // 撤销工作区同时降级其全部会话的访问模式。撤销期间工具调用已被
+    // authorized_root_for fail-closed 挡住，真正的洞在「日后重新授权同一路径」：
+    // 会话在 DB 的 no-approval 与 Rust held Automatic 都原样保留，而重新绑定回
+    // 同一路径时 resetActiveFullAccessForWorkspaceSwitch 因路径相同而跳过，
+    // 完全访问于是无原生警告地静默恢复。此处对每个受影响会话无条件走一次
+    // resetSessionAccessMode（它内部没有「已是标准就早退」的短路——DB 显示标准
+    // 而 native 侧可能仍是 Automatic 的残留态必须借此自愈），重授权需重新确认。
+    //
+    // 名单取 state.sessions 与运行时绑定的并集：前者来自 DB 投影（可能因
+    // listSessions 故障走了内存副本而缺项），后者（boundSessionIds，解绑前快照）
+    // 覆盖仍挂载该路径的运行中会话。漏掉任何一个都会让它在重授权时静默恢复完全访问。
+    const downgradeSessionIds = new Set([...affectedSessionIds, ...boundSessionIds])
+    let downgradeFailed = 0
+    for (const sessionId of downgradeSessionIds) {
+      // 不丢弃返回值：降级失败必须留下可见痕迹，否则「已撤销」与「已降级」会
+      // 在 UI 上无法区分，用户重授权时才会发现完全访问又回来了。
+      if (!await resetSessionAccessMode(set, get, deps, sessionId)) {
+        downgradeFailed += 1
+      }
+    }
+    if (downgradeFailed > 0) {
+      set({
+        settingsError: `${downgradeFailed} 个关联会话的访问模式未能降级；重新授权该工作区前请先在会话内切回标准模式`,
+      })
+    }
+    // 模式已变 → 提示词的访问模式段需重建，否则模型仍按完全访问行事。
+    await deps.refreshSystemPromptForAccessMode()
     const authorizedWorkspaces = await getAuthorizedWorkspaces()
     // 必须从 DB 重新加载 session 列表后再 hydrate；若直接使用内存中仍带有旧
     // workspace 的 get().sessions，hydrateSessionMetadata 会把旧 workspace 又
@@ -299,20 +373,21 @@ export const authorizeFile = async (
   set: AgentSet,
   _get: AgentGet,
   deps: StoreRuntimeDeps,
-): Promise<boolean> => {
+): Promise<AuthorizedReadFile | null> => {
   const structuralLease = deps.beginStructural()
-  if (!structuralLease) return false
+  if (!structuralLease) return null
   set({ settingsError: null })
   try {
     const file = await selectAndAuthorizeReadFile()
-    if (!file) return false
+    if (!file) return null
     const authorizedFiles = await listAuthorizedReadFiles()
     deps.updateAuthorizedReadFiles(authorizedFiles)
     set({ authorizedFiles, providerMessage: storeT('status.fileReference.added', { name: file.name }) })
-    return true
+    // 返回所选条目：Composer 的 + 附件按钮依赖它把引用 token 插入输入框。
+    return file
   } catch (error) {
     set({ settingsError: errorMessage(error) })
-    return false
+    return null
   } finally {
     deps.endStructural(structuralLease)
   }
@@ -382,6 +457,12 @@ export const createNewSession = async (
       set({ settingsError: storeT('status.workspace.pickRequired') })
       return false
     }
+    if (!await resetActiveFullAccessForWorkspaceSwitch(
+      set,
+      get,
+      deps,
+      selectedWorkspace.path,
+    )) return false
     const workspace = isTauriRuntime()
       && initialState.authorizedWorkspace?.path !== selectedWorkspace.path
       ? await activateAuthorizedWorkspace(selectedWorkspace.path)

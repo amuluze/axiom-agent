@@ -10,10 +10,12 @@ use tauri::{AppHandle, State};
 use crate::artifacts::{
     axiom_data_root, reconcile_at, storage_stats_at, verify_artifact_reference, ArtifactGcResult,
 };
+use crate::session_authorization::SessionAuthorizationState;
 use crate::session_schema::{create_options, migrate};
 use crate::session_state::SessionRepositoryState;
 use crate::storage_paths::set_file_permissions;
 use crate::workspace_access::WorkspaceAccessState;
+use crate::workspace_approval::WorkspaceApprovalState;
 use crate::workspace_registry;
 
 use super::*;
@@ -23,6 +25,18 @@ use super::*;
 const SESSION_REPOSITORY_POOL_MAX_CONNECTIONS: u32 = 4;
 
 const DATABASE_FILE_NAME: &str = "axiom.db";
+
+pub(super) async fn reset_session_access_modes(
+    connection: &mut SqliteConnection,
+) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE agent_sessions SET access_mode = 'standard' WHERE access_mode <> 'standard'",
+    )
+    .execute(connection)
+    .await
+    .map_err(|error| format!("无法重置会话访问模式：{error}"))?;
+    Ok(())
+}
 
 pub(crate) fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(axiom_data_root(app)?.join(DATABASE_FILE_NAME))
@@ -132,6 +146,14 @@ pub async fn initialize_session_repository(
             }
         }
         migrate(&mut connection).await?;
+        reset_session_access_modes(&mut connection).await?;
+        // R1-3：上次进程退出时遗留的测试运行，副作用是否已发生无法确认，统一标记中断且不重放。
+        // 失败即阻断启动：遗留的 running 记录若保持原样，报告会永久显示为进行中。
+        let started_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+        crate::test_repository::interrupt_active_test_runs(&mut connection, started_ms).await?;
         // 首次升级迁移：授权注册表（workspace_registry.rs）尚不存在时，用 SQLite 中
         // 用户历史绑定过的工作区播种——DB 由 Rust 独占写入，workspace_path 均源自
         // 原生选择器，可信；否则升级后既有工作区的重启恢复会被注册表 fail-closed
@@ -234,9 +256,18 @@ pub async fn load_session_repository_snapshot(
 #[tauri::command]
 pub async fn execute_session_repository(
     state: State<'_, SessionRepositoryState>,
+    approval_state: State<'_, WorkspaceApprovalState>,
+    authorization_state: State<'_, SessionAuthorizationState>,
     operation: SessionRepositoryMutation,
     parameters: Vec<Value>,
 ) -> Result<SessionDatabaseExecuteResult, String> {
+    if matches!(operation, SessionRepositoryMutation::ArchiveSession) {
+        let session_id = parameters
+            .get(2)
+            .and_then(Value::as_str)
+            .ok_or_else(|| "archiveSession 缺少有效 sessionId".to_string())?;
+        retire_session_authority(&approval_state, &authorization_state, session_id)?;
+    }
     let mut connection = state.acquire().await?;
     execute_mutation(&mut connection, operation, &parameters).await
 }
@@ -244,8 +275,11 @@ pub async fn execute_session_repository(
 #[tauri::command]
 pub async fn clear_session_repository(
     state: State<'_, SessionRepositoryState>,
+    approval_state: State<'_, WorkspaceApprovalState>,
+    authorization_state: State<'_, SessionAuthorizationState>,
     request: ClearSessionRepositoryRequest,
 ) -> Result<(), String> {
+    retire_session_authority(&approval_state, &authorization_state, &request.session_id)?;
     let mut connection = state.acquire().await?;
     clear_session(&mut connection, &request).await
 }
@@ -253,10 +287,41 @@ pub async fn clear_session_repository(
 #[tauri::command]
 pub async fn delete_session_with_successor(
     state: State<'_, SessionRepositoryState>,
+    approval_state: State<'_, WorkspaceApprovalState>,
+    authorization_state: State<'_, SessionAuthorizationState>,
     request: DeleteSessionWithSuccessorRequest,
 ) -> Result<(), String> {
+    retire_session_authority(&approval_state, &authorization_state, &request.session_id)?;
     let mut connection = state.acquire().await?;
     delete_with_successor(&mut connection, &request).await
+}
+
+/// 会话权限收口的唯一原子单元：删除 held Automatic 模式 + 前进会话撤销代际。
+/// `pub(crate)`：停止/归档/清空/删除四条路径共用，且仓储测试（crate 根的
+/// session_repository_tests）需直接锁定其语义（两段 IPC 会让降级 fail-open，
+/// 见 `retire_session_authority_command`）。
+pub(crate) fn retire_session_authority(
+    approval_state: &WorkspaceApprovalState,
+    authorization_state: &SessionAuthorizationState,
+    session_id: &str,
+) -> Result<(), String> {
+    approval_state.retire_session(session_id)?;
+    authorization_state.revoke_session(session_id)
+}
+
+/// 停止会话时的权限收口：held Automatic 模式与会话撤销代际在**同一次调用**内
+/// 落定。停止是权限**降级**动作，降级失败若保留更高权限即 fail-open——把两段
+/// IPC 合成一条命令，窗口从结构上消失，而不是靠重试或告警去补。
+///
+/// 与归档/清空/删除走同一个 `retire_session_authority`：DB 投影（WebView 侧的
+/// `access_mode = 'standard'` 写回）是 best-effort，权威判定始终在 Rust。
+#[tauri::command]
+pub async fn retire_session_authority_command(
+    approval_state: State<'_, WorkspaceApprovalState>,
+    authorization_state: State<'_, SessionAuthorizationState>,
+    session_id: String,
+) -> Result<(), String> {
+    retire_session_authority(&approval_state, &authorization_state, &session_id)
 }
 
 #[tauri::command]
@@ -304,18 +369,24 @@ pub async fn delete_unreferenced_artifact_metadata(
     delete_artifact_metadata(&mut connection, &artifact_id).await
 }
 
-/// 收集全部消息引用的 artifact content_hash（跨所有会话/分支）。Artifact id 即内容寻址
-/// 哈希（写入时校验），是 GC 权威引用集的组成部分——只按活动会话收集会把其它会话的
-/// artifact 误回收。
+/// 收集全部 Artifact 引用（跨所有会话/分支）。Artifact id 即内容寻址哈希（写入时校验），
+/// 是手动 GC 权威引用集的组成部分——只按活动会话收集会把其它会话的 artifact 误回收。
+///
+/// 必须同时覆盖 `agent_messages` 与 `tool_executions`：自动清理
+/// (`SessionRepositoryQuery::UnreferencedArtifacts`) 已把两者都算作引用来源；
+/// 手动 `gc_artifacts` 若只查消息表，未来出现「工具执行已登记 artifact、消息尚未落库」
+/// 的中间态时就会把仍被审计表引用的对象移入回收区。两处口径必须同源。
 pub(crate) async fn collect_message_artifact_hashes(
     connection: &mut SqliteConnection,
 ) -> Result<Vec<String>, String> {
     let rows = sqlx::query(
-        "SELECT DISTINCT artifact_id FROM agent_messages WHERE artifact_id IS NOT NULL",
+        "SELECT artifact_id FROM agent_messages WHERE artifact_id IS NOT NULL \
+         UNION \
+         SELECT artifact_id FROM tool_executions WHERE artifact_id IS NOT NULL",
     )
     .fetch_all(&mut *connection)
     .await
-    .map_err(|error| format!("无法收集消息 Artifact 引用：{error}"))?;
+    .map_err(|error| format!("无法收集消息/工具 Artifact 引用：{error}"))?;
     let mut hashes = Vec::new();
     for row in rows {
         let artifact_id: String = row
@@ -338,7 +409,9 @@ pub async fn gc_artifacts(
     let root = axiom_data_root(&app)?;
     let referenced = {
         let mut connection = state.acquire().await?;
-        collect_message_artifact_hashes(&mut connection).await?
+        let mut hashes = collect_message_artifact_hashes(&mut connection).await?;
+        hashes.extend(crate::test_repository::collect_test_artifact_hashes(&mut connection).await?);
+        hashes
     };
     tauri::async_runtime::spawn_blocking(move || {
         let before = storage_stats_at(&root)?;
@@ -352,6 +425,74 @@ pub async fn gc_artifacts(
     })
     .await
     .map_err(|error| format!("Artifact GC 任务失败：{error}"))?
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRepositoryMaintenanceResult {
+    pub database_bytes_before: u64,
+    pub database_bytes_after: u64,
+    pub freelist_before: i64,
+    pub freelist_after: i64,
+    pub vacuumed: bool,
+}
+
+async fn database_size_bytes(connection: &mut SqliteConnection) -> Result<u64, String> {
+    let page_count: i64 = sqlx::query_scalar("PRAGMA page_count")
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(|error| format!("无法读取 SQLite page_count：{error}"))?;
+    let page_size: i64 = sqlx::query_scalar("PRAGMA page_size")
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(|error| format!("无法读取 SQLite page_size：{error}"))?;
+    u64::try_from(page_count.saturating_mul(page_size))
+        .map_err(|_| "SQLite 文件大小超出范围".to_string())
+}
+
+pub(crate) async fn maintain_repository(
+    connection: &mut SqliteConnection,
+) -> Result<SessionRepositoryMaintenanceResult, String> {
+    let database_bytes_before = database_size_bytes(&mut *connection).await?;
+    let freelist_before: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(|error| format!("无法读取 SQLite freelist_count：{error}"))?;
+    // 先收 WAL，再在确有空洞时执行 VACUUM。VACUUM 需要独占锁，只由用户显式触发，
+    // 不在启动/删除会话的常规路径上执行。
+    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .execute(&mut *connection)
+        .await
+        .map_err(|error| format!("SQLite WAL checkpoint 失败：{error}"))?;
+    let vacuumed = freelist_before > 0;
+    if vacuumed {
+        sqlx::query("VACUUM")
+            .execute(&mut *connection)
+            .await
+            .map_err(|error| format!("SQLite VACUUM 失败：{error}"))?;
+    }
+    let freelist_after: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(|error| format!("无法读取 SQLite freelist_count：{error}"))?;
+    let database_bytes_after = database_size_bytes(&mut *connection).await?;
+    Ok(SessionRepositoryMaintenanceResult {
+        database_bytes_before,
+        database_bytes_after,
+        freelist_before,
+        freelist_after,
+        vacuumed,
+    })
+}
+
+/// 用户显式触发的数据库维护：WAL checkpoint + 必要时 VACUUM。
+/// 只压缩主库空洞，不删除任何会话/消息；与 Artifact GC 相互独立。
+#[tauri::command]
+pub async fn maintain_session_repository(
+    state: State<'_, SessionRepositoryState>,
+) -> Result<SessionRepositoryMaintenanceResult, String> {
+    let mut connection = state.acquire().await?;
+    maintain_repository(&mut connection).await
 }
 
 #[tauri::command]
@@ -429,6 +570,7 @@ pub async fn persist_session_message(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn save_session_checkpoint(
     state: State<'_, SessionRepositoryState>,
     request: SaveSessionCheckpointRequest,
@@ -454,5 +596,3 @@ pub async fn transition_session_journal_entries(
     let mut connection = state.acquire().await?;
     transition_journal_entries(&mut connection, &request).await
 }
-
-

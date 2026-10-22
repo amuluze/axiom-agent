@@ -1,9 +1,13 @@
-import { useState, type CSSProperties, type RefObject } from 'react'
+import { useRef, useState, type CSSProperties, type RefObject } from 'react'
 import { useAgentStore } from '@/stores/agentStore'
 import { useUiStore } from '@/stores/uiStore'
 import type { ContextBudgetUsage, ContextCheckpoint } from '@/agent/context/types'
+import type { AgentMessage, ModelMessage } from '@/agent/core/types'
+import { mergeSkillPhases, normalizeFacts } from '@/agent/context/ledger'
+import type { SendManifest } from '@/agent/context/sendManifest'
 import { useT } from '@/i18n'
 import { SessionUsageControl, SessionUsageDetail } from './SessionUsageControl'
+import { useHorizontalMenuClamp } from './useHorizontalMenuClamp'
 import { formatTokens, lastAssistantUsage } from './usageSummary'
 
 export const formatContextBytes = (bytes: number): string => bytes >= 1024 * 1024
@@ -14,13 +18,34 @@ export const formatContextBytes = (bytes: number): string => bytes >= 1024 * 102
 export const contextBudgetPercent = (usage: ContextBudgetUsage): number =>
   Math.min(100, Math.max(usage.tokenPercent, usage.bytePercent))
 
+export const sddProgressFromHistory = (
+  checkpoint: ContextCheckpoint | null,
+  messages: AgentMessage[],
+): ReturnType<typeof mergeSkillPhases> => {
+  const facts = normalizeFacts(checkpoint?.facts ?? { readFiles: [], modifiedFiles: [] })
+  const boundaryIndex = checkpoint
+    ? messages.findIndex((message) => message.id === checkpoint.throughMessageId)
+    : -1
+  const recentMessages = checkpoint
+    ? boundaryIndex >= 0 ? messages.slice(boundaryIndex + 1) : []
+    : messages
+  const modelMessages = recentMessages.filter(
+    (message): message is ModelMessage => message.role !== 'custom',
+  )
+  return mergeSkillPhases(facts.loadedSkills, facts.sddReviews, modelMessages)
+}
+
 export interface ContextBudgetPanelProps {
   usage: ContextBudgetUsage
   checkpoint: ContextCheckpoint | null
   busy: boolean
   messageCount: number
   compactionRunning: boolean
+  sendManifest: SendManifest | null
+  sddProgress?: ReturnType<typeof mergeSkillPhases>
   onCompact: () => void
+  /** 弹层根元素引用：水平钳制 hook 的测量目标（可选，SSR 快照不传）。 */
+  menuRef?: RefObject<HTMLDivElement | null>
 }
 
 /**
@@ -33,12 +58,15 @@ export const ContextBudgetPanel = ({
   busy,
   messageCount,
   compactionRunning,
+  sendManifest,
+  sddProgress,
   onCompact,
+  menuRef,
 }: ContextBudgetPanelProps) => {
   const { t } = useT()
   const percent = contextBudgetPercent(usage)
   return (
-    <div className="composer__budget-menu" role="dialog" aria-label={t('app.budget.aria')}>
+    <div className="composer__budget-menu" ref={menuRef} role="dialog" aria-label={t('app.budget.aria')}>
       <div className="composer__budget-heading">
         <span>{t('app.budget.title')}</span>
         <span>{percent.toFixed(0)}%</span>
@@ -61,6 +89,48 @@ export const ContextBudgetPanel = ({
           {compactionRunning ? t('app.budget.compacting') : t('app.budget.compact')}
         </button>
       </div>
+      {sendManifest && (
+        <p className="composer__budget-send-manifest">
+          {t('app.budget.sendManifest', {
+            messages: sendManifest.messageCount,
+            bytes: formatContextBytes(sendManifest.bytes),
+            tools: sendManifest.toolCount,
+            toolResults: sendManifest.toolResultCount,
+            toolResultBytes: formatContextBytes(sendManifest.toolResultBytes),
+            images: sendManifest.imageCount,
+            retries: sendManifest.retryCount,
+            scan: sendManifest.credentialScan === 'passed'
+              ? t('app.budget.sendManifest.scanPassed')
+              : sendManifest.credentialScan === 'blocked'
+                ? t('app.budget.sendManifest.scanBlocked')
+                : t('app.budget.sendManifest.scanPending'),
+            summary: sendManifest.summaryIncluded
+              ? t('app.budget.sendManifest.summaryYes')
+              : t('app.budget.sendManifest.summaryNo'),
+          })}
+        </p>
+      )}
+      {sddProgress && (sddProgress.loadedSkills.length > 0 || sddProgress.sddReviews.length > 0) && (
+        <section className="composer__budget-sdd" aria-label={t('app.budget.sdd.title')}>
+          <div className="composer__budget-sdd-title">{t('app.budget.sdd.title')}</div>
+          {sddProgress.loadedSkills.length > 0 && (
+            <div>{t('app.budget.sdd.skills', {
+              skills: sddProgress.loadedSkills.map((entry) => entry.name).join(' → '),
+            })}</div>
+          )}
+          {sddProgress.sddReviews.map((entry) => (
+            <div data-status={entry.verdict} key={entry.reviewer}>
+              {t('app.budget.sdd.review', {
+                reviewer: entry.reviewer.replace('_subagent', ''),
+                verdict: t(`app.budget.sdd.verdict.${entry.verdict}`),
+              })}
+            </div>
+          ))}
+          {sddProgress.sddReviews.some((entry) => entry.verdict !== 'pass') && (
+            <div className="composer__budget-sdd-warning">{t('app.budget.sdd.unresolved')}</div>
+          )}
+        </section>
+      )}
       {checkpoint && (
         <details className="composer__budget-checkpoint">
           <summary>{t('app.budget.viewSummary')}</summary>
@@ -116,12 +186,17 @@ export const ContextBudgetControl = ({
   const running = useAgentStore((state) => state.running)
   const sessionBusy = useAgentStore((state) => state.sessionBusy)
   const compactionRunning = useAgentStore((state) => state.compactionRunning)
+  const sendManifest = useAgentStore((state) =>
+    state.activeSessionId ? state.sendManifests[state.activeSessionId] ?? null : null)
   const setSummaryRequest = useUiStore((state) => state.setSummaryRequest)
   const [hovered, setHovered] = useState(false)
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  useHorizontalMenuClamp(menuRef, open)
   if (!contextUsage) return <SessionUsageControl />
   const usage = lastAssistantUsage(messages)
   const busy = running || sessionBusy
   const percent = contextBudgetPercent(contextUsage)
+  const sddProgress = sddProgressFromHistory(contextCheckpoint, messages)
 
   return (
     <div className="composer__budget-picker" ref={containerRef}>
@@ -153,7 +228,10 @@ export const ContextBudgetControl = ({
           busy={busy}
           checkpoint={contextCheckpoint}
           compactionRunning={compactionRunning}
+          menuRef={menuRef}
           messageCount={messages.length}
+          sendManifest={sendManifest}
+          sddProgress={sddProgress}
           onCompact={() => {
             setSummaryRequest({ mode: 'compaction' })
             onCompacted()

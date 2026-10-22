@@ -14,8 +14,8 @@ vi.mock('@/platform/designDocument', () => ({
 
 const paint = { kind: 'image' as const, url: 'assets/a.png', mode: 'fill' }
 
-const Probe = ({ url }: { url: string }) => {
-  const fill = usePenImageFill('.pen/axiom.pen', { ...paint, url })
+const Probe = ({ url, workspace }: { url: string; workspace?: string }) => {
+  const fill = usePenImageFill('.pen/axiom.ax', { ...paint, url }, workspace)
   return <div data-testid="probe">{fill.rejected ? 'rejected' : (fill.dataUrl ?? 'loading')}</div>
 }
 
@@ -28,7 +28,7 @@ describe('usePenImageFill', () => {
   it('相对路径经资产通道加载为 data URL', async () => {
     const view = render(<Probe url="assets/a.png" />)
     await waitFor(() => expect(view.getByTestId('probe').textContent).toBe('data:image/png;base64,aGk='))
-    expect(vi.mocked(readDesignDocumentAsset)).toHaveBeenCalledWith('.pen/axiom.pen', 'assets/a.png')
+    expect(vi.mocked(readDesignDocumentAsset)).toHaveBeenCalledWith('.pen/axiom.ax', 'assets/a.png', undefined)
   })
 
   it('同资产在缓存期内不重复拉取；换稿清缓存后重新拉取', async () => {
@@ -45,6 +45,18 @@ describe('usePenImageFill', () => {
     const third = render(<Probe url="assets/a.png" />)
     await waitFor(() => expect(vi.mocked(readDesignDocumentAsset)).toHaveBeenCalledTimes(2))
     third.unmount()
+  })
+
+  it('两个工作区的同名稿与同名资产不共享缓存', async () => {
+    vi.mocked(readDesignDocumentAsset)
+      .mockResolvedValueOnce({ contentBase64: 'FIRST', mediaType: 'image/png', sha256: 'first' })
+      .mockResolvedValueOnce({ contentBase64: 'SECOND', mediaType: 'image/png', sha256: 'second' })
+    const view = render(<Probe url="assets/a.png" workspace="/project/a" />)
+    await waitFor(() => expect(view.getByTestId('probe').textContent).toContain('FIRST'))
+    view.rerender(<Probe url="assets/a.png" workspace="/project/b" />)
+    await waitFor(() => expect(view.getByTestId('probe').textContent).toContain('SECOND'))
+    expect(readDesignDocumentAsset).toHaveBeenCalledTimes(2)
+    expect(readDesignDocumentAsset).toHaveBeenLastCalledWith('.pen/axiom.ax', 'assets/a.png', '/project/b')
   })
 
   it('远程 URL 直接拒绝，不调用资产通道', () => {

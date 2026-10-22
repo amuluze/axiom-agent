@@ -1,0 +1,40 @@
+{
+  "ax": "1.4",
+  "name": "EmptyState",
+  "tokens": {},
+  "components": {},
+  "symbols": {
+    "EmptyState": {
+      "props": { "headline": "string", "supporting": "string" },
+      "body": [
+        {
+          "id": "es-root",
+          "kind": "frame",
+          "layout": "vertical",
+          "gap": 12,
+          "padding": [48, 24, 48, 24],
+          "width": "fill_container",
+          "alignItems": "center",
+          "children": [
+            { "id": "es-icon", "kind": "icon", "name": "inbox", "size": 48, "fill": "#A5A199" },
+            { "id": "es-headline", "kind": "text", "text": { "$param": "headline" }, "wrap": "width", "fontSize": 16, "fill": "#1F1E1C" },
+            { "id": "es-supporting", "kind": "text", "text": { "$param": "supporting" }, "wrap": "width", "fontSize": 14, "fill": "#6B6862" }
+          ]
+        }
+      ]
+    }
+  },
+  "pages": [
+    {
+      "id": "empty-page",
+      "name": "EmptyState 模式",
+      "width": 480,
+      "height": 280,
+      "layout": "vertical",
+      "padding": [24, 24, 24, 24],
+      "tree": [
+        { "id": "es1", "kind": "component", "name": "EmptyState", "props": { "headline": "暂无订单", "supporting": "新订单出现时会自动显示在这里" } }
+      ]
+    }
+  ]
+}

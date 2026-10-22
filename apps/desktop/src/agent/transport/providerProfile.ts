@@ -5,16 +5,17 @@ import {
   type ProviderCapabilities,
   type ProviderId,
 } from './providerDefinitions'
+import { PROVIDER_PROFILE_SCHEMA_VERSION } from './providerProfileVersion'
 import { PROVIDER_CONSTANTS, PROVIDER_DATA } from './generatedProviderData'
 import { getProviderHost } from './providerHost'
 
 export type { ProviderCapabilities, ProviderId } from './providerDefinitions'
+export { PROVIDER_PROFILE_SCHEMA_VERSION } from './providerProfileVersion'
 // 数值边界（与 Rust 生成表同源）经本模块转出：providerDraftValidation 这类纯校验模块由此
 // 取用，避免直连 generatedProviderData 绕过 Provider Runtime 边界（tauri-capability-audit 强制）。
 export { PROVIDER_CONSTANTS }
 
 const PREVIOUS_PROVIDER_PROFILE_SCHEMA_VERSION = 4 as const
-export const PROVIDER_PROFILE_SCHEMA_VERSION = 5 as const
 // v2 是最后一个使用 legacy secret 前缀的版本：只有 v2 文档需要 secretId
 // 迁移（legacy 前缀 → 当前 namespace）；v3 起文档已持有当前 namespace。
 const SECRET_MIGRATION_SCHEMA_VERSION = 2 as const

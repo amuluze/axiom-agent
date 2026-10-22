@@ -1,6 +1,7 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useId, useState, type FormEvent } from 'react'
 import { RotateCcw, X } from 'lucide-react'
 import { trapDialogFocus, useDialogFocus } from '../dialogFocus'
+import { useDesignPreview } from '@/components/design/ax/previewContext'
 import { useT } from '@/i18n'
 import {
   findBuiltinSkillBody,
@@ -12,6 +13,8 @@ import {
 } from '@/agent/subagent/promptCatalog'
 import type { SubAgentKind } from '@/agent/core/types'
 import {
+  MAX_BUILTIN_OVERRIDE_TEXT,
+  isValidOverrideText,
   applySkillOverrideEntry,
   applySubAgentOverrideEntry,
   clearSkillOverride,
@@ -48,8 +51,9 @@ const LANGUAGES: readonly PromptOverrideLanguage[] = ['zh-CN', 'en']
 const isModified = (
   target: BuiltinPromptEditorTarget,
   language: PromptOverrideLanguage,
+  designPreview = false,
 ): boolean => {
-  const overrides = getBuiltinPromptOverrides()
+  const overrides: ReturnType<typeof getBuiltinPromptOverrides> = designPreview ? { version: 1, skills: {}, subagents: {} } : getBuiltinPromptOverrides()
   const entry = target.kind === 'skill'
     ? overrides.skills[target.name]?.[language]
     : overrides.subagents[target.subKind]?.[language]
@@ -60,9 +64,10 @@ const isModified = (
 const seedDrafts = (
   target: BuiltinPromptEditorTarget | null,
   language: PromptOverrideLanguage,
+  designPreview = false,
 ): { description: string; body: string } => {
   if (!target) return { description: '', body: '' }
-  const overrides = getBuiltinPromptOverrides()
+  const overrides: ReturnType<typeof getBuiltinPromptOverrides> = designPreview ? { version: 1, skills: {}, subagents: {} } : getBuiltinPromptOverrides()
   if (target.kind === 'skill') {
     const skill = findBuiltinSkillBody(target.name)
     if (!skill) return { description: '', body: '' }
@@ -82,15 +87,20 @@ export const BuiltinPromptEditorDialog = ({
   onSaved,
 }: BuiltinPromptEditorDialogProps) => {
   const { t } = useT()
+  const identifier = useId()
+  const titleId = `builtin-prompt-editor-title-${identifier}`
+  const descriptionId = `builtin-prompt-editor-description-${identifier}`
+  const designPreview = useDesignPreview() !== null
   const [language, setLanguage] = useState<PromptOverrideLanguage>('zh-CN')
-  const [drafts, setDrafts] = useState(() => seedDrafts(target, 'zh-CN'))
+  const [drafts, setDrafts] = useState(() => seedDrafts(target, 'zh-CN', designPreview))
   const [revision, setRevision] = useState(0)
-  const dialogRef = useDialogFocus<HTMLFormElement>(target !== null)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const dialogRef = useDialogFocus<HTMLFormElement>(target !== null && !designPreview)
 
   // 目标或语言切换时重填草稿（「恢复默认」经 revision 触发同一重填路径）。
   useEffect(() => {
-    setDrafts(seedDrafts(target, language))
-  }, [target, language, revision])
+    setDrafts(seedDrafts(target, language, designPreview))
+  }, [target, language, revision, designPreview])
 
   if (!target) return null
 
@@ -100,7 +110,7 @@ export const BuiltinPromptEditorDialog = ({
   const title = target.kind === 'skill'
     ? t('settings.promptEditor.title.skill', { name: target.name })
     : t('settings.promptEditor.title.subagent', { name: target.subKind })
-  const modified = isModified(target, language)
+  const modified = isModified(target, language, designPreview)
   // 渲染预览按当前草稿实时计算：草稿等同默认模板时不传 overrideTemplate。
   const defaultTemplate = target.kind === 'subagent'
     ? getBuiltinSubAgentPromptTemplate(target.subKind, language)
@@ -115,7 +125,16 @@ export const BuiltinPromptEditorDialog = ({
 
   const save = (event: FormEvent) => {
     event.preventDefault()
-    if (!target) return
+    if (designPreview || !target) return
+    // 超长正文在存储层已被拒绝；这里提前拦下并给出可读原因——静默丢弃一次
+    // 用户的编辑比报错更糟。
+    const tooLong = target.kind === 'skill'
+      ? [drafts.description, drafts.body].find((text) => !isValidOverrideText(text))
+      : (isValidOverrideText(drafts.body) ? undefined : drafts.body)
+    if (tooLong !== undefined) {
+      setSaveError(t('settings.promptEditor.tooLong', { limit: MAX_BUILTIN_OVERRIDE_TEXT }))
+      return
+    }
     const overrides = getBuiltinPromptOverrides()
     if (target.kind === 'skill' && skill) {
       const defaults = resolveBuiltinSkillVariant(skill, language)
@@ -133,7 +152,7 @@ export const BuiltinPromptEditorDialog = ({
   }
 
   const restore = () => {
-    if (!target) return
+    if (designPreview || !target) return
     const overrides = getBuiltinPromptOverrides()
     if (target.kind === 'skill') {
       saveBuiltinPromptOverrides(clearSkillOverride(overrides, target.name, language))
@@ -148,17 +167,17 @@ export const BuiltinPromptEditorDialog = ({
   return (
     <div className="builtin-prompt-editor__backdrop" role="presentation">
       <form
-        aria-describedby="builtin-prompt-editor-description"
-        aria-labelledby="builtin-prompt-editor-title"
-        aria-modal="true"
+        aria-describedby={descriptionId}
+        aria-labelledby={titleId}
+        aria-modal={designPreview ? undefined : true}
         className="builtin-prompt-editor"
         onKeyDown={(event) => {
           if (event.key === 'Escape') {
             event.preventDefault()
-            onClose()
+            if (!designPreview) onClose()
             return
           }
-          trapDialogFocus(event, dialogRef.current)
+          if (!designPreview) trapDialogFocus(event, dialogRef.current)
         }}
         onSubmit={save}
         ref={dialogRef}
@@ -171,7 +190,7 @@ export const BuiltinPromptEditorDialog = ({
                 ? t('settings.promptEditor.eyebrow.skill')
                 : t('settings.promptEditor.eyebrow.subagent')}
             </div>
-            <h2 className="builtin-prompt-editor__title" id="builtin-prompt-editor-title">{title}</h2>
+            <h2 className="builtin-prompt-editor__title" id={titleId}>{title}</h2>
           </div>
           {modified && (
             <span className="settings__badge settings__badge--shadowed">{t('settings.promptEditor.modified')}</span>
@@ -179,14 +198,14 @@ export const BuiltinPromptEditorDialog = ({
           <button
             aria-label={t('settings.promptEditor.cancel')}
             className="builtin-prompt-editor__close"
-            onClick={onClose}
+            onClick={() => { if (!designPreview) onClose() }}
             type="button"
           >
             <X size={14} />
           </button>
         </header>
 
-        <p className="builtin-prompt-editor__description" id="builtin-prompt-editor-description">
+        <p className="builtin-prompt-editor__description" id={descriptionId}>
           {t('settings.promptEditor.hint')}
         </p>
 
@@ -201,7 +220,7 @@ export const BuiltinPromptEditorDialog = ({
               onClick={() => setLanguage(code)}
             >
               {code === 'zh-CN' ? '中文' : 'English'}
-              {isModified(target, code) && <span className="builtin-prompt-editor__dot" aria-hidden="true" />}
+              {isModified(target, code, designPreview) && <span className="builtin-prompt-editor__dot" aria-hidden="true" />}
             </button>
           ))}
         </div>
@@ -254,7 +273,8 @@ export const BuiltinPromptEditorDialog = ({
             {t('settings.promptEditor.restore')}
           </button>
           <div className="builtin-prompt-editor__footer-spacer" />
-          <button className="settings__button" onClick={onClose} type="button">
+          {saveError && <span className="settings__error" role="alert">{saveError}</span>}
+          <button className="settings__button" onClick={() => { if (!designPreview) onClose() }} type="button">
             {t('settings.promptEditor.cancel')}
           </button>
           <button className="settings__button settings__button--primary" type="submit">

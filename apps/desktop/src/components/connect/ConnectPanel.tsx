@@ -6,6 +6,7 @@ import { pollWechatLogin, type ConnectPlatform, type ConnectWechatLoginStatus } 
 import { CircleAlert, Loader2, MessageSquareText, Plug, QrCode, Trash2, Unplug, X } from 'lucide-react'
 import { getPlatformLabel } from '@/components/connect/ConnectIcons'
 import { useT } from '@/i18n'
+import { confirmDialog } from '@/components/dialogService'
 
 /**
  * 连接弹窗（.pen B9OLF 常态 / llrFR 操作失败态）：全屏遮罩上的居中模态。
@@ -216,9 +217,12 @@ const WechatCard = () => {
             title={t('app.connect.platform.credentialHint')}
             aria-label={t('app.connect.platform.clearCredential')}
             onClick={() => {
-              const confirmed = window.confirm(t('app.connect.platform.removeConfirm', { platform: getPlatformLabel('weixin', t) }))
-              if (!confirmed) return
-              void clearPlatformConfig('weixin')
+              void confirmDialog({
+                message: t('app.connect.platform.removeConfirm', { platform: getPlatformLabel('weixin', t) }),
+                danger: true,
+              }).then((confirmed) => {
+                if (confirmed) void clearPlatformConfig('weixin')
+              })
             }}
           >
             <Trash2 size={12} />
@@ -264,11 +268,15 @@ const BindingsSection = () => {
               aria-label={t('app.connect.bindings.remove')}
               disabled={removing[key]}
               onClick={() => {
-                const confirmed = window.confirm(t('app.connect.platform.unpairConfirm', { platform: getPlatformLabel(binding.platform, t) }))
-                if (!confirmed) return
-                setRemoving((current) => ({ ...current, [key]: true }))
-                void unpair(binding.platform, binding.chatId, binding.userId).finally(() => {
-                  setRemoving((current) => ({ ...current, [key]: false }))
+                void confirmDialog({
+                  message: t('app.connect.platform.unpairConfirm', { platform: getPlatformLabel(binding.platform, t) }),
+                  danger: true,
+                }).then((confirmed) => {
+                  if (!confirmed) return
+                  setRemoving((current) => ({ ...current, [key]: true }))
+                  void unpair(binding.platform, binding.chatId, binding.userId).finally(() => {
+                    setRemoving((current) => ({ ...current, [key]: false }))
+                  })
                 })
               }}
             >

@@ -7,6 +7,7 @@ import {
   MIN_TOTAL_TOKENS_LIMIT,
   type AgentLimitsSettings,
 } from '@/agent/runtime/agentLimitsSettings'
+import { MAX_APPROVAL_TIMEOUT_MS, MIN_APPROVAL_TIMEOUT_MS } from '@/agent/approval/ApprovalCoordinator'
 import type { AgentLimitsDraftHook, SettingsSectionContext } from './types'
 import { useT } from '@/i18n'
 
@@ -68,6 +69,21 @@ export const LimitsSection = ({ hook, context, isSaved }: LimitsSectionProps) =>
             step={10_000}
             type="number"
             value={draft.maxTotalTokens}
+          />
+        </label>
+        <label>
+          {t('settings.limits.approvalTimeout')}
+          <input
+            disabled={busy}
+            max={MAX_APPROVAL_TIMEOUT_MS / 1000}
+            min={MIN_APPROVAL_TIMEOUT_MS / 1000}
+            onChange={(event) => setDraft({
+              ...draft,
+              approvalTimeoutMs: Number(event.target.value) * 1000,
+            } satisfies AgentLimitsSettings)}
+            step={30}
+            type="number"
+            value={Math.round(draft.approvalTimeoutMs / 1000)}
           />
         </label>
       </div>

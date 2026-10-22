@@ -14,6 +14,8 @@ import { nativeCaptureSupported, captureRectStats } from './nativePageCapture'
 import { renderPenPageForScan } from './ax/renderPageHost'
 import { parsePenDocument } from '@/agent/design/penParser'
 import type { PenDocument } from '@/agent/design/penParser'
+import type { AxDocument } from '@/agent/design/axSchema'
+import type { DesignComponentDetail } from '@/agent/design/componentInventoryHost'
 import { useUiStore } from '@/stores/uiStore'
 
 vi.mock('./nativePageCapture', async (importOriginal) => {
@@ -113,5 +115,49 @@ describe('DesignCanvas 画布原位扫掠（原生截图路径）', () => {
     expect(panel.querySelectorAll('.design-scan__page.is-fail')).toHaveLength(0)
     expect(panel.textContent).not.toContain('渲染检查未完成')
     expect(panel.textContent).not.toContain('staging')
+  })
+
+  it('项目组件页强制走隔离 staging，不采集画布上的未刷新占位态', async () => {
+    const parsed = parsePenDocument(JSON.stringify(SWEEP_PAGES), '.pen/axiom.ax')
+    const doc = parsed.document as PenDocument
+    doc.axDocument = {
+      ax: '1.5',
+      tokens: {},
+      components: {},
+      pages: [
+        { id: 'page-1', name: '首页', width: 200, height: 120, tree: [{ id: 'project-card', kind: 'component', name: 'ProjectCard' }] },
+        { id: 'page-2', name: '设置', width: 200, height: 120, tree: [] },
+      ],
+    } satisfies AxDocument
+    doc.projectComponents = [{
+      summary: {
+        name: 'ProjectCard',
+        kind: 'presentational',
+        sourcePath: 'src/ProjectCard.tsx',
+        props: [],
+        fixtures: [],
+      },
+      statics: [],
+      fixtures: {},
+    } satisfies DesignComponentDetail]
+
+    render(<DesignCanvas doc={doc} />)
+    await waitFor(() => expect(vi.mocked(nativeCaptureSupported).mock.calls.length).toBeGreaterThan(0))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const viewport = document.querySelector('.design-canvas__viewport') as HTMLElement
+    stubRect(viewport, { x: VIEWPORT_ORIGIN.left, y: VIEWPORT_ORIGIN.top, ...VIEWPORT_SIZE })
+    stubRect(
+      document.querySelector('[data-page-wrapper="page-1"]') as HTMLElement,
+      { x: VIEWPORT_ORIGIN.left + 412, y: VIEWPORT_ORIGIN.top + 324, width: 200, height: 120 },
+    )
+    stubRect(
+      document.querySelector('[data-page-wrapper="page-2"]') as HTMLElement,
+      { x: VIEWPORT_ORIGIN.left + 620, y: VIEWPORT_ORIGIN.top + 324, width: 200, height: 120 },
+    )
+
+    fireEvent.click(screen.getByText('扫描验证'))
+    await waitFor(() => expect(vi.mocked(renderPenPageForScan)).toHaveBeenCalled(), { timeout: 8000 })
+    expect(vi.mocked(renderPenPageForScan)).toHaveBeenCalledWith(expect.objectContaining({ pageIdOrIndex: 'page-1' }))
+    expect(vi.mocked(captureRectStats)).toHaveBeenCalledTimes(1)
   })
 })

@@ -10,27 +10,24 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react'
-import { ArrowUp, Check, ChevronDown, FileText, Folder, FolderOpen, GripVertical, Hash, Pencil, ShieldCheck, ShieldOff, Sparkles, Square, Trash2, X } from 'lucide-react'
+import { ArrowUp, Check, ChevronDown, Folder, FolderOpen, GripVertical, Pencil, Plus, ShieldCheck, ShieldOff, Square, Trash2, X } from 'lucide-react'
 import { useAgentStore } from '@/stores/agentStore'
 import { useUiStore } from '@/stores/uiStore'
-import type { AccessMode } from '@/stores/uiStore'
 import { useDesignAgentPreview, useDesignUiPreview } from '@/components/design/ax/previewContext'
-import type { AuthorizedWorkspace } from '@/platform/workspace'
 import type { QueuedMessageSnapshot } from '@/agent/runtime/AgentSession'
 import type {
-  QueueAcceptance,
   QueueMoveTarget,
   QueueMutationResult,
   QueueRejectionReason,
 } from '@/agent/runtime/queueContracts'
 import { MentionPopover } from '@/components/composer/MentionPopover'
 import { useUpwardMenuClamp } from '@/components/composer/useUpwardMenuClamp'
+import { useHorizontalMenuClamp } from '@/components/composer/useHorizontalMenuClamp'
 import { MENTION_POPOVER_GAP_PX } from '@/components/composer/upwardMenuSpace'
 import {
   detectActiveMention,
   formatMentionToken,
   parseMentions,
-  type ActiveMention,
   type MentionCandidate,
   type ParsedMention,
 } from '@/components/composer/mentionParser'
@@ -48,10 +45,7 @@ import { splitMentionSegments } from '@/components/composer/mentionHighlight'
 import {
   MAX_PASTE_IMAGES,
   ImageTooLargeError,
-  attachmentFromImageBlock,
-  compressPastedImage,
   imageFilesFromClipboard,
-  objectUrlForFile,
   revokeObjectUrl,
   toImageContentBlock,
 } from '@/components/composer/imagePaste'
@@ -59,150 +53,23 @@ import { resolveImageInputCapability } from '@/agent/transport/modelCatalog'
 import { ContextBudgetControl } from '@/components/composer/ContextBudgetControl'
 import { ReasoningPicker } from '@/components/composer/ReasoningPicker'
 import { useT } from '@/i18n'
+import { FULL_ACCESS_REMINDER_MS, fullAccessReminderDelay } from '@/components/composer/fullAccessReminder'
 import { localizedProviderLabel } from '@/i18n/providerLabels'
-import type { ImageContentBlock } from '@/agent/core/types'
-
-const accessModeOptions: Array<{ value: AccessMode; labelKey: string; descriptionKey: string }> = [
-  { value: 'standard', labelKey: 'app.composer.access.standard', descriptionKey: 'app.composer.access.standardDesc' },
-  { value: 'no-approval', labelKey: 'app.composer.access.noApproval', descriptionKey: 'app.composer.access.noApprovalDesc' },
-]
-
-/**
- * 下拉框「最近打开」数据派生：recentWorkspacePaths 顺序优先，
- * 只保留当前仍授权的工作目录（与左侧工作区成员一致）。
- */
-export const recentWorkspaceEntries = (
-  authorizedWorkspaces: AuthorizedWorkspace[],
-  recentWorkspacePaths: string[],
-): AuthorizedWorkspace[] => {
-  const byPath = new Map(authorizedWorkspaces.map((workspace) => [workspace.path, workspace]))
-  return recentWorkspacePaths
-    .map((path) => byPath.get(path))
-    .filter((workspace): workspace is AuthorizedWorkspace => Boolean(workspace))
-}
-
-export interface ComposerAvailability {
-  providerReady: boolean
-  providerSetupRequired: boolean
-  workspaceReady: boolean
-  sessionBusy: boolean
-  compactionRunning: boolean
-}
-
-export const isComposerAvailable = (state: ComposerAvailability): boolean => (
-  state.providerReady
-  && !state.providerSetupRequired
-  && state.workspaceReady
-  && !state.sessionBusy
-  && !state.compactionRunning
-)
-
-export const deliverQueuedContent = async (
-  action: (content: string, images?: ImageContentBlock[]) => Promise<QueueAcceptance>,
-  content: string,
-  onAccepted: () => void,
-  images?: ImageContentBlock[],
-): Promise<QueueAcceptance> => {
-  const acceptance = await action(content, images)
-  if (acceptance.accepted) onAccepted()
-  return acceptance
-}
-
-export interface ComposerKeyEvent {
-  key: string
-  altKey: boolean
-  nativeEvent: {
-    isComposing?: boolean
-    keyCode?: number
-  }
-}
-
-export const isComposerSendKey = (event: ComposerKeyEvent, composing = false): boolean => (
-  event.key === 'Enter'
-  && !event.altKey
-  && !composing
-  && event.nativeEvent.isComposing !== true
-  && event.nativeEvent.keyCode !== 229
-)
-
-export interface ComposerHistoryKeyEvent {
-  key: string
-  metaKey?: boolean
-  ctrlKey?: boolean
-  altKey?: boolean
-  shiftKey?: boolean
-  nativeEvent: {
-    isComposing?: boolean
-    keyCode?: number
-  }
-}
-
-/** ↑/↓ 触发历史导航的按键面：排除全部修饰键（保留 ⌘↑/⌥↑/⇧↑ 选区等原生语义）与 IME 组合。 */
-export const isComposerHistoryKey = (event: ComposerHistoryKeyEvent, composing = false): boolean => (
-  (event.key === 'ArrowUp' || event.key === 'ArrowDown')
-  && !event.metaKey
-  && !event.ctrlKey
-  && !event.altKey
-  && !event.shiftKey
-  && !composing
-  && event.nativeEvent.isComposing !== true
-  && event.nativeEvent.keyCode !== 229
-)
-
-/** chip 的类型标签与图标：目录/文件按标签尾斜杠约定判定（目录 token 以 / 结尾，
-    见 formatMentionToken——折叠 token 不携带元数据，类型只能编码进文本），
-    技能/会话按 trigger 区分。displayLabel 去掉目录尾斜杠仅供展示。 */
-export const mentionChipMeta = (
-  mention: ParsedMention,
-): { Icon: typeof FileText; kindKey: string; displayLabel: string } => {
-  if (mention.kind === 'skill') {
-    return { Icon: Sparkles, kindKey: 'app.mention.kind.skill', displayLabel: mention.label }
-  }
-  if (mention.kind === 'thread') {
-    return { Icon: Hash, kindKey: 'app.mention.kind.thread', displayLabel: mention.label }
-  }
-  if (mention.label.endsWith('/')) {
-    return {
-      Icon: Folder,
-      kindKey: 'app.mention.kind.directory',
-      displayLabel: mention.label.slice(0, -1),
-    }
-  }
-  return { Icon: FileText, kindKey: 'app.mention.kind.file', displayLabel: mention.label }
-}
-
-const mentionKey = (mention: ActiveMention | null): string | null => mention
-  ? `${mention.kind}:${mention.triggerStart}:${mention.queryEnd}:${mention.query}`
-  : null
-
-const queueKindKey = (kind: string): string => {
-  if (kind === 'steering') return 'app.composer.queueKind.steering'
-  if (kind === 'follow-up') return 'app.composer.queueKind.followUp'
-  return 'app.composer.queueKind.nextTurn'
-}
-
-const queueRejectionKey = (reason: QueueRejectionReason): string =>
-  `app.composer.queue.reject.${reason}`
-
-interface ComposerAttachment {
-  id: string
-  mediaType: string
-  base64: string
-  previewUrl: string
-}
-
-let attachmentIdCounter = 0
-
-const createAttachment = async (file: File): Promise<ComposerAttachment> => {
-  const image = await compressPastedImage(file)
-  attachmentIdCounter += 1
-  return {
-    id: `paste-${attachmentIdCounter}`,
-    mediaType: image.mediaType,
-    base64: image.base64,
-    previewUrl: objectUrlForFile(file),
-  }
-}
+import {
+  accessModeOptions,
+  attachmentsFromImageBlocks,
+  createAttachment,
+  deliverQueuedContent,
+  isComposerAvailable,
+  isComposerHistoryKey,
+  isComposerSendKey,
+  mentionChipMeta,
+  mentionKey,
+  queueKindKey,
+  queueRejectionKey,
+  recentWorkspaceEntries,
+} from '@/components/composer/composerModel'
+import type { ComposerAttachment } from '@/components/composer/composerModel'
 
 export interface ComposerProps {
   variant?: 'new-task' | 'session'
@@ -219,6 +86,9 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
   const [caret, setCaret] = useState(0)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [accessMenuOpen, setAccessMenuOpen] = useState(false)
+  // 模式切换失败就地提示：设置页的 settingsError 跨页不可见，失败原因必须留在
+  // 用户点选的位置（菜单保持打开并展示原因）。
+  const [accessModeError, setAccessModeError] = useState<string | null>(null)
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
   const [budgetMenuOpen, setBudgetMenuOpen] = useState(false)
   const [dismissedMentionKey, setDismissedMentionKey] = useState<string | null>(null)
@@ -254,6 +124,8 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
   const workspacePickerRef = useRef<HTMLDivElement | null>(null)
   const accessPickerRef = useRef<HTMLDivElement | null>(null)
   const modelPickerRef = useRef<HTMLDivElement | null>(null)
+  const modelMenuRef = useRef<HTMLDivElement | null>(null)
+  useHorizontalMenuClamp(modelMenuRef, modelMenuOpen)
   const budgetPickerRef = useRef<HTMLDivElement | null>(null)
   // 挂载后聚焦输入框：设置面板/原生对话框交互后 textarea 会失去 DOM 焦点，
   // 自动聚焦保证用户（以及原生 E2E 的键盘输入）能直接输入。
@@ -335,8 +207,6 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
   const stop = agentPreview?.stop ?? storeStop
   const storeQueueSteering = useAgentStore((state) => state.queueSteering)
   const queueSteering = agentPreview?.queueSteering ?? storeQueueSteering
-  const storeQueueFollowUp = useAgentStore((state) => state.queueFollowUp)
-  const queueFollowUp = agentPreview?.queueFollowUp ?? storeQueueFollowUp
   const storeClearQueuedMessages = useAgentStore((state) => state.clearQueuedMessages)
   const clearQueuedMessages = agentPreview?.clearQueuedMessages ?? storeClearQueuedMessages
   const storeRestoreQueuedMessage = useAgentStore((state) => state.restoreQueuedMessage)
@@ -409,10 +279,13 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
   const recoveredQueuedMessages = agentPreview?.recoveredQueuedMessages ?? storeRecoveredQueuedMessages
   const storeArmedQueueMessageId = useAgentStore((state) => state.armedQueueMessageId)
   const armedQueueMessageId = agentPreview?.armedQueueMessageId ?? storeArmedQueueMessageId
-  const storeAccessMode = useUiStore((state) => state.accessMode)
-  const accessMode = uiPreview?.accessMode ?? storeAccessMode
-  const storeSetAccessMode = useUiStore((state) => state.setAccessMode)
-  const setAccessMode = uiPreview?.setAccessMode ?? storeSetAccessMode
+  const storeAccessMode = useAgentStore((state) => state.accessMode)
+  const accessMode = agentPreview?.accessMode ?? storeAccessMode
+  const storeSetAccessMode = useAgentStore((state) => state.setAccessMode)
+  const setAccessMode = agentPreview?.setAccessMode ?? storeSetAccessMode
+  const accessModeChanging = useAgentStore((state) => state.accessModeChanging)
+  const [fullAccessReminderDue, setFullAccessReminderDue] = useState(false)
+  const fullAccessStartedAtRef = useRef<number | null>(null)
   const storeMessageEditRequest = useUiStore((state) => state.messageEditRequest)
   const messageEditRequest = uiPreview?.messageEditRequest ?? storeMessageEditRequest
   const storeSetMessageEditRequest = useUiStore((state) => state.setMessageEditRequest)
@@ -447,9 +320,7 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
             ? t('app.composer.placeholder.steering')
             : hasQueuedMessages
               ? t('app.composer.placeholder.queued')
-              : variant === 'new-task'
-                ? t('app.composer.placeholder.default')
-                : t('app.composer.placeholder.newTask')
+              : t('app.composer.placeholder.default')
 
   const clearAcceptedInput = useCallback(() => {
     setInput('')
@@ -554,7 +425,38 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
     })
   }
 
-  const deliverInput = useCallback(async (delivery: 'automatic' | 'follow-up' = 'automatic') => {
+  // + 附件按钮：经原生选择器把文件登记进引用注册表（提示词引用列表随之更新，
+  // 模型可用 read 按绝对路径读取），并把引用 token 追加到输入框——附件随消息
+  // 显式传达，而非只躺在全局引用列表里等模型自行发现。统一走引用通道，
+  // 图片/文本/目录同一形态（粘贴截图的 base64 通道仍留给剪贴板路径）。
+  const attachReferenceFile = useCallback(async () => {
+    const file = await authorizeFile()
+    if (!file) return
+    const token = formatMentionToken('file', {
+      id: file.path,
+      label: file.name,
+      isDirectory: file.isDirectory,
+      group: 'referenced',
+    })
+    // 原生对话框期间用户可能继续输入：函数式追加，不覆盖对话框期间的新文本。
+    // token 以 @ 开头，前一字符非空白会破坏触发边界（chip 不渲染），补双空格分隔。
+    setInput((current) => {
+      const prefix = current.length === 0 || /\s$/u.test(current) ? current : `${current}  `
+      return `${prefix}${token}`
+    })
+    setDismissedMentionKey(null)
+    historyIndexRef.current = -1
+    queueMicrotask(() => {
+      const target = textareaRef.current
+      if (!target) return
+      const end = target.value.length
+      target.focus()
+      target.setSelectionRange(end, end)
+      setCaret(end)
+    })
+  }, [authorizeFile])
+
+  const deliverInput = useCallback(async () => {
     const content = input.trim()
     const images = attachments
       .map((attachment) => toImageContentBlock(attachment))
@@ -579,7 +481,7 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
 
     if (running) {
       const acceptance = await deliverQueuedContent(
-        delivery === 'follow-up' ? queueFollowUp : queueSteering,
+        queueSteering,
         content,
         accept,
         images.length > 0 ? images : undefined,
@@ -611,7 +513,6 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
     editRequest,
     editUserMessage,
     input,
-    queueFollowUp,
     queueSteering,
     running,
     send,
@@ -755,12 +656,7 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
       ? `${current.trimEnd()}\n\n${restored.content}`
       : restored.content)
     // 图片块回填为附件：不回填就等于「恢复编辑」静默丢图。
-    const restoredAttachments = restored.images.flatMap((block) => {
-      const attachment = attachmentFromImageBlock(block)
-      if (!attachment) return []
-      attachmentIdCounter += 1
-      return [{ id: `attachment-${attachmentIdCounter}`, ...attachment }]
-    })
+    const restoredAttachments = attachmentsFromImageBlocks(restored.images)
     if (restoredAttachments.length > 0) {
       setAttachments((current) => [...current, ...restoredAttachments])
     }
@@ -906,6 +802,22 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
   )
   const project = authorizedWorkspace?.name ?? t('app.composer.project.choose')
   const currentAccessMode = accessModeOptions.find((option) => option.value === accessMode) ?? accessModeOptions[0]!
+
+  // 完全访问是显式选择，不自动降级；持续开启到阈值后只追加一条软提醒。
+  useEffect(() => {
+    if (accessMode !== 'no-approval') {
+      fullAccessStartedAtRef.current = null
+      setFullAccessReminderDue(false)
+      return
+    }
+    const startedAt = fullAccessStartedAtRef.current ?? Date.now()
+    fullAccessStartedAtRef.current = startedAt
+    const timer = window.setTimeout(
+      () => setFullAccessReminderDue(true),
+      fullAccessReminderDelay(startedAt, Date.now(), FULL_ACCESS_REMINDER_MS),
+    )
+    return () => window.clearTimeout(timer)
+  }, [accessMode])
 
   return (
     <form className="composer" onSubmit={submit} aria-label="Composer">
@@ -1151,6 +1063,30 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
             </ul>
           </div>
         )}
+      {accessMode === 'no-approval' && (
+        <div
+          aria-live="polite"
+          className={`composer__full-access-banner${fullAccessReminderDue ? ' composer__full-access-banner--reminder' : ''}`}
+          role="status"
+        >
+          <ShieldOff size={13} />
+          <span>
+            {t('app.composer.access.fullAccessBanner')}
+            {fullAccessReminderDue && (
+              <strong className="composer__full-access-reminder">
+                {t('app.composer.access.fullAccessReminder')}
+              </strong>
+            )}
+          </span>
+          <button
+            className="composer__full-access-revoke"
+            type="button"
+            onClick={() => { void setAccessMode('standard') }}
+          >
+            {t('app.composer.access.revokeFullAccess')}
+          </button>
+        </div>
+      )}
       <div className="composer__input-wrap" ref={mentionWrapRef} style={{ position: 'relative' }}>
         {activeMention && (
           <MentionPopover
@@ -1214,7 +1150,7 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
           </div>
         )}
         {attachments.length > 0 && (
-          <div aria-label={t('app.composer.attach.aria')} className="composer__attachments">
+          <section aria-label={t('app.composer.attach.aria')} className="composer__attachments">
             {attachments.map((attachment) => (
               <span className="composer__attachment" key={attachment.id}>
                 <img alt="" src={attachment.previewUrl} />
@@ -1229,7 +1165,7 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
                 </button>
               </span>
             ))}
-          </div>
+          </section>
         )}
         {editRequest && (
           <div aria-live="polite" className="composer__edit-banner" role="status">
@@ -1254,7 +1190,7 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
           </div>
         )}
         {mentionBadges.length > 0 && (
-          <div className="composer__mention-badges" aria-label={t('app.composer.badgesAria')}>
+          <section className="composer__mention-badges" aria-label={t('app.composer.badgesAria')}>
             {mentionBadges.map((badge) => {
               const { Icon: BadgeIcon, kindKey, displayLabel } = mentionChipMeta(badge)
               return (
@@ -1277,9 +1213,20 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
                 </span>
               )
             })}
-          </div>
+          </section>
         )}
         <div className="composer__controls">
+          {showAccessPicker && (
+            <button
+              aria-label={t('app.composer.attach.add')}
+              className="composer__attach-button"
+              onClick={() => { void attachReferenceFile() }}
+              title={t('app.composer.attach.add')}
+              type="button"
+            >
+              <Plus size={15} />
+            </button>
+          )}
           {showAccessPicker && (
             <div className="composer__access-picker" ref={accessPickerRef}>
               <button
@@ -1288,7 +1235,10 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
                 data-mode={accessMode}
                 aria-expanded={accessMenuOpen}
                 aria-label={t('app.composer.access.ariaCurrent', { mode: t(currentAccessMode.labelKey) })}
-                onClick={() => toggleMenu('access')}
+                onClick={() => {
+                  toggleMenu('access')
+                  setAccessModeError(null)
+                }}
               >
                 {accessMode === 'no-approval' ? <ShieldOff size={14} /> : <ShieldCheck size={14} />}
                 <span>{t(currentAccessMode.labelKey)}</span>
@@ -1301,16 +1251,30 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
                     <button
                       key={option.value}
                       type="button"
+                      disabled={accessModeChanging}
                       className={`composer__menu-item ${option.value === accessMode ? 'composer__menu-item--active' : ''}`}
                       onClick={() => {
-                        setAccessMode(option.value)
-                        setAccessMenuOpen(false)
+                        setAccessModeError(null)
+                        void setAccessMode(option.value).then((error) => {
+                          // 失败时保持菜单打开：用户需要就地看到原因（例如原生风险
+                          // 警告被取消），关掉菜单会留下「点了没反应」的空档。
+                          if (error) {
+                            setAccessModeError(error)
+                            return
+                          }
+                          setAccessMenuOpen(false)
+                        })
                       }}
                     >
                       <span className="composer__menu-item-label">{t(option.labelKey)}</span>
                       <span className="composer__menu-item-desc">{t(option.descriptionKey)}</span>
                     </button>
                   ))}
+                  {accessModeError && (
+                    <div aria-live="polite" className="composer__access-error" role="alert">
+                      {accessModeError}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1338,7 +1302,7 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
               <ChevronDown size={12} />
             </button>
             {modelMenuOpen && (
-              <div className="composer__model-menu" role="menu">
+              <div className="composer__model-menu" ref={modelMenuRef} role="menu">
                 <div className="composer__menu-title">{t('app.composer.model.titleMenu')}</div>
                 <div className="composer__menu-list">
                   {providerProfiles.map((profile) => (
@@ -1375,18 +1339,6 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
             )}
           </div>
           <ReasoningPicker disabled={running || sessionBusy || providerSaving} />
-          {running && (
-            <button
-              className="composer__follow-up"
-              aria-label={t('app.composer.followUpTitle')}
-              disabled={!composerAvailable || (!input.trim() && attachments.length === 0)}
-              onClick={() => { void deliverInput('follow-up') }}
-              title={t('app.composer.followUpTitle')}
-              type="button"
-            >
-              {t('app.composer.followUp')}
-            </button>
-          )}
           {branchSummaryRunning && !running && (
             <button
               aria-label={t('app.composer.cancelSummary.aria')}

@@ -2,6 +2,131 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+## [0.7.0] - 2026-10-22
+
+### Added
+- **高风险命令的参数 schema 增量接入 specta**：`workspace_access::{list_workspace, read_workspace_text}`、测试页四条只读命令与 `browser_command` 现在由 Rust 类型生成 TS 绑定；`platform/workspace.ts`、`platform/testRuns.ts`、`platform/testEnvironments.ts` 的对应调用改走生成命令，手写镜像只保留展示类型。生成物新增**新鲜度门禁**：`cargo test` 默认比较 `bindings.ts`，过期即失败；更新需显式 `AXIOM_UPDATE_SPECTA_BINDINGS=1`，避免 CI 静默改写工作区。Browser 动作判别值另有双向类型断言，Rust/TS 任一侧增删动作都会在 `typecheck` 暴露。
+- **Provider packet / bash 策略 fuzz 测试**：新增确定性 LCG 语料覆盖 `providerPacketSchema`、SSE 合帧、`validateBashInput` 与危险命令判定；重点断言「任意输入不抛非结构化异常」。fuzz 发现并修复了 SSE **跨 chunk CRLF** 边界：`\r` 落在块尾、`\n` 在下一块时会伪造帧边界，导致 `event` 丢失。
+- **完全访问持续提醒**：进入 `no-approval` 30 分钟后在既有警示条追加软提醒，提示确认是否仍需权限；只提示、不自动降级，切换标准模式即清除。新增纯函数与回归用例。
+- **应用内统一确认/输入对话框**：新增 `dialogService` + `DialogHost`，取代会话删除/重命名、数据库维护、工作区撤销、浏览器数据清理等路径上的 `window.confirm` / `window.prompt`。对话框参与主题、焦点陷阱、Escape 取消与 Enter 提交，危险动作使用红色确认按钮；调用方只依赖 Promise，不再被原生 WebView 弹窗阻塞或不可主题化。新增服务层、SSR 渲染与浏览器清理路径回归用例。
+- **完全访问常驻警示条**：Composer 在 `no-approval` 模式持续展示后果说明（不经沙箱、可读写工作区外、可读凭据、任意出网）并提供「切回标准模式」按钮；模式选择不再只是一次性原生警告。
+- **公开仓 CI 增加 Playwright 假宿主 E2E job**：公开流水线新增独立 `e2e` job（安装依赖 + Chromium，先跑 `e2e:validate` 再跑完整套件），导出契约同步纳入 `e2e/` 目录与 `e2e:*` 脚本；假宿主补齐 `latest_test_batch_record`，测试页三条旅程恢复全绿。
+- **文档事实/导入边界/`.ax` 格式三门禁**：新增 `npm run test:docs-facts`（从 Rust/TS 源码读取 `DATABASE_VERSION`、命令数、SPV、内置 Skill、TestSpec、AX 版本与 runtimePolicy 能力集，拒绝 README/能力矩阵/实施计划/测试设计中的过期事实）、`npm run test:import-boundary`（`agent/` 值级依赖与 `@tauri-apps` 仅 platform 的机器门禁）与 `npm run test:design-ax-format`（两份 `.ax` 必须 2 空格缩进 + 末尾换行）。三者均接入 `npm run check`。
+- **设置页显式压缩 SQLite**：新增 Rust 命令 `maintain_session_repository`（`PRAGMA wal_checkpoint(TRUNCATE)`，`freelist_count > 0` 时执行 `VACUUM`），不删除会话/消息；会话与存储设置区新增「压缩数据库」入口与结果提示，补齐此前「清理后 checkpoint/VACUUM」只写在计划里的缺口。
+- **后台运行并发保护**：后台快捷发送/队列放行启动新 run 前检查全局运行中会话数，超过 4 个时保留草稿并在目标会话投影中给出可读原因；已运行会话的 steering 不受影响（只排队，不新增并发模型流）。
+- **文档页对齐设计稿三页形态（docs-view / docs-edit / docs-empty，#111 设计落地）**：侧栏在 `docs` 视图切换为「文档助手」会话列（与设计页同一覆写模式，抽出通用 `AssistantSidebarPanel` 供设计/文档/测试三视图共用；`testing` 视图同步接入测试助手列）；主区重构为「顶部标签栏（已打开文档 + 同步状态 + 编辑/重新扫描）+ Markdown 正文 + 右侧 280px 文档目录树」。目录树补两个「项目指南」分组（根 `AGENTS.md` 与嵌套 `AGENTS.md`，与提示词 `<available_agents>` 索引同一发现参数，只进页面、不改提示词契约），七个分组头带路径标注；空态卡补「可以这样说」示例指令。新增**编辑态**：`docs-edit` 的 Markdown 源码编辑面与「未保存的更改 / 保存 ⌘S / 放弃」操作条——保存走新增 Rust 命令 `save_workspace_document`（由文档页按钮 / ⌘S 触发；macOS 上消费原生手势配额，渲染进程不能静默写盘；安全边界为授权根 + per-workspace 写锁 + 恢复门 + CAS `expectedSha256`，路径白名单只收 SDD 受管目录与 `AGENTS.md`/`DESIGN.md`，1 MiB/UTF-8 上限，原子替换保留权限位），不经 Agent 审批租约；切换文档遇脏草稿先确认。
+- **嵌套 `AGENTS.md` 进入文档通道（`<available_agents>` 索引）**：根 `AGENTS.md` 是全局契约，各子目录的 `AGENTS.md` 是它的局部展开（风格、边界、测试方式），此前只有根文件被读取——子目录里那份**完全不可发现**，模型只能靠猜。新增 `projectAgents.ts`（经 `workspace.find` 单趟遍历产出纯路径清单，剔除根文件、浅层优先）与 `formatAvailableAgents.ts`，作为 `# 项目上下文` 段中紧贴正文的第二个子块（正文 → agents → skills → docs），与另两面镜像同批刷新。
+  刻意**只注路径、正文由模型按需 `read`**，不自动注入：嵌套文件体量不可控（monorepo 可达数百份），正文进 tool result 会绕过字节预算与显式注记，把「模型主动读取」反转为「被动接受未请求的内容」，并与 Skill 通道（`load_skill` 主动加载 + SHA-256 校验）的知情权边界不对称。索引口径与另两条通道一致：条目上限 256、8 KiB 字节预算，两套缩窄各自计数告知；`.gitignore` 与跳过目录导致的不可见由常驻说明承担（该口径恒为真，不属条件缩窄）。
+- **`AGENTS.md` 与文档索引的刷新时机分叉**：文档索引在每个 `agent_end` 后重扫，根 `AGENTS.md` 却只在会话激活时读一次——而 `finish` 阶段的收口动作恰恰就是同步 `AGENTS.md`，模型改完看不到自己刚写的约定，且同一次提示词重建里文档索引已是新的。现在 `refreshProjectContextOnce` 在同一轮并发重读正文、重扫嵌套索引与文档索引，任一变化才提交；三面镜像同进同退，避免提交失败后镜像与 live 提示词分叉。`refreshProjectContext` 的两次串行读取也改为并发（共用无状态 environment，文档扫描最坏要发数十次 IPC）。
+- **SDD 阶段进度跨上下文压缩留存（确定性账本）**：上下文压缩器用 LLM 生成摘要，阶段进度此前只在 `CHECKPOINT_RULES` 里有一句提示语要求压缩器保留「已加载 Skill 名单与各自推进到的阶段」——那是提示，不是机制。长任务压缩后模型只能靠自然语言回忆阶段，回环链（implement → plan → examine）最容易在此断裂。现在 checkpoint 的 `facts` 增加 `loadedSkills` / `sddReviews`，**从工具结果确定性推导**：`load_skill` 的 details 给出已加载 Skill，`*_subagent` 的 details.verdict 给出各审查器的最新结论。`unknown`（partial 收口或结论格式漂移）必须留存——抹掉会让模型误以为该阶段已通过，渲染层为此单列 `<sdd-phase-note>`。阶段块只陈述事实、**不替模型判定阶段**：把「已加载 plan 但 examine 未过」这类解释硬编码进账本，等于把模型该做的判断固化成代码里的猜测。沿用既有账本的硬预算（有界条目数 + 8 KiB 块上限）与 `facts_json` 持久化，旧 checkpoint 经 `normalizeFacts` 按空处理、投影行为不变。恢复前导语同步计入已加载 Skill 数与未通过审查数。
+- **测试页批次回放与创作检查可见化**：页面重载后仍可经批次摘要入口恢复整套 KPI 与测试点覆盖——`loadRecentBatch` 按 `batch_id` 读回 run 记录并加载各 run 的 plan artifact，条目元数据取自冻结 plan 而非当前磁盘（超出最近 50 条摘要的旧批次不再列出，UI 如实说明）；`testAuthoringCheck` 对 valid 文件补 `noTestPoints` / `unverifiedCases` 警告并在用例表标注，让「用例写好了但没有测试点、或有测试点但没有用例追溯」在固化前可见；运行报告显示 `ui.screenshot` 的步骤名（此前只存 hash，无法辨认截图来源）。
+- **测试页落地设计稿四态（tsCases / tsRunng / tsRprt / tsEmpt，#105+#108 系列收尾）**：主区重构为「Shared31 顶栏（用例文件标签 + 已同步时间 + 刷新 + 重放）→ eNvBar 环境条（运行环境/目标标签页/视口/校验状态）→ 按状态切换三态之一」结构：
+  - **用例总览（tsCases）**：标题行（spec 名 + 元信息 + 重放 + 固化到用例文件）+ 3 张 KPI 卡（用例数 + UI/API/混合细分、最近重放结果与时间、断言数 + 待确认数）+ 用例表（按需解析 spec 的每条用例：图标 + 名称 + 断言短描述 + 状态胶囊 + 类型徽章）+ 折叠式固化面板（自动触发草稿生成）+ 历史运行行式列表 + 写动作逐次审批提示条。
+  - **运行中（tsRunng）**：标题行（运行名 + running 胶囊 + 停止）+ 6px 进度条 + 步骤卡（每步：状态图标 + 名称/消息 + 状态胶囊）+ 审批面板 + 定位失效提示条。
+  - **运行报告（tsRprt）**：标题行（报告名 + 状态胶囊 + 导出报告 + 重放）+ 6 张 KPI 卡（通过/失败/错误/已拒绝/已跳过/耗时，按步骤聚合）+ 失败详情卡（首个失败用例的预期/实际/证据三列 + 左侧会话交接控件）+ 断言项表（每步一行 + 展开查看 expected/actual/证据 ArtifactPreview）。
+  - **空态（tsEmpt）**：居中 480px 卡片（标题 + 描述 + 用例文件名输入 + 添加用例文件按钮 + 路径示例 + 重新扫描），添加走会话（新会话 + 预填骨架指令，与设计/文档空态同一模式）。
+  - 新增 `testSpecDetail.ts` 服务（按需解析选中 spec：ui.expect 中文短描述 + 用例 UI/API/混合分类 + 断言总数），仅做展示，**不动 `scanTestSpecs` 索引契约**（避免全量解析扩散到扫描路径）。环境条点环境名展开 `TestEnvironmentPanel`；类型过滤器保留在顶栏右侧（与设计稿 `Shared31` `刷新` 旁的弱化区一致）。**功能完全保留**：运行/审批/停止/固化草稿生成与发送/失败摘要交接/报告导出与重放。
+
+### Security
+- **显式承认文档侧注入面（记录取舍，不是修复）**：信任模型二分把 `.specs/.plans/.docs` 归为「可信说明」，但「可信」指来源是项目维护者，**不指内容经过完整性校验**——文档经通用 `read` 工具（免审批）进入模型上下文，不冻结正文快照；索引携带全文 SHA-256 revision 以检测变化，但不与可信快照或签名比对，也没有独立来源审计。任何能写工作区的路径（模型自身的 write/edit、沙箱内 bash、受陷的渲染进程、`git pull` 带入的仓库内容）都能改写模型可见的长期约束。接受它的理由是设计意图：规范必须在会话中演进，冻结会破坏工作流。现在该取舍与其后果写进 [`.specs/domain/sdd-workflow.md`](.specs/domain/sdd-workflow.md) 不变量 9，并绑定两条不得放宽的约束——**文档不是安全边界**（文档中的陈述不构成授权，写/命令/敏感路径/审批一律以运行时强制为准）与**需要强制的规则必须落在代码里**（文档只能作为说明，不得作为唯一来源）；同时点名主要放大路径：模型把不可信来源转写进受管目录，会把一次性内容升级为跨会话的长期约束。`.docs/sdd-workflow-implementation.md` 的已知限制同步补齐。
+- **原生手势门与高风险动作的原生内容确认**：新增共享的 `user_gesture` 状态与 NSEvent local monitor（左键按下、Return / 小键盘 Enter、⌘S），每次事件授予一个单次消费配额（5 秒 TTL；E2E 构建按 `feature = "e2e"` 豁免）。`issue_test_step_lease` / `issue_api_test_step_lease`、`save_test_environment_record`（任何字段）与 `save_workspace_document` 在动作前消费配额；受陷渲染进程无法伪造 NSEvent，不能再静默签发租约、改道环境或写文档。两类高风险动作再叠加原生内容确认（`native_confirm.rs`，tauri-plugin-dialog）：带 Secret 的 API 步骤展示 method + origin/path + Secret 数量，取消返回 `null` 并由 Runner 记 `rejected`；环境保存的 `API Base` / `Web Base` / Secret 名单 / 私网授权 / Headers 变化展示 Rust 计算的差异摘要，取消则不写库并保持编辑态。带 Secret 的请求仍被绑定到环境 `API Base URL` 同源地址；`api_request` 工具 `runtimeVersion` 升到 4 并补齐 v1/v2/v3 单跳迁移。剩余边界：UI 写步骤与文档保存仍为手势-only（5 秒存在性窗口），非 macOS 无 NSEvent 等价手势但可用原生对话框做上述两类内容确认，文档内容信任模型（不变量 9）不变。
+- **非 macOS 的「在场门」从 fail-open 改为宿主原生确认对话框（关闭注入面）**：此前 `user_gesture.rs` 在非 macOS 上「保持放行」——受陷渲染进程可以在没有任何真实用户交互的情况下静默签发 UI/API 测试步骤租约、改道测试环境（含 Secret 名单与私网授权）、写入受管文档、恢复设计稿旧版本。Linux 正是 bubblewrap 沙箱的主力平台，这道缺口与「安全对等」的承诺直接冲突。现在：`consume_user_gesture` 在非 macOS **拒绝**（不再放行），五个消费点（UI 步骤租约、API 步骤租约、测试环境保存、文档保存、设计稿历史恢复）统一经 `require_user_confirmation`——macOS 行为**零变化**（仍是手势配额 + 内容确认两层），非 macOS 降级为**一次宿主原生确认对话框**（本次动作若本来就有内容确认框，那一次点击即充当在场证明，不重复弹框；没有则补一次通用确认框），受陷渲染进程无法自动确认宿主对话框。门形态决策抽为纯函数 `resolve_user_gesture_gate`，平台矩阵在任意平台可单测（不再依赖「那段代码只能在 macOS 上编译」）。`tool:api_request` runtimeVersion 升到 5 并补 v4→v5 单跳迁移，语义契约 digest 同步。
+
+### Changed
+- **Provider transport 语义版本升到 v11**：SSE 合帧边界修复影响所有 provider；`providers.json` 与生成表、`PROVIDER_TRANSPORT_MIGRATIONS`、语义 digest 契约同步。新增 `10 → 11`（opencode-go `2 → 3`）单跳迁移，旧会话仍可恢复。
+- **视图切换支持异步守卫**：`installViewChangeGuard` 的返回值扩展为 `boolean | Promise<boolean>`，文档页未保存确认可异步等待；守卫解析前不改视图，期间用户切走则丢弃本次结果，避免异步确认覆盖用户后续导航。
+- **无障碍告警清零**：Markdown/变更日志/文档页的 `<a>` 在缺少 `href` 时退化为 `<span>`；分组容器改用 `<section>`/`<fieldset>`，归档列表改为 `<ul>`/`<li>`，拖拽把手改为 `<hr>`（补 `aria-valuenow`），浏览器实时画面改用原生 `<button>`，侧栏工作区行拆成「文件夹切换 + 名称激活按钮 + 动作按钮」避免嵌套交互元素，遮罩改为独立 backdrop 按钮；设置页关闭按钮补 `type="button"`，四处用户动作展开的 `autoFocus` 标注为有意行为。Biome a11y 规则现为 0 告警。
+- **运行时差异与文件事实收敛为单一实现**：`AgentSession.createRuntimeMutationEvents` 改用 `messageValidation` 的 `sameRuntimeValue` / `runtimeToolsSnapshot`，不再维护第二份 `JSON.stringify` 比较；上下文 compaction 与分支摘要共用 `context/fileFacts.ts`，读工具判定从 `includes('read')` 改为显式名单，避免新增/改名工具时两处事实分叉。新增 `fileFacts.test.ts` 覆盖读工具、修改优先、错误结果与非法 details。
+- **高风险模块增加局部覆盖率阈值**：`agentStore`、`sessionActions`、`SqliteSessionRepository`、`connectService` 在全局阈值之外各自设防退化下限，避免被全局聚合稀释。
+- **审批卡文案本地化**：`ToolApprovalPresentation` 新增可选 `titleKey` / `descriptionKey` 与参数；write/edit/apply_changes/restore_trash/bash/design_import 提供稳定 i18n key，`ApprovalCard` 渲染时按当前语言解析，英文 `title` / `description` 保留为 UI/审计回退值（不是模型可见内容）。新增中英文案与 ApprovalCard 回归用例。
+- **接入 `prefers-reduced-motion`**：`base.css` 全局收敛动画/过渡/滚动行为，系统开启「减少动态效果」时组件不再执行装饰性动画；DESIGN.md 同步订正。
+- **README 与现况文档重新对齐**：修正 `DATABASE_VERSION`、SubAgent 授予状态、10 个 `ui_*` 浏览器工具、测试/文档功能入口、Linux 能力矩阵、实施计划命令数与恢复点状态；`docs/ui-api-automation-testing.md` 的「仍缺失」清单改为「原设计期缺口（均已补齐）」。
+- **`.pen/axiom.ax` / `.pen/axiom-website.ax` 规范化为 2 空格缩进 + 末尾换行**：恢复 `.ax` 的 diff/补丁可读性，并由 `test:design-ax-format` 防回退。
+- **生产开放子代理（只读委派）**：`runtimePolicy` 的能力集自此授予 `subagent:review` 与 `subagent:explore`，四个 `*_subagent` 工具（explore / inspect / examine / review）进入注册表——此前它们从未在任何配置下注册过，SDD 文档描述的整套审查回路在产品形态里是死代码路径。三道门各自独立、开放不等于放开：① **注册门**在 capability；② **默认激活门**仍不含子代理（模型须先 `discover_agent_tools` 才可调用，与 web/browser/SSH 等按需加载的工具同一口径）；③ 子会话工具集是「只读工厂表 ∩ 父会话现场活跃工具」的 fail-closed 交集，写/命令/绝对读/Artifact 写入在 `scopedReadEnvironment` 层结构不可达。预算由父 run 统一承担（8 次委派 / 120 请求 / 900s 三重上界）。能力授予不依赖沙箱探测（非桌面运行时不给任何能力），因此在探测之前即生效。`SYSTEM_PROMPT_VERSION` 无需变更：`assembleCanonicalSystemPromptBody` 以全能力集（`Object.keys(CAPABILITY_SECTIONS)`）计算指纹，覆盖的本来就是「已授予」分支，`runtimePolicy.ts` 也不在任何语义 digest 的 sourceFiles 内——实测版本契约测试原样通过。五份声明「生产未授权」的文档（能力矩阵、子代理写能力设计、AGENTS.md、执行面边界 Domain Spec）同步订正。
+- **TestSpec v3：新用例文件强制测试点追溯**：`TEST_SPEC_VERSION` 升到 3，解析器接受 v1/v2/v3；v3 要求至少声明一个 `testPoints`，否则判「需要修复」；v1/v2 文件永久可读，v2 省略 `testPoints` 仍合法（由离线审计 `warnings` 与页面创作检查提示）。`contracts/test-spec-version.json` 已同步（`supportedVersions` 加入 3、重算 surfaceDigest），固化草稿文案明确标注「尚缺 testPoints/verifies」。
+- **Task Spec 与 Plan 明确为本地工作台产物，不进版本库**：`.gitignore` 早已忽略 `.plans/` 与 `.specs/tasks/`，但有两份 Task Spec 在规则之前被提交、至今仍被追踪，形成「规则说不入库、实际入库」的半状态——现已一并移出追踪（文件保留在磁盘）。同时把决定与后果写进 [`.specs/domain/sdd-workflow.md`](.specs/domain/sdd-workflow.md) 不变量 8：入库的 SDD 产物只有 `.specs/domain/`（长期演进、永不归档）与 `.docs/`；任务产物是单次任务的私有工作面，换机器/新克隆/CI 上都不存在。由此推出一条可执行的写作约束——**验收标准不得以「某个 `.plans/`/`.specs/tasks/` 文件存在或包含某内容」为判据**，那类判据对 reviewer 与 CI 不可验证（`.specs/tasks/sdd-workflow-docs.md` 的验收正是如此，勾选了「Plan 存在」而该文件并不存在），验收必须落在可观测行为上；归档（`status: done`）的执行率也因此无法用 git 审计，只能靠产物自身的 frontmatter。`docs/sdd-workflow.md` 的四目录表同步标注。
+
+### Fixed
+- **SSE 跨 chunk CRLF 合帧错误**：按块独立归一化会在 `\r`/`\n` 被 chunk 边界拆开时凭空产生空行并提前断帧，表现为 `event:` 字段丢失或事件内容错位。现在把孤立 `\r` 留到下一块（或末尾 flush）再归一化；fuzz 用例覆盖随机切块。
+- **测试报告在缺少环境事实时整页崩溃**：`TestRunSummaryRecord.envFactsJson` 是可选字段，假宿主/历史记录缺省时 `describeEnvironmentFacts(undefined)` 直接调用 `.trim()`，React 抛错后整棵 `<TestingView>` 空白。现按 `string | null | undefined` 处理并补回归用例；报告同时把 `ui.screenshot` 的证据 SHA-256 在展开详情里显示（此前被 expected/actual 分支遮住）。
+- **测试页 E2E 与现行 UI 漂移**：扫描/运行/报告三条旅程改用当前顶栏标签页、状态胶囊、报告步骤行与「返回」入口；清理用例先退出测试助手侧栏再撤销工作区，假宿主补 `latest_test_batch_record`，避免单条缺失命令让整页扫描 Promise.all 失败。
+- **手工 Artifact GC 引用集补齐 `tool_executions`**：`collect_message_artifact_hashes` 现在 UNION `agent_messages` 与 `tool_executions` 的 `artifact_id`，与自动清理查询同源；新增 Rust 回归用例锁死「只挂工具审计、没有消息行的 Artifact 不得被手工 GC 误回收」。
+- **版本契约文档漂移**：`docs/runtime-loop.md` 的过期行号改为当前函数位置；`docs/responsibility-boundaries.md` 移除会漂移的 `agentStore` 行数快照；`AGENTS.md` 移除过期行号；`docs/bundle-budget.md` 更新 2026-10-19 实测体积并修正 SubAgent 能力描述。
+- **测试功能结论可信度与 Secret 边界**：覆盖/报告不再按当前磁盘重算测试点——运行时把 `testPoints` / `cases[].verifies` 冻结进 `TestRunReport`，套件 KPI 使用条目里的冻结元数据，报告打开时从 `plan_content_hash` 读取 plan artifact；删/改失败用例不会再让本次覆盖变绿或错归因。运行范围只提交 valid 文件（此前「全部」会把 invalid 文件送进 Runner），覆盖的「需要修复 / 不适用」列改为统计当前筛选面；批次存在文件/钩子失败时不再显示「全绿」。运行页进度按 `activeRun.path` 取用例，空态显示扫描错误，环境探针/准备阶段提供停止入口，探针取消记为 canceled 而非 rejected；run 开始记录 `sourceSessionId`，步骤持久化失败会把已开始的 run 收敛为 error。TestSpec 解析器与 Rust 执行面都拒绝 URL/query/body/自定义 Header/断言中的明文凭据与敏感响应头断言，敏感提取值经 Runner → API Driver 传入证据脱敏；`api_request` 工具 `runtimeVersion` 升到 3 并补 v1/v2 → v3 单跳迁移，语义契约 digest 同步。固化 payload 按实际 v2 标注并要求 testPoints/verifies；`assertCount` 计入 `ui.wait` 与 API `expect`；离线审计补 128 KiB 字节上限；`urlEquals` 相对路径按 `webBaseUrl` 解析；修复轮次文档改为 `specHash` 口径。批次内 `afterEach` 钩子失败现在折回目标用例的测试点状态（此前用例 passed、钩子失败时测试点仍算绿）；纯 UI 套件在环境未配置 API base 且没有任何 API 步骤时跳过 API 探针，不再被无意义的环境阻塞挡住。
+- **测试批次回读、追溯审计与 afterAll 归属**：新增 Rust 命令 `latest_test_batch_record`，按 `batch_id` 直接回读最近批次（含 `truncated`），页面刷新后不再从「最近 50 条运行」里猜批次——批次文件数超出列表窗口也不会缺文件，硬上限 1000 条时界面如实提示。离线审计基线升级到 schema v2：`toSpecBaseline` 写入与 `caseIds` 同序的 `caseVerifies`，`diffSpecInventory` 在用例/测试点 id 全部不变时也能报出追溯被删除/新增（把 `verifies` 悄悄挪走不再静默降级覆盖）；v1 基线继续按旧维度比对，无需重生成。审计 CLI 对 v2 未声明 `testPoints`、用例未声明 `verifies` 输出 `warnings`（`--json` 同名字段，不改变退出码；未被认领的测试点仍由解析器判为需要修复）。`afterAll` 失败现在折回该文件全部已通过用例，套件级清理失败不会再留下绿色测试点。
+- **文档页编辑死锁、正文陈旧与超长单行数据丢失**：`scan()` 此前每次成功重扫都无条件推进 `editLoadSeqRef`，而 `beginEdit` 只在 seq 未变时复位 `editLoading`——编辑全文加载期间恰逢 run 结束重扫，按钮会永久停在「正在加载…」；现在只有选中路径真的变化才取消在途编辑加载。正文此前只在 `selectedPath` 变化时重读，Agent 改写当前文档后 run 结束重扫、重复点击当前文档都不刷新；`DocContentState` 现记录全文 revision，索引 revision 变化且非编辑态时自动重读，重复点击当前文档也强制重读。新增 `read_workspace_document` 整文件读取命令（≤1 MiB，复用授权根、路径白名单与敏感路径策略），编辑态不再分页拼接——分页在单行超过宿主 128 KiB 输出上限时返回占位提示，旧实现会把提示文本保存回磁盘。另修正 `file_read_failed` 页面文案（条目仍会以文件名兜底列出，并非「未列入索引」）、AGENTS 发现参数改为复用 `projectAgents` 常量、`<available_agents>` 常驻说明补深度 6 层、预算全部耗尽时保留最小省略提示、⌘S 提升到编辑态 window 作用域；保存后的提示词刷新改走与 `agent_end` 相同的按会话单飞 + 尾沿合并，避免与在途刷新并发扫描。
+- **侧栏残留「技能」入口未随设计稿收敛**：设计稿侧栏导航（`AppSidebar` / `Shared09`，#110 起）为新任务/文档/设计/测试 四项，但实现侧 `Sidebar` 仍保留 `Sparkles`「技能」按钮——#110 只改了设计稿静态符号、未同步实现侧留下的漂移。移除该入口、随之未用的 `Sparkles` import 与 `app.sidebar.skills` / `app.sidebar.skillsTitle` 两条文案键（技能仍可经设置页进入）；两处断言「技能在侧栏」的用例改为按设计稿断言四项导航且不含技能/SSH。
+- **Composer 占位文案与设计稿不一致**：空闲态占位符按 variant 分支，session 显「给 Axiom 一项任务」、new-task 显压缩版「向 Axiom 提问（@ 文件 · / 技能 · # 会话）」；设计稿在所有 Composer 上下文中统一为「向 Axiom 提问，输入 @ 添加文件或目录、/ 使用技能、# 关联会话」（全稿无「一项任务」字样）。两分支收敛为该文案并删除未用的 `app.composer.placeholder.newTask`（zh/en），英文同步等价完整翻译。
+- **文档扫描错误不再依赖本地化字符串猜测**：Rust `list_workspace` / `read_workspace_text` 命令边界现在返回结构化 `{ code, message }`，TS 宿主只按稳定 code 构造 `AgentEnvironmentError`；根 `AGENTS.md` 可直接区分 `not_found` 与瞬时故障，不再为读失败追加一次根目录 `list`，也不会因 Rust/系统错误文案变化误清空项目约定。
+- **文档索引缩窄从聚合计数升级为逐根可操作诊断**：根列举失败、宿主清单截断、目录条目上限、嵌套目录省略、文件头读取失败统一进入 `ProjectDocDiagnostic`，携带 root/role/count/reason；并发读取完成后按输入顺序确定性聚合。`<available_docs>` 输出同源 `<diagnostic>`，设置页新增「项目文档索引」诊断区，用户可定位具体根目录并按提示用 `ls` / `read` 复查。
+- **后台会话的 SDD 上下文刷新不再串到前台会话**：`agent_end` 现在携带触发会话 ID，刷新调度器按会话独立单飞并允许不同会话并行；缓存 harness 持有自己的根 AGENTS.md、嵌套索引与文档索引快照，后台重扫使用该会话绑定的工作区、Provider、访问模式与冻结 Skill manifest 重建提示词。此前后台会话写完 Spec 后触发的全局刷新会扫描届时的前台工作区，后台再次快捷发送仍使用旧索引。
+- **受管文档正文变化现在会触发提示词刷新**：`ProjectDocEntry` 增加宿主对全文计算的 SHA-256 `revision`，进入 `<available_docs>` 并参与深比较；标题和路径不变的正文编辑也会经 `runtime_dependencies_update` 重建提示词并失效旧 checkpoint。revision 只承担新鲜度检测，不改变“文档不是安全边界”的信任模型。
+- **文档索引 32 KiB 预算改为最终输出硬上限**：预算现在覆盖 preamble、全部诊断 note 与闭合标签，通过从尾部逐项省略低优先级条目收敛；新增回归用例直接断言最终 UTF-8 字节数不超过上限。此前只累计 `<doc>` 行，追加 note 后可能越界。
+- **文档扫描从串行 IPC 改为有界并发**：四个受管根并发列举，文档头以 8 个 worker 读取；扫描结果仍按根优先级与相对路径写回预分配槽位，避免并发完成顺序污染提示词和深比较。新增用例锁定并发上限与确定性输出。
+- **官网安全说明与现行执行面重新对齐**：中英文文档移除已退役的网络命令“双层确认”，明确标准模式单层审批、macOS seatbelt / Linux bubblewrap / Windows 无 Bash、完全访问无沙箱，以及授权注册表恢复语义；`doc-drift-audit` 新增安全事实契约，官网中英文页面测试新增章节与 block 结构对齐门禁。
+- **根 `AGENTS.md` 索引注入被宿主默认行数上限静默砍半**：项目上下文承载两件事——Axiom 自身的架构边界说明（「必须保留的不变量」表、模块分层、版本契约规则），以及各子目录的定位索引。后者已经失效：项目上下文读取直接调 workspace 读文件、不带 limit，落到宿主默认 `DEFAULT_READ_LIMIT = 200` 行，且截断在读取层静默发生。本仓 `AGENTS.md` 286 行，**后 86 行（含「版本契约」「安全模型」「交接风险清单」三节）在任何会话里都从未注入过模型**。读取改为按宿主分页协议读到 EOF。
+- **`AGENTS.md` 字节预算比宿主读上限更紧，形成第二道截断**：即使读到 EOF，注入前的 32 KiB 预算仍会把本仓 64 KiB 的 `AGENTS.md` 砍到约 150 行，且截断注记的「省略了约 N 个字符」统计的是已被宿主砍过一刀的内容、方向相反地低报缺失量——而它本就该是全文进上下文的定位索引。预算改为对齐宿主单次读输出上限（`MAX_READ_OUTPUT_BYTES`，128 KiB），使 TS 侧不再制造比宿主更紧的第二道约束；注记仍按行边界截断并显式告知省略量。
+- **AGENTS.md 读取失败不再伪装成「文件没了」**：`loadProjectContext` 返回三态（content / absent / unavailable）。此前「项目确实没写 AGENTS.md」与「读取抛错」都是 `null`，一次偶发的 IPC 或权限错误就会把整段正文从 live 提示词删掉。现由 Rust 结构化错误 code 直接判别：仅 `not_found` 为 absent，其余均为 unavailable 并保留上一份；切换工作区时不沿用旧正文——那属于另一个工作区。
+- **文档通道的四项加固**：① **限深扫描**——嵌套 `AGENTS.md` 发现限深 6 层并把该口径并入渲染层常驻说明。② **失败不再伪装成「没有」**——`loadProjectAgents` 返回 `null` 表示扫描失败，run 尾沿刷新保留上一份镜像；文档索引的 `list` 失败不再与「目录为空」同形，条目为空但存在诊断时子块仍输出。③ **失败可观测**——嵌套扫描失败与 `runtime_dependencies_update` 提交失败均记 `console.error`。④ **三面镜像收敛为单一构造点**——`buildActiveSessionBasePrompt` 让「每个调用点都记得传三面镜像」由构造保证而非自觉。
+- **提示词重建的两个调用点漏传嵌套索引**：`<available_agents>` 接入 `buildSessionBasePrompt` 时只改了激活路径与上下文提交路径，技能重载（`applyProjectSkillsToSession`）与访问模式切换（`refreshSystemPromptForAccessMode`）两处仍按旧签名调用——用户重载项目 Skill 或切换权限档，会把整块嵌套 `AGENTS.md` 索引从 live 提示词里删掉，且此后不再出现。四处重建点现已齐备。根因是「每个调用点都要记得传三面镜像」这一靠自觉的约定，故在交接风险表新增一行显式约束。
+- **`projectContext.ts` 无任何单元测试**：`AGENTS.md` 注入的截断算法、fail-soft 分支与分页读取此前零直接覆盖（`docs/deep-analysis-2026-10-04.md` 已把它列在「无单测覆盖」清单里）。新增 `projectContext.test.ts`，覆盖读到 EOF（286 行不被静默截断）、分页上限兜底时显式告知「只读到 N/M 行」、字节预算按行边界截断、缺失/空白文件 fail-soft。
+- **领域规范「永不归档」没有任何强制**：`extractArchived` 对 role 一视同仁，`.specs/domain/*.md` 一旦被误写 `status: done` 就会静默移出活跃索引——而领域不变量是整个 SDD 的最高约束源，长期蒸发且无任何信号；该规则此前只写在文档里。归档判定现在感知 role，domain 一律不归档、也不计入归档计数（否则计数说谎）。新增用例锁死，并对照保留任务类产物的归档行为。
+- **文档行为变更同步到三份现行文档**：上一条的两处行为改动（领域规范永不归档、索引只取一层且子目录显式计数）此前只落在代码与 CHANGELOG，`.specs/domain/sdd-workflow.md` 不变量 2、`docs/sdd-workflow.md` 的归档约定与不静默缩窄清单、`.docs/sdd-workflow-implementation.md` 的索引字段与四类 note 均同步订正——行为与文档不一致时，文档就是那个错误的第二事实源。
+- **文档索引不递归却也不告知**：受管目录只索引直接子项，SDD 项目一旦按子域分目录存放，子目录里的文档完全不可见，且不进任何既有计数——模型会把索引当全集并「重新造一份」。新增 `nestedDirCount` 并产出显式 note（与既有四类截断 note 同口径），深比较一并纳入该计数。
+- **子会话提示词的「允许的工具」段是第二事实源**：四个子代理模板各写死一份工具清单，与 `SUBAGENT_READONLY_TOOL_FACTORIES` 无关联——工具集增删后文案不跟随，子模型据此尝试调用不存在的工具、白耗轮次与预算（已发生过一次：文案宣称有 `web_search`/`web_fetch`，而工厂表里从来没有）。现在该段改由 `readonlyToolsSection()` 从工厂表派生，explore 与审查三件套统一走 `{{TOOLS}}` 占位符；增删工具只改工厂表一处。新增用例断言清单里不出现工厂表之外的名字。
+- **内置提示词覆写正文无长度上限**：清单层的 32 KiB 预算只约束元数据，正文本身不限长——一次误粘贴能把任意长内容塞进每一次工具调用与后续每一轮上下文。新增 16 KiB 上限，保存与加载两道都把关；设置页提前拦截并给出可读原因。三种语义保持分离：空 entry 清整条、空串清该字段、超长拒绝且**不动原值**（若与「清空」共用路径，粘贴超长正文会静默变成清空覆写，比拒绝更糟）。
+- **前端测试的间歇假红：localStorage 被所有 vitest worker 共享**：跑前端测试长期依赖 `NODE_OPTIONS="--experimental-webstorage --localstorage-file=..."`——Node 的实验性 `globalThis.localStorage` 会遮蔽 vitest jsdom 环境，而那个落盘文件被**所有 worker 进程共享**。已实证：分处不同 worker 的两个测试文件，B 能读到 A 写入的值。并发运行时互相覆盖/清空产生间歇假红，本仓已命中画布摆放叠加层（`DesignCanvas.test.tsx`）与浏览器配置持久化（`BrowserSection.test.tsx`）两处断言，且每次都要重新排查一轮。`vitest.setup.ts` 现在为每个测试文件装一份内存版 localStorage（`src/testSupport/memoryLocalStorage.ts`，实现 Web Storage 核心面并满足 DOM `Storage` 接口），文件间彻底隔离。`npm run test` 不再需要 `NODE_OPTIONS`——AGENTS.md 里那条强制要求及其「Node 26 占位遮蔽 jsdom」的坑随之消失。新增用例锁死隔离语义与内存实现的 Storage 行为。验证：5 次连续全量（不带 NODE_OPTIONS）3135 例全绿、0 失败；修复前约 10 次并行运行中失败 2 次。
+
+### Removed
+- **设计画板的 `.pen` 直接操控编辑层整层删除**：属性检查器、undo/redo、节点拖动写盘、ref 只读集、`markWritten` 防自回声、CAS 失败回滚链，以及支撑它们的 `designEditing.ts`（raw 树字段补丁纯函数层）、`DesignInspectorFields.tsx`、死样式与 11 个 i18n 键。这套能力从落地起就**从未在生产路径可达**——`.ax` 是唯一稿格式，`useDesignDocument` 的 `rawJson` 在所有产出分支恒为 `null`（`.ax` 的作者是 LLM，画布是评审面），却带着完整的检查器/撤销/属性写回/只读集测试，看上去在维护实则不可用；留着比删掉的代价更大：后续读者会以为画板支持节点级手改。`useDesignDocument` 的 `markWritten` 与 `reload` 随之下线（唯一生产消费者是该层的 CAS 回滚）。**保留**：无限画布、页拖动与 Figma 式吸附、`.ax` 两段式整页删除（`write_design_document` 与其 CAS/原子落盘语义不动）、扫描验证、PNG 导出、实现提示词、引用到会话。`DesignCanvas.test.tsx` 相应由 43 例减至 35 例，`.ax` 评审面能力用例一条不少。
+
+### Performance
+- **画布原位扫描的前置判定不再触发 2N² 次强制同步布局**：开始扫描前要算出「哪些页不能原位采集、必须走 staging 回退」（装不进视口的巨页 + 与其它页相交的页——原位截图会拍到覆盖其上的内容，像素统计失真）。原实现是两重两两比较，且**比较的循环体里每次迭代都调 `getBoundingClientRect`**，一次调用就是一次强制同步布局，于是「读矩形」被放大成 2N² 次布局刷新；65 页的稿光这一段就足以让「开始扫描」肉眼卡顿。相交判定与「装不装得下」只依赖页的相对位置与尺寸，相机又是 uniform scale + translate，两者都不改变判定结果，故整段改走画布坐标、一次 DOM 都不碰；规则抽成纯函数 `stagingPageIds` 并补用例锁死路由语义（巨页入列、相交的双方都入列、边界相接不算相交、画布坐标 × scale 与屏幕坐标等价）。顺带把 `stagingPages` 的 `!sweepable.includes` 与每轮 `pending` 的 `!visible.includes` Set 化——后者整轮扫掠累计是 O(N²) 的纯浪费。
+
+### Fixed
+- **原生截图对永久性失败也重试，白等一整轮超时**：`capture_webViewViewport` 失败后固定等 250ms 无条件重试一次，而单次失败的代价由 Rust 侧的有界等待决定（14s 收结果 + 15s 外层兜底）——矩形非法、平台不支持这类**永久失败**重试只是再烧一轮 15s，用户看到的是导出/扫描卡十几秒后报同一个错。现在按错误文本分类失败性质，只对瞬时类重试；间隔改为带抖动的递增（黄金比例相位，`captureRetryPolicy.ts` 纯函数）——画布扫描一次并行 4 张截图，固定节奏会让它们在同一时刻先后超时、又在同一瞬间重试，把瞬时拥塞放大成持续拥塞。未知文案按瞬时处理，保持既有行为。新增 5 例锁死分类与节奏语义。
+- **`npm run check` 的 `test:design-preview` 长期红**：`.ax` 1.5 具名插槽落地后，节点写 `slot` 内容必须在 `components` 侧声明 default 插槽契约（解析期 fail-closed），而 `scripts/design-preview.test.mjs` 的「store 适配器注入独立快照并运行真实 default 插槽」用例仍在写无契约的插槽内容，解析直接拒绝。用例补上 `components.Button.slots.default` 声明。该红在本次改动前已存在（`a318d55` 复现），非本轮引入。
+- **`.ax` 组件注册表的 props 契约与真实组件签名漂移无门禁**：`AX_COMPONENT_REGISTRY` 的 props 是手写的。组件改名或改 props 时画布路径会 fail-closed 拒绝（存量稿报错，这个方向安全）；致命的是反方向——契约漂移后 `validateAxProps` 仍以注册表为准，于是**放行实际不合法的稿**（模型照组件源码写了注册表里没有的 prop，被原样塞进 DOM），或**拒绝实际合法的稿**（报错信息还是错的）。两者都是「校验器与被校验对象不同源」的静默失败。现在注册表每条 props/statics 都挂 `satisfies`：presentational 用全量契约（必填 prop 必须出现且标 `required: true`、组件签名上没有的 prop 直接编译失败）、store-bound 用收窄契约（允许整条为空，但写出来的必须是真实 prop 且必填性不得写错）、statics 的 key 必须是真实 prop。门禁寄生在既有的 `npm run typecheck` 上，零运行时成本，不新增脚本与 CI 步骤；`description`（面向模型的中文说明）仍手写不生成。实测三条故障注入均被拦下并给出可定位的诊断：多声明 prop / 必填标成可选 / 漏声明必填 prop。本次实测**未发现存量漂移**——契约数据零改动，属预防性门禁。
+- **`.pen/axiom-implementation.ax` 的失实注释**：`emitPageContract.test.ts` 中一条注释称该稿已随提交 `7012c8d` 删除。它是 `npm run audit:design-axiom`（在 `npm run check` 链内）与 `design:verify:axiom` 的唯一稿件输入（`.axiom/design/verification.json` 指向它，20 份视觉基线的文件名由其路径派生）——是活资产不是残片，按注释清理会直接让 `npm run check` 红。注释已订正并写明它为何不可删。
+
+### Documentation
+- **设计画板补上领域规范层**：格式契约、评审面与作者面的分工、写通道的并发与信任模型此前只存在于 `docs/`，不在 `.specs/domain/`——与仓库「技术债走受管目录」的约定相悖。新增 [`.specs/domain/design-canvas.md`](.specs/domain/design-canvas.md)：18 条不变量（单一格式、整稿粒度 fail-closed、禁表达能力由键集结构保证而非运行时检查、评审面不得越界成第二条写路径、CAS 而非最后写入者获胜、中间态不得当最终态呈现、无能力不等于通过、空白可检出、组件即恒等层、写回通道的免审批只对用户手势成立、文档不留版本快照等）+ 状态迁移与信任模型边界。
+- **订正设计文档与实况的脱节**（七处，全部经代码核对）：`ax-format.md` §7 写死的版本快照「`.ax` 1.4 / design_query 19 / design_import 7 / Skill 24」全部落后于代码，改为指向代码与契约清单这一唯一真值（快照必然滞后并成为错误事实源）；迁移链表停在 v4/v3/17 而实际链已走到现行版本，改为记录演进事实并指向 bump 点。`design-canvas.md` 第四轮声称「`DesignCompareView.tsx` 已落地、工具栏有对比模式」——该文件与 `compareMode` 在代码中均不存在，面板已于 2026-10-05 下线，改为显式标注；§11 第五轮的「直接操控编辑」层在生产路径不可达（`rawJson` 恒为 null，仅测试驱动），同样标注；头部定位行「设计稿以 `.pen` 存放」与下一行「`.ax` 是唯一格式」的自相矛盾、以及 §2–§10 通篇 `.pen` 主语，改为显式的历史叙述读法提示。`README.md` 的 `ax@1.4` 改为指向 `AX_FORMAT_VERSION`。P2 路线图中已被下线面板的三行（自动方案探索 / 对比文件选择 / 版本历史 UI）改为标注实际状态，并指向 `design-verification.md` 已有的状态注。
+
+### Changed
+- **激活边界的提示词对账不再只改一半**：`reconcileSessionPromptOnActivation` 此前只替换 live `systemPrompt`，不更新 per-session basePrompt 镜像——而 `prepare_next_turn` 每轮末从镜像重拼提示词，下一次回流就会把刚修掉的漂移带回（档位镜像正是这样掩盖过一次缺陷）。现在「替换 live + 同步镜像」绑定在 `agentStore::reconcileSessionPrompt` 内；三处激活路径（bindSession / cached 激活 / 重启恢复）原先各自拼装同一组提示词参数（两处 14 行重复），合并为 `buildActivationBasePrompt`，使「对账候选与镜像同源」由构造保证而非靠手工保持一致。
+- **远程输入不再继承完全访问**：connect 通道全链路对访问模式零感知——`selectSession` 不触碰 Rust held 模式，因此远程消息可驱动一个「用户已设为完全访问且未收口」的会话，让其免审批执行写命令与 bash（无沙箱、可读写工作区外、可读凭据），而远程侧无从察觉。现在远程输入落盘前若目标会话为 `no-approval` 即先降级（工具调用走逐次卡片，仍可远程回 y/n 放行——人工检查点在远程侧重建）；降级失败或目标非激活会话时**拒绝**本次输入。刻意不自动恢复：重新获得完全访问由本地用户显式操作。
+- **会话提示词的访问模式段不再串会话**：此前用一个模块级「活动会话模式镜像」给提示词供档位，写入点只有模式切换与 cached 激活——切换会话时镜像不更新，于是把一个会话的完全访问档写进另一个标准会话的提示词，模型遂按「可写工作区外、不再询问」行事（激活边界的对账只替换 live 提示词、不更新 basePrompt 镜像，故错误会在下一个 turn 边界复现）。改为创建时用快照自带的 `accessMode`、刷新时读 store 权威投影，镜像与相关回调整体删除。
+- **运行中切模式的提示词不再停在旧档**：`refreshSystemPromptForAccessMode` 原先在 `isRunning` 时于**更新 basePrompt 镜像之前**早退，而 run 结束唯一触发的文档重扫带「索引未变即返回」的相等门——切一次模式会让该会话后续所有 run 都停在旧档。现改为镜像先更新（运行中唯一生效通道：`prepare_next_turn` 每轮末从 `getBasePrompt()` 重拼），并在 `agent_end` 空闲后补一次完整重建。
+- **会话工作区绑定注册表化**：`sessionWorkspacePaths` 由裸 `Map`（8 处直接 `.set`/`.get`/`.delete`，三处同步全靠注释维持）改为具名 API（`bind`/`forget`/`pathOf`/`forgetSessionsForWorkspace`/`sessionsForWorkspace`/`bindings`，实现落在 `stores/services/sessionWorkspaceRegistry.ts`）。漏掉的清理点从静默 stale path 变成类型层可见；`revokeWorkspace` 的「取受影响列表 → 停止运行中会话 → 解绑」由单次 `forgetSessionsForWorkspace` 完成（原先遍历中删除），返回的快照同时作为访问模式降级名单来源，消除同一问题读两处状态的分叉。
+- **工作区绑定不变量自检**：`bind` 比对运行时绑定与列表投影，分叉时记 `console.error`（诊断而非抛出——调用点在会话激活路径，抛出会中断激活且无法自愈）。分叉意味着 harness 未按会话自己的工作区构造，该会话的写操作会经 Rust `authorized_root_for(None)` 回落到**当前活动工作区**而非其绑定目录。投影来源经 `setProjectedWorkspacePathSource` 在 store 创建**之后**注入（`createRuntimeSession` 在模块求值期即绑定一次，那时 store 尚不可用，直接读会撞 TDZ）。
+- **订正撤销工作区的语义描述**：三处注释与 AGENTS.md 曾称撤销后「保留原路径使审批 fail-closed」，与实际不符——`clearWorkspaceForPath` 已清空 DB 的 `session.workspace`，运行时绑定随之解绑，路径**不保留**。该会话在重新绑定工作区前不可运行，挡住它的是**工作区门**而非审批：激活时全局 `authorizedWorkspace` 由会话自己的工作区推导（已为 null）→ Composer `workspaceReady` 为假；后台 `sendToSession` 要求会话工作区非空且在授权集内。
+- **`.ax` 1.5 具名插槽契约（P2-a）**：组件声明新增可选 `slots`（插槽名 → 注入 prop，首版仅 children 形态），1.4 稿迁移只改版本号；校验三层 fail-closed——decl 未声明 `default` 契约的 slot 内容解析即拒、注册表核对插槽名与 prop 撞名、宿主渲染期显式错误框。`AxComponentHost` 把插槽内容注入真实 prop（`PausedBanner` 首个内建 children 契约，零副作用三不变式不动），codegen（TSX/Vue）直译 children/`<template #default>` 并移出 unresolved；项目目录 `defaultSlot` 派生为同一契约词汇，`design_query` v20 的 mode=component 详单新增 slots 段（单跳迁移 v19→v20）。
+- **compare 同引擎档（P2-b）**：`design_query` `mode=compare` 新增可选 `via='preview'`——设计侧强制走 design:preview 隔离 Chromium（身份握手复用），与实现侧同引擎后判定阈值从 5% 收紧到 0.5%（`COMPARE_PASS_RATIO_SAME_ENGINE`）；预览服务未配置回落跨引擎档并在结果注明 `engine` 档位，运行失败照常透传原因。
+
+- **完全访问执行契约**：Bash 接受 Rust 权威返回的 `Unrestricted` 结果并记录真实执行边界；标准模式收到无沙箱结果时 fail-closed。审批来源贯通工具执行上下文，新增跨 platform 栈集成测试与 Rust 单次副作用断言。
+- **设计验收自证**：恢复并升级 Axiom 正式验收稿到 `ax@1.4`，按当前设置导航收敛为 10 个页面和 20 份明暗主题基线；新增快速设计审计并接入 `npm run check`。
+- **能力与安全文档收敛**：新增当前能力矩阵，明确 Browser/SSH Rail 为用户主动操作通道，web/browser/SSH/computer 与 SubAgent 当前不进入生产模型工具表；README、领域规范和历史方案状态同步。
+- **画布模块按边界拆分**：`DesignCanvas.tsx` 的纯几何与排布记忆抽为 `canvasGeometry.ts`，属性检查器字段抽为 `DesignInspectorFields.tsx`；组件只消费结果，交互状态机留在原地（1973 → 1716 行，行为不变）。
+- **入口体积与模块边界**：`design_query` 的模式执行器改为 `execute` 内按需加载（工具元数据只依赖新的轻量 `designQueryLimits.ts`），入口 chunk 实测 −47.9 KB（−3.6%）；`Composer` 的纯规则/派生抽为 `composerModel.ts`，`AgentSession` 的自动重试策略抽为 `autoRetry.ts`。新增 `docs/bundle-budget.md` 记录实测构成与已评估的优化杠杆（Lucide 逐图标动态加载实测不可行，已撤回）。
+- **`.ax` 解析器按边界拆分**：锚点几何抽为 `axAnchors.ts`、幂等序列化抽为 `axSerialize.ts`、画布投影抽为 `axProjection.ts`；`axParser.ts` 作为格式公共入口保留原导出面（1813 → 1309 行），余下为入口与校验器。契约审计面同步纳入新模块。
+- **运行时会话按状态边界拆分**：`AgentSession` 的运行时更新解析/快照抽为 `sessionRuntimeUpdates.ts`（2144 行）；拆分清单与状态迁移清单见 `docs/module-split-inventory.md`，`tool:*_subagent` 契约审计面同步纳入新模块。
+
+### Fixed
+
+- **权限降级撤回已入队的审批卡片**：`setAccessMode` / `resetSessionAccessMode` / `revokeWorkspace` 此前都不清 `ApprovalCoordinator` 队列（`cancel` 在生产代码中无调用点）。已入队的卡片按降级**前**的权限状态排队，用户点「允许一次」走 interactive 签发路径——撤销工作区后 native 侧仍短暂为 Automatic，会被授予 `Unrestricted` 租约并放行一次工作区外写入。新增 `cancelForSession`（按会话撤回，多会话互不影响），三条降级路径在成功后调用；升级到完全访问不撤回。
+- **访问模式对模型可见**：系统提示词全链路无模式概念，模型被告知「写入必须逐次批准」「不得声称未获批准的写入已经完成」——完全访问下写入直接成功，模型反而会把已落盘的写入误判为失败并重试。新增 `# 访问模式` 段（仅完全访问时注入，标准模式提示词逐字节不变），写/执行能力段改为按档分化表述，并显式声明 sudo 与工作区外重定向两档共同生效。模式变更后经 `runtime_dependencies_update` 重建提示词。SYSTEM_PROMPT_VERSION 43→44。
+- **写工具文案与实际能力对齐**：`write`/`edit`/`design_import` 的校验错误仍写「必须是 workspace-relative path」，与 `isMutablePath` 接受绝对路径矛盾；`design_import` 的 guideline 写死「工作区内」而 schema 承诺绝对路径；`apply_changes` 的 `path`/`from`/`to` 完全没有 description（模型无从得知该能力）。三处一并修正。
+- **完全访问的风险在 UI 留档**：四项后果中「可读本机凭据」此前在 UI 与 i18n 中零提及。`fullAccessDesc` 与侧栏 tooltip 改为与原生警告对话框同口径（关沙箱 / 工作区外读写 / 凭据 / 出网 + 不再确认），菜单加 `max-width` 让长文案按词换行。
+- **撤销工作区的降级失败可见**：此前丢弃 `resetSessionAccessMode` 返回值，降级失败静默；名单只取 `state.sessions`（listSessions 故障时会缺项）。改为并上运行时工作区映射、统计失败数并写入 settingsError。
+- **完全访问档在写工具上真正生效**：`write`/`edit`/`design_import` 的 Rust 通道此前丢弃审批租约 tier，工作区外绝对路径在完全访问下仍被 `validate_relative_path` 拒绝——schema、领域规范与 AGENTS.md 已承诺该能力，模型照 schema 发绝对路径却必然失败。`MutationScope` 提升为四个写入口共享类型（`workspace_access`），写通道按租约 tier 构造作用域，与 `apply_changes`/`restore_trash` 同源；敏感路径保护在两档下保持一致（凭据、Axiom 数据根及其祖先仍拒）。工具版本 write→v10 / edit→v11 / design_import→v8 并补单跳迁移。
+- **访问模式切换失败可见**：Composer 模式菜单的切换失败原先只写入设置面板的 `settingsError`，会话窗口内无任何反馈（菜单照常关闭、徽标不变）。`setAccessMode` 改为返回可直接展示的失败原因，菜单保持打开并就地显示，重新打开时清除。
+- **停止会话的权限降级改为原子收口**：停止原本分两段 IPC——先撤销会话代际、再降级访问模式。第二段失败时 held Automatic 原样保留，用户点了停止却仍能签发 `Unrestricted` 租约：权限**降级**动作失败后保留更高权限（fail-open）。新增 `retire_session_authority_command` 把「删除 held 模式 + 前进会话撤销代际」合成单次 Rust 调用（与归档/清空/删除共用同一原子单元 `retire_session_authority`），窗口从结构上消失；DB 投影退为 best-effort，权威判定留在 Rust。
+- **撤销工作区连带降级其全部会话**：撤销只清授权根与注册表，会话的 DB `access_mode` 与 held Automatic 原样保留。撤销期间工具调用已被 `authorized_root_for` fail-closed 挡住，真正的洞在**日后重新授权同一路径**——会话绑回时因路径相同而跳过降级检查，完全访问无原生警告地静默恢复。`revokeWorkspace` 现对每个受影响会话走一次完整降级。
+- **发布关卡恢复**：`release:native-gate` 三段重新可跑通。原生 E2E 的 schema 版本断言改为在启动恢复冲突解决之后执行——冲突未解决时 `WorkspaceRecoveryGate` 按设计不挂载 App，会话库本就不初始化，原先的断言位置会把设计行为误判为启动链故障；设置导航断言同步为「已归档」（会话与存储已并入该页）。原生 UI E2E 与 Runtime Fault E2E 均实跑通过。
+
 ## [0.6.2] - 2026-09-23
 
 ### Added
@@ -725,10 +850,6 @@
 - **浏览器工具的子进程与网络边界**（随 Browser Use 一并交付）：可执行文件 allowlist 收口 spawn 面等价命令执行通道；隔离 profile 隔离用户登录态与 Cookie；回环 CDP + 无 Origin 头防页面反向接管；`~/.axiom/browser/` 纳入数据根管理。
 
 
-## [Unreleased]
-
-### Added
-
 ## [0.1.5] - 2026-08-15
 
 ### Added
@@ -758,23 +879,6 @@
 - **修正 `task release:local` 的 shasum 工作目录**：Task 的 `dir:` 是任务级属性、cmd 项级不生效（实测 `dir: /tmp` 亦不切换），改为 `cd &&` 形式。
 
 ### Security
-
-
-## [Unreleased]
-
-### Added
-
-- **README 版本漂移检测**：`release:gate` 新增「README version badge parity / note parity」两项，校验 README 版本徽章与正文和 `package.json` 一致（修正 README 徽章与正文从 `0.1.0` 到 `0.1.5` 的漂移）。
-
-### Changed
-
-- **沙箱回归测试显式失败**：seatbelt profile 两跳工具链、deny 捕获归属、AF_UNIX 拒绝、命令输出脱敏四类沙箱回归测试从「沙箱不可用时静默跳过」改为「显式断言失败」，macOS 升级导致 sandbox-exec 失效时 CI 变红而非变绿。
-
-### Fixed
-
-### Security
-
-- **沙箱降级可观测化**：NetworkRequired 命令在 seatbelt 沙箱不可用回退常规用户权限执行时，命令结果显式标注「未沙箱化、写限工作区与凭据读取保护未生效」，消除静默降级（此前用户/模型对保护消失无感知）。命令 done 事件新增 `sandboxed` 字段全链路透传（Rust `CommandOutcome`/`WorkspaceCommandEvent` → TS `WorkspaceCommandResult` → bash 工具输出与审计 details）。
 
 
 ## [0.1.3] - 2026-08-15

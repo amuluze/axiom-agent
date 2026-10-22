@@ -1,0 +1,92 @@
+/* 应用级确认/输入对话框：与反馈弹窗同一遮罩/卡片语言，避免原生 WebView 弹窗。 */
+.app-dialog__overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg-overlay);
+}
+
+.app-dialog {
+  width: min(420px, 100%);
+  padding: 18px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-popover);
+}
+
+.app-dialog__title {
+  margin: 0 0 8px;
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.app-dialog__message {
+  margin: 0 0 14px;
+  color: var(--text-secondary);
+  font-size: 0.9231rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.app-dialog__input {
+  width: 100%;
+  margin: 0 0 14px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 0.9231rem;
+}
+
+.app-dialog__input:focus-visible {
+  border-color: var(--accent);
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.app-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.app-dialog__button {
+  padding: 6px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  font-size: 0.9231rem;
+  font-weight: 500;
+}
+
+.app-dialog__button:hover {
+  background: var(--bg-card);
+}
+
+.app-dialog__button--primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--text-on-brand);
+}
+
+.app-dialog__button--primary:hover {
+  background: var(--accent-hover);
+}
+
+.app-dialog__button--danger {
+  border-color: transparent;
+  background: var(--diff-red);
+  color: var(--text-on-brand);
+}
+
+.app-dialog__button--danger:hover {
+  background: color-mix(in srgb, var(--diff-red) 82%, black);
+}

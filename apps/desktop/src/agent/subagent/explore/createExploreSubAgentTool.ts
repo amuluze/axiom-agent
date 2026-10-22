@@ -57,12 +57,12 @@ export const createExploreSubAgentTool = (): AgentTool => ({
   ],
   // v11：子会话 system prompt 按 UI 语言解析 zh-CN/en 双语模板，并支持设置页按
   // 语言保存的用户覆写（promptLocalizationHost 执行期注入）。schema 不变。
-  runtimeVersion: '11',
+  runtimeVersion: '16',
   recoveryPolicy: 'never',
   requiresApproval: false,
   executionMode: 'sequential',
   description:
-    'Delegates a read-only exploration sub-agent that searches the authorized workspace within an optional scope and returns a structured summary (conclusion, call chain, risks, path:line evidence). The sub-agent only uses read/ls/grep/find/web_search/web_fetch; scope is a hard runtime boundary, and scope paths are resolved against the authorized workspace root. Returns completed or partial (when budget-constrained).',
+    'Delegates a read-only exploration sub-agent that searches the authorized workspace within an optional scope and returns a structured summary (conclusion, call chain, risks, path:line evidence). The sub-agent uses only the intersection of the parent active tools and read/ls/grep/find; scope is a hard runtime boundary, and scope paths are resolved against the authorized workspace root. Returns completed or partial (when budget-constrained).',
   inputSchema: {
     type: 'object',
     properties: {

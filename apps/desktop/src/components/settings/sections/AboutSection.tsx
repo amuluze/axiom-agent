@@ -49,12 +49,15 @@ const openChangelogLink = (event: MouseEvent<HTMLAnchorElement>, href: string | 
 
 const changelogMarkdownComponents: Components = {
   a({ node: _node, ref: _ref, ...props }) {
+    const href = props.href
+    if (href === undefined) return <span {...props} />
     return (
       <a
         {...props}
+        href={href}
         rel="noreferrer noopener"
         target="_blank"
-        onClick={(event) => openChangelogLink(event, props.href)}
+        onClick={(event) => openChangelogLink(event, href)}
       />
     )
   },
@@ -219,7 +222,7 @@ export const AboutSection = () => {
           <button type="button" className="settings__button" disabled={busy} onClick={onCheck}>
             <RefreshCw size={13} /> {t('settings.about.check')}
           </button>
-          {availableUpdate && updatePhase !== 'downloading' && (
+          {availableUpdate && updatePhase !== 'downloading' && updatePhase !== 'error' && (
             <button
               type="button"
               className="settings__button settings__button--primary"

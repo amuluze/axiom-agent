@@ -35,7 +35,7 @@ describe('runtimeCaches', () => {
     expect(mod.getRuntimeSession('missing')).toBeUndefined()
   })
 
-  it('dropRuntimeCachesForSession atomically removes all four caches', async () => {
+  it('dropRuntimeCachesForSession atomically removes all runtime caches', async () => {
     const mod = await loadFresh()
     const harness = makeHarnessStub()
     mod.setRuntimeSession('a', harness)
@@ -48,12 +48,52 @@ describe('runtimeCaches', () => {
       queuedMessages: [],
     })
     mod.setRuntimeBasePrompt('a', 'base-prompt-a')
+    mod.setRuntimeProjectContext('a', {
+      projectContext: '# A',
+      projectAgents: { entries: ['src/AGENTS.md'], truncated: false },
+      projectDocs: {
+        entries: [],
+        diagnostics: [],
+        truncatedEntryCount: 0,
+        truncatedRootCount: 0,
+        archivedCount: 0,
+        nestedDirCount: 0,
+        failedRootCount: 0,
+      },
+      testingContext: null,
+    })
     const removed = mod.dropRuntimeCachesForSession('a')
     expect(removed).toBe(harness)
     expect(mod.getRuntimeSession('a')).toBeUndefined()
     expect(mod.getRuntimeProvider('a')).toBeUndefined()
     expect(mod.getRuntimeProjection('a')).toBeUndefined()
     expect(mod.getRuntimeBasePrompt('a')).toBeUndefined()
+    expect(mod.getRuntimeProjectContext('a')).toBeUndefined()
+  })
+
+  it('keeps project context snapshots isolated per session', async () => {
+    const mod = await loadFresh()
+    const snapshot = {
+      projectContext: '# Workspace A',
+      projectAgents: { entries: ['src/AGENTS.md'], truncated: false },
+      projectDocs: {
+        entries: [{ role: 'domain' as const, title: 'A', relativePath: '.specs/domain/a.md', revision: 'a'.repeat(64) }],
+        diagnostics: [],
+        truncatedEntryCount: 0,
+        truncatedRootCount: 0,
+        archivedCount: 0,
+        nestedDirCount: 0,
+        failedRootCount: 0,
+      },
+      testingContext: null,
+    }
+    mod.setRuntimeProjectContext('a', snapshot)
+    mod.setRuntimeProjectContext('b', { ...snapshot, projectContext: '# Workspace B' })
+
+    const readA = mod.getRuntimeProjectContext('a')!
+    readA.projectAgents.entries.push('mutated/AGENTS.md')
+    expect(mod.getRuntimeProjectContext('a')!.projectAgents.entries).toEqual(['src/AGENTS.md'])
+    expect(mod.getRuntimeProjectContext('b')!.projectContext).toBe('# Workspace B')
   })
 
   it('keeps basePrompt mirror isolated per session (no cross-workspace leakage)', async () => {

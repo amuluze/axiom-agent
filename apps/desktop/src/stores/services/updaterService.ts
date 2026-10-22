@@ -4,8 +4,11 @@ import {
   checkForAppUpdate,
   downloadAndInstallAppUpdate,
   relaunchApp,
+  AppUpdateInstallError,
   type UpdateCheckOutcome,
+  type UpdateInstallFailureStage,
 } from '@/platform/updater'
+import type { UpdateFailureState } from '@/stores/uiStore'
 
 /**
  * 自更新服务：启动后延迟静默检查一次；此后按固定间隔周期静默复查，长开
@@ -24,11 +27,53 @@ const STARTUP_CHECK_DELAY_MS = 8_000
 // 周期复查间隔：一次 check 只是 latest.json 小请求，1 小时让长开会话在发布
 // 后也能及时收到提示；检查/下载/ready 态的重入由 checkForAppUpdateNow 门禁挡下。
 export const PERIODIC_CHECK_INTERVAL_MS = 60 * 60 * 1000
+const UPDATE_FAILURE_STORAGE_KEY = 'axiom.updater.failure.v1'
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
 
+const failureStageLabel = (stage: UpdateInstallFailureStage): string => ({
+  download: '下载',
+  signature: '签名校验',
+  storage: '磁盘写入',
+  replace: '应用替换',
+  unknown: '安装',
+})[stage]
+
+const failureMessage = (failure: UpdateFailureState): string =>
+  `更新在${failureStageLabel(failure.stage)}阶段失败：${failure.message}。未自动重启；重新检查后可手动重试。`
+
+const persistUpdateFailure = (failure: UpdateFailureState | null): void => {
+  if (typeof window === 'undefined') return
+  if (failure) window.localStorage.setItem(UPDATE_FAILURE_STORAGE_KEY, JSON.stringify(failure))
+  else window.localStorage.removeItem(UPDATE_FAILURE_STORAGE_KEY)
+}
+
+const loadUpdateFailure = (): UpdateFailureState | null => {
+  if (typeof window === 'undefined') return null
+  const raw = window.localStorage.getItem(UPDATE_FAILURE_STORAGE_KEY)
+  if (!raw) return null
+  try {
+    const value = JSON.parse(raw) as Partial<UpdateFailureState>
+    if (
+      typeof value.version !== 'string'
+      || typeof value.message !== 'string'
+      || typeof value.failedAt !== 'string'
+      || !['download', 'signature', 'storage', 'replace', 'unknown'].includes(value.stage ?? '')
+    ) return null
+    return value as UpdateFailureState
+  } catch {
+    return null
+  }
+}
+
+const clearUpdateFailure = (): void => {
+  persistUpdateFailure(null)
+  useUiStore.getState().patchUpdater({ updateFailure: null })
+}
+
 const applyOutcome = (outcome: UpdateCheckOutcome): void => {
+  clearUpdateFailure()
   const ui = useUiStore.getState()
   switch (outcome.kind) {
     case 'available':
@@ -37,6 +82,7 @@ const applyOutcome = (outcome: UpdateCheckOutcome): void => {
         availableUpdate: outcome.update,
         updateProgress: null,
         updateMessage: null,
+        updateFailure: null,
       })
       break
     case 'up-to-date':
@@ -116,12 +162,17 @@ export const checkForAppUpdateNow = async (
 
 /** 下载并安装已发现的更新；完成后进入 ready（等待用户重启生效）。 */
 export const installPendingUpdate = async (): Promise<void> => {
-  const update = useUiStore.getState().availableUpdate
+  const state = useUiStore.getState()
+  const update = state.availableUpdate
   if (!update) return
+  if (state.updateFailure?.version === update.version) {
+    throw new Error(`更新 ${update.version} 上次安装失败，请先重新检查更新再手动重试`)
+  }
   useUiStore.getState().patchUpdater({
     updatePhase: 'downloading',
     updateProgress: null,
     updateMessage: null,
+    updateFailure: null,
   })
   try {
     await downloadAndInstallAppUpdate(update.version, (progress) => {
@@ -129,9 +180,17 @@ export const installPendingUpdate = async (): Promise<void> => {
     })
     useUiStore.getState().patchUpdater({ updatePhase: 'ready', updateProgress: null })
   } catch (error) {
+    const failure: UpdateFailureState = {
+      version: update.version,
+      stage: error instanceof AppUpdateInstallError ? error.stage : 'unknown',
+      message: errorMessage(error),
+      failedAt: new Date().toISOString(),
+    }
+    persistUpdateFailure(failure)
     useUiStore.getState().patchUpdater({
       updatePhase: 'error',
-      updateMessage: `安装更新失败：${errorMessage(error)}`,
+      updateMessage: failureMessage(failure),
+      updateFailure: failure,
     })
     throw error
   }
@@ -149,6 +208,14 @@ let periodicTimer: ReturnType<typeof setInterval> | null = null
 export const initUpdaterService = (): void => {
   if (serviceStarted || !isTauriRuntime()) return
   serviceStarted = true
+  const failure = loadUpdateFailure()
+  if (failure) {
+    useUiStore.getState().patchUpdater({
+      updatePhase: 'error',
+      updateMessage: failureMessage(failure),
+      updateFailure: failure,
+    })
+  }
   setTimeout(() => {
     void checkForAppUpdateNow({ silent: true }).catch(() => undefined)
   }, STARTUP_CHECK_DELAY_MS)
@@ -160,10 +227,11 @@ export const initUpdaterService = (): void => {
 }
 
 /** 测试专用：重置模块级状态（含周期定时器）。 */
-export const resetUpdaterServiceForTests = (): void => {
+export const resetUpdaterServiceForTests = (options?: { preserveFailure?: boolean }): void => {
   serviceStarted = false
   if (periodicTimer !== null) {
     clearInterval(periodicTimer)
     periodicTimer = null
   }
+  if (!options?.preserveFailure) persistUpdateFailure(null)
 }

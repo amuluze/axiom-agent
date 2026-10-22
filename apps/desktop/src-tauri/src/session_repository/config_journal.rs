@@ -1,7 +1,7 @@
+use crate::runtime_manifest::{validate_identifier, validate_runtime_manifest};
 use serde_json::Value;
 use sqlx::{Connection, QueryBuilder, Sqlite, SqliteConnection};
 use std::collections::HashSet;
-use crate::runtime_manifest::{validate_identifier, validate_runtime_manifest};
 
 use super::*;
 

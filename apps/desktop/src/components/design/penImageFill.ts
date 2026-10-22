@@ -15,12 +15,12 @@ import { readDesignDocumentAsset } from '@/platform/designDocument'
 const assetCache = new Map<string, Promise<string | null>>()
 const ASSET_CACHE_LIMIT = 128
 
-const loadAsset = (penPath: string, url: string): Promise<string | null> => {
-  const key = `${penPath}::${url}`
+const loadAsset = (penPath: string, url: string, workspacePath?: string): Promise<string | null> => {
+  const key = JSON.stringify([workspacePath ?? null, penPath, url])
   const cached = assetCache.get(key)
   if (cached) return cached
   if (assetCache.size >= ASSET_CACHE_LIMIT) assetCache.clear()
-  const promise = readDesignDocumentAsset(penPath, url)
+  const promise = readDesignDocumentAsset(penPath, url, workspacePath)
     .then((asset) => `data:${asset.mediaType};base64,${asset.contentBase64}`)
     // 资产缺失/超限/魔数不符都归一为 null：渲染层按无填充处理，不抛错。
     .catch(() => null)
@@ -47,6 +47,7 @@ export interface PenImageFillResult {
 export const usePenImageFill = (
   penPath: string,
   paint: PenPaintImage | undefined,
+  workspacePath?: string,
 ): PenImageFillResult => {
   const url = paint?.url
   const remote = url !== undefined && isRemoteImageUrl(url)
@@ -56,13 +57,14 @@ export const usePenImageFill = (
       setDataUrl(null)
       return undefined
     }
+    setDataUrl(null)
     let cancelled = false
-    void loadAsset(penPath, url).then((loaded) => {
+    void loadAsset(penPath, url, workspacePath).then((loaded) => {
       if (!cancelled) setDataUrl(loaded)
     })
     return () => {
       cancelled = true
     }
-  }, [penPath, url, remote])
+  }, [penPath, url, remote, workspacePath])
   return { dataUrl, rejected: remote }
 }

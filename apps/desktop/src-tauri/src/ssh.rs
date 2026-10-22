@@ -17,7 +17,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex as StdMutex;
-use std::{fs, io::Write, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tauri::{AppHandle, Manager};
 use tempfile::NamedTempFile;
 
@@ -32,6 +37,28 @@ const HOSTS_SCHEMA_VERSION: u32 = 1;
 const MAX_HOSTS: usize = 64;
 /// 注册表文件读取上限：64 条 × 元数据，超限视为损坏（fail-closed）。
 const MAX_HOSTS_FILE_BYTES: u64 = 256 * 1024;
+
+/// unix socket `sun_path` 上限（macOS/Linux 均 104 字节，含结尾 NUL）。两个
+/// SSH 通道（用户终端 / Agent）都在 `~/.axiom/ssh/` 下用 ControlPath 做连接
+/// 复用；数据根过深（深层 HOME 或 TMPDIR 下的临时目录）时路径超限会让 ssh
+/// 直接以 `ControlPath too long` 退出，连接根本建立不起来。超限即退化为每
+/// 命令直连——复用只是优化，不是授权或安全边界。
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) const MAX_UNIX_SOCKET_PATH_BYTES: usize = 103;
+
+/// ControlPath 是否可用（路径长度在 unix socket 上限内）；非 unix 平台恒 false。
+pub(crate) fn control_socket_path_supported(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        path.as_os_str().as_bytes().len() <= MAX_UNIX_SOCKET_PATH_BYTES
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
+}
 
 const MAX_NAME_BYTES: usize = 64;
 const MAX_HOSTNAME_BYTES: usize = 255;
@@ -94,9 +121,14 @@ fn hosts_read(file: &Path) -> Result<Vec<SshHostEntry>, String> {
     if metadata.len() > MAX_HOSTS_FILE_BYTES {
         return Err("SSH 主机注册表超出安全大小上限".into());
     }
-    let raw = fs::read_to_string(file).map_err(|error| format!("读取 SSH 主机注册表失败：{error}"))?;
-    let document: HostsDocument = serde_json::from_str(&raw)
-        .map_err(|error| format!("SSH 主机注册表已损坏，请手动检查 {}：{error}", file.display()))?;
+    let raw =
+        fs::read_to_string(file).map_err(|error| format!("读取 SSH 主机注册表失败：{error}"))?;
+    let document: HostsDocument = serde_json::from_str(&raw).map_err(|error| {
+        format!(
+            "SSH 主机注册表已损坏，请手动检查 {}：{error}",
+            file.display()
+        )
+    })?;
     if document.schema_version != HOSTS_SCHEMA_VERSION {
         return Err(format!(
             "SSH 主机注册表 schema 版本 {} 不受支持（期望 {HOSTS_SCHEMA_VERSION}）",
@@ -132,9 +164,10 @@ fn hosts_write(file: &Path, hosts: &[SshHostEntry]) -> Result<(), String> {
         .write_all(&encoded)
         .and_then(|()| temporary.as_file_mut().sync_all())
         .map_err(|error| format!("写入 SSH 主机注册表失败：{error}"))?;
-    temporary.persist(file).map(|_| ()).map_err(|error| {
-        format!("提交 SSH 主机注册表失败：{}", error.error)
-    })
+    temporary
+        .persist(file)
+        .map(|_| ())
+        .map_err(|error| format!("提交 SSH 主机注册表失败：{}", error.error))
 }
 
 /// 新增/更新的已校验输入（校验与落盘分离，便于对校验规则单独测试）。
@@ -188,7 +221,9 @@ pub(crate) fn validate_private_key_path(value: &str) -> Result<String, String> {
         return Err("私钥路径不能为空".into());
     }
     if trimmed.len() > MAX_PRIVATE_KEY_PATH_BYTES {
-        return Err(format!("私钥路径超出长度上限（{MAX_PRIVATE_KEY_PATH_BYTES} 字节）"));
+        return Err(format!(
+            "私钥路径超出长度上限（{MAX_PRIVATE_KEY_PATH_BYTES} 字节）"
+        ));
     }
     if !trimmed.starts_with('/') {
         return Err("私钥路径必须是绝对路径（以 / 开头）".into());
@@ -237,7 +272,10 @@ fn generate_host_id(input: &HostInput, sequence: u64, nanos: u128) -> String {
     hasher.update(sequence.to_be_bytes());
     hasher.update(nanos.to_be_bytes());
     let digest = hasher.finalize();
-    digest[..8].iter().map(|byte| format!("{byte:02x}")).collect()
+    digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn now_epoch_seconds() -> u64 {
@@ -265,18 +303,22 @@ pub(crate) const SSH_HOST_SECRET_PREFIX: &str = "ssh.host.";
 /// 私钥路径落盘归一：空串视为清除（None），非空原样保留（上游已校验）。
 fn normalize_private_key_path(value: &str) -> Option<String> {
     let trimmed = value.trim();
-    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
-pub(crate) fn password_action_for(
-    host_id: &str,
-    password: Option<&str>,
-) -> PasswordAction {
+pub(crate) fn password_action_for(host_id: &str, password: Option<&str>) -> PasswordAction {
     let key = format!("{SSH_HOST_SECRET_PREFIX}{host_id}");
     match password {
         None => PasswordAction::Keep,
         Some("") => PasswordAction::Clear { key },
-        Some(value) => PasswordAction::Set { key, value: value.to_string() },
+        Some(value) => PasswordAction::Set {
+            key,
+            value: value.to_string(),
+        },
     }
 }
 
@@ -309,7 +351,9 @@ pub(crate) fn hosts_upsert(
         }
     } else {
         if hosts.len() >= MAX_HOSTS {
-            return Err(format!("主机数量已达上限（{MAX_HOSTS}），请先删除不需要的主机"));
+            return Err(format!(
+                "主机数量已达上限（{MAX_HOSTS}），请先删除不需要的主机"
+            ));
         }
         let sequence = HOST_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let nanos = SystemTime::now()
@@ -388,7 +432,11 @@ pub struct SshState {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "action",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum SshCommandRequest {
     ListHosts,
     SaveHost {
@@ -403,20 +451,27 @@ pub enum SshCommandRequest {
         /// None = 不改动私钥路径；Some("") = 清除；Some(path) = 设置（绝对路径）。
         private_key_path: Option<String>,
     },
-    DeleteHost { id: String },
+    DeleteHost {
+        id: String,
+    },
     // ---- 会话类动作（P1，委托 ssh_session::dispatch_session_action）----
     OpenSession {
         host_id: String,
         cols: u16,
         rows: u16,
     },
-    WriteSession { host_id: String, data: String },
+    WriteSession {
+        host_id: String,
+        data: String,
+    },
     ResizeSession {
         host_id: String,
         cols: u16,
         rows: u16,
     },
-    CloseSession { host_id: String },
+    CloseSession {
+        host_id: String,
+    },
     /// 触发上传：路径由 Rust 原生文件选择器决定（渲染进程不可指定本地路径）；
     /// remote_dir 为本次上传的目标远程目录（SFTP 面板当前浏览目录）。
     UploadFile {
@@ -424,9 +479,13 @@ pub enum SshCommandRequest {
         remote_dir: String,
     },
     /// 续传最近一次失败/取消的上传（材料在 Rust 侧留存）。
-    ResumeUpload { host_id: String },
+    ResumeUpload {
+        host_id: String,
+    },
     /// 取消在途上传（保留续传材料）。
-    CancelUpload { host_id: String },
+    CancelUpload {
+        host_id: String,
+    },
     /// 列出远程目录（SFTP 文件浏览器：名称/权限/大小/修改时间）。
     ListFiles {
         host_id: String,
@@ -446,7 +505,11 @@ pub enum SshCommandRequest {
 }
 
 #[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum SshCommandResponse {
     /// 主机全量列表（CRUD 后统一回传，前端整体替换 store 状态）。
     Hosts { hosts: Vec<SshHostEntry> },
@@ -478,20 +541,54 @@ pub async fn ssh_command(
     use crate::ssh_session::{dispatch_session_action, SshSessionAction};
     match request {
         // 会话类动作先行分流：不触碰注册表，锁与 I/O 归 ssh_session 自治。
-        SshCommandRequest::OpenSession { host_id, cols, rows } => {
-            dispatch_session_action(app, SshSessionAction::Open { host_id, cols, rows }).await
+        SshCommandRequest::OpenSession {
+            host_id,
+            cols,
+            rows,
+        } => {
+            dispatch_session_action(
+                app,
+                SshSessionAction::Open {
+                    host_id,
+                    cols,
+                    rows,
+                },
+            )
+            .await
         }
         SshCommandRequest::WriteSession { host_id, data } => {
             dispatch_session_action(app, SshSessionAction::Write { host_id, data }).await
         }
-        SshCommandRequest::ResizeSession { host_id, cols, rows } => {
-            dispatch_session_action(app, SshSessionAction::Resize { host_id, cols, rows }).await
+        SshCommandRequest::ResizeSession {
+            host_id,
+            cols,
+            rows,
+        } => {
+            dispatch_session_action(
+                app,
+                SshSessionAction::Resize {
+                    host_id,
+                    cols,
+                    rows,
+                },
+            )
+            .await
         }
         SshCommandRequest::CloseSession { host_id } => {
             dispatch_session_action(app, SshSessionAction::Close { host_id }).await
         }
-        SshCommandRequest::UploadFile { host_id, remote_dir } => {
-            dispatch_session_action(app, SshSessionAction::Upload { host_id, remote_dir }).await
+        SshCommandRequest::UploadFile {
+            host_id,
+            remote_dir,
+        } => {
+            dispatch_session_action(
+                app,
+                SshSessionAction::Upload {
+                    host_id,
+                    remote_dir,
+                },
+            )
+            .await
         }
         SshCommandRequest::ResumeUpload { host_id } => {
             dispatch_session_action(app, SshSessionAction::Resume { host_id }).await
@@ -505,8 +602,18 @@ pub async fn ssh_command(
         SshCommandRequest::MakeDir { host_id, path } => {
             dispatch_session_action(app, SshSessionAction::MakeDir { host_id, path }).await
         }
-        SshCommandRequest::UploadFolder { host_id, remote_dir } => {
-            dispatch_session_action(app, SshSessionAction::UploadFolder { host_id, remote_dir }).await
+        SshCommandRequest::UploadFolder {
+            host_id,
+            remote_dir,
+        } => {
+            dispatch_session_action(
+                app,
+                SshSessionAction::UploadFolder {
+                    host_id,
+                    remote_dir,
+                },
+            )
+            .await
         }
         SshCommandRequest::ListSessions => {
             dispatch_session_action(app, SshSessionAction::List).await
@@ -558,7 +665,8 @@ pub async fn ssh_command(
                         // 投影即清、不再有入口触发 Close，不先杀的话 ssh 进程只能
                         // 等应用退出 reap 兜底——连接与 PTY 全程残留。signal_close
                         // 走事件任务收尾（SIGTERM → 宽限 → SIGKILL → remove）。
-                        if let Some(session_state) = app.try_state::<crate::ssh_session::SshSessionState>()
+                        if let Some(session_state) =
+                            app.try_state::<crate::ssh_session::SshSessionState>()
                         {
                             session_state.signal_close(&id);
                             session_state.forget_host(&id);
@@ -592,21 +700,15 @@ pub async fn ssh_command(
 
 /// 按 id 查找主机（OpenSession 前置校验：渲染进程只能连接已登记主机，
 /// 连接目标字段一律取自注册表而非请求参数）。
-pub(crate) fn find_host(
-    app: &AppHandle,
-    host_id: &str,
-) -> Result<Option<SshHostEntry>, String> {
+pub(crate) fn find_host(app: &AppHandle, host_id: &str) -> Result<Option<SshHostEntry>, String> {
     let file = hosts_file_path(app)?;
-    Ok(hosts_read(&file)?.into_iter().find(|host| host.id == host_id))
+    Ok(hosts_read(&file)?
+        .into_iter()
+        .find(|host| host.id == host_id))
 }
 
 /// 读取全部主机（ssh_agent 的 ListHosts 消费：注册表条目并入 Agent 可连清单）。
 /// 文件缺失视为空集；损坏 fail-closed 与 CRUD 同源。
-pub(crate) fn list_hosts(app: &AppHandle) -> Result<Vec<SshHostEntry>, String> {
-    let file = hosts_file_path(app)?;
-    hosts_read(&file)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -693,7 +795,15 @@ mod tests {
     fn rejects_unknown_host_on_update() {
         let directory = temporary_directory();
         let file = hosts_file_in(&directory);
-        assert!(hosts_upsert(&file, Some("missing".into()), &sample_input("x"), None, None, None).is_err());
+        assert!(hosts_upsert(
+            &file,
+            Some("missing".into()),
+            &sample_input("x"),
+            None,
+            None,
+            None
+        )
+        .is_err());
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -759,7 +869,15 @@ mod tests {
         let directory = temporary_directory();
         let file = hosts_file_in(&directory);
         for index in 0..MAX_HOSTS {
-            hosts_upsert(&file, None, &sample_input(&format!("主机{index}")), None, None, None).unwrap();
+            hosts_upsert(
+                &file,
+                None,
+                &sample_input(&format!("主机{index}")),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
         }
         assert!(hosts_upsert(&file, None, &sample_input("超限"), None, None, None).is_err());
         assert_eq!(hosts_read(&file).unwrap().len(), MAX_HOSTS);
@@ -770,17 +888,19 @@ mod tests {
     fn password_action_semantics() {
         use super::{password_action_for, PasswordAction};
         // None = 不改动；Some("") = 清除；Some(pw) = 保存/替换。
-        assert_eq!(
-            password_action_for("host-1", None),
-            PasswordAction::Keep
-        );
+        assert_eq!(password_action_for("host-1", None), PasswordAction::Keep);
         assert_eq!(
             password_action_for("host-1", Some("")),
-            PasswordAction::Clear { key: "ssh.host.host-1".into() }
+            PasswordAction::Clear {
+                key: "ssh.host.host-1".into()
+            }
         );
         assert_eq!(
             password_action_for("host-1", Some("s3cret")),
-            PasswordAction::Set { key: "ssh.host.host-1".into(), value: "s3cret".into() }
+            PasswordAction::Set {
+                key: "ssh.host.host-1".into(),
+                value: "s3cret".into()
+            }
         );
     }
 
@@ -789,7 +909,8 @@ mod tests {
         let directory = temporary_directory();
         let file = hosts_file_in(&directory);
         let first = hosts_upsert(&file, None, &sample_input("同名同址"), None, None, None).unwrap();
-        let second = hosts_upsert(&file, None, &sample_input("同名同址"), None, None, None).unwrap();
+        let second =
+            hosts_upsert(&file, None, &sample_input("同名同址"), None, None, None).unwrap();
         assert_ne!(first[0].id, second[1].id);
         fs::remove_dir_all(directory).unwrap();
     }
@@ -864,17 +985,30 @@ mod tests {
         let host_id = hosts[0].id.clone();
 
         // 更新：None = 保留既有路径。
-        let hosts = hosts_upsert(&file, Some(host_id.clone()), &sample_input("带密钥"), None, None, None)
-            .unwrap();
+        let hosts = hosts_upsert(
+            &file,
+            Some(host_id.clone()),
+            &sample_input("带密钥"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             hosts[0].private_key_path.as_deref(),
             Some("/Users/amu/.ssh/id_ed25519")
         );
 
         // 更新：Some("") = 清除。
-        let hosts =
-            hosts_upsert(&file, Some(host_id.clone()), &sample_input("带密钥"), None, Some(""), None)
-                .unwrap();
+        let hosts = hosts_upsert(
+            &file,
+            Some(host_id.clone()),
+            &sample_input("带密钥"),
+            None,
+            Some(""),
+            None,
+        )
+        .unwrap();
         assert_eq!(hosts[0].private_key_path, None);
 
         // 更新：Some(新路径) = 替换。

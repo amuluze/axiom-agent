@@ -2,6 +2,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SkillReloadPreview } from '@/stores/agentStateTypes'
+import type { ProjectDocInventory } from '@/agent/prompt/projectDocs'
 import { SkillsSection } from './SkillsSection'
 
 const skill = (name: string, sha: string) => ({
@@ -36,6 +37,15 @@ const mocks = vi.hoisted(() => {
       skills: [makeSkill('alpha', 'a'.repeat(64)), makeSkill('beta', 'b'.repeat(64))],
     },
     skillReloadPreview: null as SkillReloadPreview | null,
+    projectDocs: {
+      entries: [],
+      diagnostics: [],
+      truncatedEntryCount: 0,
+      truncatedRootCount: 0,
+      archivedCount: 0,
+      nestedDirCount: 0,
+      failedRootCount: 0,
+    } as ProjectDocInventory,
     previewSkillReload: vi.fn(async () => ({}) as SkillReloadPreview),
     applySkillReload: vi.fn(async () => undefined),
     projectSkillsEnabled: true,
@@ -53,6 +63,7 @@ vi.mock('@/stores/agentStore', async (importOriginal) => {
       authorizedWorkspace: mocks.authorizedWorkspace,
       projectSkills: mocks.projectSkills,
       skillDiagnostics: [],
+      projectDocs: mocks.projectDocs,
       skillReloadPreview: mocks.skillReloadPreview,
       previewSkillReload: mocks.previewSkillReload,
       applySkillReload: mocks.applySkillReload,
@@ -82,6 +93,15 @@ afterEach(() => {
     schemaVersion: 1 as const,
     skills: [skill('alpha', 'a'.repeat(64)), skill('beta', 'b'.repeat(64))],
   }
+  mocks.projectDocs = {
+    entries: [],
+    diagnostics: [],
+    truncatedEntryCount: 0,
+    truncatedRootCount: 0,
+    archivedCount: 0,
+    nestedDirCount: 0,
+    failedRootCount: 0,
+  }
 })
 
 describe('SkillsSection reload 确认框（RTL）', () => {
@@ -105,7 +125,7 @@ describe('SkillsSection reload 确认框（RTL）', () => {
     expect(screen.getByText(/新增：gamma/)).toBeTruthy()
     expect(screen.getByText(/删除：beta/)).toBeTruthy()
     expect(screen.getByText(/摘要检查点失效/)).toBeTruthy()
-    expect(screen.getByText(/历史较长时下一轮可能增加一次摘要模型调用、费用与等待时间/)).toBeTruthy()
+    expect(screen.getByText(/长历史下一轮可能多一次摘要调用/)).toBeTruthy()
   })
 
   it('确认应用调用 applySkillReload', async () => {
@@ -144,13 +164,36 @@ describe('SkillsSection reload 确认框（RTL）', () => {
     render(<SkillsSection />)
     fireEvent.click(screen.getByRole('button', { name: /重新扫描/ }))
 
-    expect(await screen.findByText(/无待应用的变更/)).toBeTruthy()
+    expect(await screen.findByText(/无待应用变更/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: /确认应用/ })).toBeNull()
   })
 })
 
 describe('SkillsSection 内置/项目技能区分展示（RTL）', () => {
-  it('内置技能区渲染 7 个内置 Skill 与来源标注，项目区独立成块', () => {
+  it('展示按根目录聚合的项目文档扫描诊断与修复建议', () => {
+    mocks.projectDocs = {
+      entries: [],
+      diagnostics: [{
+        code: 'root_list_failed',
+        root: '.specs/domain',
+        role: 'domain',
+        affectedCount: 1,
+        reason: 'not_authorized',
+      }],
+      truncatedEntryCount: 0,
+      truncatedRootCount: 0,
+      archivedCount: 0,
+      nestedDirCount: 0,
+      failedRootCount: 1,
+    }
+    render(<SkillsSection />)
+    expect(screen.getByText('项目文档索引')).toBeTruthy()
+    expect(screen.getByText('.specs/domain · domain')).toBeTruthy()
+    expect(screen.getByText(/请确认工作区授权后重试/)).toBeTruthy()
+    expect(screen.getByText('root_list_failed:not_authorized')).toBeTruthy()
+  })
+
+  it('内置技能区渲染 8 个内置 Skill 与来源标注，项目区独立成块', () => {
     render(<SkillsSection />)
     expect(screen.getByText('内置技能')).toBeTruthy()
     expect(screen.getByText('项目级技能')).toBeTruthy()
@@ -158,7 +201,7 @@ describe('SkillsSection 内置/项目技能区分展示（RTL）', () => {
       expect(screen.getByText(name)).toBeTruthy()
     }
     // 每个内置项都有「内置」badge；项目 alpha/beta 不带该 badge。
-    expect(screen.getAllByText('内置')).toHaveLength(7)
+    expect(screen.getAllByText('内置')).toHaveLength(8)
     expect(screen.queryByText(/已被项目同名覆盖/)).toBeNull()
   })
 
@@ -181,6 +224,6 @@ describe('SkillsSection 内置/项目技能区分展示（RTL）', () => {
     render(<SkillsSection />)
     expect(screen.getByText('内置技能')).toBeTruthy()
     expect(screen.getByText('brainstorm')).toBeTruthy()
-    expect(screen.getByText(/尚未激活工作区/)).toBeTruthy()
+    expect(screen.getByText(/请先在左侧激活一个工作目录/)).toBeTruthy()
   })
 })

@@ -13,7 +13,7 @@ const TEXT_EXTENSIONS: &[&str] = &[
     "bash", "c", "cc", "cfg", "cjs", "conf", "cpp", "css", "csv", "cts", "env", "fish", "go",
     "gql", "graphql", "h", "hpp", "html", "ini", "java", "js", "json", "jsonl", "jsx", "kt", "kts",
     "log", "markdown", "md", "mjs", "mts", "py", "rb", "rs", "scss", "sh", "sql", "swift", "toml",
-    "ts", "tsv", "tsx", "txt", "xml", "yaml", "yml", "zsh",
+    "ts", "tsv", "tsx", "txt", "vue", "xml", "yaml", "yml", "zsh",
 ];
 const TEXT_FILE_NAMES: &[&str] = &[
     ".env",
@@ -75,24 +75,77 @@ pub(crate) fn is_supported_text_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-pub(crate) fn canonical_text_file(raw_path: &str) -> Result<(PathBuf, u64), String> {
-    if raw_path.len() > 16 * 1024 {
-        return Err("file path is too long".into());
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CanonicalTextFileErrorCode {
+    NotAuthorized,
+    NotFound,
+    InvalidPath,
+    Unavailable,
+    Unknown,
+}
+
+#[derive(Debug)]
+pub(crate) struct CanonicalTextFileError {
+    pub(crate) code: CanonicalTextFileErrorCode,
+    pub(crate) message: String,
+}
+
+impl CanonicalTextFileError {
+    fn new(code: CanonicalTextFileErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
     }
-    let canonical = std::fs::canonicalize(raw_path)
-        .map_err(|error| format!("failed to resolve selected file: {error}"))?;
-    let metadata = std::fs::metadata(&canonical)
-        .map_err(|error| format!("failed to inspect selected file: {error}"))?;
+
+    fn from_io(context: &str, error: std::io::Error) -> Self {
+        let code = match error.kind() {
+            std::io::ErrorKind::NotFound => CanonicalTextFileErrorCode::NotFound,
+            std::io::ErrorKind::PermissionDenied => CanonicalTextFileErrorCode::NotAuthorized,
+            _ => CanonicalTextFileErrorCode::Unknown,
+        };
+        Self::new(code, format!("{context}: {error}"))
+    }
+}
+
+pub(crate) fn canonical_text_file_diagnostic(
+    raw_path: &str,
+) -> Result<(PathBuf, u64), CanonicalTextFileError> {
+    if raw_path.len() > 16 * 1024 {
+        return Err(CanonicalTextFileError::new(
+            CanonicalTextFileErrorCode::InvalidPath,
+            "file path is too long",
+        ));
+    }
+    let canonical = std::fs::canonicalize(raw_path).map_err(|error| {
+        CanonicalTextFileError::from_io("failed to resolve selected file", error)
+    })?;
+    let metadata = std::fs::metadata(&canonical).map_err(|error| {
+        CanonicalTextFileError::from_io("failed to inspect selected file", error)
+    })?;
     if !metadata.is_file() {
-        return Err("selected path is not a file".into());
+        return Err(CanonicalTextFileError::new(
+            CanonicalTextFileErrorCode::InvalidPath,
+            "selected path is not a file",
+        ));
     }
     if !is_supported_text_path(&canonical) {
-        return Err("selected file type is not supported for text reading".into());
+        return Err(CanonicalTextFileError::new(
+            CanonicalTextFileErrorCode::InvalidPath,
+            "selected file type is not supported for text reading",
+        ));
     }
     if metadata.len() > MAX_TEXT_FILE_BYTES {
-        return Err("selected text file is larger than 1 MiB".into());
+        return Err(CanonicalTextFileError::new(
+            CanonicalTextFileErrorCode::Unavailable,
+            "selected text file is larger than 1 MiB",
+        ));
     }
     Ok((canonical, metadata.len()))
+}
+
+pub(crate) fn canonical_text_file(raw_path: &str) -> Result<(PathBuf, u64), String> {
+    canonical_text_file_diagnostic(raw_path).map_err(|error| error.message)
 }
 
 fn file_summary(path: &Path, size_bytes: u64, is_directory: bool) -> AuthorizedReadFile {
@@ -190,22 +243,22 @@ async fn read_canonical_text(canonical: &Path) -> Result<AuthorizedTextContent, 
     if bytes.len() as u64 > MAX_TEXT_FILE_BYTES {
         return Err("text file grew beyond 1 MiB".into());
     }
-    let content = String::from_utf8(bytes)
-        .map_err(|_| "file is not valid UTF-8 text".to_string())?;
+    let content =
+        String::from_utf8(bytes).map_err(|_| "file is not valid UTF-8 text".to_string())?;
     Ok(AuthorizedTextContent {
         file: file_summary(canonical, content.len() as u64, false),
         content,
     })
 }
 
-const SENSITIVE_READ_DENIED_MESSAGE: &str = "读取被运行时安全策略拒绝：该路径位于敏感目录（~/.ssh、~/.aws、~/.gnupg 等凭据载体或 ~/.axiom 数据目录）。此类路径不可读取、也不可经授权解除；请向用户说明，不要尝试其他路径绕过。";
+const SENSITIVE_READ_DENIED_MESSAGE: &str = "读取被运行时安全策略拒绝：该路径位于敏感目录（~/.ssh、~/.aws、~/.gnupg 等凭据载体或 ~/.axiom 数据目录）。凭据与应用数据不可经工作区授权解除；隐私目录需原生确认项目子目录。请向用户说明，不要尝试其他路径绕过。";
 
 /// 读取绝对路径的文本文件（工作区外 `read` 工具的唯一通道）。读取面免审批
 /// （对齐 codex 的全盘读语义）：不要求逐文件授权，但保留与 bash 沙箱同一集合
 /// 的敏感路径 deny（凭据载体 + `~/.axiom` 数据根）——read 不得成为绕过沙箱
 /// 凭据保护的旁路。canonicalize 先于 deny 判定：symlink 置换指向 deny 目标
-/// 同样被拒；路径位于任一授权工作区内时豁免（镜像沙箱「工作区位于 deny 目录
-/// 内时跳过该目录」语义）。HOME 来源与沙箱 profile 一致（`$HOME` 环境变量），
+/// 同样被拒；只有经原生确认的隐私项目子根可以窄范围开放。HOME 来源与沙箱
+/// profile 一致（Windows 无 HOME 时回退 USERPROFILE），
 /// 保证两侧 deny 集合判定在同一坐标系上。
 #[tauri::command]
 #[specta::specta]
@@ -216,9 +269,7 @@ pub(crate) async fn read_authorized_text(
     // 先做类型/大小校验：无效路径（二进制、超限、不存在）直接报错，
     // 不进入 deny 判定。
     let (canonical, _) = canonical_text_file(&path)?;
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| "HOME environment variable is unavailable".to_string())?;
+    let home = crate::sandbox::policy_home()?;
     let workspace_roots = {
         use tauri::Manager;
         crate::workspace_access::authorized_roots(&app.state::<WorkspaceAccessState>())
@@ -362,8 +413,7 @@ pub(crate) fn revoke_authorized_read_file(
     // 注册表仍含该路径，重启恢复就会重新登记它，移除不具持久效力。canonicalize
     // 仅在传入非 canonical 形态时兜底（文件已删除时退回原串，与 workspace revoke
     // 的 roots 匹配语义一致）。
-    let registry_target = std::fs::canonicalize(&path)
-        .unwrap_or_else(|_| PathBuf::from(&path));
+    let registry_target = std::fs::canonicalize(&path).unwrap_or_else(|_| PathBuf::from(&path));
     file_access_registry::registry_remove(
         &file_access_registry::registry_file_path(&app)?,
         &registry_target,
@@ -446,9 +496,11 @@ mod tests {
         file_access_registry::registry_insert(&registry, &binary).unwrap();
 
         let state = FileAccessState::default();
-        let restored =
-            regrant_entries(&state, file_access_registry::registry_read(&registry).unwrap())
-                .unwrap();
+        let restored = regrant_entries(
+            &state,
+            file_access_registry::registry_read(&registry).unwrap(),
+        )
+        .unwrap();
         assert_eq!(restored, 1);
         assert!(state.authorized.lock().unwrap().contains(&live));
         assert!(!state.authorized.lock().unwrap().contains(&gone));

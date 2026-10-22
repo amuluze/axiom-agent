@@ -41,22 +41,17 @@ const failClosedEnvironment: AgentEnvironment = {
   },
   artifacts: {
     writeToolResult: () => Promise.reject(unavailable('artifacts.writeToolResult')),
-  },
-  web: {
-    search: () => Promise.reject(unavailable('web.search')),
-    fetch: () => Promise.reject(unavailable('web.fetch')),
-  },
-  design: {
-    readDocument: () => Promise.reject(unavailable('design.readDocument')),
+    writeImage: () => Promise.reject(unavailable('artifacts.writeImage')),
   },
   browser: {
     command: () => Promise.reject(unavailable('browser.command')),
+    write: () => Promise.reject(unavailable('browser.write')),
   },
-  computer: {
-    command: () => Promise.reject(unavailable('computer.command')),
+  api: {
+    runStep: () => Promise.reject(unavailable('api.runStep')),
   },
-  ssh: {
-    command: () => Promise.reject(unavailable('ssh.command')),
+  design: {
+    readDocument: () => Promise.reject(unavailable('design.readDocument')),
   },
 }
 

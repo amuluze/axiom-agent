@@ -1,5 +1,9 @@
+use crate::design_access::{design_document_write_limit, DesignWatchState};
 use crate::{
-    file_access::{canonical_text_file, is_supported_text_path, MAX_TEXT_FILE_BYTES},
+    file_access::{
+        canonical_text_file, canonical_text_file_diagnostic, is_supported_text_path,
+        CanonicalTextFileError, CanonicalTextFileErrorCode, MAX_TEXT_FILE_BYTES,
+    },
     fuzzy_match::{
         apply_replacements_preserving_lines, count_occurrences_normalized, fuzzy_find,
         TextReplacement,
@@ -10,7 +14,6 @@ use crate::{
     workspace_command::WorkspaceCommandState,
     workspace_registry,
 };
-use crate::design_access::design_document_write_limit;
 use globset::{Glob, GlobMatcher};
 use ignore::{DirEntry, WalkBuilder};
 use regex::{Regex, RegexBuilder};
@@ -24,9 +27,10 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex, RwLock,
     },
+    time::UNIX_EPOCH,
 };
-use tempfile::NamedTempFile;
 use tauri::Manager;
+use tempfile::NamedTempFile;
 
 const DEFAULT_LIST_LIMIT: usize = 200;
 const MAX_LIST_LIMIT: usize = 1_000;
@@ -83,16 +87,31 @@ pub(crate) struct AuthorizedWorkspace {
     git_branch: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceEntry {
     path: String,
     name: String,
     kind: String,
+    #[specta(type = specta_typescript::Number)]
     size_bytes: u64,
+    /// 文件 mtime（Unix epoch ms）。文档索引用它配合 size 复用 revision 缓存，
+    /// 避免每次扫描都整文件重读计算 SHA；拿不到时缺省，前端必须回退到实际读取。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(type = Option<specta_typescript::Number>)]
+    modified_ms: Option<u64>,
 }
 
-#[derive(Debug, Serialize)]
+fn modified_epoch_ms(metadata: &std::fs::Metadata) -> Option<u64> {
+    metadata
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+}
+
+#[derive(Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceListResult {
     workspace: AuthorizedWorkspace,
@@ -101,7 +120,55 @@ pub(crate) struct WorkspaceListResult {
     truncated: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+enum WorkspaceCommandErrorCode {
+    NotAuthorized,
+    NotFound,
+    InvalidPath,
+    Unavailable,
+    Unknown,
+}
+
+#[derive(Debug, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkspaceCommandError {
+    code: WorkspaceCommandErrorCode,
+    message: String,
+}
+
+impl WorkspaceCommandError {
+    fn new(code: WorkspaceCommandErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    fn from_io(context: &str, error: std::io::Error) -> Self {
+        let code = match error.kind() {
+            std::io::ErrorKind::NotFound => WorkspaceCommandErrorCode::NotFound,
+            std::io::ErrorKind::PermissionDenied => WorkspaceCommandErrorCode::NotAuthorized,
+            _ => WorkspaceCommandErrorCode::Unknown,
+        };
+        Self::new(code, format!("{context}: {error}"))
+    }
+}
+
+impl From<CanonicalTextFileError> for WorkspaceCommandError {
+    fn from(error: CanonicalTextFileError) -> Self {
+        let code = match error.code {
+            CanonicalTextFileErrorCode::NotAuthorized => WorkspaceCommandErrorCode::NotAuthorized,
+            CanonicalTextFileErrorCode::NotFound => WorkspaceCommandErrorCode::NotFound,
+            CanonicalTextFileErrorCode::InvalidPath => WorkspaceCommandErrorCode::InvalidPath,
+            CanonicalTextFileErrorCode::Unavailable => WorkspaceCommandErrorCode::Unavailable,
+            CanonicalTextFileErrorCode::Unknown => WorkspaceCommandErrorCode::Unknown,
+        };
+        Self::new(code, error.message)
+    }
+}
+
+#[derive(Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceImage {
     mime_type: String,
@@ -111,17 +178,21 @@ pub(crate) struct WorkspaceImage {
     resized: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceReadResult {
     workspace: AuthorizedWorkspace,
     path: String,
     content: String,
     sha256: String,
+    #[specta(type = specta_typescript::Number)]
     start_line: usize,
+    #[specta(type = specta_typescript::Number)]
     end_line: usize,
+    #[specta(type = specta_typescript::Number)]
     total_lines: usize,
     truncated: bool,
+    #[specta(type = Option<specta_typescript::Number>)]
     next_offset: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     image: Option<WorkspaceImage>,
@@ -330,10 +401,8 @@ pub(crate) fn authorized_root_for(
         .ok_or_else(|| "workspace is not authorized for this Axiom process".to_string())
 }
 
-/// 全部已授权工作区根（canonical）。read 工具的敏感路径豁免按此判定——
-/// 路径位于任一授权工作区内时不受 deny 清单约束（镜像沙箱的「工作区位于
-/// deny 目录内时跳过该目录」）。锁中毒时返回空集：缺豁免只会多拒不会多放，
-/// 沿 fail-closed 方向退化。
+/// 全部已授权工作区根（canonical），用于隐私目录项目子根的窄范围判定。
+/// 凭据与应用数据不得豁免；锁中毒时返回空集，沿 fail-closed 方向退化。
 pub(crate) fn authorized_roots(state: &WorkspaceAccessState) -> Vec<PathBuf> {
     state
         .roots
@@ -401,12 +470,34 @@ fn authorize_restore_impl(
     registry_file: &Path,
     raw_path: &str,
 ) -> Result<AuthorizedWorkspace, String> {
+    authorize_restore_with_home(
+        state,
+        registry_file,
+        raw_path,
+        &crate::sandbox::policy_home()?,
+    )
+}
+
+fn authorize_restore_with_home(
+    state: &WorkspaceAccessState,
+    registry_file: &Path,
+    raw_path: &str,
+    home: &Path,
+) -> Result<AuthorizedWorkspace, String> {
     let canonical = resolve_workspace_directory(raw_path)?;
     if !workspace_registry::registry_contains(registry_file, &canonical)? {
         return Err(format!(
             "workspace {} was not previously authorized via the folder picker; authorize it again from the picker",
             canonical.display()
         ));
+    }
+    if let Some(scope) = crate::sandbox::workspace_sensitive_scope(home, &canonical)? {
+        if !workspace_registry::registry_sensitive_scope_matches(registry_file, &canonical, &scope)?
+        {
+            return Err(
+                "该工作区位于隐私目录，需要重新通过原生目录选择器确认精确子目录范围。".into(),
+            );
+        }
     }
     authorize_root_in_memory(state, &canonical)
 }
@@ -456,6 +547,86 @@ fn revoke_impl(state: &WorkspaceAccessState, target: &Path) -> Result<bool, Stri
     Ok(removed)
 }
 
+/// 写操作路径作用域。`root` 始终是会话授权工作区（敏感策略豁免、事务指纹、
+/// receipt 身份与设计稿历史目录都以它为锚）；仅「目标是否必须落在 root 内」
+/// 随 `confined` 切换。写工具（write/edit/apply_changes/restore_trash）共用
+/// 本类型，保证「完全访问放开工作区包含限制」在所有写入口上是同一判据。
+#[derive(Clone, Copy)]
+pub(crate) struct MutationScope<'a> {
+    pub(crate) root: &'a Path,
+    pub(crate) confined: bool,
+}
+
+impl<'a> MutationScope<'a> {
+    /// 标准模式：只接受相对路径，且必须落在授权工作区内。
+    pub(crate) fn workspace(root: &'a Path) -> Self {
+        Self {
+            root,
+            confined: true,
+        }
+    }
+
+    /// 完全访问：接受绝对路径，不受工作区包含限制（保护路径仍由
+    /// `SensitivePathPolicy` 拒绝，与本类型无关）。
+    pub(crate) fn unrestricted(root: &'a Path) -> Self {
+        Self {
+            root,
+            confined: false,
+        }
+    }
+
+    /// 按事务记录的作用域重建。旧事务没有该字段，读出 `false` 即沿用工作区
+    /// 包含规则重放（fail-closed），行为与放开前逐字一致。
+    pub(crate) fn from_record(root: &'a Path, unconfined: bool) -> Self {
+        Self {
+            root,
+            confined: !unconfined,
+        }
+    }
+
+    /// 完全访问档的路径形状校验：接受绝对路径，仍拒绝 `..` 与空路径。
+    /// `.git`/`.axiom` 段不由路径层拒绝（工作区外写 `.git` 是正常操作），
+    /// Axiom 数据根由敏感路径策略统一覆盖。
+    pub(crate) fn validate_unrestricted_path(raw_path: &str) -> Result<PathBuf, String> {
+        let raw_path = raw_path.trim();
+        if raw_path.is_empty() || raw_path.len() > 16 * 1024 {
+            return Err("workspace change path must be a non-empty path".into());
+        }
+        let path = PathBuf::from(raw_path);
+        if path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir))
+        {
+            return Err("workspace changes do not accept '..' in paths".into());
+        }
+        let normalized = path
+            .components()
+            .filter_map(|part| match part {
+                Component::Normal(value) => Some(value),
+                Component::CurDir => None,
+                Component::RootDir => Some(std::ffi::OsStr::new("/")),
+                _ => None,
+            })
+            .collect::<PathBuf>();
+        if normalized.as_os_str().is_empty() {
+            return Err("workspace change path has no file name".into());
+        }
+        Ok(normalized)
+    }
+}
+
+/// 审批租约携带的档位 → 写作用域。只有完全访问签发的租约是 `Unrestricted`
+/// （档位由 Rust 签发侧分类，渲染进程无法自报），因此该判定与 bash 同源。
+pub(crate) fn mutation_scope_for<'a>(
+    root: &'a Path,
+    tier: Option<crate::sandbox::CommandTier>,
+) -> MutationScope<'a> {
+    match tier {
+        Some(crate::sandbox::CommandTier::Unrestricted) => MutationScope::unrestricted(root),
+        _ => MutationScope::workspace(root),
+    }
+}
+
 pub(crate) fn validate_relative_path(raw_path: Option<&str>) -> Result<PathBuf, String> {
     let raw_path = raw_path
         .map(str::trim)
@@ -497,29 +668,128 @@ pub(crate) fn reject_reserved_write_components(relative: &Path) -> Result<(), St
     Ok(())
 }
 
-fn resolve_workspace_path(root: &Path, raw_path: Option<&str>) -> Result<PathBuf, String> {
+pub(crate) fn workspace_path_policy(
+    root: &Path,
+) -> Result<crate::sandbox::SensitivePathPolicy, String> {
+    Ok(crate::sandbox::SensitivePathPolicy::new(
+        &crate::sandbox::policy_home()?,
+        &[root.to_path_buf()],
+    ))
+}
+
+pub(crate) fn ensure_workspace_path_access(
+    root: &Path,
+    path: &Path,
+    mutation: bool,
+) -> Result<(), String> {
+    ensure_path_access(&workspace_path_policy(root)?, path, mutation)
+}
+
+pub(crate) fn ensure_path_access(
+    policy: &crate::sandbox::SensitivePathPolicy,
+    path: &Path,
+    mutation: bool,
+) -> Result<(), String> {
+    if if mutation {
+        policy.mutation_denied(path)
+    } else {
+        policy.read_denied(path)
+    } {
+        return Err("工作区授权不能解除敏感路径保护：凭据和 Axiom 数据不可读取或改名；隐私目录只开放经原生确认的项目子目录。".into());
+    }
+    Ok(())
+}
+
+fn resolve_workspace_path_with_policy(
+    root: &Path,
+    raw_path: Option<&str>,
+    policy: &crate::sandbox::SensitivePathPolicy,
+) -> Result<PathBuf, String> {
     let relative = validate_relative_path(raw_path)?;
     let canonical = std::fs::canonicalize(root.join(relative))
         .map_err(|error| format!("failed to resolve workspace path: {error}"))?;
     if !canonical.starts_with(root) {
         return Err("workspace path resolves outside the authorized root".into());
     }
+    ensure_path_access(policy, &canonical, false)?;
     Ok(canonical)
 }
 
-fn resolve_new_workspace_file(root: &Path, raw_path: &str) -> Result<PathBuf, String> {
-    let relative = validate_relative_path(Some(raw_path))?;
-    reject_reserved_write_components(&relative)?;
-    if relative.as_os_str() == "." {
-        return Err("workspace file path cannot be empty".into());
+/// 父目录不存在时，逐级创建缺失的目录。安全边界与既有父目录解析一致：
+/// 标准模式下，最近的存在祖先必须落在授权根内（这一条同时拦住了「经符号链接把目录
+/// 建到根外」），且只做单级 `create_dir`（`create_dir_all` 会跟随符号链接，故不用）；
+/// 完全访问不限制父目录位置，敏感路径保护由调用方后续的 `ensure_workspace_path_access` 生效。
+/// 崩溃语义：目录可能已建而文件尚未落盘，遗留的是**空目录**（文件写盘本身仍由
+/// `NamedTempFile::persist_noclobber` 原子完成），不丢数据、可安全忽略。
+fn ensure_parent_directories(
+    scope: MutationScope<'_>,
+    expected_parent: &Path,
+) -> Result<(), String> {
+    if expected_parent.exists() {
+        return Ok(());
     }
+    let mut existing = expected_parent;
+    let mut missing: Vec<&std::ffi::OsStr> = Vec::new();
+    while !existing.exists() {
+        let name = existing
+            .file_name()
+            .ok_or_else(|| "workspace file parent has no name".to_string())?;
+        missing.push(name);
+        existing = existing
+            .parent()
+            .ok_or_else(|| "workspace file parent has no existing ancestor".to_string())?;
+    }
+    missing.reverse();
+    let mut cursor = if scope.confined {
+        let canonical_ancestor = std::fs::canonicalize(existing)
+            .map_err(|error| format!("failed to resolve workspace parent ancestor: {error}"))?;
+        if !canonical_ancestor.starts_with(scope.root) {
+            return Err("workspace file parent crosses the authorized root".into());
+        }
+        canonical_ancestor
+    } else {
+        existing.to_path_buf()
+    };
+    for name in missing {
+        cursor = cursor.join(name);
+        match std::fs::create_dir(&cursor) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(format!("failed to create workspace file parent: {error}")),
+        }
+    }
+    Ok(())
+}
+
+/// 按写作用域解析新文件目标。标准模式只接受工作区内相对路径；完全访问接受
+/// 绝对路径（父目录同样可落在工作区外），敏感路径保护在两种档位下一致生效。
+fn resolve_new_workspace_file(scope: MutationScope<'_>, raw_path: &str) -> Result<PathBuf, String> {
+    let relative = if scope.confined {
+        let relative = validate_relative_path(Some(raw_path))?;
+        reject_reserved_write_components(&relative)?;
+        if relative.as_os_str() == "." {
+            return Err("workspace file path cannot be empty".into());
+        }
+        relative
+    } else {
+        MutationScope::validate_unrestricted_path(raw_path)?
+    };
     let file_name = relative
         .file_name()
         .ok_or_else(|| "workspace file path must include a file name".to_string())?;
     let parent = relative.parent().unwrap_or_else(|| Path::new("."));
-    let canonical_parent = std::fs::canonicalize(root.join(parent))
+    let expected_parent = if relative.is_absolute() {
+        parent.to_path_buf()
+    } else {
+        scope.root.join(parent)
+    };
+    // 父目录可能尚不存在（例如空仓库里写 `tests/x.testspec.json`）：在授权根内自动创建缺失的
+    // 父目录。标准模式只允许授权根内的相对父路径，完全访问允许绝对路径的父目录——
+    // 敏感路径判定由下面的 `ensure_workspace_path_access` 兜底。
+    ensure_parent_directories(scope, &expected_parent)?;
+    let canonical_parent = std::fs::canonicalize(&expected_parent)
         .map_err(|error| format!("failed to resolve workspace file parent: {error}"))?;
-    if !canonical_parent.starts_with(root) {
+    if scope.confined && !canonical_parent.starts_with(scope.root) {
         return Err("workspace file parent resolves outside the authorized root".into());
     }
     let metadata = std::fs::metadata(&canonical_parent)
@@ -528,7 +798,8 @@ fn resolve_new_workspace_file(root: &Path, raw_path: &str) -> Result<PathBuf, St
         return Err("workspace file parent is not a directory".into());
     }
     let target = canonical_parent.join(file_name);
-    // .pen 设计稿定点放行：不经文本扩展白名单（8MiB 上限由写入侧按 limit 生效）。
+    ensure_workspace_path_access(scope.root, &target, true)?;
+    // `.ax` 设计稿定点放行：不经文本扩展白名单（8MiB 上限由写入侧按 limit 生效）。
     if design_document_write_limit(&target).is_none() && !is_supported_text_path(&target) {
         return Err("workspace file type is not supported for text writing".into());
     }
@@ -615,11 +886,12 @@ pub(crate) fn sync_parent_directory(path: &Path) -> Result<(), String> {
 }
 
 fn create_text_file_impl(
-    root: &Path,
+    scope: MutationScope<'_>,
     raw_path: &str,
     content: &str,
 ) -> Result<WorkspaceWriteResult, String> {
-    let target = resolve_new_workspace_file(root, raw_path)?;
+    let root = scope.root;
+    let target = resolve_new_workspace_file(scope, raw_path)?;
     validate_write_content(
         content,
         design_document_write_limit(&target).unwrap_or(MAX_TEXT_FILE_BYTES),
@@ -650,27 +922,59 @@ fn create_text_file_impl(
     sync_parent_directory(&target)?;
     Ok(WorkspaceWriteResult {
         workspace: workspace_summary(root),
-        path: relative_display(root, &target),
+        path: scoped_path_display(scope, &target),
         size_bytes: content.len() as u64,
         sha256: format!("{:x}", Sha256::digest(content.as_bytes())),
     })
 }
 
+/// 结果里的路径展示：标准模式给出工作区相对路径，完全访问的目标可能落在工作区
+/// 外，此时原样返回绝对路径（与 workspace_changes 的 relative_display 同口径）。
+fn scoped_path_display(scope: MutationScope<'_>, target: &Path) -> String {
+    if scope.confined || !target.is_absolute() {
+        relative_display(scope.root, target)
+    } else {
+        target.to_string_lossy().into_owned()
+    }
+}
+
+#[cfg(test)]
 fn edit_text_file_impl(
     root: &Path,
-    raw_path: &str,
+    path: &str,
     edits: &[WorkspaceEditOp],
 ) -> Result<WorkspaceWriteResult, String> {
+    edit_text_file_with_history_impl(MutationScope::workspace(root), path, edits, None)
+}
+
+fn edit_text_file_with_history_impl(
+    scope: MutationScope<'_>,
+    raw_path: &str,
+    edits: &[WorkspaceEditOp],
+    data_root: Option<&Path>,
+) -> Result<WorkspaceWriteResult, String> {
+    let root = scope.root;
     let total_edits = edits.len();
     if total_edits == 0 {
         return Err("workspace edit requires at least one edit".into());
     }
-    let relative = validate_relative_path(Some(raw_path))?;
-    reject_reserved_write_components(&relative)?;
-    // .pen 设计稿定点放行：不经 canonical_text_file 的文本扩展白名单与 1MiB
+    // 标准模式只接受工作区内相对路径并拒保留目录；完全访问接受绝对路径，
+    // `.git`/`.axiom` 段交由敏感路径策略判定（Axiom 数据根始终拒绝）。
+    let relative = if scope.confined {
+        let relative = validate_relative_path(Some(raw_path))?;
+        reject_reserved_write_components(&relative)?;
+        relative
+    } else {
+        MutationScope::validate_unrestricted_path(raw_path)?
+    };
+    let requested = if relative.is_absolute() {
+        relative.clone()
+    } else {
+        root.join(&relative)
+    };
+    // `.ax` 设计稿定点放行：不经 canonical_text_file 的文本扩展白名单与 1MiB
     // 上限，改按设计稿上限（containment / is_file / UTF-8 校验全部保留）。
-    let write_limit = design_document_write_limit(&root.join(&relative))
-        .unwrap_or(MAX_TEXT_FILE_BYTES);
+    let write_limit = design_document_write_limit(&requested).unwrap_or(MAX_TEXT_FILE_BYTES);
     for (index, edit) in edits.iter().enumerate() {
         if edit.old_text.is_empty() {
             return Err(empty_old_text_error(raw_path, index, total_edits));
@@ -682,17 +986,16 @@ fn edit_text_file_impl(
             ));
         }
     }
-    let requested = root.join(relative);
     let canonical = if write_limit == MAX_TEXT_FILE_BYTES {
         let (canonical, _) = canonical_text_file(&requested.to_string_lossy())?;
-        if !canonical.starts_with(root) {
+        if scope.confined && !canonical.starts_with(root) {
             return Err("workspace file resolves outside the authorized root".into());
         }
         canonical
     } else {
         let canonical = std::fs::canonicalize(&requested)
             .map_err(|error| format!("failed to resolve workspace path: {error}"))?;
-        if !canonical.starts_with(root) {
+        if scope.confined && !canonical.starts_with(root) {
             return Err("workspace file resolves outside the authorized root".into());
         }
         let metadata = std::fs::metadata(&canonical)
@@ -708,6 +1011,7 @@ fn edit_text_file_impl(
         }
         canonical
     };
+    ensure_workspace_path_access(root, &canonical, true)?;
     let bytes = std::fs::read(&canonical)
         .map_err(|error| format!("failed to read workspace text file: {error}"))?;
     let original = String::from_utf8(bytes)
@@ -801,6 +1105,9 @@ fn edit_text_file_impl(
         .as_file()
         .sync_all()
         .map_err(|error| format!("failed to sync workspace temporary file: {error}"))?;
+    if let Some(data_root) = data_root {
+        crate::design_history::backup(data_root, root, &canonical, original.as_bytes())?;
+    }
     temporary.persist(&canonical).map_err(|error| {
         format!(
             "failed to atomically replace workspace file: {}",
@@ -810,7 +1117,7 @@ fn edit_text_file_impl(
     sync_parent_directory(&canonical)?;
     Ok(WorkspaceWriteResult {
         workspace: workspace_summary(root),
-        path: relative_display(root, &canonical),
+        path: scoped_path_display(scope, &canonical),
         size_bytes: updated.len() as u64,
         sha256: format!("{:x}", Sha256::digest(updated.as_bytes())),
     })
@@ -852,18 +1159,52 @@ fn list_impl(
     root: &Path,
     raw_path: Option<&str>,
     limit: Option<usize>,
-) -> Result<WorkspaceListResult, String> {
-    let directory = resolve_workspace_path(root, raw_path)?;
+) -> Result<WorkspaceListResult, WorkspaceCommandError> {
+    let policy = workspace_path_policy(root).map_err(|message| {
+        WorkspaceCommandError::new(WorkspaceCommandErrorCode::Unavailable, message)
+    })?;
+    list_impl_with_policy(root, raw_path, limit, &policy)
+}
+
+fn list_impl_with_policy(
+    root: &Path,
+    raw_path: Option<&str>,
+    limit: Option<usize>,
+    policy: &crate::sandbox::SensitivePathPolicy,
+) -> Result<WorkspaceListResult, WorkspaceCommandError> {
+    let relative = validate_relative_path(raw_path).map_err(|message| {
+        WorkspaceCommandError::new(WorkspaceCommandErrorCode::InvalidPath, message)
+    })?;
+    let directory = std::fs::canonicalize(root.join(relative)).map_err(|error| {
+        WorkspaceCommandError::from_io("failed to resolve workspace path", error)
+    })?;
+    if !directory.starts_with(root) {
+        return Err(WorkspaceCommandError::new(
+            WorkspaceCommandErrorCode::InvalidPath,
+            "workspace path resolves outside the authorized root",
+        ));
+    }
+    ensure_path_access(policy, &directory, false).map_err(|message| {
+        WorkspaceCommandError::new(WorkspaceCommandErrorCode::NotAuthorized, message)
+    })?;
     if !std::fs::metadata(&directory)
-        .map_err(|error| format!("failed to inspect workspace directory: {error}"))?
+        .map_err(|error| {
+            WorkspaceCommandError::from_io("failed to inspect workspace directory", error)
+        })?
         .is_dir()
     {
-        return Err("workspace list path is not a directory".into());
+        return Err(WorkspaceCommandError::new(
+            WorkspaceCommandErrorCode::InvalidPath,
+            "workspace list path is not a directory",
+        ));
     }
     let effective_limit = limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(1, MAX_LIST_LIMIT);
     let mut raw_entries = std::fs::read_dir(&directory)
-        .map_err(|error| format!("failed to read workspace directory: {error}"))?
+        .map_err(|error| {
+            WorkspaceCommandError::from_io("failed to read workspace directory", error)
+        })?
         .filter_map(Result::ok)
+        .filter(|entry| !policy.read_denied(&entry.path()))
         .collect::<Vec<_>>();
     raw_entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_lowercase());
     let truncated = raw_entries.len() > effective_limit;
@@ -882,8 +1223,12 @@ fn list_impl(
         } else {
             "other"
         };
+        let metadata = entry.metadata().ok();
         let size_bytes = if file_type.is_file() {
-            entry.metadata().map(|metadata| metadata.len()).unwrap_or(0)
+            metadata
+                .as_ref()
+                .map(|metadata| metadata.len())
+                .unwrap_or(0)
         } else {
             0
         };
@@ -892,6 +1237,7 @@ fn list_impl(
             name: entry.file_name().to_string_lossy().into_owned(),
             kind: kind.into(),
             size_bytes,
+            modified_ms: metadata.as_ref().and_then(modified_epoch_ms),
         });
     }
     Ok(WorkspaceListResult {
@@ -907,24 +1253,84 @@ fn read_impl(
     raw_path: &str,
     offset: Option<usize>,
     limit: Option<usize>,
-) -> Result<WorkspaceReadResult, String> {
-    let relative = validate_relative_path(Some(raw_path))?;
+) -> Result<WorkspaceReadResult, WorkspaceCommandError> {
+    let policy = workspace_path_policy(root).map_err(|message| {
+        WorkspaceCommandError::new(WorkspaceCommandErrorCode::Unavailable, message)
+    })?;
+    read_impl_with_policy(root, raw_path, offset, limit, &policy)
+}
+
+fn read_impl_with_policy(
+    root: &Path,
+    raw_path: &str,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    policy: &crate::sandbox::SensitivePathPolicy,
+) -> Result<WorkspaceReadResult, WorkspaceCommandError> {
+    let relative = validate_relative_path(Some(raw_path)).map_err(|message| {
+        WorkspaceCommandError::new(WorkspaceCommandErrorCode::InvalidPath, message)
+    })?;
+    ensure_path_access(policy, &root.join(&relative), false).map_err(|message| {
+        WorkspaceCommandError::new(WorkspaceCommandErrorCode::NotAuthorized, message)
+    })?;
 
     // Image branch: bypass the text-only extension whitelist and return a
     // base64 image payload (resized to fit provider limits) instead of text.
     if is_supported_image_path(&root.join(&relative)) {
-        return read_image_impl(root, &relative);
+        return read_image_impl(root, &relative, policy);
     }
 
     let requested = root.join(relative);
-    let (canonical, _) = canonical_text_file(&requested.to_string_lossy())?;
+    let canonical = if let Some(max_bytes) = design_document_write_limit(&requested) {
+        let canonical = std::fs::canonicalize(&requested).map_err(|error| {
+            WorkspaceCommandError::from_io("failed to resolve workspace path", error)
+        })?;
+        if !canonical.starts_with(root) {
+            return Err(WorkspaceCommandError::new(
+                WorkspaceCommandErrorCode::InvalidPath,
+                "workspace file resolves outside the authorized root",
+            ));
+        }
+        let metadata = std::fs::metadata(&canonical).map_err(|error| {
+            WorkspaceCommandError::from_io("failed to inspect workspace text file", error)
+        })?;
+        if !metadata.is_file() {
+            return Err(WorkspaceCommandError::new(
+                WorkspaceCommandErrorCode::InvalidPath,
+                "workspace read requires a regular text file",
+            ));
+        }
+        if metadata.len() > max_bytes {
+            return Err(WorkspaceCommandError::new(
+                WorkspaceCommandErrorCode::Unavailable,
+                format!(
+                    "workspace text file is larger than {} MiB",
+                    max_bytes / (1024 * 1024)
+                ),
+            ));
+        }
+        canonical
+    } else {
+        canonical_text_file_diagnostic(&requested.to_string_lossy())?.0
+    };
     if !canonical.starts_with(root) {
-        return Err("workspace file resolves outside the authorized root".into());
+        return Err(WorkspaceCommandError::new(
+            WorkspaceCommandErrorCode::InvalidPath,
+            "workspace file resolves outside the authorized root",
+        ));
     }
-    let bytes = std::fs::read(&canonical)
-        .map_err(|error| format!("failed to read workspace text file: {error}"))?;
-    let content = String::from_utf8(bytes)
-        .map_err(|_| "workspace file is not valid UTF-8 text".to_string())?;
+    ensure_path_access(policy, &canonical, false).map_err(|message| {
+        WorkspaceCommandError::new(WorkspaceCommandErrorCode::NotAuthorized, message)
+    })?;
+    let bytes = std::fs::read(&canonical).map_err(|error| {
+        WorkspaceCommandError::from_io("failed to read workspace text file", error)
+    })?;
+    let content = String::from_utf8(bytes).map_err(|_| {
+        WorkspaceCommandError::new(
+            WorkspaceCommandErrorCode::InvalidPath,
+            "workspace file is not valid UTF-8 text",
+        )
+    })?;
     let lines = content
         .split('\n')
         .map(|line| line.strip_suffix('\r').unwrap_or(line))
@@ -932,8 +1338,9 @@ fn read_impl(
     let total_lines = lines.len();
     let start_line = offset.unwrap_or(1).max(1);
     if start_line > total_lines {
-        return Err(format!(
-            "workspace read offset {start_line} is beyond the file's {total_lines} lines"
+        return Err(WorkspaceCommandError::new(
+            WorkspaceCommandErrorCode::InvalidPath,
+            format!("workspace read offset {start_line} is beyond the file's {total_lines} lines"),
         ));
     }
     let requested_limit = limit.unwrap_or(DEFAULT_READ_LIMIT).clamp(1, MAX_READ_LIMIT);
@@ -989,31 +1396,59 @@ fn read_impl(
 
 /// Read an image file, resize it to fit provider limits, and return a base64
 /// payload alongside a human-readable note in `content`.
-fn read_image_impl(root: &Path, relative: &Path) -> Result<WorkspaceReadResult, String> {
+fn read_image_impl(
+    root: &Path,
+    relative: &Path,
+    policy: &crate::sandbox::SensitivePathPolicy,
+) -> Result<WorkspaceReadResult, WorkspaceCommandError> {
     let requested = root.join(relative);
-    let canonical = std::fs::canonicalize(&requested)
-        .map_err(|error| format!("failed to resolve workspace image path: {error}"))?;
+    let canonical = std::fs::canonicalize(&requested).map_err(|error| {
+        WorkspaceCommandError::from_io("failed to resolve workspace image path", error)
+    })?;
     if !canonical.starts_with(root) {
-        return Err("workspace file resolves outside the authorized root".into());
+        return Err(WorkspaceCommandError::new(
+            WorkspaceCommandErrorCode::InvalidPath,
+            "workspace file resolves outside the authorized root",
+        ));
     }
     // 读入内存前先按 metadata 检查尺寸，避免超大图片先整读进内存再拒绝（OOM）。
     // 读后仍保留 bytes.len() 复查，兜住 metadata 与 read 之间的 TOCTOU 窗口。
-    let metadata = std::fs::metadata(&canonical)
-        .map_err(|error| format!("failed to inspect workspace image file: {error}"))?;
+    let metadata = std::fs::metadata(&canonical).map_err(|error| {
+        WorkspaceCommandError::from_io("failed to inspect workspace image file", error)
+    })?;
     if !metadata.is_file() {
-        return Err("workspace image path is not a file".into());
+        return Err(WorkspaceCommandError::new(
+            WorkspaceCommandErrorCode::InvalidPath,
+            "workspace image path is not a file",
+        ));
     }
     if metadata.len() > MAX_TEXT_FILE_BYTES {
-        return Err("workspace image file is larger than 1 MiB".into());
+        return Err(WorkspaceCommandError::new(
+            WorkspaceCommandErrorCode::Unavailable,
+            "workspace image file is larger than 1 MiB",
+        ));
     }
-    let bytes = std::fs::read(&canonical)
-        .map_err(|error| format!("failed to read workspace image file: {error}"))?;
+    ensure_path_access(policy, &canonical, false).map_err(|message| {
+        WorkspaceCommandError::new(WorkspaceCommandErrorCode::NotAuthorized, message)
+    })?;
+    let bytes = std::fs::read(&canonical).map_err(|error| {
+        WorkspaceCommandError::from_io("failed to read workspace image file", error)
+    })?;
     if bytes.len() as u64 > MAX_TEXT_FILE_BYTES {
-        return Err("workspace image file is larger than 1 MiB".into());
+        return Err(WorkspaceCommandError::new(
+            WorkspaceCommandErrorCode::Unavailable,
+            "workspace image file is larger than 1 MiB",
+        ));
     }
-    let mime_type = detect_image_mime(&bytes)
-        .ok_or_else(|| "workspace file is not a supported image format".to_string())?;
-    let resized = resize_image(&bytes)?;
+    let mime_type = detect_image_mime(&bytes).ok_or_else(|| {
+        WorkspaceCommandError::new(
+            WorkspaceCommandErrorCode::InvalidPath,
+            "workspace file is not a supported image format",
+        )
+    })?;
+    let resized = resize_image(&bytes).map_err(|message| {
+        WorkspaceCommandError::new(WorkspaceCommandErrorCode::Unavailable, message)
+    })?;
     let note = match (
         resized.original_width,
         resized.original_height,
@@ -1112,7 +1547,16 @@ fn search_impl(
     options: SearchOptions,
     cancellation: &AtomicBool,
 ) -> Result<WorkspaceSearchResult, String> {
-    let search_root = resolve_workspace_path(root, options.path.as_deref())?;
+    search_impl_with_policy(root, options, cancellation, &workspace_path_policy(root)?)
+}
+
+fn search_impl_with_policy(
+    root: &Path,
+    options: SearchOptions,
+    cancellation: &AtomicBool,
+    policy: &crate::sandbox::SensitivePathPolicy,
+) -> Result<WorkspaceSearchResult, String> {
+    let search_root = resolve_workspace_path_with_policy(root, options.path.as_deref(), policy)?;
     let search_metadata = std::fs::metadata(&search_root)
         .map_err(|error| format!("failed to inspect workspace search path: {error}"))?;
     if !search_metadata.is_dir() && !search_metadata.is_file() {
@@ -1123,6 +1567,7 @@ fn search_impl(
     let matcher = build_search_matcher(&options)?;
     let glob = build_glob_matcher(options.glob.as_deref())?;
     let effective_limit = options.limit.clamp(1, MAX_SEARCH_LIMIT);
+    let walk_policy = policy.clone();
     let mut builder = WalkBuilder::new(&search_root);
     builder
         .hidden(false)
@@ -1133,7 +1578,9 @@ fn search_impl(
         .require_git(false)
         .follow_links(false)
         .max_filesize(Some(MAX_TEXT_FILE_BYTES))
-        .filter_entry(should_walk_entry);
+        .filter_entry(move |entry| {
+            should_walk_entry(entry) && !walk_policy.read_denied(entry.path())
+        });
 
     let mut matches = Vec::new();
     let mut output_bytes = 0usize;
@@ -1151,6 +1598,9 @@ fn search_impl(
         }
         let relative = relative_display(root, entry.path());
         if glob.as_ref().is_some_and(|glob| !glob.is_match(&relative)) {
+            continue;
+        }
+        if policy.read_denied(entry.path()) {
             continue;
         }
         let content = match std::fs::read_to_string(entry.path()) {
@@ -1252,6 +1702,24 @@ fn find_impl(
     limit: Option<usize>,
     max_depth: Option<usize>,
 ) -> Result<WorkspaceFindResult, String> {
+    find_impl_with_policy(
+        root,
+        pattern,
+        raw_path,
+        limit,
+        max_depth,
+        &workspace_path_policy(root)?,
+    )
+}
+
+fn find_impl_with_policy(
+    root: &Path,
+    pattern: &str,
+    raw_path: Option<&str>,
+    limit: Option<usize>,
+    max_depth: Option<usize>,
+    policy: &crate::sandbox::SensitivePathPolicy,
+) -> Result<WorkspaceFindResult, String> {
     let trimmed_pattern = pattern.trim();
     if trimmed_pattern.is_empty() {
         return Err("workspace find pattern cannot be empty".into());
@@ -1259,7 +1727,28 @@ fn find_impl(
     if trimmed_pattern.len() > 512 {
         return Err("workspace find pattern is too long".into());
     }
-    let search_root = resolve_workspace_path(root, raw_path)?;
+    // 目标目录不存在 = 0 个匹配（新项目首次扫描 tests/ 的常态），不是错误：宿主直接
+    // 返回结构化空结果，调用方不必从错误文案推断 not_found（TS 侧因此不需要任何
+    // 字符串匹配）。越界（`..` / 绝对路径）与保护路径仍由下方的
+    // resolve_workspace_path_with_policy 拒绝——这里只对「工作区内、合法相对路径、
+    // 且目标确实不存在或非目录」短路，且不读取目标内容。
+    if let Some(raw) = raw_path {
+        let relative = validate_relative_path(Some(raw))?;
+        let target = root.join(&relative);
+        let absent = std::fs::symlink_metadata(&target)
+            .map(|metadata| !metadata.is_dir())
+            .unwrap_or(true);
+        if absent && !policy.read_denied(&target) {
+            return Ok(WorkspaceFindResult {
+                workspace: workspace_summary(root),
+                pattern: trimmed_pattern.to_string(),
+                root_path: relative_display(root, &target),
+                matches: Vec::new(),
+                truncated: false,
+            });
+        }
+    }
+    let search_root = resolve_workspace_path_with_policy(root, raw_path, policy)?;
     if !std::fs::metadata(&search_root)
         .map_err(|error| format!("failed to inspect workspace find path: {error}"))?
         .is_dir()
@@ -1272,6 +1761,7 @@ fn find_impl(
     let effective_limit = limit.unwrap_or(DEFAULT_FIND_LIMIT).clamp(1, MAX_FIND_LIMIT);
     let root_path = relative_display(root, &search_root);
 
+    let walk_policy = policy.clone();
     let mut builder = WalkBuilder::new(&search_root);
     builder
         .hidden(false)
@@ -1281,7 +1771,9 @@ fn find_impl(
         .git_exclude(true)
         .require_git(false)
         .follow_links(false)
-        .filter_entry(should_walk_entry);
+        .filter_entry(move |entry| {
+            should_walk_entry(entry) && !walk_policy.read_denied(entry.path())
+        });
     // 深度受限时（顶层列举）不进入子目录：glob 的 `*` 跨分隔符，
     // 仅靠 pattern 无法把结果限制在顶层。
     if let Some(depth) = max_depth {
@@ -1295,6 +1787,9 @@ fn find_impl(
         if entry.path() == search_root {
             continue;
         }
+        if policy.read_denied(entry.path()) {
+            continue;
+        }
         let relative = relative_display(root, entry.path());
         if !glob_matcher.is_match(&relative) {
             continue;
@@ -1304,11 +1799,15 @@ fn find_impl(
             break;
         }
         let file_type = entry.file_type();
+        let metadata = entry.metadata().ok();
         let (kind, size_bytes) = match file_type {
             Some(ft) if ft.is_dir() => ("directory".to_string(), 0),
             Some(ft) if ft.is_symlink() => ("symlink".to_string(), 0),
             Some(ft) if ft.is_file() => {
-                let size = entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+                let size = metadata
+                    .as_ref()
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0);
                 ("file".to_string(), size)
             }
             _ => ("other".to_string(), 0),
@@ -1319,6 +1818,7 @@ fn find_impl(
             name,
             kind,
             size_bytes,
+            modified_ms: metadata.as_ref().and_then(modified_epoch_ms),
         });
     }
     Ok(WorkspaceFindResult {
@@ -1348,6 +1848,33 @@ pub(crate) fn authorize_workspace(
     authorize_restore_impl(&state, &registry_file, &path)
 }
 
+async fn confirm_sensitive_workspace(
+    app: &tauri::AppHandle,
+    root: &Path,
+    scope: &Path,
+) -> Result<(), String> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let mut dialog = app.dialog().message(format!(
+        "所选项目位于隐私保护目录：{}\n\n只开放项目子目录：{}\n父目录及其他子目录仍受保护，凭据和 Axiom 数据不会开放。授权范围会记录在本机安全审计中。",
+        scope.display(), root.display())).title("确认敏感位置的工作区")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom("仅授权此子目录".into(), "取消".into()));
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.parent(&window);
+    }
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    dialog.show(move |confirmed| {
+        let _ = sender.send(confirmed);
+    });
+    if !receiver
+        .await
+        .map_err(|_| "敏感工作区确认对话框意外关闭".to_string())?
+    {
+        return Err("用户取消了敏感工作区授权，目录未登记。".into());
+    }
+    Ok(())
+}
+
 /// 由 Rust 侧打开原生目录选择器并授权，路径直接来自系统对话框，
 /// 不再让 WebView 把任意绝对路径作为"已授权工作区"传入。
 /// 取消时返回 Ok(None)。`authorize_workspace` 仅供启动恢复既有授权路径，
@@ -1375,18 +1902,27 @@ pub(crate) async fn pick_and_authorize_workspace(
     let path = picked
         .into_path()
         .map_err(|error| format!("failed to resolve selected workspace path: {error}"))?;
+    let canonical = resolve_workspace_directory(&path.to_string_lossy())?;
+    let home = crate::sandbox::policy_home()?;
+    let sensitive_scope = crate::sandbox::workspace_sensitive_scope(&home, &canonical)?;
+    if let Some(scope) = &sensitive_scope {
+        confirm_sensitive_workspace(&app, &canonical, scope).await?;
+    }
     let _ = (&command_state, &terminal_state);
     let _registry = state
         .registry_mutations
         .lock()
         .map_err(|_| "workspace registry mutation lock is poisoned".to_string())?;
     ensure_workspace_recovery_ready(&state)?;
-    let canonical = resolve_workspace_directory(&path.to_string_lossy())?;
-    // 先持久化登记再内存授权：注册表写失败即拒绝授权（fail-closed），不留
-    // 「本次可用、重启后恢复被拒」的静默降级。
-    workspace_registry::registry_insert(
+    if resolve_workspace_directory(&path.to_string_lossy())? != canonical
+        || crate::sandbox::workspace_sensitive_scope(&home, &canonical)? != sensitive_scope
+    {
+        return Err("确认期间工作区路径或保护范围已变化，请重新选择目录。".into());
+    }
+    workspace_registry::registry_insert_with_scope(
         &workspace_registry::registry_file_path(&app)?,
         &canonical,
+        sensitive_scope.as_deref(),
     )?;
     Ok(Some(authorize_root_in_memory(&state, &canonical)?))
 }
@@ -1404,7 +1940,9 @@ pub(crate) fn e2e_register_workspace(
     path: String,
 ) -> Result<AuthorizedWorkspace, String> {
     if std::env::var("AXIOM_E2E_RUNTIME_AUTOMATION").is_err() {
-        return Err("E2E workspace registration requires the runtime automation environment".into());
+        return Err(
+            "E2E workspace registration requires the runtime automation environment".into(),
+        );
     }
     let _ = (&command_state, &terminal_state);
     let _registry = state
@@ -1413,6 +1951,11 @@ pub(crate) fn e2e_register_workspace(
         .map_err(|_| "workspace registry mutation lock is poisoned".to_string())?;
     ensure_workspace_recovery_ready(&state)?;
     let canonical = resolve_workspace_directory(&path)?;
+    if crate::sandbox::workspace_sensitive_scope(&crate::sandbox::policy_home()?, &canonical)?
+        .is_some()
+    {
+        return Err("E2E registration cannot grant sensitive workspace exceptions".into());
+    }
     workspace_registry::registry_insert(
         &workspace_registry::registry_file_path(&app)?,
         &canonical,
@@ -1476,6 +2019,7 @@ pub(crate) async fn revoke_workspace(
         let state = app.state::<WorkspaceAccessState>();
         let command_state = app.state::<WorkspaceCommandState>();
         let terminal_state = app.state::<TerminalState>();
+        let watch_state = app.state::<DesignWatchState>();
         // TS 传入的即 pick 时返回的 canonical 字符串；canonicalize 仅在渲染
         // 进程传入非 canonical 形态时兜底（目录已被删除时退回原串，与 revoke_impl
         // 的 roots 匹配语义一致）。
@@ -1495,61 +2039,144 @@ pub(crate) async fn revoke_workspace(
         };
         // 撤销的作用域只限目标工作区：只取消/杀死挂载在该工作区下的命令、终端与
         // 搜索，其他工作区并行运行的会话不受影响（多工作区并行的互不干扰边界）。
-        command_state.cancel_for_workspace(target)?;
         terminal_state.kill_for_workspace(target)?;
-        let _registry = state
-            .registry_mutations
-            .lock()
-            .map_err(|_| "workspace registry mutation lock is poisoned".to_string())?;
-        // 注册表移除必须先于且成功于内存 revoke：注册表仍含该路径时，重启恢复
-        // （authorize_workspace）会重新授权它——localStorage/SQLite 任一残留都足以
-        // 触发恢复，撤销必须落到 Rust 侧持久层才具效力。移除失败即整体失败
-        // （fail-closed），内存授权集保持不变，用户可重试。
-        workspace_registry::registry_remove(
+        revoke_workspace_core(
+            &state,
+            &command_state,
+            &watch_state,
             &workspace_registry::registry_file_path(&app)?,
             target,
-        )?;
-        // 等出该工作区在途写再内存撤销：与写路径共用 per-workspace 写锁，保证
-        // revoke 返回后不再有面向该工作区的文件写在进行中（其后的新写会因
-        // generation bump 在审批租赁 consume 处被拒）。锁序 registry → 写锁与
-        // 写路径（gate.read → 写锁，不取 registry）无环。
-        let write_lock = state.workspace_write_lock(target);
-        let _write_lock = write_lock
-            .lock()
-            .map_err(|_| "workspace write lock is poisoned".to_string())?;
-        revoke_impl(&state, target)
+        )
     })
     .await
     .map_err(|error| format!("workspace revoke task failed: {error}"))?
 }
 
-#[tauri::command]
-pub(crate) fn list_workspace(
-    state: tauri::State<'_, WorkspaceAccessState>,
-    path: Option<String>,
-    limit: Option<usize>,
-    workspace_path: Option<String>,
-) -> Result<WorkspaceListResult, String> {
-    let root = authorized_root_for(&state, workspace_path.as_deref())?;
-    list_impl(&root, path.as_deref(), limit)
+/// 撤销核心：注册表移除 → 写锁临界区内（命令取消 + 内存撤销）。抽出为独立函数
+/// 以支撑「命令取消发生在写锁临界区内」的并发回归测试。
+///
+/// 命令取消必须在写锁内：命令侧（`run_workspace_command`）的 consume→register
+/// 同处该锁。锁外先行取消会漏掉「已 consume、尚未 register」窗口内登记的命令——
+/// 此刻 generation bump 还没发生，租约代际校验也拦不住它，命令会在已撤销的
+/// 工作区里跑完。两侧都持锁后，两种交错被全序化：撤销先到则命令 consume 的
+/// 代际复查拒绝；命令先到则此处的 cancel_for_workspace 必能看到已登记的命令。
+fn revoke_workspace_core(
+    state: &WorkspaceAccessState,
+    command_state: &WorkspaceCommandState,
+    watch_state: &DesignWatchState,
+    registry_path: &Path,
+    target: &Path,
+) -> Result<bool, String> {
+    let _registry = state
+        .registry_mutations
+        .lock()
+        .map_err(|_| "workspace registry mutation lock is poisoned".to_string())?;
+    // 注册表移除必须先于且成功于内存 revoke：注册表仍含该路径时，重启恢复
+    // （authorize_workspace）会重新授权它——localStorage/SQLite 任一残留都足以
+    // 触发恢复，撤销必须落到 Rust 侧持久层才具效力。移除失败即整体失败
+    // （fail-closed），内存授权集保持不变，用户可重试。
+    workspace_registry::registry_remove(registry_path, target)?;
+    // 等出该工作区在途写再内存撤销：与写路径共用 per-workspace 写锁，保证
+    // revoke 返回后不再有面向该工作区的文件写在进行中（其后的新写会因
+    // generation bump 在审批租赁 consume 处被拒）。锁序 registry → 写锁与
+    // 写路径（gate.read → 写锁，不取 registry）无环。
+    let write_lock = state.workspace_write_lock(target);
+    let _write_lock = write_lock
+        .lock()
+        .map_err(|_| "workspace write lock is poisoned".to_string())?;
+    command_state.cancel_for_workspace(target)?;
+    // 设计稿监听池同在临界区内清理：与命令/终端/搜索同属「撤销作用域只限目标
+    // 工作区」的联动收口，撤销返回后该工作区不再产生任何事件。
+    watch_state.revoke_for_workspace(target)?;
+    revoke_impl(state, target)
+}
+
+fn command_authorized_root(
+    state: &WorkspaceAccessState,
+    workspace_path: Option<&str>,
+) -> Result<PathBuf, WorkspaceCommandError> {
+    ensure_workspace_recovery_ready(state).map_err(|message| {
+        WorkspaceCommandError::new(WorkspaceCommandErrorCode::Unavailable, message)
+    })?;
+    if let Some(workspace_path) = workspace_path {
+        if workspace_path.is_empty() || workspace_path.len() > 16 * 1024 {
+            return Err(WorkspaceCommandError::new(
+                WorkspaceCommandErrorCode::InvalidPath,
+                "workspace path is invalid",
+            ));
+        }
+        let requested = PathBuf::from(workspace_path);
+        return state
+            .roots
+            .lock()
+            .map_err(|_| {
+                WorkspaceCommandError::new(
+                    WorkspaceCommandErrorCode::Unknown,
+                    "workspace authorization set lock is poisoned",
+                )
+            })?
+            .get(&requested)
+            .cloned()
+            .ok_or_else(|| {
+                WorkspaceCommandError::new(
+                    WorkspaceCommandErrorCode::NotAuthorized,
+                    "workspace is not authorized for this Axiom process",
+                )
+            });
+    }
+    state
+        .root
+        .lock()
+        .map_err(|_| {
+            WorkspaceCommandError::new(
+                WorkspaceCommandErrorCode::Unknown,
+                "workspace authorization state lock is poisoned",
+            )
+        })?
+        .clone()
+        .ok_or_else(|| {
+            WorkspaceCommandError::new(
+                WorkspaceCommandErrorCode::NotAuthorized,
+                "no workspace has been authorized for this Axiom process",
+            )
+        })
 }
 
 #[tauri::command]
+#[specta::specta]
+pub(crate) fn list_workspace(
+    state: tauri::State<'_, WorkspaceAccessState>,
+    path: Option<String>,
+    limit: Option<u32>,
+    workspace_path: Option<String>,
+) -> Result<WorkspaceListResult, WorkspaceCommandError> {
+    let root = command_authorized_root(&state, workspace_path.as_deref())?;
+    list_impl(&root, path.as_deref(), limit.map(|value| value as usize))
+}
+
+#[tauri::command]
+#[specta::specta]
 pub(crate) fn read_workspace_text(
     state: tauri::State<'_, WorkspaceAccessState>,
     path: String,
-    offset: Option<usize>,
-    limit: Option<usize>,
+    offset: Option<u32>,
+    limit: Option<u32>,
     workspace_path: Option<String>,
-) -> Result<WorkspaceReadResult, String> {
-    let root = authorized_root_for(&state, workspace_path.as_deref())?;
-    read_impl(&root, &path, offset, limit)
+) -> Result<WorkspaceReadResult, WorkspaceCommandError> {
+    let root = command_authorized_root(&state, workspace_path.as_deref())?;
+    read_impl(
+        &root,
+        &path,
+        offset.map(|value| value as usize),
+        limit.map(|value| value as usize),
+    )
 }
 
 #[tauri::command]
 pub(crate) async fn create_workspace_text_file(
     app: tauri::AppHandle,
     approval_lease: String,
+    approval_scope: crate::workspace_approval::ApprovalScope,
     path: String,
     content: String,
     workspace_path: Option<String>,
@@ -1570,14 +2197,18 @@ pub(crate) async fn create_workspace_text_file(
         let _write_lock = write_lock
             .lock()
             .map_err(|_| "workspace write lock is poisoned".to_string())?;
-        approval_state.consume(
+        let tier = approval_state.consume_scoped(
             &approval_lease,
             "create_workspace_file",
             serde_json::json!({ "path": path, "content": content }),
             state.generation_for(&root),
             workspace_path.as_deref(),
+            (
+                &approval_scope,
+                &app.state::<crate::session_authorization::SessionAuthorizationState>(),
+            ),
         )?;
-        create_text_file_impl(&root, &path, &content)
+        create_text_file_impl(mutation_scope_for(&root, tier), &path, &content)
     })
     .await
     .map_err(|error| format!("workspace write task failed: {error}"))?
@@ -1587,6 +2218,7 @@ pub(crate) async fn create_workspace_text_file(
 pub(crate) async fn edit_workspace_text_file(
     app: tauri::AppHandle,
     approval_lease: String,
+    approval_scope: crate::workspace_approval::ApprovalScope,
     request: WorkspaceEditRequest,
     workspace_path: Option<String>,
 ) -> Result<WorkspaceWriteResult, String> {
@@ -1603,14 +2235,25 @@ pub(crate) async fn edit_workspace_text_file(
         let _write_lock = write_lock
             .lock()
             .map_err(|_| "workspace write lock is poisoned".to_string())?;
-        approval_state.consume(
+        let tier = approval_state.consume_scoped(
             &approval_lease,
             "edit_workspace_file",
             serde_json::json!({ "path": request.path, "edits": request.edits }),
             state.generation_for(&root),
             workspace_path.as_deref(),
+            (
+                &approval_scope,
+                &app.state::<crate::session_authorization::SessionAuthorizationState>(),
+            ),
         )?;
-        edit_text_file_impl(&root, &request.path, &request.edits)
+        authorized_root_for(&state, Some(&root.to_string_lossy()))?;
+        let data_root = crate::storage_paths::axiom_data_root(&app)?;
+        edit_text_file_with_history_impl(
+            mutation_scope_for(&root, tier),
+            &request.path,
+            &request.edits,
+            Some(&data_root),
+        )
     })
     .await
     .map_err(|error| format!("workspace write task failed: {error}"))?
@@ -1622,7 +2265,9 @@ pub(crate) async fn search_workspace_text(
     request: WorkspaceSearchRequest,
     workspace_path: Option<String>,
 ) -> Result<WorkspaceSearchResult, String> {
-    let request_id = crate::request_id::validate_request_id("workspace search", &request.request_id)?.to_string();
+    let request_id =
+        crate::request_id::validate_request_id("workspace search", &request.request_id)?
+            .to_string();
     let root = authorized_root_for(&state, workspace_path.as_deref())?;
     let cancellation = Arc::new(AtomicBool::new(false));
     {
@@ -1693,13 +2338,18 @@ pub(crate) async fn find_workspace_files(
     app: tauri::AppHandle,
     request: WorkspaceFindRequest,
     workspace_path: Option<String>,
-) -> Result<WorkspaceFindResult, String> {
+) -> Result<WorkspaceFindResult, WorkspaceCommandError> {
     // 检索要遍历工作区（query 无匹配时走完整棵树）：同步 command 在主线程执行
     // 会卡 UI——Composer 提及弹层的防抖查询也走这条命令；整体移入 blocking
     // 线程池，State 经 AppHandle 在闭包内解析（非 'static，不能捕获捕获期借用）。
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<WorkspaceAccessState>();
-        let root = authorized_root_for(&state, workspace_path.as_deref())?;
+        // 结构化错误信封（`{code,message}`）：调用方按 code 判定，不再从文案推断
+        // not_found。目录不存在已由 `find_impl_with_policy` 短路为空结果，故这里的
+        // Err 一律是真实故障（未授权 / 无效路径 / 遍历失败）。
+        let root = authorized_root_for(&state, workspace_path.as_deref()).map_err(|message| {
+            WorkspaceCommandError::new(WorkspaceCommandErrorCode::NotAuthorized, message)
+        })?;
         find_impl(
             &root,
             &request.pattern,
@@ -1707,9 +2357,15 @@ pub(crate) async fn find_workspace_files(
             request.limit,
             request.max_depth,
         )
+        .map_err(|message| WorkspaceCommandError::new(WorkspaceCommandErrorCode::Unknown, message))
     })
     .await
-    .map_err(|error| format!("workspace find task failed: {error}"))?
+    .map_err(|error| {
+        WorkspaceCommandError::new(
+            WorkspaceCommandErrorCode::Unavailable,
+            format!("workspace find task failed: {error}"),
+        )
+    })?
 }
 
 #[cfg(test)]
@@ -1756,6 +2412,38 @@ mod tests {
     }
 
     #[test]
+    fn exposes_stable_structured_codes_for_workspace_read_and_list_errors() {
+        let root = temporary_directory();
+
+        let missing_file = read_impl(&root, "missing.md", None, None).unwrap_err();
+        assert_eq!(missing_file.code, WorkspaceCommandErrorCode::NotFound);
+        assert_eq!(
+            serde_json::to_value(&missing_file).unwrap()["code"],
+            "not_found"
+        );
+
+        let missing_directory = list_impl(&root, Some("missing"), None).unwrap_err();
+        assert_eq!(missing_directory.code, WorkspaceCommandErrorCode::NotFound);
+        assert_eq!(
+            serde_json::to_value(&missing_directory).unwrap()["code"],
+            "not_found"
+        );
+
+        let invalid_path = read_impl(&root, "../outside.md", None, None).unwrap_err();
+        assert_eq!(invalid_path.code, WorkspaceCommandErrorCode::InvalidPath);
+
+        let state = WorkspaceAccessState::default();
+        let unauthorized =
+            command_authorized_root(&state, Some(root.to_str().unwrap())).unwrap_err();
+        assert_eq!(unauthorized.code, WorkspaceCommandErrorCode::NotAuthorized);
+        set_workspace_recovery_blocked(&state, true);
+        let unavailable = command_authorized_root(&state, None).unwrap_err();
+        assert_eq!(unavailable.code, WorkspaceCommandErrorCode::Unavailable);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn reads_image_files_as_resized_base64_payloads() {
         let root = temporary_directory();
         // Write a small PNG.
@@ -1790,8 +2478,9 @@ mod tests {
         let result = read_impl(&root, "huge.png", None, None);
         let error = result.expect_err("oversized image must be rejected");
         assert!(
-            error.contains("larger than 1 MiB"),
-            "unexpected error: {error}"
+            error.message.contains("larger than 1 MiB"),
+            "unexpected error: {:?}",
+            error
         );
 
         std::fs::remove_dir_all(root).unwrap();
@@ -1862,6 +2551,58 @@ mod tests {
         std::fs::remove_dir_all(second).unwrap();
     }
 
+    /// 并发回归：撤销的命令取消必须发生在 per-workspace 写锁临界区内。
+    /// 持锁线程模拟「命令侧 consume+register 临界段在途」——撤销在此期间不得
+    /// 完成取消或代际提升；锁释放后撤销收口（命令被取消 + generation bump）。
+    /// 若取消被移回锁外（回归），撤销会在持锁期间完成取消，断言失败。
+    #[test]
+    fn revoke_cancels_commands_inside_the_write_lock_section() {
+        let state = WorkspaceAccessState::default();
+        let root = temporary_directory();
+        authorize_impl(&state, root.to_str().unwrap()).unwrap();
+
+        let command_state = WorkspaceCommandState::default();
+        let cancellation = command_state.register("req-revoke-race", &root).unwrap();
+        let watch_state = DesignWatchState::new();
+
+        // 撤销核心要求注册表条目先被移除：种子一个真实注册表文件
+        let registry_dir = temporary_directory();
+        let registry_file = registry_dir.join("authorized_workspaces.json");
+        workspace_registry::registry_insert(&registry_file, &root).unwrap();
+
+        // 持有该工作区写锁 = 命令侧临界段在途，撤销必须阻塞在写锁上
+        let lock = state.workspace_write_lock(&root);
+        let held = lock.lock().unwrap();
+
+        std::thread::scope(|scope| {
+            let handle = scope.spawn(|| {
+                revoke_workspace_core(&state, &command_state, &watch_state, &registry_file, &root)
+                    .unwrap()
+            });
+            // 给撤销线程时间走到（并阻塞在）写锁；若取消在锁外先行发生，
+            // 此处 cancellation 已翻转为 true → 断言失败（回归信号）
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert!(
+                !*cancellation.borrow(),
+                "写锁被命令临界段持有时，撤销不得先行完成命令取消"
+            );
+            assert_eq!(
+                state.generation_for(&root),
+                1,
+                "写锁被持有时，撤销不得先行提升代际"
+            );
+            drop(held);
+            assert!(handle.join().unwrap(), "撤销应成功");
+        });
+
+        assert!(*cancellation.borrow(), "锁释放后撤销应取消已登记命令");
+        assert_eq!(state.generation_for(&root), 2, "撤销后代际应 +1");
+        assert!(
+            !workspace_registry::registry_contains(&registry_file, &root).unwrap(),
+            "注册表条目应已被移除"
+        );
+    }
+
     #[test]
     fn write_locks_are_per_workspace_and_the_recovery_gate_excludes_writes() {
         let state = WorkspaceAccessState::default();
@@ -1889,19 +2630,11 @@ mod tests {
         // 恢复门：写（读锁）彼此共享共存；恢复（写锁）在任何写在途时无法开始。
         let gate_read = state.recovery_gate.read().unwrap();
         let gate = &state.recovery_gate;
-        let read_shared = std::thread::scope(|scope| {
-            scope
-                .spawn(|| gate.try_read().is_ok())
-                .join()
-                .unwrap()
-        });
+        let read_shared =
+            std::thread::scope(|scope| scope.spawn(|| gate.try_read().is_ok()).join().unwrap());
         assert!(read_shared);
-        let write_blocked = std::thread::scope(|scope| {
-            scope
-                .spawn(|| gate.try_write().is_err())
-                .join()
-                .unwrap()
-        });
+        let write_blocked =
+            std::thread::scope(|scope| scope.spawn(|| gate.try_write().is_err()).join().unwrap());
         assert!(write_blocked);
         drop(gate_read);
         drop(held);
@@ -1917,28 +2650,20 @@ mod tests {
 
         let first_search = Arc::new(AtomicBool::new(false));
         let second_search = Arc::new(AtomicBool::new(false));
-        state
-            .searches
-            .lock()
-            .unwrap()
-            .insert(
-                "search-a".into(),
-                WorkspaceSearchRegistration {
-                    cancellation: first_search.clone(),
-                    workspace_root: first.clone(),
-                },
-            );
-        state
-            .searches
-            .lock()
-            .unwrap()
-            .insert(
-                "search-b".into(),
-                WorkspaceSearchRegistration {
-                    cancellation: second_search.clone(),
-                    workspace_root: second.clone(),
-                },
-            );
+        state.searches.lock().unwrap().insert(
+            "search-a".into(),
+            WorkspaceSearchRegistration {
+                cancellation: first_search.clone(),
+                workspace_root: first.clone(),
+            },
+        );
+        state.searches.lock().unwrap().insert(
+            "search-b".into(),
+            WorkspaceSearchRegistration {
+                cancellation: second_search.clone(),
+                workspace_root: second.clone(),
+            },
+        );
 
         // 撤销 first：只取消/移除 first 的搜索，second 的在途搜索不受影响。
         assert!(revoke_impl(&state, &first).unwrap());
@@ -2050,7 +2775,11 @@ mod tests {
     fn searches_a_single_file_when_path_is_a_regular_file() {
         let root = temporary_directory();
         std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/main.ts"), "const Axiom = true\nconst other = 1\n").unwrap();
+        std::fs::write(
+            root.join("src/main.ts"),
+            "const Axiom = true\nconst other = 1\n",
+        )
+        .unwrap();
         std::fs::write(root.join("src/other.ts"), "const Axiom = false\n").unwrap();
         // 显式指定单个文件：只搜索该文件，不遍历整个目录
         let result = search_impl(
@@ -2184,6 +2913,22 @@ mod tests {
     }
 
     #[test]
+    fn find_returns_empty_result_for_absent_relative_directory() {
+        // 新项目首次扫描 `tests/` 的冷启动路径：目录不存在必须返回空结果而不是错误，
+        // 否则调用方只能靠错误文案猜 not_found（首屏退化成「扫描失败」的隐式耦合）。
+        let root = std::fs::canonicalize(temporary_directory()).unwrap();
+        let result = find_impl(&root, "*.testspec.json", Some("tests"), None, None).unwrap();
+        assert!(result.matches.is_empty());
+        assert!(!result.truncated);
+        // 非目录目标（指向一个文件）同样是 0 个匹配。
+        std::fs::write(root.join("notes.txt"), "x").unwrap();
+        let file_target = find_impl(&root, "*", Some("notes.txt"), None, None).unwrap();
+        assert!(file_target.matches.is_empty());
+        // 越界路径仍然拒绝：短路不得放宽 `..` 校验。
+        assert!(find_impl(&root, "*", Some("../escape"), None, None).is_err());
+    }
+
+    #[test]
     fn find_caps_results_at_the_limit() {
         let root = temporary_directory();
         std::fs::create_dir_all(root.join("data")).unwrap();
@@ -2246,23 +2991,182 @@ mod tests {
         std::fs::remove_dir_all(outside).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn auto_created_parents_never_cross_a_symlink_out_of_the_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = temporary_directory();
+        let outside = temporary_directory();
+        std::fs::create_dir_all(outside.join("real")).unwrap();
+        // root/escape → outside/real：父目录「不存在」只是因为子目录还没建，
+        // 但路径本身经符号链接指到根外——自动建目录时必须在这里拒绝。
+        symlink(outside.join("real"), root.join("escape")).unwrap();
+        assert!(create_text_file_impl(
+            MutationScope::workspace(&root),
+            "escape/sub/file.txt",
+            "sneak",
+        )
+        .is_err());
+        assert!(!outside.join("real/sub").exists());
+        assert!(!outside.join("real/sub/file.txt").exists());
+
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+
     #[test]
     fn creates_new_text_files_without_overwriting_existing_paths() {
         let root = temporary_directory();
         std::fs::create_dir_all(root.join("notes")).unwrap();
 
-        let created = create_text_file_impl(&root, "notes/axiom.md", "hello Axiom").unwrap();
+        let created = create_text_file_impl(
+            MutationScope::workspace(&root),
+            "notes/axiom.md",
+            "hello Axiom",
+        )
+        .unwrap();
         assert_eq!(created.path, "notes/axiom.md");
         assert_eq!(created.size_bytes, 11);
         assert_eq!(
             std::fs::read_to_string(root.join("notes/axiom.md")).unwrap(),
             "hello Axiom"
         );
-        assert!(create_text_file_impl(&root, "notes/axiom.md", "overwrite").is_err());
-        assert!(create_text_file_impl(&root, "missing/file.txt", "no directory").is_err());
-        assert!(create_text_file_impl(&root, "../outside.txt", "escape").is_err());
+        assert!(create_text_file_impl(
+            MutationScope::workspace(&root),
+            "notes/axiom.md",
+            "overwrite"
+        )
+        .is_err());
+        // 父目录不存在时自动创建（write 工具的父目录语义，见 task `write-parent-directory`）。
+        let created_in_missing = create_text_file_impl(
+            MutationScope::workspace(&root),
+            "missing/file.txt",
+            "no directory",
+        )
+        .unwrap();
+        assert_eq!(created_in_missing.path, "missing/file.txt");
+        assert_eq!(
+            std::fs::read_to_string(root.join("missing/file.txt")).unwrap(),
+            "no directory"
+        );
+        assert!(
+            create_text_file_impl(MutationScope::workspace(&root), "../outside.txt", "escape")
+                .is_err()
+        );
+        assert!(
+            create_text_file_impl(MutationScope::workspace(&root), "notes/legacy.pen", "{}")
+                .is_err()
+        );
+        assert!(
+            create_text_file_impl(MutationScope::workspace(&root), "notes/design.ax", "{}").is_ok()
+        );
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_editing_pen_import_sources() {
+        let root = temporary_directory();
+        std::fs::write(root.join("legacy.pen"), r#"{"children":[]}"#).unwrap();
+        let result = edit_text_file_impl(
+            &root,
+            "legacy.pen",
+            &[WorkspaceEditOp {
+                old_text: "children".into(),
+                new_text: "pages".into(),
+            }],
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join("legacy.pen")).unwrap(),
+            r#"{"children":[]}"#
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn vue_sources_use_the_existing_text_read_and_edit_boundary() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        let file = root.join("Button.vue");
+        let source = "<script setup lang=\"ts\">defineProps<{ label: string }>()</script>";
+        std::fs::write(&file, source).unwrap();
+        let read = read_impl(&root, "Button.vue", Some(1), Some(1)).unwrap();
+        assert_eq!(read.content, source);
+        assert_eq!(
+            read.sha256,
+            format!("{:x}", Sha256::digest(source.as_bytes()))
+        );
+        edit_text_file_impl(
+            &root,
+            "Button.vue",
+            &[WorkspaceEditOp {
+                old_text: "label".into(),
+                new_text: "title".into(),
+            }],
+        )
+        .unwrap();
+        assert!(std::fs::read_to_string(&file).unwrap().contains("title"));
+        std::fs::write(&file, vec![b'a'; MAX_TEXT_FILE_BYTES as usize + 1]).unwrap();
+        assert!(read_impl(&root, "Button.vue", Some(1), Some(1)).is_err());
+    }
+
+    #[test]
+    fn reads_test_specs_through_the_workspace_text_boundary() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        std::fs::create_dir(root.join("tests")).unwrap();
+        let content = r#"{"kind":"axiom.test","version":1}"#;
+        std::fs::write(root.join("tests/api.testspec.json"), content).unwrap();
+
+        let read = read_impl(&root, "tests/api.testspec.json", Some(1), Some(1)).unwrap();
+        assert_eq!(read.content, content);
+        assert_eq!(
+            read.sha256,
+            format!("{:x}", Sha256::digest(content.as_bytes()))
+        );
+    }
+
+    #[test]
+    fn agent_design_edit_saves_old_version_and_backup_failure_preserves_document() {
+        let workspace = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        let file = root.join("draft.ax");
+        let before = r#"{"ax":"1.0","pages":[{"id":"before"}]}"#;
+        std::fs::write(&file, before).unwrap();
+        let edits = vec![WorkspaceEditOp {
+            old_text: "before".into(),
+            new_text: "after".into(),
+        }];
+        edit_text_file_with_history_impl(
+            MutationScope::workspace(&root),
+            "draft.ax",
+            &edits,
+            Some(data.path()),
+        )
+        .unwrap();
+        let history = crate::design_history::directory(data.path(), &root, &file);
+        let versions = crate::design_history::list(&history).unwrap();
+        assert_eq!(
+            crate::design_history::read(&history, &versions[0].sha256).unwrap(),
+            before.as_bytes()
+        );
+        let broken = tempfile::tempdir().unwrap();
+        std::fs::write(broken.path().join("design-history"), "not a directory").unwrap();
+        let updated = std::fs::read(&file).unwrap();
+        assert!(edit_text_file_with_history_impl(
+            MutationScope::workspace(&root),
+            "draft.ax",
+            &[WorkspaceEditOp {
+                old_text: "after".into(),
+                new_text: "lost".into()
+            }],
+            Some(broken.path())
+        )
+        .is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), updated);
     }
 
     #[test]
@@ -2407,7 +3311,10 @@ mod tests {
     fn rejects_oversized_workspace_writes() {
         let root = temporary_directory();
         let oversized = "x".repeat(MAX_TEXT_FILE_BYTES as usize + 1);
-        assert!(create_text_file_impl(&root, "large.txt", &oversized).is_err());
+        assert!(
+            create_text_file_impl(MutationScope::workspace(&root), "large.txt", &oversized)
+                .is_err()
+        );
         std::fs::write(root.join("small.txt"), "replace me").unwrap();
         assert!(edit_text_file_impl(
             &root,
@@ -2436,7 +3343,12 @@ mod tests {
         symlink(&outside, root.join("outside-dir")).unwrap();
         symlink(outside.join("secret.txt"), root.join("outside-file.txt")).unwrap();
 
-        assert!(create_text_file_impl(&root, "outside-dir/new.txt", "escape").is_err());
+        assert!(create_text_file_impl(
+            MutationScope::workspace(&root),
+            "outside-dir/new.txt",
+            "escape"
+        )
+        .is_err());
         assert!(edit_text_file_impl(
             &root,
             "outside-file.txt",
@@ -2455,6 +3367,89 @@ mod tests {
         std::fs::remove_dir_all(outside).unwrap();
     }
 
+    /// 完全访问档：写工具与 bash/apply_changes 同源放开工作区包含限制——
+    /// write/edit 消费租约 tier 后接受工作区外绝对路径，标准模式仍拒。
+    #[test]
+    fn full_access_scope_lets_write_and_edit_target_absolute_paths_outside_workspace() {
+        let root = temporary_directory();
+        let outside = temporary_directory();
+
+        let created = create_text_file_impl(
+            MutationScope::unrestricted(&root),
+            outside.join("new.txt").to_str().unwrap(),
+            "hello",
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(outside.join("new.txt")).unwrap(),
+            "hello"
+        );
+        // 工作区外目标按绝对路径回报，不伪造工作区相对路径。
+        assert_eq!(created.path, outside.join("new.txt").to_str().unwrap());
+
+        let edited = edit_text_file_with_history_impl(
+            MutationScope::unrestricted(&root),
+            outside.join("new.txt").to_str().unwrap(),
+            &[WorkspaceEditOp {
+                old_text: "hello".into(),
+                new_text: "world".into(),
+            }],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(outside.join("new.txt")).unwrap(),
+            "world"
+        );
+        assert_eq!(edited.path, outside.join("new.txt").to_str().unwrap());
+
+        // 同一绝对路径在标准档仍被工作区包含限制拒绝。
+        assert!(create_text_file_impl(
+            MutationScope::workspace(&root),
+            outside.join("blocked.txt").to_str().unwrap(),
+            "x"
+        )
+        .is_err());
+        assert!(edit_text_file_impl(
+            &root,
+            outside.join("new.txt").to_str().unwrap(),
+            &[WorkspaceEditOp {
+                old_text: "world".into(),
+                new_text: "nope".into(),
+            }]
+        )
+        .is_err());
+        assert_eq!(
+            std::fs::read_to_string(outside.join("new.txt")).unwrap(),
+            "world"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+
+    /// 放开工作区包含限制不等于放开敏感路径保护：Axiom 数据根与凭据祖先在
+    /// 完全访问档下同样不可写（不变量 9）。
+    #[test]
+    fn full_access_scope_still_refuses_protected_paths() {
+        let root = temporary_directory();
+        let home = crate::sandbox::policy_home().unwrap();
+        let data_root = home.join(".axiom");
+        let error = create_text_file_impl(
+            MutationScope::unrestricted(&root),
+            data_root.join("probe.txt").to_str().unwrap(),
+            "x",
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("敏感路径保护"),
+            "expected sensitive path refusal, got {error}"
+        );
+        assert!(!data_root.join("probe.txt").exists());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn rejects_writes_to_reserved_control_directories() {
         let root = temporary_directory();
@@ -2462,8 +3457,16 @@ mod tests {
         std::fs::write(root.join(".git/hooks/pre-commit.sh"), "echo old").unwrap();
         std::fs::create_dir_all(root.join(".axiom")).unwrap();
 
-        assert!(create_text_file_impl(&root, ".git/hooks/pre-push.sh", "echo pwned").is_err());
-        assert!(create_text_file_impl(&root, ".axiom/notes.md", "notes").is_err());
+        assert!(create_text_file_impl(
+            MutationScope::workspace(&root),
+            ".git/hooks/pre-push.sh",
+            "echo pwned"
+        )
+        .is_err());
+        assert!(
+            create_text_file_impl(MutationScope::workspace(&root), ".axiom/notes.md", "notes")
+                .is_err()
+        );
         assert!(edit_text_file_impl(
             &root,
             ".git/hooks/pre-commit.sh",
@@ -2559,5 +3562,111 @@ mod tests {
 
         std::fs::remove_dir_all(root).unwrap();
         std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn workspace_read_list_search_and_find_filter_protected_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        std::fs::create_dir_all(home.join(".axiom")).unwrap();
+        std::fs::write(home.join("main.txt"), "needle normal").unwrap();
+        std::fs::write(home.join(".ssh/key.txt"), "needle credential").unwrap();
+        std::fs::write(home.join(".axiom/data.txt"), "needle database").unwrap();
+        std::fs::write(home.join(".npmrc"), "needle token").unwrap();
+        std::fs::write(home.join(".ssh/image.png"), b"invalid-image-stub").unwrap();
+        let root = std::fs::canonicalize(home).unwrap();
+        let policy = crate::sandbox::SensitivePathPolicy::new(&root, std::slice::from_ref(&root));
+        let normal = read_impl_with_policy(&root, "main.txt", None, None, &policy).unwrap();
+        assert_eq!(normal.content, "needle normal");
+        for path in [
+            ".ssh/key.txt",
+            ".axiom/data.txt",
+            ".npmrc",
+            ".ssh/image.png",
+        ] {
+            assert!(read_impl_with_policy(&root, path, None, None, &policy)
+                .unwrap_err()
+                .message
+                .contains("敏感路径"));
+        }
+        let listed = list_impl_with_policy(&root, None, None, &policy).unwrap();
+        assert_eq!(
+            listed
+                .entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["main.txt"]
+        );
+        assert!(list_impl_with_policy(&root, Some(".ssh"), None, &policy).is_err());
+        let found = find_impl_with_policy(&root, "**", None, None, None, &policy).unwrap();
+        assert_eq!(
+            found
+                .matches
+                .iter()
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            ["main.txt"]
+        );
+        let searched = search_impl_with_policy(
+            &root,
+            SearchOptions {
+                pattern: "needle".into(),
+                path: None,
+                glob: None,
+                ignore_case: false,
+                literal: true,
+                limit: 10,
+                context: 0,
+            },
+            &AtomicBool::new(false),
+            &policy,
+        )
+        .unwrap();
+        assert_eq!(
+            searched
+                .matches
+                .iter()
+                .map(|entry| entry.line.as_str())
+                .collect::<Vec<_>>(),
+            ["needle normal"]
+        );
+        assert!(ensure_path_access(&policy, &root.join(".ssh"), true).is_err());
+        assert!(ensure_path_access(&policy, &root.join("main.txt"), true).is_ok());
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn restore_sensitive_workspaces_requires_matching_native_scope_and_never_grants_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        #[cfg(target_os = "macos")]
+        let boundary = home.join("Library/Mail");
+        #[cfg(target_os = "linux")]
+        let boundary = home.join(".local/share/Trash");
+        let workspace = boundary.join("project");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(home.join(".ssh/project")).unwrap();
+        let workspace = std::fs::canonicalize(workspace).unwrap();
+        let boundary = std::fs::canonicalize(boundary).unwrap();
+        let file = dir.path().join("registry.json");
+        let state = WorkspaceAccessState::default();
+        workspace_registry::registry_insert(&file, &workspace).unwrap();
+        assert!(
+            authorize_restore_with_home(&state, &file, &workspace.to_string_lossy(), &home)
+                .is_err()
+        );
+        assert!(authorized_roots(&state).is_empty());
+        workspace_registry::registry_insert_with_scope(&file, &workspace, Some(&boundary)).unwrap();
+        assert!(
+            authorize_restore_with_home(&state, &file, &workspace.to_string_lossy(), &home).is_ok()
+        );
+        let credential = std::fs::canonicalize(home.join(".ssh/project")).unwrap();
+        workspace_registry::registry_insert(&file, &credential).unwrap();
+        assert!(
+            authorize_restore_with_home(&state, &file, &credential.to_string_lossy(), &home)
+                .is_err()
+        );
+        assert_eq!(authorized_roots(&state), [workspace]);
     }
 }

@@ -111,6 +111,18 @@ describe('resolveActiveToolNames', () => {
     ]
     expect(resolveActiveToolNames(tools, messages, ['read'])).toEqual(['read'])
   })
+
+  it('projects historical discoveries onto current permissions without changing audit messages', () => {
+    const messages: AgentMessage[] = [{
+      id: 'm1', role: 'tool', toolCallId: 'c1', toolName: 'discover_agent_tools',
+      content: 'Activated tools', isError: false, createdAt: 1,
+      addedToolNames: ['ssh', 'computer', 'web_search', 'bash'],
+    }]
+    const before = structuredClone(messages)
+    expect(resolveActiveToolNames(tools, messages, ['read'])).toEqual(['read', 'web_search'])
+    expect(messages).toEqual(before)
+    expect(() => validateAddedToolNames(['ssh'], tools)).toThrow('未知工具')
+  })
 })
 
 const makeContext = (tools: AgentTool[], activeToolNames?: string[]): AgentContext => ({

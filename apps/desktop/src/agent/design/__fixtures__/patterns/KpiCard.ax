@@ -1,0 +1,42 @@
+{
+  "ax": "1.4",
+  "name": "KpiCard",
+  "tokens": {},
+  "components": {},
+  "symbols": {
+    "KpiCard": {
+      "props": { "label": "string", "value": "string", "delta": "string" },
+      "body": [
+        {
+          "id": "kpi-root",
+          "kind": "frame",
+          "layout": "vertical",
+          "gap": 4,
+          "padding": [16, 20, 16, 20],
+          "width": "fill_container",
+          "fill": "#FFFFFF",
+          "cornerRadius": 8,
+          "stroke": "#E7E4DE",
+          "strokeWidth": 1,
+          "children": [
+            { "id": "kpi-label", "kind": "text", "text": { "$param": "label" }, "wrap": "nowrap", "fontSize": 13, "fill": "#6B6862" },
+            { "id": "kpi-value", "kind": "text", "text": { "$param": "value" }, "wrap": "nowrap", "fontSize": 24, "fill": "#1F1E1C" },
+            { "id": "kpi-delta", "kind": "text", "text": { "$param": "delta" }, "wrap": "nowrap", "fontSize": 13, "fill": "#3167FA" }
+          ]
+        }
+      ]
+    }
+  },
+  "pages": [
+    {
+      "id": "kpi-page",
+      "name": "KpiCard 模式",
+      "width": 320,
+      "height": 160,
+      "layout": "vertical",
+      "tree": [
+        { "id": "usage", "kind": "component", "name": "KpiCard", "props": { "label": "本月收入", "value": "¥128,430", "delta": "+12.4% 环比" } }
+      ]
+    }
+  ]
+}

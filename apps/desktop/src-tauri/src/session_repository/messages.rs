@@ -1,12 +1,16 @@
+use crate::artifacts::MAX_ARTIFACT_BYTES;
+use crate::runtime_manifest::validate_identifier;
 use serde_json::Value;
 use sqlx::SqliteConnection;
 use std::collections::HashSet;
-use crate::artifacts::MAX_ARTIFACT_BYTES;
-use crate::runtime_manifest::validate_identifier;
 
 use super::*;
 
-pub(super) fn json_string<'a>(value: &'a Value, field: &str, label: &str) -> Result<&'a str, String> {
+pub(super) fn json_string<'a>(
+    value: &'a Value,
+    field: &str,
+    label: &str,
+) -> Result<&'a str, String> {
     value
         .get(field)
         .and_then(Value::as_str)
@@ -20,7 +24,9 @@ pub(super) fn json_i64(value: &Value, field: &str, label: &str) -> Result<i64, S
         .ok_or_else(|| format!("{label} 缺少有效的 {field}"))
 }
 
-pub(super) fn validate_session_message_artifact(artifact: &SessionMessageArtifact) -> Result<(), String> {
+pub(super) fn validate_session_message_artifact(
+    artifact: &SessionMessageArtifact,
+) -> Result<(), String> {
     let valid_hash = artifact.content_hash.len() == 64
         && artifact
             .content_hash
@@ -197,6 +203,14 @@ pub(super) fn validate_session_message_request(
                 completion.approval_state.as_str(),
                 "not_required" | "approved" | "denied"
             )
+            || !matches!(
+                completion.approval_source.as_str(),
+                "not_required" | "interactive" | "automatic"
+            )
+            || (completion.approval_state == "approved"
+                && completion.approval_source == "not_required")
+            || (completion.approval_state != "approved"
+                && completion.approval_source != "not_required")
         {
             return Err("ToolResult message 与工具完成事实不一致".to_string());
         }
@@ -503,7 +517,7 @@ async fn save_session_message_locked(
         if message_replayed {
             let stored: Option<CompletedToolRecord> = sqlx::query_as(
                 "SELECT tool_name, result_preview, details_json, status, is_error,
-                        approval_state, ended_at, artifact_id
+                        approval_state, ended_at, artifact_id, approval_source
                  FROM tool_executions WHERE run_id = ? AND tool_call_id = ?",
             )
             .bind(run_id)
@@ -520,6 +534,7 @@ async fn save_session_message_locked(
                 completion.approval_state.clone(),
                 Some(completion.ended_at),
                 artifact_id.map(str::to_string),
+                completion.approval_source.clone(),
             ));
             if stored != expected {
                 return Err("ToolResult message 与已完成工具 canonical effect 不一致".to_string());
@@ -528,7 +543,7 @@ async fn save_session_message_locked(
             let tool = sqlx::query(
                 "UPDATE tool_executions
                  SET result_preview = ?, details_json = ?, status = ?, is_error = ?,
-                     approval_state = ?, ended_at = ?, artifact_id = ?
+                     approval_state = ?, ended_at = ?, artifact_id = ?, approval_source = ?
                  WHERE run_id = ? AND tool_call_id = ? AND tool_name = ? AND status = 'running'",
             )
             .bind(&completion.result_preview)
@@ -538,6 +553,7 @@ async fn save_session_message_locked(
             .bind(&completion.approval_state)
             .bind(completion.ended_at)
             .bind(artifact_id)
+            .bind(&completion.approval_source)
             .bind(run_id)
             .bind(tool_call_id)
             .bind(&completion.tool_name)

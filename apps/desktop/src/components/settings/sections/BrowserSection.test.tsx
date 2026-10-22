@@ -2,6 +2,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrowserSection } from './BrowserSection'
+import { DialogHost } from '@/components/DialogHost'
 import {
   browserStatus,
   clearBrowserProfileData,
@@ -185,22 +186,24 @@ describe('BrowserSection', () => {
   })
 
   it('清除缓存/清除全部经确认后调用 clearProfileData，运行中禁用', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     mockStatus.mockResolvedValue({ type: 'status', running: false })
-    render(<BrowserSection />)
+    render(<><BrowserSection /><DialogHost /></>)
     const clearCache = await screen.findByRole('button', { name: '清除内置浏览器缓存' }) as HTMLButtonElement
     const clearAll = screen.getByRole('button', { name: '清除全部浏览器数据' }) as HTMLButtonElement
     expect(clearCache.disabled).toBe(false)
     expect(clearAll.disabled).toBe(false)
 
     fireEvent.click(clearCache)
+    const firstDialog = await screen.findByRole('dialog')
+    expect(firstDialog.textContent).toContain('Cookie')
+    fireEvent.click(screen.getByRole('button', { name: '确认' }))
     await waitFor(() => expect(mockClear).toHaveBeenCalledWith('cache'))
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('Cookie'))
     await waitFor(() => expect(screen.getByText(/浏览器数据已清除/)).toBeTruthy())
 
     fireEvent.click(clearAll)
+    await screen.findByRole('dialog')
+    fireEvent.click(screen.getByRole('button', { name: '确认' }))
     await waitFor(() => expect(mockClear).toHaveBeenCalledWith('all'))
-    confirmSpy.mockRestore()
   })
 
   it('浏览器运行中时数据清理按钮禁用并提示先关闭', async () => {
@@ -210,7 +213,7 @@ describe('BrowserSection', () => {
     const clearAll = screen.getByRole('button', { name: '清除全部浏览器数据' }) as HTMLButtonElement
     await waitFor(() => expect(clearCache.disabled).toBe(true))
     expect(clearAll.disabled).toBe(true)
-    expect(screen.getByText(/清理前请先在上方关闭浏览器进程/)).toBeTruthy()
+    expect(screen.getByText(/请先关闭浏览器进程再清理/)).toBeTruthy()
     expect(mockClear).not.toHaveBeenCalled()
   })
 
@@ -218,6 +221,6 @@ describe('BrowserSection', () => {
     render(<BrowserSection />)
     await screen.findByRole('checkbox', { name: '启用浏览器能力' })
     expect(screen.getByText(/独立隔离 profile/)).toBeTruthy()
-    expect(screen.getByText(/仅绑定本机回环/)).toBeTruthy()
+    expect(screen.getByText(/仅本机回环/)).toBeTruthy()
   })
 })

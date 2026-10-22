@@ -3,7 +3,12 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { SessionsSection } from './SessionsSection'
 import { buildSessionsHook, stubContext } from './testFixtures'
-import type { StoredAgentSession, StorageStats } from '@/persistence/types'
+import {
+  EMPTY_RECOVERY_SUMMARY,
+  type RecoverySummary,
+  type StoredAgentSession,
+  type StorageStats,
+} from '@/persistence/types'
 
 const stubSession = (overrides: Partial<StoredAgentSession> = {}): StoredAgentSession => ({
   id: 'session-1',
@@ -44,7 +49,7 @@ const renderSection = (overrides: {
   sessions?: StoredAgentSession[]
   storageStats?: StorageStats | null
   desktop?: boolean
-  recoveredRuns?: number
+  recoverySummary?: RecoverySummary
 } = {}) => {
   const sessions = overrides.sessions ?? [stubSession()]
   return renderToStaticMarkup(createElement(SessionsSection, {
@@ -58,7 +63,7 @@ const renderSection = (overrides: {
     })),
     titleById: new Map(),
     storageStats: overrides.storageStats ?? null,
-    recoveredRuns: overrides.recoveredRuns ?? 0,
+    recoverySummary: overrides.recoverySummary ?? EMPTY_RECOVERY_SUMMARY,
     desktop: overrides.desktop ?? true,
   }))
 }
@@ -98,7 +103,7 @@ describe('SessionsSection', () => {
       tree: [{ session, depth: 1, hasChildren: false, orphaned: false }],
       titleById,
       storageStats: null,
-      recoveredRuns: 0,
+      recoverySummary: EMPTY_RECOVERY_SUMMARY,
       desktop: true,
     }))
     expect(html).toContain('源自 parent-session')
@@ -121,8 +126,27 @@ describe('SessionsSection', () => {
     expect(html).toContain('内存模式')
   })
 
-  it('shows the recovered runs banner when runs were recovered', () => {
-    const html = renderSection({ recoveredRuns: 2 })
+  it('exposes explicit database maintenance only in desktop mode', () => {
+    const html = renderSection({ storageStats: baseStats })
+    expect(html).toContain('压缩数据库')
+    const memoryOnly = renderSection({ storageStats: baseStats, desktop: false })
+    expect(memoryOnly).not.toContain('压缩数据库')
+  })
+
+  it('shows the recovery summary with dispositions and re-authorization needs', () => {
+    const recoverySummary: RecoverySummary = {
+      recoveredRuns: 2,
+      completedRuns: 1,
+      failedRuns: 0,
+      unknownRuns: 1,
+      interruptedToolExecutions: 3,
+      possiblyExecutedToolExecutions: 1,
+      recoveredSessions: ['session-1'],
+    }
+    const session = stubSession({ id: 'session-1', activeToolNames: ['ssh', 'ssh_hosts', 'read'] })
+    const html = renderSection({ sessions: [session], recoverySummary })
     expect(html).toContain('本次启动已安全结束 2 个中断运行')
+    expect(html).toContain('已完成 1 个、已失败 0 个、状态未知 1 个')
+    expect(html).toContain('中断工具调用 3 个')
   })
 })

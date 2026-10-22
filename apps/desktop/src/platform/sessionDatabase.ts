@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { ContextCheckpoint } from '@/agent/context/types'
+import { commands, type SaveSessionCheckpointRequest } from './bindings'
 
-export const DATABASE_VERSION = 15
+export const DATABASE_VERSION = 20
 
 export type SessionRepositoryQuery =
   | 'sessions'
@@ -25,6 +25,7 @@ export type SessionRepositoryMutation =
   | 'renameSessionIfTitle'
   | 'archiveSession'
   | 'restoreSession'
+  | 'updateSessionAccessMode'
   | 'clearWorkspaceForPath'
 
 export type JournalTransition =
@@ -39,8 +40,26 @@ export interface SessionDatabaseExecuteResult {
   lastInsertId: number
 }
 
+export interface SessionRepositoryMaintenanceResult {
+  databaseBytesBefore: number
+  databaseBytesAfter: number
+  freelistBefore: number
+  freelistAfter: number
+  vacuumed: boolean
+}
+
+/** 显式数据库维护：WAL checkpoint + 必要时 VACUUM；不删除任何会话/消息。 */
+export const maintainSessionRepository = (): Promise<SessionRepositoryMaintenanceResult> =>
+  invoke<SessionRepositoryMaintenanceResult>('maintain_session_repository')
+
 export interface NativeSessionRecoveryResult {
   recoveredRuns: number
+  completedRuns: number
+  failedRuns: number
+  unknownRuns: number
+  interruptedToolExecutions: number
+  possiblyExecutedToolExecutions: number
+  recoveredSessions: string[]
 }
 
 export interface NativeSessionBranchMessage {
@@ -216,6 +235,7 @@ export interface NativeSessionMessageRequest {
     detailsJson?: string
     isError: boolean
     approvalState: 'not_required' | 'approved' | 'denied'
+    approvalSource: 'not_required' | 'interactive' | 'automatic'
     endedAt: number
   }
   now: number
@@ -228,7 +248,7 @@ export interface NativeSessionSnapshotRows<TSession, TMessage, TCheckpoint, TJou
   pendingJournal: TJournal[]
 }
 
-export type NativeSessionCheckpointRequest = ContextCheckpoint
+export type NativeSessionCheckpointRequest = SaveSessionCheckpointRequest
 
 export class NativeSessionDatabase {
   static async open(): Promise<NativeSessionDatabase> {
@@ -340,8 +360,8 @@ export class NativeSessionDatabase {
     return invoke<void>('persist_session_message', { request })
   }
 
-  saveSessionCheckpoint(request: NativeSessionCheckpointRequest): Promise<void> {
-    return invoke<void>('save_session_checkpoint', { request })
+  async saveSessionCheckpoint(request: NativeSessionCheckpointRequest): Promise<void> {
+    await commands.saveSessionCheckpoint(request)
   }
 
   settleSessionRun(request: NativeSessionSettlementRequest): Promise<void> {

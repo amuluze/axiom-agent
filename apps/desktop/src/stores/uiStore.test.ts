@@ -94,29 +94,41 @@ describe('uiStore preferences', () => {
   })
 })
 
-describe('uiStore access mode and git branch prefix', () => {
-  it('restores, persists and overwrites the approval access mode', async () => {
-    const dom = installDomStorage({ 'axiom.access.mode.v1': 'no-approval' })
-    const { useUiStore } = await import('./uiStore')
-    expect(useUiStore.getState().accessMode).toBe('no-approval')
+describe('uiStore view change guard', () => {
+  it('拦截视图切换，卸载后恢复正常导航', async () => {
+    installDomStorage()
+    const { installViewChangeGuard, useUiStore } = await import('./uiStore')
+    useUiStore.setState({ view: 'docs' })
+    const guard = vi.fn(() => false)
+    const dispose = installViewChangeGuard(guard)
 
-    useUiStore.getState().setAccessMode('standard')
-    expect(dom.values.get('axiom.access.mode.v1')).toBe('standard')
-    expect(useUiStore.getState().accessMode).toBe('standard')
+    useUiStore.getState().setView('settings')
+    expect(guard).toHaveBeenCalledWith('settings', 'docs')
+    expect(useUiStore.getState().view).toBe('docs')
+
+    dispose()
+    useUiStore.getState().setView('settings')
+    expect(useUiStore.getState().view).toBe('settings')
   })
 
-  it('migrates the retired high-risk mode to standard (fail-closed)', async () => {
-    installDomStorage({ 'axiom.access.mode.v1': 'high-risk' })
-    const { useUiStore } = await import('./uiStore')
-    expect(useUiStore.getState().accessMode).toBe('standard')
-  })
+  it('waits for an async guard and applies the view only after confirmation', async () => {
+    installDomStorage()
+    const { installViewChangeGuard, useUiStore } = await import('./uiStore')
+    useUiStore.setState({ view: 'docs' })
+    let resolve!: (allowed: boolean) => void
+    const dispose = installViewChangeGuard(() => new Promise<boolean>((settle) => { resolve = settle }))
 
-  it('falls back to standard mode for unknown stored values', async () => {
-    installDomStorage({ 'axiom.access.mode.v1': 'garbage' })
-    const { useUiStore } = await import('./uiStore')
-    expect(useUiStore.getState().accessMode).toBe('standard')
-  })
+    useUiStore.getState().setView('settings')
+    expect(useUiStore.getState().view).toBe('docs')
 
+    resolve(true)
+    await Promise.resolve()
+    expect(useUiStore.getState().view).toBe('settings')
+    dispose()
+  })
+})
+
+describe('uiStore git branch prefix', () => {
   it('restores the git branch prefix from localStorage', async () => {
     installDomStorage({ 'axiom.git.branch.prefix.v1': 'hotfix-' })
     const { useUiStore } = await import('./uiStore')

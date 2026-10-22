@@ -16,7 +16,7 @@ vi.mock('../../stores/agentStore', async (importOriginal) => {
       running: false,
       authorizedWorkspace: null,
       authorizedFiles: [],
-      authorizeFile: vi.fn(async () => true),
+      authorizeFile: vi.fn(async () => null),
       authorizeDirectory: vi.fn(async () => true),
     } as StoreState),
   }

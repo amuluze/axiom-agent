@@ -11,5 +11,6 @@ export const getRuntimeInfo = async (): Promise<RuntimeInfo> => {
     appVersion: 'browser-dev',
     operatingSystem: navigator.platform || 'browser',
     architecture: 'webview',
+    sandboxAvailable: false,
   }
 }

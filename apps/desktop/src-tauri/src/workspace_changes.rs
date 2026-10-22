@@ -1,10 +1,10 @@
 use crate::{
     artifacts::{write_text_artifact_at, ArtifactMetadata},
-    design_access::design_document_write_limit,
+    design_access::{design_document_transfer_limit, design_document_write_limit},
     file_access::{is_supported_text_path, MAX_TEXT_FILE_BYTES},
     workspace_access::{
-        authorized_root_for, set_workspace_recovery_blocked, workspace_summary,
-        AuthorizedWorkspace, WorkspaceAccessState,
+        authorized_root_for, mutation_scope_for, set_workspace_recovery_blocked, workspace_summary,
+        AuthorizedWorkspace, MutationScope, WorkspaceAccessState,
     },
     workspace_approval::WorkspaceApprovalState,
 };
@@ -85,6 +85,8 @@ pub(crate) struct WorkspaceChangeResult {
     recovery_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     audit_artifact: Option<ArtifactMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    history_warning: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -93,11 +95,15 @@ struct ChangeReceipt {
     version: u32,
     request_id: String,
     workspace: String,
+    #[serde(default)]
+    unconfined: bool,
     restored: bool,
     changes: Vec<WorkspaceChangeSummary>,
     trash: Vec<TrashReceiptEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     audit_artifact: Option<ArtifactMetadata>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    history_moves: Vec<crate::design_history::DesignHistoryMove>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -112,6 +118,10 @@ struct TrashReceiptEntry {
 struct TransactionJournal {
     version: u32,
     request_id: String,
+    // 该事务是否在完全访问（无沙箱）作用域下产生。`serde(default)` 使旧事务读回
+    // `false`——沿用工作区包含规则重放，行为与放开前逐字一致。
+    #[serde(default)]
+    unconfined: bool,
     workspace: String,
     status: TransactionStatus,
     actions: Vec<JournalAction>,
@@ -161,6 +171,8 @@ enum JournalAction {
 struct RestoreJournal {
     version: u32,
     request_id: String,
+    #[serde(default)]
+    unconfined: bool,
     workspace: String,
     status: RestoreStatus,
     actions: Vec<RestoreAction>,
@@ -273,7 +285,18 @@ fn validate_relative_path(raw_path: &str) -> Result<PathBuf, String> {
     Ok(normalized)
 }
 
+fn validate_scoped_path(scope: MutationScope<'_>, raw_path: &str) -> Result<PathBuf, String> {
+    if scope.confined {
+        validate_relative_path(raw_path)
+    } else {
+        MutationScope::validate_unrestricted_path(raw_path)
+    }
+}
+
 fn relative_display(path: &Path) -> String {
+    if path.is_absolute() {
+        return path.to_string_lossy().into_owned();
+    }
     path.components()
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
@@ -381,12 +404,16 @@ fn workspace_fingerprint(root: &Path) -> String {
     sha256_bytes(root.to_string_lossy().as_bytes())[..24].to_string()
 }
 
-fn ensure_parent_inside_root(root: &Path, relative: &Path) -> Result<PathBuf, String> {
+fn ensure_parent_for_scope(scope: MutationScope<'_>, relative: &Path) -> Result<PathBuf, String> {
     let parent = relative.parent().unwrap_or_else(|| Path::new("."));
-    let expected = root.join(parent);
+    let expected = if relative.is_absolute() {
+        parent.to_path_buf()
+    } else {
+        scope.root.join(parent)
+    };
     let canonical = std::fs::canonicalize(&expected)
         .map_err(|error| format!("failed to resolve workspace change parent: {error}"))?;
-    if !canonical.starts_with(root) || canonical != expected {
+    if scope.confined && (!canonical.starts_with(scope.root) || canonical != expected) {
         return Err("workspace change parent crosses a symlink or authorized root".into());
     }
     if !std::fs::metadata(&canonical)
@@ -398,13 +425,29 @@ fn ensure_parent_inside_root(root: &Path, relative: &Path) -> Result<PathBuf, St
     Ok(canonical)
 }
 
-fn resolve_new_path(root: &Path, raw_path: &str) -> Result<(PathBuf, PathBuf, String), String> {
-    let relative = validate_relative_path(raw_path)?;
-    let parent = ensure_parent_inside_root(root, &relative)?;
+fn resolve_new_path(
+    scope: MutationScope<'_>,
+    raw_path: &str,
+) -> Result<(PathBuf, PathBuf, String), String> {
+    resolve_new_path_with_policy(
+        scope,
+        raw_path,
+        &crate::workspace_access::workspace_path_policy(scope.root)?,
+    )
+}
+
+fn resolve_new_path_with_policy(
+    scope: MutationScope<'_>,
+    raw_path: &str,
+    policy: &crate::sandbox::SensitivePathPolicy,
+) -> Result<(PathBuf, PathBuf, String), String> {
+    let relative = validate_scoped_path(scope, raw_path)?;
+    let parent = ensure_parent_for_scope(scope, &relative)?;
     let name = relative
         .file_name()
         .ok_or_else(|| "workspace change path has no file name".to_string())?;
     let target = parent.join(name);
+    crate::workspace_access::ensure_path_access(policy, &target, true)?;
     match std::fs::symlink_metadata(&target) {
         Ok(_) => {
             return Err(format!(
@@ -423,11 +466,27 @@ fn resolve_new_path(root: &Path, raw_path: &str) -> Result<(PathBuf, PathBuf, St
 }
 
 fn resolve_existing_path(
-    root: &Path,
+    scope: MutationScope<'_>,
     raw_path: &str,
 ) -> Result<(PathBuf, PathBuf, String, std::fs::Metadata), String> {
-    let relative = validate_relative_path(raw_path)?;
-    let requested = root.join(&relative);
+    resolve_existing_path_with_policy(
+        scope,
+        raw_path,
+        &crate::workspace_access::workspace_path_policy(scope.root)?,
+    )
+}
+
+fn resolve_existing_path_with_policy(
+    scope: MutationScope<'_>,
+    raw_path: &str,
+    policy: &crate::sandbox::SensitivePathPolicy,
+) -> Result<(PathBuf, PathBuf, String, std::fs::Metadata), String> {
+    let relative = validate_scoped_path(scope, raw_path)?;
+    let requested = if relative.is_absolute() {
+        relative.clone()
+    } else {
+        scope.root.join(&relative)
+    };
     let link_metadata = std::fs::symlink_metadata(&requested)
         .map_err(|error| format!("failed to inspect workspace change source: {error}"))?;
     if link_metadata.file_type().is_symlink() {
@@ -435,9 +494,10 @@ fn resolve_existing_path(
     }
     let canonical = std::fs::canonicalize(&requested)
         .map_err(|error| format!("failed to resolve workspace change source: {error}"))?;
-    if !canonical.starts_with(root) || canonical != requested {
+    if scope.confined && (!canonical.starts_with(scope.root) || canonical != requested) {
         return Err("workspace change source crosses a symlink or authorized root".into());
     }
+    crate::workspace_access::ensure_path_access(policy, &canonical, true)?;
     let display = relative_display(&relative);
     Ok((canonical, relative, display, link_metadata))
 }
@@ -453,9 +513,9 @@ fn source_identity(
         }
         return Ok(SourceIdentity::Directory(directory_sha256(path)?));
     }
-    // 设计稿（.pen/.ax）不在文本扩展名白名单内：move/trash 与写路径同口径按
-    // design_document_write_limit 放行（8MiB），其余仍限 1MiB 文本。
-    let limit = design_document_write_limit(path);
+    // .ax 与存量 .pen 迁移源按 design_document_transfer_limit 放行移动/回收
+    // （8MiB），不恢复 .pen 的设计写入能力，其余仍限 1MiB 文本。
+    let limit = design_document_transfer_limit(path);
     if !metadata.is_file() || (limit.is_none() && !is_supported_text_path(path)) {
         return Err("workspace move/trash supports text files and directories only".into());
     }
@@ -488,8 +548,9 @@ fn recovery_material_identity(
     if metadata.is_dir() {
         return Ok(SourceIdentity::Directory(directory_sha256(path)?));
     }
-    let limit = design_document_write_limit(Path::new(original_path));
-    if !metadata.is_file() || (limit.is_none() && !is_supported_text_path(Path::new(original_path))) {
+    let limit = design_document_transfer_limit(Path::new(original_path));
+    if !metadata.is_file() || (limit.is_none() && !is_supported_text_path(Path::new(original_path)))
+    {
         return Err("workspace recovery material is not a supported text file or directory".into());
     }
     let bytes = std::fs::read(path)
@@ -500,6 +561,31 @@ fn recovery_material_identity(
     std::str::from_utf8(&bytes)
         .map_err(|_| "workspace recovery material is not valid UTF-8 text".to_string())?;
     Ok(SourceIdentity::TextFile(sha256_bytes(&bytes)))
+}
+
+fn design_extension(path: &Path) -> Option<&'static str> {
+    if crate::design_access::is_design_document_path(path) {
+        Some("ax")
+    } else if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pen"))
+    {
+        Some("pen")
+    } else {
+        None
+    }
+}
+
+fn validate_move_design_format(source: &Path, destination: &Path) -> Result<(), String> {
+    let source_format = design_extension(source);
+    let destination_format = design_extension(destination);
+    if source_format == destination_format {
+        return Ok(());
+    }
+    if source_format.is_some() || destination_format.is_some() {
+        return Err("workspace move cannot change a design file format; use design_import to migrate .pen to .ax".into());
+    }
+    Ok(())
 }
 
 fn verify_identity(path: &Path, identity: &SourceIdentity) -> Result<(), String> {
@@ -542,7 +628,7 @@ fn reserve_path(paths: &mut Vec<PathBuf>, path: &Path) -> Result<(), String> {
 }
 
 fn prepare_changes(
-    root: &Path,
+    scope: MutationScope<'_>,
     operations: &[WorkspaceChangeOperation],
 ) -> Result<Vec<PreparedChange>, String> {
     if operations.is_empty() || operations.len() > MAX_CHANGE_OPERATIONS {
@@ -558,10 +644,9 @@ fn prepare_changes(
         match operation {
             WorkspaceChangeOperation::CreateFile { path, content } => {
                 content_bytes = content_bytes.saturating_add(content.len());
-                let (target, _, relative) = resolve_new_path(root, path)?;
-                // 设计稿（.pen/.ax）定点放行：上限按设计稿 8MiB，其余类型维持 1MiB。
-                let max_bytes =
-                    design_document_write_limit(&target).unwrap_or(MAX_TEXT_FILE_BYTES);
+                let (target, _, relative) = resolve_new_path(scope, path)?;
+                // `.ax` 设计稿定点放行：上限按设计稿 8MiB，其余类型维持 1MiB。
+                let max_bytes = design_document_write_limit(&target).unwrap_or(MAX_TEXT_FILE_BYTES);
                 if content.len() as u64 > max_bytes {
                     return Err(format!(
                         "workspace create content is larger than {} MiB",
@@ -589,10 +674,9 @@ fn prepare_changes(
                 }
                 content_bytes = content_bytes.saturating_add(old_text.len() + new_text.len());
                 let expected = validate_expected_sha256(expected_sha256)?;
-                let (target, _, relative, metadata) = resolve_existing_path(root, path)?;
-                // 设计稿（.pen/.ax）定点放行：上限按设计稿 8MiB，其余类型维持 1MiB。
-                let max_bytes =
-                    design_document_write_limit(&target).unwrap_or(MAX_TEXT_FILE_BYTES);
+                let (target, _, relative, metadata) = resolve_existing_path(scope, path)?;
+                // `.ax` 设计稿定点放行：上限按设计稿 8MiB，其余类型维持 1MiB。
+                let max_bytes = design_document_write_limit(&target).unwrap_or(MAX_TEXT_FILE_BYTES);
                 if !metadata.is_file()
                     || (max_bytes == MAX_TEXT_FILE_BYTES && !is_supported_text_path(&target))
                 {
@@ -629,7 +713,7 @@ fn prepare_changes(
                 });
             }
             WorkspaceChangeOperation::CreateDirectory { path } => {
-                let (target, _, relative) = resolve_new_path(root, path)?;
+                let (target, _, relative) = resolve_new_path(scope, path)?;
                 reserve_path(&mut reserved, &target)?;
                 prepared.push(PreparedChange::CreateDirectory { target, relative });
             }
@@ -638,8 +722,11 @@ fn prepare_changes(
                 to,
                 expected_sha256,
             } => {
-                let (source, _, source_relative, metadata) = resolve_existing_path(root, from)?;
-                let (destination, _, destination_relative) = resolve_new_path(root, to)?;
+                let (source, _, source_relative, metadata) = resolve_existing_path(scope, from)?;
+                let (destination, _, destination_relative) = resolve_new_path(scope, to)?;
+                if metadata.is_file() {
+                    validate_move_design_format(&source, &destination)?;
+                }
                 reserve_path(&mut reserved, &source)?;
                 reserve_path(&mut reserved, &destination)?;
                 prepared.push(PreparedChange::Move {
@@ -654,7 +741,7 @@ fn prepare_changes(
                 path,
                 expected_sha256,
             } => {
-                let (source, _, relative, metadata) = resolve_existing_path(root, path)?;
+                let (source, _, relative, metadata) = resolve_existing_path(scope, path)?;
                 reserve_path(&mut reserved, &source)?;
                 prepared.push(PreparedChange::Trash {
                     identity: source_identity(&source, &metadata, expected_sha256.as_deref())?,
@@ -933,14 +1020,28 @@ fn discard_last_journal_action(transaction: &Path, journal: &mut TransactionJour
     )
 }
 
-fn resolve_recovery_path(root: &Path, raw_path: &str) -> Result<PathBuf, String> {
-    let relative = validate_relative_path(raw_path)?;
-    let parent = ensure_parent_inside_root(root, &relative)?;
-    Ok(parent.join(
+fn resolve_recovery_path(scope: MutationScope<'_>, raw_path: &str) -> Result<PathBuf, String> {
+    resolve_recovery_path_with_policy(
+        scope,
+        raw_path,
+        &crate::workspace_access::workspace_path_policy(scope.root)?,
+    )
+}
+
+fn resolve_recovery_path_with_policy(
+    scope: MutationScope<'_>,
+    raw_path: &str,
+    policy: &crate::sandbox::SensitivePathPolicy,
+) -> Result<PathBuf, String> {
+    let relative = validate_scoped_path(scope, raw_path)?;
+    let parent = ensure_parent_for_scope(scope, &relative)?;
+    let target = parent.join(
         relative
             .file_name()
             .ok_or_else(|| "workspace recovery path has no file name".to_string())?,
-    ))
+    );
+    crate::workspace_access::ensure_path_access(policy, &target, true)?;
+    Ok(target)
 }
 
 fn identity_matches(path: &Path, identity: &SourceIdentity) -> Result<bool, String> {
@@ -1002,13 +1103,17 @@ fn recover_rename(
     }
 }
 
-fn recover_action(root: &Path, transaction: &Path, action: &JournalAction) -> Result<(), String> {
+fn recover_action(
+    scope: MutationScope<'_>,
+    transaction: &Path,
+    action: &JournalAction,
+) -> Result<(), String> {
     match action {
         JournalAction::RemoveFile {
             path,
             created_sha256,
         } => {
-            let target = resolve_recovery_path(root, path)?;
+            let target = resolve_recovery_path(scope, path)?;
             let metadata = match std::fs::symlink_metadata(&target) {
                 Ok(metadata) => metadata,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -1040,7 +1145,7 @@ fn recover_action(root: &Path, transaction: &Path, action: &JournalAction) -> Re
             original_sha256,
             updated_sha256,
         } => {
-            let target = resolve_recovery_path(root, path)?;
+            let target = resolve_recovery_path(scope, path)?;
             let backup = transaction
                 .join("backups")
                 .join(validate_backup_name(backup_name)?);
@@ -1079,7 +1184,7 @@ fn recover_action(root: &Path, transaction: &Path, action: &JournalAction) -> Re
             sync_parent(&target)
         }
         JournalAction::RemoveDirectory { path } => {
-            let target = resolve_recovery_path(root, path)?;
+            let target = resolve_recovery_path(scope, path)?;
             let metadata = match std::fs::symlink_metadata(&target) {
                 Ok(metadata) => metadata,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -1115,8 +1220,8 @@ fn recover_action(root: &Path, transaction: &Path, action: &JournalAction) -> Re
             destination,
             identity,
         } => recover_rename(
-            &resolve_recovery_path(root, source)?,
-            &resolve_recovery_path(root, destination)?,
+            &resolve_recovery_path(scope, source)?,
+            &resolve_recovery_path(scope, destination)?,
             identity,
             "move",
         ),
@@ -1127,7 +1232,7 @@ fn recover_action(root: &Path, transaction: &Path, action: &JournalAction) -> Re
         } => {
             validate_trash_name(stored_name)?;
             recover_rename(
-                &resolve_recovery_path(root, source)?,
+                &resolve_recovery_path(scope, source)?,
                 &transaction.join("trash").join(stored_name),
                 identity,
                 "trash",
@@ -1154,12 +1259,12 @@ fn recover_reversed(
 }
 
 fn recover_journal_actions(
-    root: &Path,
+    scope: MutationScope<'_>,
     transaction: &Path,
     journal: &TransactionJournal,
 ) -> Result<(), String> {
     recover_reversed(journal.actions.len(), |index| {
-        recover_action(root, transaction, &journal.actions[index])
+        recover_action(scope, transaction, &journal.actions[index])
     })
 }
 
@@ -1210,23 +1315,24 @@ fn rollback_journal<J>(
 }
 
 fn rollback_transaction(
-    root: &Path,
+    scope: MutationScope<'_>,
     transaction: &Path,
     journal: &mut TransactionJournal,
 ) -> Result<(), String> {
+    let scope = MutationScope::from_record(scope.root, journal.unconfined);
     rollback_journal(
         transaction,
         "transaction.json",
         journal,
         |journal| journal.status = TransactionStatus::RollingBack,
         |path, journal| write_transaction_journal(path, journal, false),
-        |journal| recover_journal_actions(root, transaction, journal),
+        |journal| recover_journal_actions(scope, transaction, journal),
         remove_transaction,
     )
 }
 
 fn recover_restore_action(
-    root: &Path,
+    scope: MutationScope<'_>,
     transaction: &Path,
     action: &RestoreAction,
 ) -> Result<(), String> {
@@ -1234,19 +1340,19 @@ fn recover_restore_action(
     validate_trash_name(&action.stored_name)?;
     recover_rename(
         &transaction.join("trash").join(&action.stored_name),
-        &resolve_recovery_path(root, &action.original_path)?,
+        &resolve_recovery_path(scope, &action.original_path)?,
         &action.identity,
         "trash restore",
     )
 }
 
 fn recover_restore_actions(
-    root: &Path,
+    scope: MutationScope<'_>,
     transaction: &Path,
     journal: &RestoreJournal,
 ) -> Result<(), String> {
     recover_reversed(journal.actions.len(), |index| {
-        recover_restore_action(root, transaction, &journal.actions[index])
+        recover_restore_action(scope, transaction, &journal.actions[index])
     })
 }
 
@@ -1283,28 +1389,29 @@ fn cleanup_restore_transaction(transaction: &Path, remove_trash: bool) -> Result
 }
 
 fn rollback_restore_transaction(
-    root: &Path,
+    scope: MutationScope<'_>,
     transaction: &Path,
     journal: &mut RestoreJournal,
 ) -> Result<(), String> {
+    let scope = MutationScope::from_record(scope.root, journal.unconfined);
     rollback_journal(
         transaction,
         "restore.json",
         journal,
         |journal| journal.status = RestoreStatus::RollingBack,
         |path, journal| write_restore_journal(path, journal, false),
-        |journal| recover_restore_actions(root, transaction, journal),
+        |journal| recover_restore_actions(scope, transaction, journal),
         |transaction| cleanup_restore_transaction(transaction, false),
     )
 }
 
 fn restore_failure_after_rollback(
     error: String,
-    root: &Path,
+    scope: MutationScope<'_>,
     transaction: &Path,
     journal: &mut RestoreJournal,
 ) -> String {
-    match rollback_restore_transaction(root, transaction, journal) {
+    match rollback_restore_transaction(scope, transaction, journal) {
         Ok(()) => format!("{error}; all restored workspace paths were rolled back"),
         Err(rollback_error) => format!(
             "{error}; rollback was incomplete: {rollback_error}; recovery data remains at {}",
@@ -1527,13 +1634,14 @@ fn summarize_prepared(prepared: &[PreparedChange]) -> Vec<WorkspaceChangeSummary
 }
 
 fn execute_prepared(
-    root: &Path,
+    scope: MutationScope<'_>,
     recovery_base: &Path,
     app_data: &Path,
     request_id: &str,
     operations: &[WorkspaceChangeOperation],
     prepared: Vec<PreparedChange>,
 ) -> Result<WorkspaceChangeResult, String> {
+    let root = scope.root;
     let transaction = recovery_base
         .join(workspace_fingerprint(root))
         .join(request_id);
@@ -1569,6 +1677,7 @@ fn execute_prepared(
     let mut journal = TransactionJournal {
         version: TRANSACTION_VERSION,
         request_id: request_id.to_string(),
+        unconfined: !scope.confined,
         workspace: root.to_string_lossy().into_owned(),
         status: TransactionStatus::Applying,
         actions: Vec::new(),
@@ -1598,6 +1707,7 @@ fn execute_prepared(
         changes,
         recovery_id,
         audit_artifact: None,
+        history_warning: None,
     };
     let audit_result = (|| {
         let created_at = SystemTime::now()
@@ -1623,6 +1733,7 @@ fn execute_prepared(
     };
 
     let mut trash = Vec::new();
+    let mut history_moves = Vec::new();
     let execution: Result<(), String> = (|| {
         for (index, change) in prepared.into_iter().enumerate() {
             match change {
@@ -1657,6 +1768,7 @@ fn execute_prepared(
                     if sha256_bytes(&current) != expected_sha256 {
                         return Err("workspace patch conflict: file changed after approval".into());
                     }
+                    crate::design_history::backup(app_data, root, &target, &current)?;
                     let backup_name = format!("{index}.original");
                     let backup = backups.join(&backup_name);
                     std::fs::copy(&target, &backup).map_err(|error| {
@@ -1715,6 +1827,19 @@ fn execute_prepared(
                             "workspace move conflict: destination appeared after approval".into(),
                         );
                     }
+                    let moves =
+                        crate::design_history::prepare_move(app_data, root, &source, &destination)?;
+                    crate::design_history::stage_moves(
+                        app_data,
+                        root,
+                        &backups.join("design-history"),
+                        &moves,
+                    )?;
+                    history_moves.extend(moves);
+                    if history_moves.len() > 128 {
+                        return Err("design history move exceeds 128 documents".into());
+                    }
+                    verify_identity(&source, &identity)?;
                     append_journal_action(
                         &transaction,
                         &mut journal,
@@ -1770,18 +1895,20 @@ fn execute_prepared(
         let receipt = ChangeReceipt {
             version: RECEIPT_VERSION,
             request_id: request_id.to_string(),
+            unconfined: !scope.confined,
             workspace: root.to_string_lossy().into_owned(),
             restored: false,
             changes: result.changes.clone(),
             trash,
             audit_artifact: result.audit_artifact.clone(),
+            history_moves,
         };
         write_receipt(&transaction.join("receipt.json"), &receipt)?;
         Ok(())
     })();
 
     if let Err(error) = execution {
-        let rollback_result = rollback_transaction(root, &transaction, &mut journal);
+        let rollback_result = rollback_transaction(scope, &transaction, &mut journal);
         return match rollback_result {
             Ok(()) => Err(format!(
                 "{error}; all applied workspace changes were rolled back"
@@ -1793,20 +1920,63 @@ fn execute_prepared(
         };
     }
 
-    let _ = cleanup_committed_transaction(&transaction);
+    if let Err(error) = finish_design_history_moves(app_data, root, &transaction) {
+        result.history_warning = Some(format!(
+            "workspace changes committed; design history transfer pending: {error}"
+        ));
+    } else {
+        let _ = cleanup_committed_transaction(&transaction);
+    }
     Ok(result)
 }
 
-fn apply_impl(
+fn finish_design_history_moves(
+    app_data: &Path,
     root: &Path,
+    transaction: &Path,
+) -> Result<(), String> {
+    let receipt_path = transaction.join("receipt.json");
+    let mut receipt = read_receipt(&receipt_path)?;
+    if receipt.history_moves.is_empty() {
+        return Ok(());
+    }
+    if receipt.history_moves.len() > 128 {
+        return Err("design history move exceeds 128 documents".into());
+    }
+    for movement in &receipt.history_moves {
+        validate_relative_path(&movement.source)?;
+        validate_relative_path(&movement.destination)?;
+        if !crate::design_access::is_design_document_path(Path::new(&movement.source))
+            || !crate::design_access::is_design_document_path(Path::new(&movement.destination))
+        {
+            return Err("invalid design history move paths".into());
+        }
+        crate::design_history::transfer(
+            app_data,
+            root,
+            movement,
+            Some(&transaction.join("backups/design-history")),
+        )?;
+    }
+    receipt.history_moves.clear();
+    let bytes = serde_json::to_vec_pretty(&receipt)
+        .map_err(|error| format!("failed to encode completed design history move: {error}"))?;
+    write_atomic(&receipt_path, &bytes, None, false)?;
+    sync_parent(&receipt_path)
+}
+
+fn apply_impl(
+    scope: MutationScope<'_>,
     recovery_base: &Path,
     app_data: &Path,
     request: WorkspaceChangeRequest,
 ) -> Result<WorkspaceChangeResult, String> {
-    let request_id = crate::request_id::validate_request_id("workspace change", &request.request_id)?.to_string();
-    let prepared = prepare_changes(root, &request.operations)?;
+    let request_id =
+        crate::request_id::validate_request_id("workspace change", &request.request_id)?
+            .to_string();
+    let prepared = prepare_changes(scope, &request.operations)?;
     execute_prepared(
-        root,
+        scope,
         recovery_base,
         app_data,
         &request_id,
@@ -1816,10 +1986,11 @@ fn apply_impl(
 }
 
 fn restore_impl(
-    root: &Path,
+    scope: MutationScope<'_>,
     recovery_base: &Path,
     recovery_id: &str,
 ) -> Result<WorkspaceChangeResult, String> {
+    let root = scope.root;
     let recovery_id = crate::request_id::validate_request_id("workspace change", recovery_id)?;
     let transaction = recovery_base
         .join(workspace_fingerprint(root))
@@ -1846,6 +2017,21 @@ fn restore_impl(
     {
         return Err("workspace recovery receipt is not restorable".into());
     }
+    if receipt.unconfined && scope.confined {
+        return Err(
+            "restoring paths outside the workspace requires full access to be enabled again".into(),
+        );
+    }
+    // 事务记录的作用域决定重放时的路径规则：完全访问下记录的是绝对路径。
+    let scope = MutationScope::from_record(scope.root, receipt.unconfined);
+    finish_design_history_moves(
+        recovery_base
+            .parent()
+            .ok_or_else(|| "workspace recovery root has no parent".to_string())?,
+        root,
+        &transaction,
+    )?;
+    receipt.history_moves.clear();
     cleanup_committed_transaction(&transaction)?;
     if path_is_regular_file(&transaction.join("restore.json"))? {
         return Err("workspace restore transaction is already recoverable".into());
@@ -1854,8 +2040,8 @@ fn restore_impl(
     let mut targets = HashSet::new();
     let mut prepared = Vec::new();
     for entry in &receipt.trash {
-        let relative = validate_relative_path(&entry.original_path)?;
-        let parent = ensure_parent_inside_root(root, &relative)?;
+        let relative = validate_scoped_path(scope, &entry.original_path)?;
+        let parent = ensure_parent_for_scope(scope, &relative)?;
         let target = parent.join(
             relative
                 .file_name()
@@ -1904,6 +2090,7 @@ fn restore_impl(
     let mut journal = RestoreJournal {
         version: RESTORE_VERSION,
         request_id: recovery_id.to_string(),
+        unconfined: !scope.confined,
         workspace: root.to_string_lossy().into_owned(),
         status: RestoreStatus::Restoring,
         actions: Vec::new(),
@@ -1914,7 +2101,7 @@ fn restore_impl(
         if let Err(error) = append_restore_action(&transaction, &mut journal, action.clone()) {
             return Err(restore_failure_after_rollback(
                 error,
-                root,
+                scope,
                 &transaction,
                 &mut journal,
             ));
@@ -1923,7 +2110,7 @@ fn restore_impl(
             discard_last_restore_action(&transaction, &mut journal);
             return Err(restore_failure_after_rollback(
                 format!("failed to restore workspace trash: {error}"),
-                root,
+                scope,
                 &transaction,
                 &mut journal,
             ));
@@ -1931,7 +2118,7 @@ fn restore_impl(
         if let Err(error) = sync_parent(&stored).and_then(|()| sync_parent(&target)) {
             return Err(restore_failure_after_rollback(
                 format!("failed to sync restored workspace trash: {error}"),
-                root,
+                scope,
                 &transaction,
                 &mut journal,
             ));
@@ -1948,7 +2135,7 @@ fn restore_impl(
             ) {
                 return Err(restore_failure_after_rollback(
                     error,
-                    root,
+                    scope,
                     &transaction,
                     &mut journal,
                 ));
@@ -1962,7 +2149,7 @@ fn restore_impl(
         Err(error) => {
             return Err(restore_failure_after_rollback(
                 format!("failed to encode restored workspace receipt: {error}"),
-                root,
+                scope,
                 &transaction,
                 &mut journal,
             ))
@@ -1971,7 +2158,7 @@ fn restore_impl(
     if replacement.len() as u64 > MAX_RECEIPT_BYTES {
         return Err(restore_failure_after_rollback(
             "restored workspace receipt exceeds safety limit".into(),
-            root,
+            scope,
             &transaction,
             &mut journal,
         ));
@@ -1979,7 +2166,7 @@ fn restore_impl(
     if let Err(error) = write_atomic(&receipt_path, &replacement, None, false) {
         return Err(restore_failure_after_rollback(
             format!("failed to finalize workspace recovery receipt: {error}"),
-            root,
+            scope,
             &transaction,
             &mut journal,
         ));
@@ -1997,6 +2184,7 @@ fn restore_impl(
         changes: restored_changes,
         recovery_id: None,
         audit_artifact: None,
+        history_warning: None,
     })
 }
 
@@ -2011,7 +2199,8 @@ fn validate_transaction_identity(
     workspace: &str,
     require_existing_workspace: bool,
 ) -> Result<Option<PathBuf>, String> {
-    let validated_request_id = crate::request_id::validate_request_id("workspace change", request_id)?;
+    let validated_request_id =
+        crate::request_id::validate_request_id("workspace change", request_id)?;
     if transaction.file_name().and_then(|name| name.to_str()) != Some(validated_request_id) {
         return Err("workspace transaction request ID does not match its directory".into());
     }
@@ -2223,7 +2412,8 @@ fn clean_initializing_transaction(
     if let Some(journal) = journal {
         if journal.version != TRANSACTION_VERSION
             || !journal.actions.is_empty()
-            || crate::request_id::validate_request_id("workspace change", &journal.request_id).is_err()
+            || crate::request_id::validate_request_id("workspace change", &journal.request_id)
+                .is_err()
         {
             return Err("initializing workspace transaction journal is invalid".into());
         }
@@ -2257,6 +2447,7 @@ fn recover_workspace_change_transaction(
     workspace_directory: &Path,
     transaction: &Path,
     is_initializing: bool,
+    app_data: &Path,
 ) -> Result<(), String> {
     if is_initializing {
         return clean_initializing_transaction(workspace_directory, transaction);
@@ -2284,12 +2475,17 @@ fn recover_workspace_change_transaction(
             if receipt.request_id != journal.request_id || receipt.workspace != journal.workspace {
                 return Err("workspace receipt does not match its transaction journal".into());
             }
+            finish_design_history_moves(app_data, Path::new(&receipt.workspace), transaction)?;
             cleanup_committed_transaction(transaction)?;
         } else if journal.actions.is_empty() {
             return remove_transaction(transaction);
         } else {
             let root = root.ok_or_else(|| "workspace transaction root is missing".to_string())?;
-            return rollback_transaction(&root, transaction, &mut journal);
+            return rollback_transaction(
+                MutationScope::workspace(&root),
+                transaction,
+                &mut journal,
+            );
         }
     }
     if !has_receipt {
@@ -2297,6 +2493,7 @@ fn recover_workspace_change_transaction(
     }
     let receipt = read_receipt(&receipt_path)?;
     validate_committed_receipt(workspace_directory, transaction, &receipt)?;
+    finish_design_history_moves(app_data, Path::new(&receipt.workspace), transaction)?;
     cleanup_committed_transaction(transaction)?;
     if has_restore {
         let mut restore = read_restore_journal(&restore_path)?;
@@ -2314,7 +2511,11 @@ fn recover_workspace_change_transaction(
         } else {
             let root =
                 root.ok_or_else(|| "workspace restore transaction root is missing".to_string())?;
-            rollback_restore_transaction(&root, transaction, &mut restore)?;
+            rollback_restore_transaction(
+                MutationScope::workspace(&root),
+                transaction,
+                &mut restore,
+            )?;
         }
     }
     Ok(())
@@ -2473,8 +2674,18 @@ fn recover_workspace_change_transactions_at(
                     "workspace transaction group contains an invalid entry".into(),
                 ));
             }
-            recover_workspace_change_transaction(&workspace_path, &transaction, is_initializing)
-                .map_err(|error| transaction_recovery_issue(&transaction, error))?;
+            recover_workspace_change_transaction(
+                &workspace_path,
+                &transaction,
+                is_initializing,
+                recovery_base.parent().ok_or_else(|| {
+                    transaction_recovery_issue(
+                        &transaction,
+                        "workspace recovery root has no parent".into(),
+                    )
+                })?,
+            )
+            .map_err(|error| transaction_recovery_issue(&transaction, error))?;
         }
     }
     Ok(())
@@ -2544,6 +2755,7 @@ pub(crate) async fn retry_workspace_recovery(
 pub(crate) async fn apply_workspace_changes(
     app: tauri::AppHandle,
     approval_lease: String,
+    approval_scope: crate::workspace_approval::ApprovalScope,
     request: WorkspaceChangeRequest,
     workspace_path: Option<String>,
 ) -> Result<WorkspaceChangeResult, String> {
@@ -2561,16 +2773,21 @@ pub(crate) async fn apply_workspace_changes(
         let _write_lock = write_lock
             .lock()
             .map_err(|_| "workspace write lock is poisoned".to_string())?;
-        approval_state.consume(
+        let tier = approval_state.consume_scoped(
             &approval_lease,
             "apply_workspace_changes",
             serde_json::json!({ "operations": &request.operations }),
             state.generation_for(&root),
             workspace_path.as_deref(),
+            (
+                &approval_scope,
+                &app.state::<crate::session_authorization::SessionAuthorizationState>(),
+            ),
         )?;
+        let scope = mutation_scope_for(&root, tier);
         let app_data = crate::storage_paths::axiom_data_root(&app)
             .map_err(|error| format!("failed to resolve workspace audit storage: {error}"))?;
-        apply_impl(&root, &recovery_base(&app)?, &app_data, request)
+        apply_impl(scope, &recovery_base(&app)?, &app_data, request)
     })
     .await
     .map_err(|error| format!("workspace apply task failed: {error}"))?
@@ -2580,6 +2797,7 @@ pub(crate) async fn apply_workspace_changes(
 pub(crate) async fn restore_workspace_trash(
     app: tauri::AppHandle,
     approval_lease: String,
+    approval_scope: crate::workspace_approval::ApprovalScope,
     recovery_id: String,
     workspace_path: Option<String>,
 ) -> Result<WorkspaceChangeResult, String> {
@@ -2596,14 +2814,19 @@ pub(crate) async fn restore_workspace_trash(
         let _write_lock = write_lock
             .lock()
             .map_err(|_| "workspace write lock is poisoned".to_string())?;
-        approval_state.consume(
+        let tier = approval_state.consume_scoped(
             &approval_lease,
             "restore_workspace_trash",
             serde_json::json!({ "recoveryId": recovery_id }),
             state.generation_for(&root),
             workspace_path.as_deref(),
+            (
+                &approval_scope,
+                &app.state::<crate::session_authorization::SessionAuthorizationState>(),
+            ),
         )?;
-        restore_impl(&root, &recovery_base(&app)?, &recovery_id)
+        let scope = mutation_scope_for(&root, tier);
+        restore_impl(scope, &recovery_base(&app)?, &recovery_id)
     })
     .await
     .map_err(|error| format!("workspace restore task failed: {error}"))?

@@ -66,6 +66,7 @@ export const WorkspaceRecoveryNotice = ({
         {t('app.recoveryGate.detail')}
       </p>
       <div className="startup-recovery-actions">
+        {/* biome-ignore lint/a11y/noAutofocus: 启动恢复门是阻塞态，聚焦唯一动作是预期行为 */}
         <button autoFocus disabled={busy} onClick={onRetry} type="button">
           {busy ? t('app.recoveryGate.checking') : issue ? t('app.recoveryGate.retry') : t('app.recoveryGate.recheck')}
         </button>

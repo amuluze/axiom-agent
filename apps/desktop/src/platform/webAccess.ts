@@ -1,38 +1,12 @@
 import { invoke } from '@tauri-apps/api/core'
 
 /**
- * web 只读访问的平台封装：命令名以字面量出现在 `invoke` 调用中，
+ * 外部链接的平台封装：命令名以字面量出现在 `invoke` 调用中，
  * 供 `tauri-capability-audit` 做 handler ↔ capability ↔ 前端三向漂移审计。
- * 安全边界（公网主机校验、体积/输出上限、HTML 转文本）全部由 Rust
- * `web_access.rs` 权威执行，本层只做类型化转发。
+ * 协议校验（仅 http/https、无凭据）由 Rust 侧权威执行。
+ * （web_search/web_fetch/authorize_web_read 等只读 Agent 通道已随会话能力
+ * 预设清理移除，本文件只保留设置页与面板仍在使用的外链通道。）
  */
-
-export interface WebSearchResultItem {
-  title: string
-  url: string
-  snippet: string
-}
-
-export interface WebSearchResponse {
-  query: string
-  results: WebSearchResultItem[]
-}
-
-export interface WebFetchResponse {
-  /** 重定向跟随后的最终 URL。 */
-  url: string
-  status: number
-  contentType: string
-  content: string
-  truncated: boolean
-  fetchedBytes: number
-}
-
-export const webSearch = (query: string, limit?: number): Promise<WebSearchResponse> =>
-  invoke<WebSearchResponse>('web_search', { query, limit })
-
-export const webFetch = (url: string, maxBytes?: number): Promise<WebFetchResponse> =>
-  invoke<WebFetchResponse>('web_fetch', { url, maxBytes })
 
 /**
  * 用系统默认浏览器打开外部链接（会话输出中的 markdown 链接，如 PR 链接）。

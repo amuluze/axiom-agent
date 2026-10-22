@@ -98,7 +98,10 @@ impl UsageUrl {
 fn zhipu_quota_url(endpoint_hint: Option<&str>) -> Result<String, String> {
     const QUOTA_PATH: &str = "/api/monitor/usage/quota/limit";
     let default_url = || format!("https://open.bigmodel.cn{QUOTA_PATH}");
-    let Some(hint) = endpoint_hint.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(hint) = endpoint_hint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
         return Ok(default_url());
     };
     let parsed = reqwest::Url::parse(hint)
@@ -142,7 +145,9 @@ fn usage_endpoint(provider_id: &str) -> Option<UsageEndpointSpec> {
             parse: parse_kimi_coding_usage,
         }),
         "minimax-chat" => Some(UsageEndpointSpec {
-            url: UsageUrl::Fixed("https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains"),
+            url: UsageUrl::Fixed(
+                "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains",
+            ),
             auth: UsageAuthStyle::Bearer,
             kind: "quota",
             parse: parse_minimax_token_plan,
@@ -169,7 +174,11 @@ fn extract_reset_time(value: &serde_json::Value) -> Option<String> {
     if raw <= 0 {
         return None;
     }
-    let millis = if raw < 1_000_000_000_000 { raw * 1_000 } else { raw };
+    let millis = if raw < 1_000_000_000_000 {
+        raw * 1_000
+    } else {
+        raw
+    };
     Some(millis.to_string())
 }
 
@@ -240,13 +249,12 @@ fn parse_zhipu_quota(value: &serde_json::Value) -> Result<Vec<UsageMetric>, Stri
         .ok_or_else(|| "智谱响应缺少 limits".to_string())?;
     let level = data.get("level").and_then(|item| item.as_str());
 
-    let classify = |limit: &serde_json::Value| {
-        match limit.get("unit").and_then(|item| item.as_i64()) {
+    let classify =
+        |limit: &serde_json::Value| match limit.get("unit").and_then(|item| item.as_i64()) {
             Some(3) => Some(ZhipuWindow::FiveHour),
             Some(6) => Some(ZhipuWindow::Weekly),
             _ => None,
-        }
-    };
+        };
     let mut five_hour: Option<ZhipuEntry> = None;
     let mut weekly: Option<ZhipuEntry> = None;
     let mut unclassified: Vec<ZhipuEntry> = Vec::new();
@@ -271,7 +279,8 @@ fn parse_zhipu_quota(value: &serde_json::Value) -> Result<Vec<UsageMetric>, Stri
             _ => unclassified.push(entry),
         }
     }
-    unclassified.sort_by_key(|entry| (entry.reset_ms.is_some(), entry.reset_ms.unwrap_or(i64::MIN)));
+    unclassified
+        .sort_by_key(|entry| (entry.reset_ms.is_some(), entry.reset_ms.unwrap_or(i64::MIN)));
     for entry in unclassified {
         if five_hour.is_none() {
             five_hour = Some(entry);
@@ -282,7 +291,11 @@ fn parse_zhipu_quota(value: &serde_json::Value) -> Result<Vec<UsageMetric>, Stri
 
     let to_metric = |window: &str, entry: Option<ZhipuEntry>| -> Option<UsageMetric> {
         let entry = entry?;
-        let kind_prefix = if entry.credit_limit { "额度" } else { "Token" };
+        let kind_prefix = if entry.credit_limit {
+            "额度"
+        } else {
+            "Token"
+        };
         Some(UsageMetric {
             label: format!("{kind_prefix}{window}"),
             used: entry.percentage,
@@ -337,19 +350,17 @@ fn parse_kimi_coding_usage(value: &serde_json::Value) -> Result<Vec<UsageMetric>
     // 返回 (已用百分比, 剩余百分比, "余量/总量" 明细)。剩余百分比 =
     // 100 - 已用（对齐 cc-switch token_plan 展示层），与 MiniMax 的
     // "剩余 N %" 形态一致；额度余量绝对值经 detail 展示补充语义。
-    let utilization = |limit: Option<f64>, remaining: Option<f64>| {
-        match (limit, remaining) {
-            (Some(limit), Some(remaining)) if limit > 0.0 => {
-                let used = (limit - remaining).max(0.0);
-                let used_percent = used / limit * 100.0;
-                (
-                    Some(used_percent),
-                    Some(100.0 - used_percent),
-                    Some(format!("额度余量 {remaining} / {limit}")),
-                )
-            }
-            _ => (None, None, None),
+    let utilization = |limit: Option<f64>, remaining: Option<f64>| match (limit, remaining) {
+        (Some(limit), Some(remaining)) if limit > 0.0 => {
+            let used = (limit - remaining).max(0.0);
+            let used_percent = used / limit * 100.0;
+            (
+                Some(used_percent),
+                Some(100.0 - used_percent),
+                Some(format!("额度余量 {remaining} / {limit}")),
+            )
         }
+        _ => (None, None, None),
     };
     let mut metrics = Vec::new();
     // 5 小时滚动窗：limits[].detail（可能多条，逐条展示）。
@@ -441,7 +452,11 @@ fn parse_minimax_token_plan(value: &serde_json::Value) -> Result<Vec<UsageMetric
         });
     }
     // 周桶：仅 status=1 时激活（status=3 表示该套餐无周限额）。
-    if item.get("current_weekly_status").and_then(|value| value.as_i64()) == Some(1) {
+    if item
+        .get("current_weekly_status")
+        .and_then(|value| value.as_i64())
+        == Some(1)
+    {
         if let Some(remaining) = item
             .get("current_weekly_remaining_percent")
             .and_then(number_field)
@@ -529,12 +544,8 @@ pub(crate) async fn query_provider_usage_inner(
     let Some(spec) = usage_endpoint(&provider_id) else {
         return Err(format!("Provider {provider_id} 暂不支持用量查询"));
     };
-    let secret = resolve_secret(
-        secret_state,
-        &provider_id,
-        request.secret_id.as_deref(),
-    )?
-    .ok_or_else(|| "未配置 API Key，无法查询用量".to_string())?;
+    let secret = resolve_secret(secret_state, &provider_id, request.secret_id.as_deref())?
+        .ok_or_else(|| "未配置 API Key，无法查询用量".to_string())?;
     // 先做密钥绑定校验再用 endpointHint 解析 URL：分流拒绝发生在任何网络
     // 访问之前，且密钥不参与 URL 解析。
     let url = spec.url.resolve(request.endpoint_hint.as_deref())?;
@@ -606,14 +617,23 @@ mod tests {
 
     #[test]
     fn endpoint_table_only_covers_supported_providers_over_https() {
-        for provider in ["deepseek", "zhipu-glm", "kimi", "kimi-coding", "minimax-chat"] {
+        for provider in [
+            "deepseek",
+            "zhipu-glm",
+            "kimi",
+            "kimi-coding",
+            "minimax-chat",
+        ] {
             let spec = usage_endpoint(provider).expect("supported provider");
             let url = spec.url.resolve(None).expect("default URL must resolve");
             assert!(url.starts_with("https://"), "{provider} must use https");
             assert!(matches!(spec.kind, "balance" | "quota"));
         }
         for provider in ["openai", "gemini", "ollama", "demo", ""] {
-            assert!(usage_endpoint(provider).is_none(), "{provider} must be unsupported");
+            assert!(
+                usage_endpoint(provider).is_none(),
+                "{provider} must be unsupported"
+            );
         }
     }
 
@@ -625,7 +645,10 @@ mod tests {
         assert_eq!(zhipu_quota_url(None).unwrap(), cn);
         assert_eq!(zhipu_quota_url(Some("  ")).unwrap(), cn);
         assert_eq!(
-            zhipu_quota_url(Some("https://open.bigmodel.cn/api/coding/paas/v4/chat/completions")).unwrap(),
+            zhipu_quota_url(Some(
+                "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"
+            ))
+            .unwrap(),
             cn,
         );
         assert_eq!(
@@ -658,7 +681,10 @@ mod tests {
             "balance_infos": [{ "currency": "CNY", "total_balance": "0.00" }]
         }))
         .unwrap();
-        assert!(depleted[0].detail.as_deref().is_some_and(|detail| detail.contains("欠费")));
+        assert!(depleted[0]
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("欠费")));
 
         assert!(parse_deepseek_balance(&serde_json::json!({ "balance_infos": [] })).is_err());
         assert!(parse_deepseek_balance(&serde_json::json!({})).is_err());
@@ -685,10 +711,7 @@ mod tests {
         assert_eq!(metrics[0].label, "Token5 小时窗口");
         assert_eq!(metrics[0].used, Some(12.34));
         assert_eq!(metrics[0].total, Some(100.0));
-        assert_eq!(
-            metrics[0].resets_at.as_deref(),
-            Some("1700000000000")
-        );
+        assert_eq!(metrics[0].resets_at.as_deref(), Some("1700000000000"));
         assert_eq!(metrics[0].detail.as_deref(), Some("套餐：pro"));
         assert_eq!(metrics[1].label, "Token周窗口");
         assert_eq!(metrics[1].used, Some(45.0));
@@ -784,7 +807,10 @@ mod tests {
         // MiniMax 的"剩余 N %"形态）；额度余量绝对值经 detail 补充语义。
         assert_eq!(metrics[0].remaining, Some(75.0));
         assert_eq!(metrics[0].detail.as_deref(), Some("额度余量 1.5 / 2"));
-        assert_eq!(metrics[0].resets_at.as_deref(), Some("2024-01-01T00:00:00Z"));
+        assert_eq!(
+            metrics[0].resets_at.as_deref(),
+            Some("2024-01-01T00:00:00Z")
+        );
         assert_eq!(metrics[1].label, "周窗口");
         assert_eq!(metrics[1].used, Some(75.0));
         assert_eq!(metrics[1].remaining, Some(25.0));
@@ -810,17 +836,23 @@ mod tests {
         let object = value.as_object().unwrap();
         assert!(object.contains_key("used") && object.contains_key("unit"));
         for field in ["total", "remaining", "resetsAt", "detail"] {
-            assert!(!object.contains_key(field), "{field} must be absent, not null");
+            assert!(
+                !object.contains_key(field),
+                "{field} must be absent, not null"
+            );
         }
     }
 
     #[test]
-    fn credential_hint_covers_401_and_403_only() {        assert_eq!(
+    fn credential_hint_covers_401_and_403_only() {
+        assert_eq!(
             with_credential_hint("HTTP 401: Authentication Fails, Your api key is invalid".into()),
             "API Key 无效或已过期（HTTP 401: Authentication Fails, Your api key is invalid）",
         );
-        assert!(with_credential_hint("HTTP 403: only available for Coding Agents".into())
-            .starts_with("API Key 无效或已过期（"));
+        assert!(
+            with_credential_hint("HTTP 403: only available for Coding Agents".into())
+                .starts_with("API Key 无效或已过期（")
+        );
         // 其余错误原样透传：4xx 其他状态、5xx、超时与业务解析错误。
         assert_eq!(
             with_credential_hint("HTTP 429: rate limited".into()),
@@ -830,10 +862,7 @@ mod tests {
             with_credential_hint("HTTP 500: internal".into()),
             "HTTP 500: internal",
         );
-        assert_eq!(
-            with_credential_hint("用量查询超时".into()),
-            "用量查询超时",
-        );
+        assert_eq!(with_credential_hint("用量查询超时".into()), "用量查询超时",);
     }
 
     #[test]
@@ -966,7 +995,8 @@ mod tests {
         // 同一本地 server 处理两次请求：Bearer（deepseek spec）与裸 key（智谱 spec）。
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
-        let body = r#"{"balance_infos":[{"currency":"CNY","total_balance":"88.00"}],"is_available":true}"#;
+        let body =
+            r#"{"balance_infos":[{"currency":"CNY","total_balance":"88.00"}],"is_available":true}"#;
         let server = std::thread::spawn(move || {
             let mut received = Vec::new();
             for _ in 0..2 {
@@ -1006,8 +1036,14 @@ mod tests {
         // 逐字匹配 "Authorization:" 会误报——头值仍须逐字比对。
         let bearer_request = requests[0].to_lowercase();
         let raw_request = requests[1].to_lowercase();
-        assert!(bearer_request.contains("authorization: bearer bearer-secret"), "{bearer_request}");
-        assert!(raw_request.contains("authorization: raw-secret"), "{raw_request}");
+        assert!(
+            bearer_request.contains("authorization: bearer bearer-secret"),
+            "{bearer_request}"
+        );
+        assert!(
+            raw_request.contains("authorization: raw-secret"),
+            "{raw_request}"
+        );
         assert!(raw_request.contains("accept-language: en-us,en"));
     }
 
@@ -1038,8 +1074,14 @@ mod tests {
         server.join().unwrap();
         // 错误详情里的密钥回显必须被脱敏。
         let redacted = redact_secret(&error, Some("bearer-secret"));
-        assert!(redacted.contains("HTTP 401"), "unexpected error: {redacted}");
-        assert!(!redacted.contains("bearer-secret"), "secret leaked: {redacted}");
+        assert!(
+            redacted.contains("HTTP 401"),
+            "unexpected error: {redacted}"
+        );
+        assert!(
+            !redacted.contains("bearer-secret"),
+            "secret leaked: {redacted}"
+        );
         assert!(redacted.contains("[REDACTED]"));
     }
 }

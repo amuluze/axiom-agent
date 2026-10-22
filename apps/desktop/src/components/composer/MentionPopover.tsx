@@ -161,7 +161,7 @@ export const MentionPopover = ({
     ? NO_MATCH_KEY_BY_KIND[active.kind]
     : PLACEHOLDER_KEY_BY_KIND[active.kind]
   return (
-    <div aria-label={title} className="composer__mention-popover">
+    <section aria-label={title} className="composer__mention-popover">
       <div className="composer__mention-title">
         <Icon size={13} />
         <span>
@@ -187,11 +187,10 @@ export const MentionPopover = ({
         <div className="composer__mention-empty">{t(emptyKey)}</div>
       ) : (
         sections.map((section) => (
-          <div
+          <fieldset
             aria-label={section.group ? t(GROUP_KEY_BY_GROUP[section.group]) : undefined}
             className="composer__mention-section"
             key={section.group ?? 'plain'}
-            role="group"
           >
             {section.group && (
               <div className="composer__mention-group">{t(GROUP_KEY_BY_GROUP[section.group])}</div>
@@ -202,7 +201,20 @@ export const MentionPopover = ({
                 className={`composer__mention-item ${index === highlightIndex ? 'composer__mention-item--active' : ''}`}
                 data-mention-index={index}
                 key={candidate.id}
-                onClick={() => onSelect(candidate)}
+                onClick={(event) => {
+                  const target = event.target
+                  if (target instanceof Element && target.closest('.composer__mention-item-enter')) {
+                    if (candidate.isDirectory && onEnterDirectory) onEnterDirectory(candidate)
+                    return
+                  }
+                  onSelect(candidate)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== 'ArrowRight' || !candidate.isDirectory || !onEnterDirectory) return
+                  event.preventDefault()
+                  event.stopPropagation()
+                  onEnterDirectory(candidate)
+                }}
                 onMouseEnter={() => setHighlightIndex(index)}
                 role="option"
                 type="button"
@@ -212,20 +224,8 @@ export const MentionPopover = ({
                 {candidate.hint && <span className="composer__mention-item-hint">{candidate.hint}</span>}
                 {onEnterDirectory && candidate.isDirectory && (
                   <span
-                    aria-label={t('app.mention.browse.enter')}
+                    aria-hidden="true"
                     className="composer__mention-item-enter"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      onEnterDirectory(candidate)
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key !== 'Enter' && event.key !== ' ') return
-                      event.preventDefault()
-                      event.stopPropagation()
-                      onEnterDirectory(candidate)
-                    }}
-                    role="button"
-                    tabIndex={-1}
                     title={t('app.mention.browse.enter')}
                   >
                     <ChevronRight size={13} />
@@ -233,7 +233,7 @@ export const MentionPopover = ({
                 )}
               </button>
             ))}
-          </div>
+          </fieldset>
         ))
       )}
       </div>
@@ -265,6 +265,6 @@ export const MentionPopover = ({
           </div>
         </div>
       )}
-    </div>
+    </section>
   )
 }

@@ -25,7 +25,7 @@ export const createReviewSubAgentTool = (
   kind: 'review',
   toolName: 'review_subagent',
   // v8：子会话 system prompt 双语模板 + 用户覆写支持（同 inspect v6）。schema 不变。
-  runtimeVersion: '8',
+  runtimeVersion: '13',
   diffMaxLength: MAX_DIFF_LENGTH,
   capabilities: options.capabilities,
   label: '审查代码改动',
@@ -37,5 +37,5 @@ export const createReviewSubAgentTool = (
     '审查因预算中止返回 partial 或报错时：基于已有证据直接收口，或把 scope 收窄到未覆盖部分后重新委派；不要以同等规模重复委派（配额按父 run 累计）。',
   ],
   description:
-    'Delegates a read-only review sub-agent that checks code changes for correctness, security, and test coverage, returning a pass/fail verdict with a prioritized issue list. The sub-agent has no bash/git: pass the unified diff via the diff parameter and describe intent in task. Delegating without diff is a downgraded review (current state only). The sub-agent only uses read/ls/grep/find with scope as a hard runtime boundary.',
+    'Delegates a read-only review sub-agent that checks code changes for correctness, security, and test coverage, returning a pass/fail verdict with a prioritized issue list. The sub-agent has no bash/git: pass the unified diff via the diff parameter and describe intent in task. Delegating without diff is a downgraded review (current state only). The sub-agent uses only the intersection of the parent active tools and read/ls/grep/find with scope as a hard runtime boundary.',
 })

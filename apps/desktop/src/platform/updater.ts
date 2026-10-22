@@ -33,6 +33,18 @@ export interface UpdateProgress {
   totalBytes: number | null
 }
 
+export type UpdateInstallFailureStage = 'download' | 'signature' | 'storage' | 'replace' | 'unknown'
+
+export class AppUpdateInstallError extends Error {
+  readonly stage: UpdateInstallFailureStage
+
+  constructor(stage: UpdateInstallFailureStage, message: string) {
+    super(message)
+    this.name = 'AppUpdateInstallError'
+    this.stage = stage
+  }
+}
+
 /** 插件 Update 对象不跨出本模块：以版本号为键登记，安装时按版本取回。 */
 const pendingUpdates = new Map<string, Update>()
 
@@ -57,6 +69,28 @@ const isPluginMissing = (error: unknown): boolean => {
 const isTargetMissing = (error: unknown): boolean => {
   const message = error instanceof Error ? error.message : String(error)
   return /target not found/i.test(message)
+}
+
+const installErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error)
+
+export const classifyUpdateInstallFailure = (error: unknown): UpdateInstallFailureStage => {
+  const message = installErrorMessage(error)
+  if (/signature|minisign|verify|verification|public key|公钥|签名|校验/iu.test(message)) {
+    return 'signature'
+  }
+  if (/no space|disk full|os error 28|存储空间|磁盘空间|磁盘已满/iu.test(message)) {
+    return 'storage'
+  }
+  if (/replace|rename|move the new app|failed to install|authentication failed|permission denied|access denied|替换|重命名|安装失败|权限被拒绝/iu.test(message)) {
+    return 'replace'
+  }
+  // reqwest 的传输层 Display 文案随断连位置漂移（"failed to download…" /
+  // "error sending request for url (…)"），两者都是下载期网络故障
+  if (/download|network|connection|timeout|timed out|send(?:ing)? (?:an? )?(?:http )?request|下载|网络|连接|超时|中断/iu.test(message)) {
+    return 'download'
+  }
+  return 'unknown'
 }
 
 export const checkForAppUpdate = async (): Promise<UpdateCheckOutcome> => {
@@ -94,20 +128,25 @@ export const downloadAndInstallAppUpdate = async (
   }
   // Progress 事件只带本次分块大小，累计值在此维护。
   let downloadedBytes = 0
-  await update.downloadAndInstall((event) => {
-    if (!onProgress) return
-    if (event.event === 'Started') {
-      downloadedBytes = 0
-      onProgress({ downloadedBytes: 0, totalBytes: event.data.contentLength ?? null })
-    } else if (event.event === 'Progress') {
-      downloadedBytes += event.data.chunkLength
-      onProgress({ downloadedBytes, totalBytes: null })
-    } else {
-      onProgress({ downloadedBytes, totalBytes: downloadedBytes })
-    }
-  })
-  releaseUpdate(update)
-  pendingUpdates.delete(version)
+  try {
+    await update.downloadAndInstall((event) => {
+      if (!onProgress) return
+      if (event.event === 'Started') {
+        downloadedBytes = 0
+        onProgress({ downloadedBytes: 0, totalBytes: event.data.contentLength ?? null })
+      } else if (event.event === 'Progress') {
+        downloadedBytes += event.data.chunkLength
+        onProgress({ downloadedBytes, totalBytes: null })
+      } else {
+        onProgress({ downloadedBytes, totalBytes: downloadedBytes })
+      }
+    })
+  } catch (error) {
+    throw new AppUpdateInstallError(classifyUpdateInstallFailure(error), installErrorMessage(error))
+  } finally {
+    releaseUpdate(update)
+    pendingUpdates.delete(version)
+  }
 }
 
 /** 安装完成后重启应用（tauri-plugin-process restart，立即拉起新版本）。 */

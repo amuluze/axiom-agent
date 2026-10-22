@@ -32,12 +32,11 @@ const allCapabilities: AgentCapability[] = [
   'workspace:read',
   'workspace:write',
   'workspace:execute',
+  'ui-test:read',
+  'ui-test:write',
+  'api-test:request',
   'subagent:explore',
   'subagent:review',
-  'web:read',
-  'web:browser',
-  'computer:control',
-  'ssh:remote',
 ]
 
 const productTools = createToolRegistry({ capabilities: allCapabilities })

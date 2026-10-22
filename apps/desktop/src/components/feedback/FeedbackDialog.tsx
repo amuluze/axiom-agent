@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useEffect, useId, useState, type FormEvent, type KeyboardEvent } from 'react'
 import {
   AtSign,
   Bug,
@@ -13,6 +13,7 @@ import {
 import { useDialogFocus, trapDialogFocus } from '@/components/dialogFocus'
 import { submitFeedback, type FeedbackKind, type FeedbackSubmission } from '@/platform/feedback'
 import { useUiStore, type FeedbackRequest } from '@/stores/uiStore'
+import { useDesignPreview } from '@/components/design/ax/previewContext'
 import { useT } from '@/i18n'
 
 const MAX_DESCRIPTION_CHARS = 2000
@@ -50,28 +51,43 @@ const KIND_DESC_KEY: Record<FeedbackKind, string> = {
  * 类型卡可再点一次取消选中，对应设计稿的「类型未选」校验态。
  * 端点与 HMAC 密钥都在 Rust `feedback.rs`，本组件只做表单与状态机。
  */
+export type FeedbackPreviewState = {
+  kind: FeedbackKind | null
+  title: string
+  description: string
+  contact: string
+  showErrors: boolean
+  phase: SubmitPhase
+}
+
 export const FeedbackDialog = ({ request }: { request: FeedbackRequest }) => {
   const { t } = useT()
+  const identifier = useId()
+  const titleId = `feedback-title-${identifier}`
+
+  const preview = useDesignPreview()
+  const initial = preview?.feedback
   const closeFeedback = useUiStore((state) => state.closeFeedback)
-  const [kind, setKind] = useState<FeedbackKind | null>(request.kind)
-  const [title, setTitle] = useState('')
-  const [description, setDescription] = useState('')
-  const [contact, setContact] = useState('')
-  const [showErrors, setShowErrors] = useState(false)
-  const [phase, setPhase] = useState<SubmitPhase>({ state: 'editing' })
-  const dialogRef = useDialogFocus<HTMLFormElement>(true)
+  const [kind, setKind] = useState<FeedbackKind | null>(initial ? initial.kind : request.kind)
+  const [title, setTitle] = useState(initial?.title ?? '')
+  const [description, setDescription] = useState(initial?.description ?? '')
+  const [contact, setContact] = useState(initial?.contact ?? '')
+  const [showErrors, setShowErrors] = useState(initial?.showErrors ?? false)
+  const [phase, setPhase] = useState<SubmitPhase>(initial?.phase ?? { state: 'editing' })
+  const dialogRef = useDialogFocus<HTMLFormElement>(!preview)
   const submitting = phase.state === 'submitting'
   const success = phase.state === 'success'
 
   // 弹窗随 request 重新打开时全部状态归零（复用同一组件实例，靠引用变化触发）。
   useEffect(() => {
+    if (preview) return
     setKind(request.kind)
     setTitle('')
     setDescription('')
     setContact('')
     setShowErrors(false)
     setPhase({ state: 'editing' })
-  }, [request])
+  }, [request, preview])
 
   const titleError = title.trim() === ''
   const descriptionError = description.trim() === ''
@@ -88,13 +104,13 @@ export const FeedbackDialog = ({ request }: { request: FeedbackRequest }) => {
   }
 
   const requestClose = () => {
-    if (submitting) return
+    if (preview || submitting) return
     closeFeedback()
   }
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (submitting || success) return
+    if (preview || submitting || success) return
     setShowErrors(true)
     if (kind === null || titleError || descriptionError || contactError) return
     const submission: FeedbackSubmission = {
@@ -129,7 +145,7 @@ export const FeedbackDialog = ({ request }: { request: FeedbackRequest }) => {
       requestClose()
       return
     }
-    trapDialogFocus(event, dialogRef.current)
+    if (!preview) trapDialogFocus(event, dialogRef.current)
   }
 
   const kindCard = (value: FeedbackKind) => {
@@ -175,8 +191,8 @@ export const FeedbackDialog = ({ request }: { request: FeedbackRequest }) => {
   return (
     <div className="feedback-backdrop" role="presentation">
       <form
-        aria-labelledby="feedback-title"
-        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-modal={preview ? undefined : true}
         className={`feedback-dialog ${submitting ? 'feedback-dialog--locked' : ''} ${
           success ? 'feedback-dialog--success' : ''
         }`}
@@ -191,7 +207,7 @@ export const FeedbackDialog = ({ request }: { request: FeedbackRequest }) => {
               <MessageSquareText size={16} />
             </span>
             <div className="feedback__header-text">
-              <h2 id="feedback-title">{t('app.feedback.title')}</h2>
+              <h2 id={titleId}>{t('app.feedback.title')}</h2>
               <p>{t('app.feedback.subtitle')}</p>
             </div>
             <button
@@ -210,7 +226,7 @@ export const FeedbackDialog = ({ request }: { request: FeedbackRequest }) => {
             <span className="feedback__success-badge">
               <CircleCheck size={28} />
             </span>
-            <h2 id="feedback-title" className="feedback__success-title">
+            <h2 id={titleId} className="feedback__success-title">
               {t('app.feedback.success.title')}
             </h2>
             <p className="feedback__success-desc">

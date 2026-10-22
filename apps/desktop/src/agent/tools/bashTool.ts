@@ -1,27 +1,28 @@
+import { BASH_POLICY } from './bashPolicy.generated'
+import { toolApprovalScope } from '@/agent/core/approvalScope'
 import { createId } from '@/agent/core/id'
 import type { AgentTool, CommandTier, JsonValue } from '@/agent/core/types'
 import type { AgentEnvironment, WorkspaceCommandResult } from '@/agent/environment/AgentEnvironment'
 import { desktopAgentEnvironment } from '@/agent/environment/agentEnvironmentHost'
 import { hasOnlyKeys, isJsonObject, isSafeRelativePath } from './workspaceToolUtils'
 
-const MAX_TIMEOUT_MS = 2_147_483_647
+const MAX_TIMEOUT_MS = BASH_POLICY.maxTimeoutMs
 const MAX_TIMEOUT_SECONDS = MAX_TIMEOUT_MS / 1000
-/** 与 Rust workspace_command.rs 中 64 KiB 上限保持一致，由 bash-policy-audit 强制校验。 */
-const MAX_COMMAND_BYTES = 64 * 1024
+/** 由 contracts/bash-policy.json 生成，`generate:bash-policy:check` 强制。 */
+const MAX_COMMAND_BYTES = BASH_POLICY.maxCommandBytes
 const textEncoder = new TextEncoder()
 
 /**
- * 自由命令模型的最小安全基线（与 Rust workspace_command.rs 逐字一致，
- * 由 bash-policy-audit 强制）：拒绝 sudo 提升权限与重定向到工作区外。
- * 定位为"减速带"而非安全边界——逐次审批才是主要安全阀。
+ * 自由命令模型的尽力拦截（与 Rust workspace_command.rs 逐字一致，
+ * 由 bash-policy-audit 强制）：拒绝常见 sudo 调用与重定向到工作区外。
+ * 定位为"减速带"而非安全边界——标准模式的沙箱才是执行边界，完全访问没有
+ * 可靠的命令级隔离。
  * sudo 匹配命令上下文边界（行首 / 换行 / 分号 / && / | / 子shell / $() ），
  * 不匹配 `grep sudo` 这类把 sudo 当普通参数的合法命令。
  * 换行显式纳入分隔符字符类：命令经 /bin/bash -c 执行，`echo hi\nsudo whoami`
  * 中的换行是合法分隔符，若漏掉可绕过行首匹配（`^` 无 multiline 标志）。
  */
-const SUDO_COMMAND_PREFIX_PATTERN = new RegExp(
-  String.raw`(?:^\s*|(?:\s*[;&|(\n]\s*))\\?sudo(?:\s|$)`,
-)
+const SUDO_COMMAND_PREFIX_PATTERN = new RegExp(BASH_POLICY.sudoCommandPrefixPattern)
 /**
  * 拒绝把输出重定向到工作区外：覆盖 `> /abs`、`> ~`、`> ..`、引号包裹的绝对路径
  * （`> "$HOME/x"`）、noclobber `>|`、变量/命令替换目标（`$VAR`、`$()`、反引号，
@@ -34,21 +35,53 @@ const SUDO_COMMAND_PREFIX_PATTERN = new RegExp(
  * 字符展开枚举 `dev/null` 前缀的各类拒绝路径，唯 `null`+边界（空格/分隔符/引号/行尾）
  * 不匹配任何分支从而放行；`/dev/nullfoo`、`/dev/nulldir`、`/dev`、`/dev/` 等仍拒绝。
  */
-const OUTSIDE_WORKSPACE_REDIRECT_PATTERN = new RegExp(
-  String.raw`(?:^|[;&|}]|\s|\d)>\s*(?:\|?\s*(?:>|&)?)?\s*[\x22']?(?:\/(?:[^d]|$|d(?:[^e]|e(?:[^v]|v(?:[^\/]|$|\/(?:[^n]|$|n(?:[^u]|u(?:[^l]|l(?:[^l]|l[^\s;&|>\x22']))))))))|~|\$|\x60|\.\.(?:[/\s]|$))`,
-)
+const OUTSIDE_WORKSPACE_REDIRECT_PATTERN = new RegExp(BASH_POLICY.outsideWorkspaceRedirectPattern)
 /** 审批展示中的危险命令标记（不拦截，仅警示用户仔细确认）。
- * rm 变体覆盖 -rf / -fr / -Rf / -RF 等任意大小写合并短 flag（只要含 r/R/f/F）、
- * -r -f 拆分形式与 --recursive/--force。`(?:\s|$)` 收尾防止 `rm -rfoo` 误匹配。 */
-/** 审批展示共用的危险命令标记：ssh 工具的远程命令审批复用同一份判定。 */
-export const DANGEROUS_COMMAND_MARKERS = /\bsudo\b|\brm\s+(?:--(?:recursive|force)|-[a-zA-Z]*[rRfF][a-zA-Z]*)(?:\s|$)|\bcurl\b|\bwget\b|\bnc(?:at)?\b|\bmkfs\b|\bdd\b|\bshutdown\b|\breboot\b/u
+ *
+ * 判定分两步，缺一不可：
+ * 1. **剥引号**：单引号与双引号内的内容是数据而非可执行命令，`grep -r "sudo" docs`、
+ *    `sed "s/sudo/x/" README.md` 这类把危险词当字面量用的命令不应被升级。
+ * 2. **命令位置**：危险词只在命令起始位置（行首，或 `;` `&` `|` 反引号 `(` 换行
+ *    之后，允许一个 `\` 转义）才算执行。`ls wget-cache`、`git checkout
+ *    feature/curling` 里的词是路径/分支名而非命令。
+ *
+ * `rm` 变体覆盖 -rf / -fr / -Rf / -RF 等任意大小写合并短 flag（只要含 r/R/f/F）、
+ * -r -f 拆分形式与 --recursive/--force。`(?:\s|$)` 收尾防止 `rm -rfoo` 误匹配。
+ *
+ * Rust 同源实现见 `workspace_approval.rs::command_is_dangerous`，两侧逐字比对由
+ * `scripts/bash-policy-audit.mjs` 强制。ssh 工具的远程命令审批复用同一份判定。 */
+const DANGEROUS_COMMAND_ALTERNATION = String.raw`su(?:do)?|cu(?:rl)?|wg(?:et)?|n(?:c|cat)|mkfs|dd|shut(?:down)?|re(?:boot)?`
+// 反引号以 \x60 表示（与 OUTSIDE_WORKSPACE_REDIRECT_PATTERN 同款处理）：保持单段
+// 字面量以便 bash-policy 审计逐字比对两侧，且 Rust regex crate 同样支持该转义。
+// 收尾用「行尾或非标识符字符」交替而非 lookaround（RE2 不支持）：mkfs.ext4 /
+// nc.open 这类带紧跟分隔符的命令名必须命中，而单字命令（reboot）在行尾没有后续
+// 字符。漏判比误判危险。
+const DANGEROUS_COMMAND_POSITION = String.raw`(?:^\s*|(?:\s*[;&|\x60(\n]\s*))\\?`
+const DANGEROUS_COMMAND_TAIL = String.raw`(?:[^\w-]|$)`
+const DANGEROUS_RM_FLAG = String.raw`rm\s+(?:--(?:recursive|force)|-[a-zA-Z]*[rRfF][a-zA-Z]*)(?:\s|$)`
+const dangerousCommandPattern = new RegExp(
+  `${DANGEROUS_COMMAND_POSITION}(?:${DANGEROUS_COMMAND_ALTERNATION})${DANGEROUS_COMMAND_TAIL}`,
+  'u',
+)
+const dangerousRmPattern = new RegExp(`${DANGEROUS_COMMAND_POSITION}${DANGEROUS_RM_FLAG}`, 'u')
+export const isDangerousCommand = (command: string): boolean => {
+  // 先剥引号：引号内是数据而非命令。内容替换为转义后的空引号而非删除，
+  // 否则 `echo "x" && rm -rf /` 这类拼接的分隔符会随引号内容一起丢失。
+  const stripped = command.replace(/'[^']*'/gu, "''").replace(/"[^"]*"/gu, '""')
+  return dangerousCommandPattern.test(stripped) || dangerousRmPattern.test(stripped)
+}
 
 interface CommandInput {
   command: string
   cwd?: string
   timeoutMs?: number
   network?: boolean
+  vcsCredentials?: boolean
+  containerControl?: boolean
 }
+
+const isWholeMillisecond = (value: number): boolean =>
+  Math.abs(value - Math.round(value)) <= Number.EPSILON * Math.max(1, Math.abs(value)) * 4
 
 const resolveTimeoutMs = (timeout: number | undefined): number | undefined => {
   if (timeout === undefined) return undefined
@@ -59,7 +92,10 @@ const resolveTimeoutMs = (timeout: number | undefined): number | undefined => {
   if (timeoutMs > MAX_TIMEOUT_MS) {
     throw new Error(`Invalid timeout: maximum is ${MAX_TIMEOUT_SECONDS} seconds`)
   }
-  return timeoutMs
+  if (!isWholeMillisecond(timeoutMs) || Math.round(timeoutMs) <= 0) {
+    throw new Error('Invalid timeout: must resolve to a whole millisecond')
+  }
+  return Math.round(timeoutMs)
 }
 
 const asCommandInput = (input: JsonValue): CommandInput => {
@@ -71,26 +107,15 @@ const asCommandInput = (input: JsonValue): CommandInput => {
     cwd: typeof input.cwd === 'string' ? input.cwd : undefined,
     timeoutMs: typeof input.timeout === 'number' ? resolveTimeoutMs(input.timeout) : undefined,
     network: typeof input.network === 'boolean' ? input.network : undefined,
+    vcsCredentials: typeof input.vcsCredentials === 'boolean' ? input.vcsCredentials : undefined,
+    containerControl: typeof input.containerControl === 'boolean' ? input.containerControl : undefined,
   }
 }
 
-/** 网络关键字（镜像 Rust `sandbox.rs::NETWORK_KEYWORDS`，`bash-policy-audit` 强制一致）。
+/** 网络关键字（由 contracts/bash-policy.json 生成；Rust 侧消费同一份契约）。
  * 定位是"减速带"而非安全边界：解释器内联网络调用可绕过，真正的网络阻断在 OS 沙箱层；
  * 漏报只会让命令在沙箱内失败（fail-closed）。关键词用前缀/整词形式避免误匹配。 */
-export const NETWORK_KEYWORDS = [
-  'curl', 'wget', 'nc ', 'ncat', 'netcat', '/usr/bin/nc', 'ssh', 'scp', 'rsync',
-  'npm install', 'npm i ', 'npm ci', 'npm publish', 'npx ',
-  'yarn add', 'yarn install', 'yarn upgrade', 'yarn publish',
-  'pnpm add', 'pnpm install', 'pnpm update', 'pnpm publish',
-  'pip install', 'pip3 install', 'uv pip',
-  'cargo add', 'cargo update', 'cargo publish', 'cargo install',
-  'go get ', 'go install', 'go mod download', 'go mod tidy',
-  'git clone', 'git fetch', 'git pull', 'git push', 'git ls-remote',
-  'git submodule update',
-  'gem install', 'bundle install', 'dotnet restore',
-  'brew install', 'docker', 'telnet', 'socat',
-  'http://', 'https://', 'ftp://',
-]
+export const NETWORK_KEYWORDS = BASH_POLICY.networkKeywords
 
 /**
  * bash 分级提示（镜像 Rust `CommandTier`）：`network: true` 或命令含网络关键字 →
@@ -109,8 +134,8 @@ export const resolveBashTier = (input: JsonValue): CommandTier => {
 }
 
 export const validateBashInput = (input: JsonValue): string | null => {
-  if (!isJsonObject(input) || !hasOnlyKeys(input, ['command', 'cwd', 'timeout', 'network'])) {
-    return 'Arguments must be an object with only command, cwd, timeout, network.'
+  if (!isJsonObject(input) || !hasOnlyKeys(input, ['command', 'cwd', 'timeout', 'network', 'vcsCredentials', 'containerControl'])) {
+    return 'Arguments must be an object with only command, cwd, timeout, network, vcsCredentials, containerControl.'
   }
   if (typeof input.command !== 'string' || input.command.trim().length === 0) {
     return 'command must be a non-empty string.'
@@ -137,9 +162,15 @@ export const validateBashInput = (input: JsonValue): string | null => {
     if (input.timeout > MAX_TIMEOUT_SECONDS) {
       return `timeout must not exceed ${MAX_TIMEOUT_SECONDS} seconds.`
     }
+    if (!isWholeMillisecond(input.timeout * 1000) || Math.round(input.timeout * 1000) <= 0) {
+      return 'timeout must resolve to a whole millisecond.'
+    }
   }
   if (input.network !== undefined && typeof input.network !== 'boolean') {
     return 'network must be a boolean.'
+  }
+  for (const name of ['vcsCredentials', 'containerControl']) {
+    if (input[name] !== undefined && typeof input[name] !== 'boolean') return `${name} must be a boolean.`
   }
   return null
 }
@@ -154,18 +185,20 @@ const truncateForDisplay = (value: string, maxLength: number): string =>
 const commandOutput = (
   resolvedCommand: string,
   result: WorkspaceCommandResult,
+  tier: CommandTier,
 ): string => {
-  const sections = [`Command: ${resolvedCommand}`, `Exit code: ${result.exitCode ?? 'signal'}`]
-  // 沙箱降级警示：NetworkRequired 命令在沙箱不可用时回退常规用户权限执行，
-  // 写限工作区与凭据读取保护未生效——显式告知模型/用户，而非静默裸跑。
-  if (result.sandboxed === false) {
-    sections.push(
-      'Sandbox unavailable (degraded execution): the OS sandbox was not available, '
-      + 'so this command ran as a regular user process WITHOUT sandboxing — '
-      + 'workspace-write confinement and credential-read denials did NOT apply. '
-      + 'Review the command and its output accordingly.',
-    )
-  }
+  const policy = result.sandboxed === false
+    ? 'Unrestricted'
+    : tier === 'sandboxSafe'
+      ? 'LoopbackOnly'
+      : 'OutboundEnabled'
+  const executionBoundary = result.sandboxed === false ? 'Host access (OS sandbox disabled)' : 'OS sandbox'
+  const sections = [
+    `Command: ${resolvedCommand}`,
+    `Execution boundary: ${executionBoundary}`,
+    `Network policy: ${policy}`,
+    `Exit code: ${result.exitCode ?? 'signal'}`,
+  ]
   if (result.timedOut) sections.push('Status: timed out')
   if (result.stdout) sections.push(`STDOUT:\n${result.stdout}`)
   if (result.stderr) sections.push(`STDERR:\n${result.stderr}`)
@@ -199,15 +232,13 @@ export const createBashTool = (
     label: 'bash',
     promptSnippet: '执行 Bash 命令（ls、grep、find、git、npm test 等）。',
     promptGuidelines: [
-      '接受任意 bash 命令字符串；每次调用需用户逐次审批。',
-      '所有命令都在 OS 沙箱内执行（仅工作区与临时目录可写）；需要外网的命令（安装依赖、git push 等）必须声明 network: true 以启用网络，本地开发服务器（npm run dev 等）无需声明——本机回环端口默认可用。',
-      'git clone/fetch/pull/push/ls-remote/submodule-update 等 VCS 网络命令会在沙箱内被放行读取 ~/.ssh 与 ~/.config/git/credentials，以便 SSH/HTTPS 认证正常工作；其它凭据目录仍保持拒绝。',
+      '工作区授权不能解除凭据或 Axiom 数据保护；隐私目录只开放经原生确认的项目子目录，拒绝后不要通过改名或其他工具绕过。',
+      '接受任意 bash 命令字符串；标准模式下每次调用经审批卡片确认一次，命令始终在 OS 沙箱内执行。「完全访问」模式下命令以宿主用户权限在沙箱外直接执行、不再有任何确认——该模式是权限档而非效率档，只在完全信任当前任务时使用。',
+      '标准模式下所有命令都在 OS 沙箱内执行（仅工作区与临时目录可写）；需要外网的命令（安装依赖、git push 等）必须声明 network: true 以启用网络，本地开发服务器（npm run dev 等）无需声明——本机回环端口默认可用。',
+      '标准模式下命令始终在 OS 沙箱内执行：出网需声明 network: true（仅本次放开），凭据与容器权限分别经 vcsCredentials / containerControl 声明并在沙箱内定点放行；沙箱不可用时所有命令都拒绝执行。「完全访问」下这三项声明不再有意义——命令已不经沙箱，网络、凭据与容器权限直接由宿主用户权限决定。',
       '输出超过 2 MiB 时尾截断；用更精确的命令缩小范围以获取缺失部分。',
     ],
-    // v17：出网取消单独的二次原生确认——networkRequired 命令与沙箱级命令同为
-    // 单层卡片审批（Rust 权威分类仍绑定 lease，执行档不变）；审批卡片与 schema
-    // 描述文案同步。恢复会话按版本迁移，旧会话工具契约不因审批语义变化而静默沿用。
-    runtimeVersion: '17',
+    runtimeVersion: '26',
     recoveryPolicy: 'never',
     description:
       'Execute a bash command in the authorized workspace. The command runs via /bin/bash -c inside the workspace directory. Output is truncated at 2 MiB (tail retained). Each invocation requires an approval lease. Optionally provide a timeout in seconds.',
@@ -231,7 +262,17 @@ export const createBashTool = (
           description: 'Whether this command requires outbound network access. '
             + 'false (default): runs inside the OS sandbox with loopback-only networking. '
             + 'true: runs inside the OS sandbox with network enabled (writes still confined to the workspace). '
-            + 'Both tiers use the same single approval.',
+            + 'Both tiers use the same single approval. In full-access mode the sandbox is off and network is unrestricted.',
+          default: false,
+        },
+        vcsCredentials: {
+          type: 'boolean',
+          description: 'Request SSH private-key and Git credential reads inside the sandbox for this command only. Approval applies to this single command. In full-access mode the sandbox is off and the flag has no effect.',
+          default: false,
+        },
+        containerControl: {
+          type: 'boolean',
+          description: 'Request container daemon access and Docker config reads/writes inside the sandbox for this command only. Can reach files outside the workspace through mounts. Approval applies to this single command. In full-access mode the sandbox is off and the flag has no effect.',
           default: false,
         },
       },
@@ -246,46 +287,54 @@ export const createBashTool = (
       return error ? { ok: false, error } : { ok: true, value: input }
     },
     approvalPresentation: (input) => {
-      const { command, cwd, timeoutMs } = asCommandInput(input)
+      const { command, cwd, timeoutMs, vcsCredentials, containerControl } = asCommandInput(input)
       const preview = truncateForDisplay(command, TRUNCATED_PREVIEW_LENGTH)
-      const dangerous = DANGEROUS_COMMAND_MARKERS.test(command)
+      const dangerous = isDangerousCommand(command)
       const dangerNote = dangerous
         ? '\n\n⚠️ 危险命令：包含 sudo / 删除 / 外传 / 磁盘写入等高风险关键字，请仔细确认'
         : ''
       const sandboxed = resolveBashTier(input) === 'sandboxSafe'
-      // 沙箱策略：两级分类都在沙箱内执行、仅工作区可写；读取为全局 + 凭据路径 deny
-      // （见 sandbox.rs），故文案说"仅工作区可写"而非"仅限工作区"。差别只在网络档位：
-      // 默认档仅本机回环可用（dev server 场景），network:true 档外网启用。
-      const vcsNote = /\bgit\s+(clone|fetch|pull|push|ls-remote|submodule\s+update)\b/.test(command)
-        ? '\n\n🔑 此 VCS 命令需要认证：沙箱会放行读取 ~/.ssh 与 ~/.config/git/credentials，其它凭据目录仍拒绝。'
+      const vcsNote = vcsCredentials === true
+        ? '\n\n🔑 本次审批将为该命令在沙箱内放行读取 ~/.ssh 与 ~/.config/git/credentials；其它凭据目录仍拒绝。'
         : ''
+      const containerNote = containerControl === true
+        ? '\n\n⚠️ 本次审批将为该命令放行容器 daemon 与 Docker 配置；容器可访问工作区外文件和网络。'
+        : ''
+      const writeScope = containerControl === true
+        ? '容器 daemon 操作不受工作区写范围约束'
+        : '仅工作区与临时目录可写'
       const sandboxNote = sandboxed
-        ? '\n\n🔒 沙箱内执行：外网禁用（本机回环可用），仅工作区可写'
-        : '\n\n🌐 沙箱内执行＋启用网络：仅工作区可写，凭据目录仍拒绝'
+        ? `\n\n🔒 策略 LoopbackOnly：命令在沙箱内执行，外网禁用（本机回环可用）；${writeScope}`
+        : `\n\n🌐 策略 OutboundEnabled：本次审批后命令在沙箱内执行并启用网络；${writeScope}；凭据与容器权限需另行声明`
       return {
         category: 'workspace-command',
         title: 'Run bash command?',
-        description: 'This command runs via /bin/bash -c inside the authorized workspace, sandboxed by the OS sandbox (workspace-only writes, credentials denied). This approval lease is valid only for this single command.'
+        titleKey: 'app.approval.bash.title',
+        description: 'This approval is the only confirmation for this command. It runs via /bin/bash -c inside the authorized workspace and remains inside the OS sandbox. The approval lease is valid only for this single command.'
           + (dangerous ? ' ⚠️ 危险命令，请仔细确认。' : '')
           + (sandboxed ? ' 🔒 沙箱内执行。' : ' 🌐 沙箱内执行＋启用网络。'),
+        descriptionKey: 'app.approval.bash.description',
         path: cwd || '.',
-        preview: `$ ${preview}${timeoutMs !== undefined ? `\n\ntimeout: ${(timeoutMs / 1000).toFixed(1)}s` : ''}${sandboxNote}${vcsNote}${dangerNote}`,
-        danger: dangerous,
+        preview: `$ ${preview}${timeoutMs !== undefined ? `\n\ntimeout: ${(timeoutMs / 1000).toFixed(1)}s` : ''}${sandboxNote}${vcsNote}${containerNote}${dangerNote}`,
+        danger: dangerous || vcsCredentials === true || containerControl === true,
       }
     },
     auditArguments: (input) => {
-      const { command, cwd, timeoutMs } = asCommandInput(input)
+      const { command, cwd, timeoutMs, vcsCredentials, containerControl } = asCommandInput(input)
       return {
         commandPreview: truncateForDisplay(command, TRUNCATED_AUDIT_LENGTH),
         commandLength: command.length,
         cwd: cwd ?? '.',
         timeoutMs: timeoutMs ?? null,
+        vcsCredentials: vcsCredentials ?? false,
+        containerControl: containerControl ?? false,
+        requestedNetworkPolicy: resolveBashTier(input) === 'sandboxSafe' ? 'LoopbackOnly' : 'OutboundEnabled',
       }
     },
     execute: async (input, context) => {
       if (!context.approvalLease) throw new Error('Missing workspace approval lease.')
       if (!isJsonObject(input)) throw new Error('Invalid bash arguments.')
-      const { command, cwd, timeoutMs } = asCommandInput(input)
+      const { command, cwd, timeoutMs, vcsCredentials, containerControl } = asCommandInput(input)
 
       await context.reportProgress('Starting bash command', {
         cwd: cwd ?? '.',
@@ -299,6 +348,8 @@ export const createBashTool = (
         command,
         cwd,
         timeoutMs,
+        ...(vcsCredentials !== undefined ? { vcsCredentials } : {}),
+        ...(containerControl !== undefined ? { containerControl } : {}),
       }, context.signal, (progress) => {
         const capturedBytes = progress.capturedStdoutBytes + progress.capturedStderrBytes
         if (capturedBytes - reportedBytes < 32 * 1024) return
@@ -307,11 +358,19 @@ export const createBashTool = (
           `Workspace command produced ${capturedBytes} bytes of output`,
           { capturedBytes },
         ))
-      }, context.approvalLease)
+      }, context.approvalLease, toolApprovalScope(context))
       await progressChain
-  
+
+      // 跨层结果契约：Rust 只对完全访问签发的租约返回 sandboxed=false。命令此时
+      // 已真实执行，因此只按「租约来源」判定边界是否合法——标准模式拿到无沙箱
+      // 结果说明契约被破坏，必须报错而不是当成功回灌模型（后者会诱发重试，让
+      // 副作用再执行一次）。
+      if (result.sandboxed === false && context.approvalSource !== 'automatic') {
+        throw new Error('命令结果缺少 OS 沙箱保护，已拒绝接收；请检查宿主沙箱支持。')
+      }
+
       return {
-        content: commandOutput(command, result),
+        content: commandOutput(command, result, resolveBashTier(input)),
         details: {
           cwd: cwd ?? '.',
           exitCode: result.exitCode ?? null,
@@ -321,6 +380,11 @@ export const createBashTool = (
           truncated: result.truncated,
           timedOut: result.timedOut,
           sandboxed: result.sandboxed ?? null,
+          executionPolicy: result.sandboxed === false
+            ? 'Unrestricted'
+            : resolveBashTier(input) === 'sandboxSafe'
+              ? 'LoopbackOnly'
+              : 'OutboundEnabled',
         },
       }
     },

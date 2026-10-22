@@ -12,12 +12,9 @@ interface WorkspaceApprovalLeaseRequest {
   workspacePath?: string
 }
 
-export type WorkspaceApprovalConfirmationMode =
-  | 'interactive'
-  | 'automatic'
-  | 'sandboxSafe'
-  /** SSH 远程执行的「会话内已授权主机」签发模式（Rust 校验权威授权表）。 */
-  | 'sshSessionGranted'
+/** 与 Rust `WorkspaceApprovalConfirmationMode` 对齐：原生确认退役后只剩两档
+ * （标准模式单层卡片 / 完全访问自动签发）。 */
+export type WorkspaceApprovalConfirmationMode = 'interactive' | 'automatic'
 
 const NATIVE_WORKSPACE_APPROVAL_TOOL_NAMES: Record<string, string> = {
   write: 'create_workspace_file',
@@ -35,15 +32,12 @@ const NATIVE_WORKSPACE_APPROVAL_TOOL_NAMES: Record<string, string> = {
 export const nativeWorkspaceApprovalToolName = (toolName: string): string =>
   NATIVE_WORKSPACE_APPROVAL_TOOL_NAMES[toolName] ?? toolName
 
-/**
- * 把用户选择的 access-mode 同步到 Rust 权威状态。Rust 仅在模式为 automatic 时
- * 接受 automatic 租约（fail-closed）；浏览器开发模式静默降级。
- */
 export const setWorkspaceApprovalMode = async (
+  sessionId: string,
   mode: WorkspaceApprovalConfirmationMode,
 ): Promise<void> => {
   if (!isTauriRuntime()) return
-  await invoke('set_workspace_approval_mode', { mode })
+  await invoke('set_workspace_approval_mode', { sessionId, mode })
 }
 
 export const requestWorkspaceApprovalLease = async (

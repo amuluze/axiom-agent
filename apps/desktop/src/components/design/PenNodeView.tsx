@@ -220,6 +220,7 @@ const PenNodeView = memo(function PenNodeView({
   const imageFill = usePenImageFill(
     document.fileName,
     'fill' in node && node.fill?.kind === 'image' ? node.fill : undefined,
+    document.workspacePath,
   )
 
   if (node.type === 'unknown') {

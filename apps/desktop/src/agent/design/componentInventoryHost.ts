@@ -14,6 +14,20 @@ export interface DesignComponentPropSummary {
 }
 
 export interface DesignComponentSummary {
+  framework?: 'react' | 'vue'
+  defaultSlot?: boolean
+  /**
+   * 具名插槽契约（.ax 1.5）：插槽名 → 内容注入的组件 prop 名。内置注册表来自条目
+   * `slots`；项目目录由 `defaultSlot` 派生（`{ default: { prop: 'children' } }`，
+   * prop 字段仅 React 注入路径消费，Vue 走 defaultSlot 布尔）。读取路径据此核对
+   * decl.slots（插槽名 ⊆ 注册表契约、注入 prop 不与 props 撞名）。
+   */
+  slots?: Record<string, { prop: string }>
+  previewAdapter?: { sourcePath: string; sourceSha256: string; exportName: string; defaultSlot?: boolean }
+  origin?: 'project'
+  importSource?: string
+  exportName?: string
+  sourceSha256?: string
   name: string
   kind: 'presentational' | 'store-bound'
   /** 真实源码路径：模型据此把设计稿里的组件对到实现文件。 */
@@ -45,6 +59,11 @@ export interface DesignComponentDetail {
    * 会在渲染期抛错，只有看到 fixture 形状才能写对）。
    */
   fixtures: Record<string, Record<string, unknown>>
+  /**
+   * 具名插槽契约段（1.5，mode=component 详单新增）：写节点 slot 内容前据此确认
+   * 插槽名与注入 prop；未声明契约的插槽在解析期即报错（fail-closed）。
+   */
+  slots?: Record<string, { prop: string }>
 }
 
 type Provider = () => DesignComponentSummary[]

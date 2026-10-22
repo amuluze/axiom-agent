@@ -1,4 +1,6 @@
+import type { ToolApprovalScope } from '@/agent/core/approvalScope'
 import type { ArtifactReference } from '@/agent/core/types'
+import { AgentEnvironmentError, type AgentEnvironmentErrorCode } from '@/agent/environment/AgentEnvironment'
 import { invoke } from '@tauri-apps/api/core'
 import { commands } from './bindings'
 import { isTauriRuntime } from './environment'
@@ -14,6 +16,8 @@ export interface WorkspaceEntry {
   name: string
   kind: 'directory' | 'file' | 'symlink' | 'other'
   sizeBytes: number
+  /** 文件 mtime（Unix epoch ms）；宿主拿不到时缺省。文档索引用它复用 revision 缓存。 */
+  modifiedMs?: number
 }
 
 export interface WorkspaceListResult {
@@ -125,6 +129,7 @@ export interface WorkspaceChangeResult {
   changes: WorkspaceChangeSummary[]
   recoveryId?: string
   auditArtifact?: ArtifactReference
+  historyWarning?: string
 }
 
 export interface WorkspaceRecoveryIssue {
@@ -195,11 +200,19 @@ export const listWorkspace = async (
   workspacePath?: string,
 ): Promise<WorkspaceListResult> => {
   requireTauri()
-  return invoke<WorkspaceListResult>('list_workspace', {
-    path,
-    limit,
-    ...(workspacePath ? { workspacePath } : {}),
-  })
+  const result = await commands.listWorkspace(path ?? null, limit ?? null, workspacePath ?? null)
+  return {
+    ...result,
+    entries: result.entries.map((entry) => ({
+      path: entry.path,
+      name: entry.name,
+      kind: entry.kind as WorkspaceEntry['kind'],
+      sizeBytes: entry.sizeBytes,
+      ...(entry.modifiedMs !== undefined && entry.modifiedMs !== null
+        ? { modifiedMs: entry.modifiedMs }
+        : {}),
+    })),
+  }
 }
 
 /**
@@ -232,20 +245,35 @@ export const readWorkspaceText = async (
   workspacePath?: string,
 ): Promise<WorkspaceReadResult> => {
   requireTauri()
-  const invokeArgs = (candidate: string) => ({
-    path: candidate,
-    offset,
-    limit,
-    ...(workspacePath ? { workspacePath } : {}),
-  })
+  const read = async (candidate: string): Promise<WorkspaceReadResult> => {
+    const result = await commands.readWorkspaceText(
+      candidate,
+      offset ?? null,
+      limit ?? null,
+      workspacePath ?? null,
+    )
+    return {
+      ...result,
+      nextOffset: result.nextOffset ?? undefined,
+      ...(result.image
+        ? {
+            image: {
+              ...result.image,
+              originalWidth: result.image.originalWidth ?? undefined,
+              originalHeight: result.image.originalHeight ?? undefined,
+            },
+          }
+        : { image: undefined }),
+    }
+  }
   try {
-    return await invoke<WorkspaceReadResult>('read_workspace_text', invokeArgs(path))
+    return await read(path)
   } catch (originalError) {
     // Try macOS filename variants (NFD, curly quotes, narrow NBSP) before
     // giving up — the canonical filename may differ from what was typed.
     for (const variant of macOSPathVariants(path)) {
       try {
-        return await invoke<WorkspaceReadResult>('read_workspace_text', invokeArgs(variant))
+        return await read(variant)
       } catch {
         // Continue to the next variant.
       }
@@ -259,12 +287,14 @@ export const createWorkspaceTextFile = async (
   content: string,
   approvalLease: string,
   workspacePath?: string,
+  approvalScope?: ToolApprovalScope,
 ): Promise<WorkspaceWriteResult> => {
   requireTauri()
   return invoke<WorkspaceWriteResult>('create_workspace_text_file', {
     path,
     content,
     approvalLease,
+    ...(approvalScope ? { approvalScope } : {}),
     ...(workspacePath ? { workspacePath } : {}),
   })
 }
@@ -274,11 +304,13 @@ export const editWorkspaceTextFile = async (
   edits: WorkspaceEditOp[],
   approvalLease: string,
   workspacePath?: string,
+  approvalScope?: ToolApprovalScope,
 ): Promise<WorkspaceWriteResult> => {
   requireTauri()
   return invoke<WorkspaceWriteResult>('edit_workspace_text_file', {
     request: { path, edits },
     approvalLease,
+    ...(approvalScope ? { approvalScope } : {}),
     ...(workspacePath ? { workspacePath } : {}),
   })
 }
@@ -287,11 +319,13 @@ export const applyWorkspaceChanges = async (
   request: WorkspaceChangeRequest,
   approvalLease: string,
   workspacePath?: string,
+  approvalScope?: ToolApprovalScope,
 ): Promise<WorkspaceChangeResult> => {
   requireTauri()
   return invoke<WorkspaceChangeResult>('apply_workspace_changes', {
     request,
     approvalLease,
+    ...(approvalScope ? { approvalScope } : {}),
     ...(workspacePath ? { workspacePath } : {}),
   })
 }
@@ -300,11 +334,13 @@ export const restoreWorkspaceTrash = async (
   recoveryId: string,
   approvalLease: string,
   workspacePath?: string,
+  approvalScope?: ToolApprovalScope,
 ): Promise<WorkspaceChangeResult> => {
   requireTauri()
   return invoke<WorkspaceChangeResult>('restore_workspace_trash', {
     recoveryId,
     approvalLease,
+    ...(approvalScope ? { approvalScope } : {}),
     ...(workspacePath ? { workspacePath } : {}),
   })
 }
@@ -354,15 +390,54 @@ export const findWorkspaceFiles = async (request: {
 }): Promise<WorkspaceFindResult> => {
   if (request.signal.aborted) throw new DOMException('Aborted', 'AbortError')
   requireTauri()
-  const result = await invoke<WorkspaceFindResult>('find_workspace_files', {
-    request: {
-      pattern: request.pattern,
-      ...(request.path !== undefined ? { path: request.path } : {}),
-      ...(request.limit !== undefined ? { limit: request.limit } : {}),
-      ...(request.maxDepth !== undefined ? { maxDepth: request.maxDepth } : {}),
-    },
-    ...(request.workspacePath ? { workspacePath: request.workspacePath } : {}),
-  })
+  let result: WorkspaceFindResult
+  try {
+    result = await invoke<WorkspaceFindResult>('find_workspace_files', {
+      request: {
+        pattern: request.pattern,
+        ...(request.path !== undefined ? { path: request.path } : {}),
+        ...(request.limit !== undefined ? { limit: request.limit } : {}),
+        ...(request.maxDepth !== undefined ? { maxDepth: request.maxDepth } : {}),
+      },
+      ...(request.workspacePath ? { workspacePath: request.workspacePath } : {}),
+    })
+  } catch (error) {
+    throw workspaceCommandError(error)
+  }
   if (request.signal.aborted) throw new DOMException('Aborted', 'AbortError')
   return result
+}
+
+/**
+ * `find_workspace_files` 的错误信封（`{ code, message }`）→ `AgentEnvironmentError`。
+ *
+ * 命令侧对「目录不存在」已短路为空结果，因此这里的 code 只承载真实故障
+ * （not_authorized / unavailable / unknown）。调用方按 code 判定，不再读 message 文案；
+ * 非信封错误（旧宿主或 IPC 层错误）原样抛出，保留 message 供诊断。
+ */
+const ENVELOPE_CODES: ReadonlySet<string> = new Set<AgentEnvironmentErrorCode>([
+  'not_authorized',
+  'not_found',
+  'invalid_path',
+  'unavailable',
+  'unknown',
+])
+
+const workspaceCommandError = (error: unknown): Error => {
+  if (error instanceof AgentEnvironmentError) return error
+  if (error && typeof error === 'object') {
+    const candidate = error as { code?: unknown; message?: unknown }
+    if (
+      typeof candidate.code === 'string'
+      && ENVELOPE_CODES.has(candidate.code)
+      && typeof candidate.message === 'string'
+    ) {
+      return new AgentEnvironmentError(
+        candidate.code as AgentEnvironmentErrorCode,
+        candidate.message,
+        error,
+      )
+    }
+  }
+  return error instanceof Error ? error : new Error(String(error))
 }

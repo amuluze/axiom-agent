@@ -23,6 +23,18 @@ export interface ToolLedgerEntry {
   status: ToolLedgerStatus
 }
 
+/** 已加载的内置/项目 Skill（阶段进度的**确定性**证据，来自 load_skill 工具结果）。 */
+export interface LoadedSkillEntry {
+  name: string
+  source: string
+}
+
+/** 一次审查子代理委派的结论（来自 *_subagent 工具结果的 details.verdict）。 */
+export interface SddReviewEntry {
+  reviewer: string
+  verdict: 'pass' | 'fail' | 'unknown'
+}
+
 export interface ContextCheckpointFacts {
   readFiles: string[]
   modifiedFiles: string[]
@@ -33,6 +45,16 @@ export interface ContextCheckpointFacts {
    */
   readProgress?: Record<string, ReadProgressCursor>
   toolLedger?: ToolLedgerEntry[]
+  /**
+   * SDD 阶段进度账本：已加载 Skill 与审查结论。**由工具结果确定性推导，不采信
+   * 模型自述**——`CHECKPOINT_RULES` 里那句「必须保留已加载 Skill 名单与阶段」
+   * 只是给压缩器的提示语，压缩后模型实际只能靠自然语言回忆阶段，回环链
+   * （implement → plan → examine）最容易在此断裂。此两字段是那条提示的
+   * 程序化兜底：阶段本身仍由模型判断，本账本只保证它拿得到判断所需的事实。
+   * 旧 checkpoint 无此字段（可选语义，视为空），经 normalizeFacts 统一兜底。
+   */
+  loadedSkills?: LoadedSkillEntry[]
+  sddReviews?: SddReviewEntry[]
 }
 
 export interface ContextCheckpoint {

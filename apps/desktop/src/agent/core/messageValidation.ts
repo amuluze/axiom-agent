@@ -37,9 +37,35 @@ export const validatedMessages = (
   return messages
 }
 
-/** 用 JSON 字符串比较两个运行时值是否结构相等。 */
-export const sameRuntimeValue = (left: unknown, right: unknown): boolean =>
-  JSON.stringify(left) === JSON.stringify(right)
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+/** 对象参与比较的键：显式 `undefined` 视同缺失（与 JSON 投影一致，避免虚假差异）。 */
+const comparableKeys = (value: Record<string, unknown>): string[] =>
+  Object.keys(value).filter((key) => value[key] !== undefined).sort()
+
+/**
+ * 比较两个运行时值是否结构相等：对象按键集合比较（**键序无关**），数组按元素顺序比较，
+ * 原始值按类型严格比较（`0` 与 `"0"` 不等）。
+ *
+ * 不能用 `JSON.stringify` 代替：它键序敏感（同一对象换构造顺序就判不等，产生虚假的
+ * runtime_*_update 事件与持久化 churn），且会把 `0` 与 `"0"` 判为相等。两条偏差都会让
+ * 「运行时是否变化」的判定偏离语义。
+ */
+export const sameRuntimeValue = (left: unknown, right: unknown): boolean => {
+  if (Object.is(left, right)) return true
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right)
+      && left.length === right.length
+      && left.every((item, index) => sameRuntimeValue(item, right[index]))
+  }
+  if (!isPlainRecord(left) || !isPlainRecord(right)) return false
+  const leftKeys = comparableKeys(left)
+  const rightKeys = comparableKeys(right)
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key, index) => key === rightKeys[index]
+      && sameRuntimeValue(left[key], right[key]))
+}
 
 /** 投影出 context 中工具相关的可观察快照（工具名 + 激活工具名）。 */
 export const runtimeToolsSnapshot = (context: AgentContext) => ({

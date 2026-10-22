@@ -1,0 +1,96 @@
+# 源码门禁 CI（仅公开分发仓 amuluze/axiom-agent 生效）
+#
+# 私仓不跑 Actions（工作区无 .github/workflows/）——本文件维护在私仓
+# scripts/public-export/workflows/，经 export-public.mjs 的 OVERLAYS 注入公开仓
+# .github/workflows/：公开仓每次 push 跑完整 `npm run check`，发布路径不存在
+# 「零测试」窗口。私仓门禁由本地 `npm run check` / `release:check` 承担。
+#
+# macOS 专属行为（seatbelt 实跑、原生 E2E、双 target 交叉）不在本 CI 范围：
+# cfg 门控的测试在 Linux 跳过，macOS 侧回归仍须在 macOS 主机实跑。
+# `npm run check` 需要 Rust 工具链（check:rust/test:rust/fmt:rust/lint:rust），
+# Linux 依赖与 release.yml 的 debian:12 build job 逐字同源。
+
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: npm run check（完整源码门禁）
+    runs-on: ubuntu-latest
+    container:
+      image: node:22-bookworm
+    timeout-minutes: 60
+    env:
+      # GHA 容器 job 默认 HOME=/github/home，与 euid home（/root）不一致会被 rustup
+      # 拒绝——钉回 /root，cargo/npm 缓存路径随之对齐（与 release.yml 同型）
+      HOME: /root
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # doc-drift 审计用 `git log --diff-filter=D` 收集已删除符号；浅克隆下
+          # 拿不到删除记录，审计会 fail-closed 退出（“git 历史不可读？”）。
+          # 公开仓的导出是 squash 提交，当前恰好能供出删除记录——依赖这一点很脆弱，
+          # 完整历史才能让审计在历史形态变化后仍然有效。
+          fetch-depth: 0
+      - name: 安装 Tauri 2 Linux 构建依赖（debian:12，与 release.yml build-linux 逐字同源）
+        shell: bash
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential curl ca-certificates git file xz-utils pkg-config patchelf \
+            librsvg2-dev libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            libssl-dev
+      - name: 安装 Rust 工具链（rust-toolchain.toml 固定 1.96.0 + clippy/rustfmt）
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          # with-rust-toolchain.mjs 经 `rustup which --toolchain` 定位 cargo，
+          # 该调用不会自动安装缺失工具链——先按 rust-toolchain.toml 显式装好
+          source "$HOME/.cargo/env"
+          rustup toolchain install
+      - uses: actions/cache@v4
+        with:
+          path: |
+            /root/.cargo/registry
+            /root/.cargo/git
+            apps/desktop/src-tauri/target
+            /root/.npm
+          key: ci-cargo-debian12-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock', 'package-lock.json') }}
+      - name: npm ci
+        shell: bash
+        run: npm ci
+      - name: 完整源码门禁
+        shell: bash
+        run: npm run check
+
+  e2e:
+    name: Playwright 假宿主 E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: 安装应用依赖
+        run: npm ci
+      - name: 安装 E2E 依赖
+        run: npm ci --prefix e2e
+      - name: 安装 Chromium
+        working-directory: e2e
+        run: npx playwright install --with-deps chromium
+      - name: E2E 框架自检
+        run: npm run e2e:validate
+      - name: E2E 套件
+        run: npm run e2e:test

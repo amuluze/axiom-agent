@@ -20,14 +20,19 @@
       "id": "generic-openai-compatible",
       "label": "OpenAI Compatible",
       "apiFormat": "openai-compatible",
-      "transportVersion": "10",
+      "transportVersion": "11",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.openai-compatible.api-key",
         "required": false
       },
-      "supportedCapabilities": { "toolReferences": false, "toolSearch": false },
-      "trustedHosts": ["api.openai.com"],
+      "supportedCapabilities": {
+        "toolReferences": false,
+        "toolSearch": false
+      },
+      "trustedHosts": [
+        "api.openai.com"
+      ],
       "defaultProfile": {
         "profileId": "builtin.generic-openai-compatible",
         "endpoint": "https://api.openai.com/v1/chat/completions",
@@ -35,7 +40,10 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": false, "toolSearch": false }
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        }
       },
       "legacySecretIdPrefixes": [],
       "models": []
@@ -44,13 +52,16 @@
       "id": "custom-openai-compatible",
       "label": "自定义（OpenAI）",
       "apiFormat": "openai-compatible",
-      "transportVersion": "10",
+      "transportVersion": "11",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.custom-openai-compatible.api-key",
         "required": false
       },
-      "supportedCapabilities": { "toolReferences": false, "toolSearch": false },
+      "supportedCapabilities": {
+        "toolReferences": false,
+        "toolSearch": false
+      },
       "trustedHosts": [],
       "allowPublicEndpoints": true,
       "defaultProfile": {
@@ -60,7 +71,10 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": false, "toolSearch": false }
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        }
       },
       "legacySecretIdPrefixes": [],
       "models": []
@@ -69,14 +83,19 @@
       "id": "openai",
       "label": "OpenAI Responses",
       "apiFormat": "openai-responses",
-      "transportVersion": "10",
+      "transportVersion": "11",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.openai-responses.api-key",
         "required": true
       },
-      "supportedCapabilities": { "toolReferences": false, "toolSearch": true },
-      "trustedHosts": ["api.openai.com"],
+      "supportedCapabilities": {
+        "toolReferences": false,
+        "toolSearch": true
+      },
+      "trustedHosts": [
+        "api.openai.com"
+      ],
       "defaultProfile": {
         "profileId": "builtin.openai",
         "endpoint": "https://api.openai.com/v1/responses",
@@ -84,7 +103,10 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": false, "toolSearch": false }
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        }
       },
       "legacySecretIdPrefixes": [],
       "models": []
@@ -93,14 +115,19 @@
       "id": "generic-anthropic-compatible",
       "label": "Anthropic Compatible",
       "apiFormat": "anthropic-compatible",
-      "transportVersion": "10",
+      "transportVersion": "11",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.generic-anthropic-compatible.api-key",
         "required": false
       },
-      "supportedCapabilities": { "toolReferences": true, "toolSearch": false },
-      "trustedHosts": ["api.anthropic.com"],
+      "supportedCapabilities": {
+        "toolReferences": true,
+        "toolSearch": false
+      },
+      "trustedHosts": [
+        "api.anthropic.com"
+      ],
       "defaultProfile": {
         "profileId": "builtin.generic-anthropic-compatible",
         "endpoint": "https://api.anthropic.com/v1/messages",
@@ -108,7 +135,10 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": false, "toolSearch": false }
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        }
       },
       "legacySecretIdPrefixes": [
         "provider.anthropic-compatible.api-key",
@@ -120,13 +150,16 @@
       "id": "custom-anthropic-compatible",
       "label": "自定义（Anthropic）",
       "apiFormat": "anthropic-compatible",
-      "transportVersion": "10",
+      "transportVersion": "11",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.custom-anthropic-compatible.api-key",
         "required": false
       },
-      "supportedCapabilities": { "toolReferences": false, "toolSearch": false },
+      "supportedCapabilities": {
+        "toolReferences": false,
+        "toolSearch": false
+      },
       "trustedHosts": [],
       "allowPublicEndpoints": true,
       "defaultProfile": {
@@ -136,7 +169,10 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": false, "toolSearch": false }
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        }
       },
       "legacySecretIdPrefixes": [],
       "models": []
@@ -145,14 +181,19 @@
       "id": "zhipu-glm",
       "label": "GLM",
       "apiFormat": "openai-compatible",
-      "transportVersion": "10",
+      "transportVersion": "11",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.zhipu-glm.api-key",
         "required": false
       },
-      "supportedCapabilities": { "toolReferences": false, "toolSearch": false },
-      "trustedHosts": ["open.bigmodel.cn"],
+      "supportedCapabilities": {
+        "toolReferences": false,
+        "toolSearch": false
+      },
+      "trustedHosts": [
+        "open.bigmodel.cn"
+      ],
       "defaultProfile": {
         "profileId": "builtin.zhipu-glm",
         "endpoint": "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
@@ -160,7 +201,10 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 64000,
         "contextWindow": 1000000,
-        "capabilities": { "toolReferences": false, "toolSearch": false }
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        }
       },
       "legacySecretIdPrefixes": [],
       "models": [
@@ -169,7 +213,9 @@
           "label": "GLM-5.2",
           "contextWindow": 1000000,
           "maxOutputTokens": 64000,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -177,7 +223,10 @@
           "label": "GLM-5.3-Flash",
           "contextWindow": 1000000,
           "maxOutputTokens": 64000,
-          "input": ["text", "image"],
+          "input": [
+            "text",
+            "image"
+          ],
           "supportsReasoning": true
         },
         {
@@ -185,7 +234,9 @@
           "label": "GLM-4.6",
           "contextWindow": 200000,
           "maxOutputTokens": 8192,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -193,7 +244,9 @@
           "label": "GLM-4.5",
           "contextWindow": 128000,
           "maxOutputTokens": 8192,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -201,7 +254,9 @@
           "label": "GLM-4.5-Air",
           "contextWindow": 128000,
           "maxOutputTokens": 4096,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -209,7 +264,9 @@
           "label": "GLM-4-Flash",
           "contextWindow": 128000,
           "maxOutputTokens": 4096,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": false
         }
       ]
@@ -218,14 +275,19 @@
       "id": "deepseek",
       "label": "DeepSeek",
       "apiFormat": "openai-compatible",
-      "transportVersion": "10",
+      "transportVersion": "11",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.deepseek.api-key",
         "required": false
       },
-      "supportedCapabilities": { "toolReferences": false, "toolSearch": false },
-      "trustedHosts": ["api.deepseek.com"],
+      "supportedCapabilities": {
+        "toolReferences": false,
+        "toolSearch": false
+      },
+      "trustedHosts": [
+        "api.deepseek.com"
+      ],
       "defaultProfile": {
         "profileId": "builtin.deepseek",
         "endpoint": "https://api.deepseek.com/chat/completions",
@@ -233,7 +295,10 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 1000000,
-        "capabilities": { "toolReferences": false, "toolSearch": false }
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        }
       },
       "legacySecretIdPrefixes": [],
       "models": [
@@ -242,7 +307,10 @@
           "label": "DeepSeek Flash",
           "contextWindow": 1000000,
           "maxOutputTokens": 64000,
-          "input": ["text", "image"],
+          "input": [
+            "text",
+            "image"
+          ],
           "supportsReasoning": true
         },
         {
@@ -250,7 +318,10 @@
           "label": "DeepSeek V4 Flash",
           "contextWindow": 1000000,
           "maxOutputTokens": 64000,
-          "input": ["text", "image"],
+          "input": [
+            "text",
+            "image"
+          ],
           "supportsReasoning": true
         },
         {
@@ -258,7 +329,9 @@
           "label": "DeepSeek V4 Pro",
           "contextWindow": 1000000,
           "maxOutputTokens": 64000,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         }
       ]
@@ -267,14 +340,19 @@
       "id": "minimax-chat",
       "label": "MiniMax",
       "apiFormat": "openai-compatible",
-      "transportVersion": "10",
+      "transportVersion": "11",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.minimax-chat.api-key",
         "required": false
       },
-      "supportedCapabilities": { "toolReferences": false, "toolSearch": false },
-      "trustedHosts": ["api.minimaxi.com"],
+      "supportedCapabilities": {
+        "toolReferences": false,
+        "toolSearch": false
+      },
+      "trustedHosts": [
+        "api.minimaxi.com"
+      ],
       "defaultProfile": {
         "profileId": "builtin.minimax-chat",
         "endpoint": "https://api.minimaxi.com/v1/chat/completions",
@@ -282,7 +360,10 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": false, "toolSearch": false }
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        }
       },
       "legacySecretIdPrefixes": [],
       "models": [
@@ -291,7 +372,10 @@
           "label": "MiniMax M3",
           "contextWindow": 1000000,
           "maxOutputTokens": 8192,
-          "input": ["text", "image"],
+          "input": [
+            "text",
+            "image"
+          ],
           "supportsReasoning": true
         },
         {
@@ -299,7 +383,9 @@
           "label": "MiniMax abab6.5s",
           "contextWindow": 128000,
           "maxOutputTokens": 4096,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": false
         },
         {
@@ -307,7 +393,9 @@
           "label": "MiniMax Text-01",
           "contextWindow": 1000000,
           "maxOutputTokens": 8192,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         }
       ]
@@ -316,11 +404,14 @@
       "id": "ollama",
       "label": "Ollama",
       "apiFormat": "openai-compatible",
-      "transportVersion": "10",
+      "transportVersion": "11",
       "auth": {
         "kind": "none"
       },
-      "supportedCapabilities": { "toolReferences": false, "toolSearch": false },
+      "supportedCapabilities": {
+        "toolReferences": false,
+        "toolSearch": false
+      },
       "trustedHosts": [],
       "defaultProfile": {
         "profileId": "builtin.ollama",
@@ -329,7 +420,10 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": false, "toolSearch": false }
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        }
       },
       "legacySecretIdPrefixes": [],
       "models": [
@@ -338,7 +432,9 @@
           "label": "Llama 3.3",
           "contextWindow": 128000,
           "maxOutputTokens": 4096,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": false
         },
         {
@@ -346,7 +442,9 @@
           "label": "Qwen 3",
           "contextWindow": 256000,
           "maxOutputTokens": 8192,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": false
         },
         {
@@ -354,7 +452,9 @@
           "label": "DeepSeek R1",
           "contextWindow": 128000,
           "maxOutputTokens": 8192,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -362,7 +462,10 @@
           "label": "Gemma 3",
           "contextWindow": 128000,
           "maxOutputTokens": 8192,
-          "input": ["text", "image"],
+          "input": [
+            "text",
+            "image"
+          ],
           "supportsReasoning": false
         },
         {
@@ -370,7 +473,9 @@
           "label": "Phi-4",
           "contextWindow": 16384,
           "maxOutputTokens": 4096,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -378,7 +483,9 @@
           "label": "Mistral",
           "contextWindow": 32768,
           "maxOutputTokens": 4096,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": false
         }
       ]
@@ -387,14 +494,19 @@
       "id": "gemini",
       "label": "Google Gemini",
       "apiFormat": "openai-compatible",
-      "transportVersion": "10",
+      "transportVersion": "11",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.gemini.api-key",
         "required": true
       },
-      "supportedCapabilities": { "toolReferences": false, "toolSearch": false },
-      "trustedHosts": ["generativelanguage.googleapis.com"],
+      "supportedCapabilities": {
+        "toolReferences": false,
+        "toolSearch": false
+      },
+      "trustedHosts": [
+        "generativelanguage.googleapis.com"
+      ],
       "defaultProfile": {
         "profileId": "builtin.gemini",
         "endpoint": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
@@ -402,7 +514,10 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 8192,
         "contextWindow": 1000000,
-        "capabilities": { "toolReferences": false, "toolSearch": false }
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        }
       },
       "legacySecretIdPrefixes": [],
       "models": [
@@ -411,7 +526,10 @@
           "label": "Gemini 2.5 Pro",
           "contextWindow": 1000000,
           "maxOutputTokens": 65536,
-          "input": ["text", "image"],
+          "input": [
+            "text",
+            "image"
+          ],
           "supportsReasoning": true
         },
         {
@@ -419,7 +537,10 @@
           "label": "Gemini 2.5 Flash",
           "contextWindow": 1000000,
           "maxOutputTokens": 65536,
-          "input": ["text", "image"],
+          "input": [
+            "text",
+            "image"
+          ],
           "supportsReasoning": true
         },
         {
@@ -427,7 +548,10 @@
           "label": "Gemini 2.5 Flash-Lite",
           "contextWindow": 1000000,
           "maxOutputTokens": 65536,
-          "input": ["text", "image"],
+          "input": [
+            "text",
+            "image"
+          ],
           "supportsReasoning": false
         },
         {
@@ -435,7 +559,10 @@
           "label": "Gemini 2.0 Flash",
           "contextWindow": 1000000,
           "maxOutputTokens": 8192,
-          "input": ["text", "image"],
+          "input": [
+            "text",
+            "image"
+          ],
           "supportsReasoning": false
         }
       ]
@@ -444,14 +571,19 @@
       "id": "kimi",
       "label": "Kimi",
       "apiFormat": "openai-compatible",
-      "transportVersion": "10",
+      "transportVersion": "11",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.kimi.api-key",
         "required": false
       },
-      "supportedCapabilities": { "toolReferences": false, "toolSearch": false },
-      "trustedHosts": ["api.moonshot.cn"],
+      "supportedCapabilities": {
+        "toolReferences": false,
+        "toolSearch": false
+      },
+      "trustedHosts": [
+        "api.moonshot.cn"
+      ],
       "defaultProfile": {
         "profileId": "builtin.kimi",
         "endpoint": "https://api.moonshot.cn/v1/chat/completions",
@@ -459,7 +591,10 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 32768,
         "contextWindow": 1000000,
-        "capabilities": { "toolReferences": false, "toolSearch": false }
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        }
       },
       "legacySecretIdPrefixes": [],
       "models": [
@@ -468,7 +603,9 @@
           "label": "Kimi K3",
           "contextWindow": 1000000,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -476,7 +613,9 @@
           "label": "Kimi K2.7 Code",
           "contextWindow": 262144,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -484,7 +623,9 @@
           "label": "Kimi K2.6",
           "contextWindow": 262144,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         }
       ]
@@ -493,14 +634,19 @@
       "id": "kimi-coding",
       "label": "Kimi Coding",
       "apiFormat": "anthropic-compatible",
-      "transportVersion": "10",
+      "transportVersion": "11",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.kimi-coding.api-key",
         "required": false
       },
-      "supportedCapabilities": { "toolReferences": false, "toolSearch": false },
-      "trustedHosts": ["api.kimi.com"],
+      "supportedCapabilities": {
+        "toolReferences": false,
+        "toolSearch": false
+      },
+      "trustedHosts": [
+        "api.kimi.com"
+      ],
       "defaultProfile": {
         "profileId": "builtin.kimi-coding",
         "endpoint": "https://api.kimi.com/coding/v1/messages",
@@ -508,7 +654,10 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 32768,
         "contextWindow": 262144,
-        "capabilities": { "toolReferences": false, "toolSearch": false }
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        }
       },
       "legacySecretIdPrefixes": [],
       "models": [
@@ -517,7 +666,10 @@
           "label": "Kimi For Coding",
           "contextWindow": 262144,
           "maxOutputTokens": 32768,
-          "input": ["text", "image"],
+          "input": [
+            "text",
+            "image"
+          ],
           "supportsReasoning": true
         },
         {
@@ -525,7 +677,10 @@
           "label": "Kimi For Coding HighSpeed",
           "contextWindow": 262144,
           "maxOutputTokens": 32768,
-          "input": ["text", "image"],
+          "input": [
+            "text",
+            "image"
+          ],
           "supportsReasoning": true
         }
       ]
@@ -534,14 +689,19 @@
       "id": "orcarouter",
       "label": "OrcaRouter",
       "apiFormat": "openai-compatible",
-      "transportVersion": "10",
+      "transportVersion": "11",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.orcarouter.api-key",
         "required": false
       },
-      "supportedCapabilities": { "toolReferences": false, "toolSearch": false },
-      "trustedHosts": ["api.orcarouter.ai"],
+      "supportedCapabilities": {
+        "toolReferences": false,
+        "toolSearch": false
+      },
+      "trustedHosts": [
+        "api.orcarouter.ai"
+      ],
       "defaultProfile": {
         "profileId": "builtin.orcarouter",
         "endpoint": "https://api.orcarouter.ai/v1/chat/completions",
@@ -549,7 +709,10 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 4096,
         "contextWindow": 128000,
-        "capabilities": { "toolReferences": false, "toolSearch": false }
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        }
       },
       "legacySecretIdPrefixes": [],
       "models": [
@@ -558,7 +721,9 @@
           "label": "OrcaRouter Auto（自动路由）",
           "contextWindow": 128000,
           "maxOutputTokens": 8192,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -566,7 +731,9 @@
           "label": "OpenAI GPT-4o mini (via OrcaRouter)",
           "contextWindow": 128000,
           "maxOutputTokens": 16384,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": false
         },
         {
@@ -574,7 +741,9 @@
           "label": "Anthropic Claude Sonnet 4.6 (via OrcaRouter)",
           "contextWindow": 200000,
           "maxOutputTokens": 32000,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -582,7 +751,9 @@
           "label": "Google Gemini 2.5 Flash (via OrcaRouter)",
           "contextWindow": 1000000,
           "maxOutputTokens": 64000,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -590,7 +761,9 @@
           "label": "DeepSeek Chat (via OrcaRouter)",
           "contextWindow": 128000,
           "maxOutputTokens": 8192,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": false
         },
         {
@@ -598,7 +771,9 @@
           "label": "Z.ai GLM-5 (via OrcaRouter)",
           "contextWindow": 128000,
           "maxOutputTokens": 16384,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         }
       ]
@@ -607,17 +782,24 @@
       "id": "opencode-go",
       "label": "OpenCode Go",
       "apiFormat": "openai-compatible",
-      "transportVersion": "2",
+      "transportVersion": "3",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.opencode-go.api-key",
         "required": true
       },
-      "supportedCapabilities": { "toolReferences": false, "toolSearch": false },
-      "trustedHosts": ["opencode.ai"],
+      "supportedCapabilities": {
+        "toolReferences": false,
+        "toolSearch": false
+      },
+      "trustedHosts": [
+        "opencode.ai"
+      ],
       "website": "https://opencode.ai/go",
       "inviteUrl": "https://opencode.ai/go?ref=QQ1BKKXRTV",
-      "requestHeaders": { "user-agent": "Axiom/{version}" },
+      "requestHeaders": {
+        "user-agent": "Axiom/{version}"
+      },
       "sessionHeader": "x-opencode-session",
       "defaultProfile": {
         "profileId": "builtin.opencode-go",
@@ -626,7 +808,10 @@
         "timeoutMs": 60000,
         "maxOutputTokens": 8192,
         "contextWindow": 200000,
-        "capabilities": { "toolReferences": false, "toolSearch": false }
+        "capabilities": {
+          "toolReferences": false,
+          "toolSearch": false
+        }
       },
       "legacySecretIdPrefixes": [],
       "models": [
@@ -635,7 +820,9 @@
           "label": "GLM-5.3 (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -643,7 +830,9 @@
           "label": "GLM-5.3 Flash (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -651,7 +840,9 @@
           "label": "GLM-5.2 (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -659,7 +850,9 @@
           "label": "GLM-5.1 (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -667,7 +860,9 @@
           "label": "Kimi K3 (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -675,7 +870,9 @@
           "label": "Kimi K2.7 Code (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -683,7 +880,9 @@
           "label": "Kimi K2.6 (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -691,7 +890,9 @@
           "label": "LongCat-2.0 (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 16384,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": false
         },
         {
@@ -699,7 +900,9 @@
           "label": "DeepSeek V4 Pro (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 8192,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -707,7 +910,9 @@
           "label": "DeepSeek V4 Flash (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 8192,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -715,7 +920,9 @@
           "label": "DeepSeek V4.1 Flash (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 8192,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -723,7 +930,10 @@
           "label": "DeepSeek V4 Flash Vision Exp (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 8192,
-          "input": ["text", "image"],
+          "input": [
+            "text",
+            "image"
+          ],
           "supportsReasoning": true
         },
         {
@@ -731,7 +941,9 @@
           "label": "MiMo V2.5 (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 16384,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -739,7 +951,9 @@
           "label": "MiMo V2.5 Pro (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 16384,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true
         },
         {
@@ -747,7 +961,9 @@
           "label": "Hy4 Preview (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 16384,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": false
         },
         {
@@ -755,7 +971,9 @@
           "label": "Hy3 (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 16384,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": false
         },
         {
@@ -763,7 +981,9 @@
           "label": "MiniMax M3 (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true,
           "wire": {
             "apiFormat": "anthropic-compatible",
@@ -775,7 +995,9 @@
           "label": "MiniMax M2.7 (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true,
           "wire": {
             "apiFormat": "anthropic-compatible",
@@ -787,7 +1009,9 @@
           "label": "MiniMax M2.5 (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true,
           "wire": {
             "apiFormat": "anthropic-compatible",
@@ -799,7 +1023,9 @@
           "label": "Qwen3.8 Max (via OpenCode Go)",
           "contextWindow": 262144,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true,
           "wire": {
             "apiFormat": "anthropic-compatible",
@@ -811,7 +1037,9 @@
           "label": "Qwen3.8 Flash (via OpenCode Go)",
           "contextWindow": 262144,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true,
           "wire": {
             "apiFormat": "anthropic-compatible",
@@ -823,7 +1051,9 @@
           "label": "Qwen3.7 Max (via OpenCode Go)",
           "contextWindow": 262144,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true,
           "wire": {
             "apiFormat": "anthropic-compatible",
@@ -835,7 +1065,9 @@
           "label": "Qwen3.7 Plus (via OpenCode Go)",
           "contextWindow": 262144,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true,
           "wire": {
             "apiFormat": "anthropic-compatible",
@@ -847,7 +1079,9 @@
           "label": "Qwen3.6 Plus (via OpenCode Go)",
           "contextWindow": 262144,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true,
           "wire": {
             "apiFormat": "anthropic-compatible",
@@ -859,7 +1093,9 @@
           "label": "Grok 4.6 (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true,
           "wire": {
             "apiFormat": "openai-responses",
@@ -871,7 +1107,9 @@
           "label": "GPT 5.6 Luna (via OpenCode Go)",
           "contextWindow": 272000,
           "maxOutputTokens": 32768,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": true,
           "wire": {
             "apiFormat": "openai-responses",
@@ -883,7 +1121,9 @@
           "label": "Muse Spark 1.3 Contributor (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 8192,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": false,
           "wire": {
             "apiFormat": "openai-responses",
@@ -895,7 +1135,9 @@
           "label": "Muse Spark 1.2 Contributor (via OpenCode Go)",
           "contextWindow": 200000,
           "maxOutputTokens": 8192,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "supportsReasoning": false,
           "wire": {
             "apiFormat": "openai-responses",

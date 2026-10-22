@@ -131,51 +131,115 @@ describe('Runtime dependency manifest', () => {
   // version bumps. Every stored historical version must recover against the
   // live contract so existing sessions are not blocked on upgrade.
   it.each([
-    ['discover_agent_tools', '2', 'idempotent', '4'],
-    ['discover_agent_tools', '3', 'idempotent', '4'],
-    ['read', '3', 'idempotent', '7'],
-    ['read', '4', 'idempotent', '7'],
-    ['read', '5', 'idempotent', '7'],
-    ['ls', '2', 'idempotent', '4'],
-    ['ls', '3', 'idempotent', '4'],
-    ['grep', '3', 'idempotent', '5'],
-    ['grep', '4', 'idempotent', '5'],
-    ['find', '2', 'idempotent', '5'],
-    ['find', '3', 'idempotent', '5'],
-    ['find', '4', 'idempotent', '5'],
-    ['write', '2', 'idempotent', '6'],
-    ['write', '3', 'idempotent', '6'],
-    ['write', '4', 'idempotent', '6'],
-    ['write', '5', 'idempotent', '6'],
-    ['edit', '3', 'idempotent', '7'],
-    ['edit', '4', 'idempotent', '7'],
-    ['edit', '5', 'idempotent', '7'],
-    ['edit', '6', 'idempotent', '7'],
-    ['apply_changes', '3', 'never', '5'],
-    ['apply_changes', '4', 'never', '5'],
-    ['restore_trash', '2', 'never', '3'],
-    ['bash', '2', 'never', '17'],
-    ['bash', '3', 'never', '17'],
-    ['bash', '4', 'never', '17'],
-    ['bash', '5', 'never', '17'],
-    ['bash', '6', 'never', '17'],
-    ['bash', '7', 'never', '17'],
-    ['bash', '8', 'never', '17'],
-    ['bash', '9', 'never', '17'],
-    ['bash', '10', 'never', '17'],
-    ['bash', '11', 'never', '17'],
-    ['bash', '12', 'never', '17'],
+    ['design_query', '23', 'idempotent', '24'],
+    ['design_query', '22', 'idempotent', '24'],
+    ['design_query', '21', 'idempotent', '24'],
+    ['design_query', '20', 'idempotent', '24'],
+    ['design_query', '19', 'idempotent', '24'],
+    ['design_query', '18', 'idempotent', '24'],
+    ['design_query', '17', 'idempotent', '24'],
+    ['write', '10', 'idempotent', '12'],
+    ['edit', '11', 'idempotent', '12'],
+    ['apply_changes', '9', 'never', '10'],
+    ['restore_trash', '6', 'never', '7'],
+    ['bash', '25', 'never', '26'],
+    ['design_import', '8', 'idempotent', '9'],
+    ['write', '9', 'idempotent', '12'],
+    ['write', '8', 'idempotent', '12'],
+    ['edit', '10', 'idempotent', '12'],
+    ['edit', '9', 'idempotent', '12'],
+    ['apply_changes', '8', 'never', '10'],
+    ['restore_trash', '5', 'never', '7'],
+    ['design_import', '7', 'idempotent', '9'],
+    ['design_import', '6', 'idempotent', '9'],
+    ['explore_subagent', '15', 'never', '16'],
+    ['explore_subagent', '14', 'never', '16'],
+    ['explore_subagent', '13', 'never', '16'],
+    ['explore_subagent', '12', 'never', '16'],
+    ['review_subagent', '12', 'never', '13'],
+    ['review_subagent', '11', 'never', '13'],
+    ['review_subagent', '10', 'never', '13'],
+    ['review_subagent', '9', 'never', '13'],
+    ['inspect_subagent', '10', 'never', '11'],
+    ['inspect_subagent', '9', 'never', '11'],
+    ['inspect_subagent', '8', 'never', '11'],
+    ['inspect_subagent', '7', 'never', '11'],
+    ['examine_subagent', '10', 'never', '11'],
+    ['examine_subagent', '9', 'never', '11'],
+    ['examine_subagent', '8', 'never', '11'],
+    ['examine_subagent', '7', 'never', '11'],
+    ['write', '7', 'idempotent', '12'],
+    ['edit', '8', 'idempotent', '12'],
+    ['apply_changes', '7', 'never', '10'],
+    ['restore_trash', '4', 'never', '7'],
+    ['bash', '24', 'never', '26'],
+    ['bash', '23', 'never', '26'],
+    ['bash', '22', 'never', '26'],
+    ['bash', '19', 'never', '26'],
+    ['design_import', '5', 'idempotent', '9'],
+    ['discover_agent_tools', '2', 'idempotent', '7'],
+    ['discover_agent_tools', '3', 'idempotent', '7'],
+    ['discover_agent_tools', '4', 'idempotent', '7'],
+    ['read', '7', 'idempotent', '8'],
+    ['ls', '4', 'idempotent', '5'],
+    ['grep', '5', 'idempotent', '6'],
+    ['find', '5', 'idempotent', '6'],
+    ['write', '6', 'never', '12'],
+    ['edit', '7', 'never', '12'],
+    ['apply_changes', '6', 'never', '10'],
+    ['restore_trash', '3', 'never', '7'],
+    ['bash', '18', 'never', '26'],
+    ['design_query', '15', 'idempotent', '24'],
+    ['design_import', '4', 'never', '9'],
+    ['read', '3', 'idempotent', '8'],
+    ['read', '4', 'idempotent', '8'],
+    ['read', '5', 'idempotent', '8'],
+    ['ls', '2', 'idempotent', '5'],
+    ['ls', '3', 'idempotent', '5'],
+    ['grep', '3', 'idempotent', '6'],
+    ['grep', '4', 'idempotent', '6'],
+    ['find', '2', 'idempotent', '6'],
+    ['find', '3', 'idempotent', '6'],
+    ['find', '4', 'idempotent', '6'],
+    ['write', '2', 'idempotent', '12'],
+    ['write', '3', 'idempotent', '12'],
+    ['write', '4', 'idempotent', '12'],
+    ['write', '5', 'idempotent', '12'],
+    ['edit', '3', 'idempotent', '12'],
+    ['edit', '4', 'idempotent', '12'],
+    ['edit', '5', 'idempotent', '12'],
+    ['edit', '6', 'idempotent', '12'],
+    ['apply_changes', '3', 'never', '10'],
+    ['apply_changes', '4', 'never', '10'],
+    ['apply_changes', '5', 'never', '10'],
+    ['restore_trash', '2', 'never', '7'],
+    ['bash', '2', 'never', '26'],
+    ['bash', '3', 'never', '26'],
+    ['bash', '4', 'never', '26'],
+    ['bash', '5', 'never', '26'],
+    ['bash', '6', 'never', '26'],
+    ['bash', '7', 'never', '26'],
+    ['bash', '8', 'never', '26'],
+    ['bash', '9', 'never', '26'],
+    ['bash', '10', 'never', '26'],
+    ['bash', '11', 'never', '26'],
+    ['bash', '12', 'never', '26'],
     // bash 曾随未合入主干的 sudo 词边界扩展 bump 到 v13（已回滚）；两版 v13 的
     // schema 一致（command/cwd/timeout/network），存储的旧 v13 无需迁移即可恢复。
-    ['bash', '13', 'never', '17'],
+    ['bash', '13', 'never', '26'],
     // v16：沙箱后端平台化（macOS Seatbelt / Linux bubblewrap），审批卡片与降级
     // 警示文案去掉平台专名；schema 不变。
-    ['bash', '14', 'never', '17'],
-    ['bash', '15', 'never', '17'],
+    ['bash', '14', 'never', '26'],
+    ['bash', '15', 'never', '26'],
     // v17：出网取消单独的二次原生确认（单层卡片审批覆盖 bash 全部分级）；schema 不变。
-    ['bash', '16', 'never', '17'],
+    ['bash', '16', 'never', '26'],
+    ['bash', '17', 'never', '26'],
+    // ui_click/ui_input/ui_select v1 → v2：目标从「仅 ref」加宽为「locator 或 ref 二选一」
+    // （locator 先经只读 resolveLocator 解析出唯一 ref），ref 形式与既有语义不变。
+    ['ui_click', '1', 'idempotent', '2'],
+    ['ui_input', '1', 'idempotent', '2'],
+    ['ui_select', '1', 'idempotent', '2'],
     // ssh v2：共享源文件 bashTool.ts 语义审计重绑，工具自身行为不变。
-    ['ssh', '1', 'never', '2'],
   ])('migrates stored %s@%s/%s to the live %s contract', (name, previousVersion, recoveryPolicy, liveVersion) => {
     const stored = createRuntimeDependencyManifest(
       TEST_ANTHROPIC_PROFILE,
@@ -190,16 +254,16 @@ describe('Runtime dependency manifest', () => {
   })
 
   it('rejects a migration whose declared currentVersion lags behind the live contract', () => {
-    // Simulate a forgotten migration bump: the table still points an old
-    // version forward to a stale currentVersion while the live tool has moved
-    // past it. The restore check must fail loudly instead of silently accepting.
+    // Simulate a forgotten migration bump: the table has no forward path from
+    // the stored version while the live tool has moved past it. The restore
+    // check must fail loudly instead of silently accepting.
     const stored = createRuntimeDependencyManifest(
       TEST_ANTHROPIC_PROFILE,
-      [tool('discover_agent_tools', '2', 'idempotent')],
+      [tool('discover_agent_tools', '0', 'idempotent')],
     )
     const current = createRuntimeDependencyManifest(
       TEST_ANTHROPIC_PROFILE,
-      [tool('discover_agent_tools', '5', 'idempotent')], // live moved past the table's declared '4'
+      [tool('discover_agent_tools', '6', 'idempotent')],
     )
 
     expect(() => assertRuntimeDependenciesCompatible(stored, current, ['discover_agent_tools']))
@@ -313,7 +377,7 @@ describe('Runtime dependency manifest', () => {
       [tool('discover')],
     )
 
-    expect(current.provider.transportVersion).toBe('10')
+    expect(current.provider.transportVersion).toBe('11')
     expect(() => assertRuntimeDependenciesCompatible(stored, current, ['discover'])).not.toThrow()
   })
 
@@ -362,7 +426,7 @@ describe('Runtime dependency manifest', () => {
   it('migrates registered Hook contracts and rejects unknown Hook drift', () => {
     const current = createRuntimeDependencyManifest(TEST_ANTHROPIC_PROFILE, [tool('discover')])
     const previous = structuredClone(current)
-    for (const version of ['2', '3', '4', '5', '6', '7', '8']) {
+    for (const version of ['2', '3', '4', '5', '6', '7', '8', '9']) {
       previous.hooks = [{ id: 'axiom.desktop.runtime-hooks', version, fingerprint: 'legacy' }]
       expect(() => assertRuntimeDependenciesCompatible(previous, current, ['discover'])).not.toThrow()
     }

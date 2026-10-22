@@ -4,6 +4,7 @@ import type {
   ToolResultArtifactRequest,
 } from '@/agent/core/types'
 import { invoke } from '@tauri-apps/api/core'
+import { decodeBase64ToBytes } from './base64'
 
 export interface ArtifactContent {
   contentBase64: string
@@ -58,10 +59,70 @@ export const writeToolResultArtifact = async (
   })
 }
 
+export const writeJsonArtifact = async (content: string): Promise<ArtifactReference> => {
+  JSON.parse(content)
+  return invoke<ArtifactReference>('write_artifact', {
+    request: {
+      content,
+      encoding: 'utf8',
+      kind: 'json',
+      mediaType: 'application/json',
+      createdAt: Date.now(),
+    },
+  })
+}
+
+export const IMAGE_ARTIFACT_MEDIA_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const
+
+export type ImageArtifactMediaType = (typeof IMAGE_ARTIFACT_MEDIA_TYPES)[number]
+
+const MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
+const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/
+
+export interface ImageArtifactRequest {
+  contentBase64: string
+  /** 入参来自工具结果等外部数据，故以运行时守卫收窄而非信任静态类型。 */
+  mediaType: string
+}
+
+const isImageMediaType = (value: string): value is ImageArtifactMediaType =>
+  (IMAGE_ARTIFACT_MEDIA_TYPES as readonly string[]).includes(value)
+
+/**
+ * 写入图片 Artifact。TS 侧只做格式与体积的快速失败；图片魔数（伪造扩展名/MIME）
+ * 仍由 Rust `validate_media` 权威校验，前端校验不构成信任依据。
+ */
+export const writeImageArtifact = async (request: ImageArtifactRequest): Promise<ArtifactReference> => {
+  const { contentBase64, mediaType } = request
+  if (!isImageMediaType(mediaType)) throw new Error('不支持的图片类型')
+  if (contentBase64.length === 0 || contentBase64.length % 4 !== 0 || !BASE64_PATTERN.test(contentBase64)) {
+    throw new Error('图片内容不是合法的 Base64')
+  }
+  const padding = contentBase64.endsWith('==') ? 2 : contentBase64.endsWith('=') ? 1 : 0
+  if ((contentBase64.length / 4) * 3 - padding > MAX_ARTIFACT_BYTES) throw new Error('图片超过 8 MiB 安全上限')
+  return invoke<ArtifactReference>('write_artifact', {
+    request: {
+      content: contentBase64,
+      encoding: 'base64',
+      kind: 'image',
+      mediaType,
+      createdAt: Date.now(),
+    },
+  })
+}
+
 export const readArtifact = (artifact: ArtifactReference): Promise<ArtifactContent> =>
   invoke<ArtifactContent>('read_artifact', {
     request: { contentHash: artifact.contentHash },
   })
+
+/** 按内容 hash 读取 UTF-8 文本 Artifact（测试运行计划快照等）。 */
+export const readArtifactText = async (contentHash: string): Promise<string> => {
+  const content = await invoke<ArtifactContent>('read_artifact', {
+    request: { contentHash },
+  })
+  return new TextDecoder().decode(decodeBase64ToBytes(content.contentBase64))
+}
 
 export const trashArtifacts = (contentHashes: string[]): Promise<number> =>
   contentHashes.length === 0

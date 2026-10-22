@@ -8,6 +8,28 @@ import { hasProjectSkillChanges } from '@/agent/skills/diffProjectSkills'
 import { getBuiltinPromptOverrides } from '@/config/builtinPromptOverrides'
 import { BuiltinPromptEditorDialog, type BuiltinPromptEditorTarget } from '../BuiltinPromptEditorDialog'
 import { useT } from '@/i18n'
+import type { TFunction } from '@/i18n'
+import type { ProjectDocDiagnostic } from '@/agent/prompt/projectDocs'
+
+const projectDocDiagnosticMessage = (
+  diagnostic: ProjectDocDiagnostic,
+  t: TFunction,
+): string => {
+  switch (diagnostic.code) {
+    case 'root_list_failed':
+      return t('settings.skills.docsDiagnostic.rootListFailed')
+    case 'root_list_truncated':
+      return t('settings.skills.docsDiagnostic.rootListTruncated')
+    case 'root_entry_limit':
+      return t('settings.skills.docsDiagnostic.rootEntryLimit', { count: diagnostic.affectedCount })
+    case 'nested_directories_omitted':
+      return t('settings.skills.docsDiagnostic.nestedOmitted', { count: diagnostic.affectedCount })
+    case 'nested_scan_truncated':
+      return t('settings.skills.docsDiagnostic.nestedScanTruncated', { count: diagnostic.affectedCount })
+    case 'file_read_failed':
+      return t('settings.skills.docsDiagnostic.fileReadFailed', { count: diagnostic.affectedCount })
+  }
+}
 
 /**
  * 设置-技能面板（docs/skills-extension.md §7.3 显式 reload）：
@@ -27,6 +49,7 @@ export const SkillsSection = () => {
   const authorizedWorkspace = useAgentStore((state) => state.authorizedWorkspace)
   const projectSkills = useAgentStore((state) => state.projectSkills)
   const skillDiagnostics = useAgentStore((state) => state.skillDiagnostics)
+  const projectDocs = useAgentStore((state) => state.projectDocs)
   const preview = useAgentStore((state) => state.skillReloadPreview)
   const previewSkillReload = useAgentStore((state) => state.previewSkillReload)
   const applySkillReload = useAgentStore((state) => state.applySkillReload)
@@ -175,7 +198,7 @@ export const SkillsSection = () => {
           <p className="settings__hint">{t('settings.skills.workspacePath', { path: authorizedWorkspace.path })}</p>
 
           {showConfirm ? (
-            <div className="settings__reload-confirm" role="group" aria-label={t('settings.skills.confirmGroupAria')}>
+            <fieldset className="settings__reload-confirm" aria-label={t('settings.skills.confirmGroupAria')}>
               <div className="settings__reload-summary">
                 {t('settings.skills.changesSummary', { count: preview.added.length + preview.removed.length + preview.changed.length })}
               </div>
@@ -213,7 +236,7 @@ export const SkillsSection = () => {
                   {t('settings.skills.cancel')}
                 </button>
               </div>
-            </div>
+            </fieldset>
           ) : (
             <p className="settings__empty">
               {t('settings.skills.noChanges')}
@@ -262,6 +285,41 @@ export const SkillsSection = () => {
                     </code>
                     <span>{diagnostic.relativePath}{diagnostic.line !== undefined ? `:${diagnostic.line}` : ''}</span>
                     <span className="settings__diagnostic-message">{diagnostic.message}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="section-title" style={{ marginTop: 'var(--space-6)' }}>
+            <span>{t('settings.skills.docsTitle')}</span>
+            <span className="section-state">
+              {t('settings.skills.docsState', {
+                documents: projectDocs.entries.length,
+                diagnostics: projectDocs.diagnostics.length,
+              })}
+            </span>
+          </div>
+          <p className="settings__hint">{t('settings.skills.docsHint')}</p>
+          {projectDocs.diagnostics.length === 0 ? (
+            <p className="settings__empty">{t('settings.skills.docsHealthy')}</p>
+          ) : (
+            <div className="settings__diagnostics">
+              <div className="settings__diagnostics-title">
+                <AlertTriangle size={13} />
+                {t('settings.skills.docsDiagnosticsTitle', { count: projectDocs.diagnostics.length })}
+              </div>
+              <ul>
+                {projectDocs.diagnostics.map((diagnostic) => (
+                  <li
+                    key={`${diagnostic.root}:${diagnostic.code}:${diagnostic.reason ?? ''}`}
+                    className="settings__diagnostic"
+                  >
+                    <code>{diagnostic.code}{diagnostic.reason ? `:${diagnostic.reason}` : ''}</code>
+                    <span>{diagnostic.root} · {diagnostic.role}</span>
+                    <span className="settings__diagnostic-message">
+                      {projectDocDiagnosticMessage(diagnostic, t)}
+                    </span>
                   </li>
                 ))}
               </ul>

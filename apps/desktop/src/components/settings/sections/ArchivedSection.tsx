@@ -104,9 +104,9 @@ export const ArchivedSection = () => {
           </p>
         </div>
       ) : (
-        <div className="archived-list" role="list" aria-label={t('settings.archived.listAria')}>
+        <ul className="archived-list" aria-label={t('settings.archived.listAria')}>
           {groups.map((group) => (
-            <div key={group.path ?? group.name} className="archived-group" role="group" aria-label={t('settings.archived.groupAria', { name: group.name })}>
+            <li key={group.path ?? group.name} className="archived-group">
               <div className="archived-group__header">
                 <Folder size={14} className="archived-group__icon" />
                 <div className="archived-group__info">
@@ -118,15 +118,14 @@ export const ArchivedSection = () => {
                 <span className="archived-group__count">{t('settings.archived.count', { count: group.sessions.length })}</span>
               </div>
 
-              <div className="archived-group__list">
+              <ul className="archived-group__list">
                 {group.sessions.map((session) => {
                   const isConfirmingDelete = confirmDeleteId === session.id
                   const isActive = session.id === activeSessionId
                   return (
-                    <div
+                    <li
                       key={session.id}
                       className={`archived-item ${isActive ? 'archived-item--active' : ''}`}
-                      role="listitem"
                     >
                       <div className="archived-item__main">
                         <span className="archived-item__title" title={displaySessionTitle(t, session.title)}>
@@ -161,13 +160,13 @@ export const ArchivedSection = () => {
                           <span className="archived-item__button-label">{isConfirmingDelete ? t('settings.archived.confirm') : t('settings.archived.delete')}</span>
                         </button>
                       </div>
-                    </div>
+                    </li>
                   )
                 })}
-              </div>
-            </div>
+              </ul>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
 
       <p className="security-note">

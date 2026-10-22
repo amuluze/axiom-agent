@@ -1,0 +1,23 @@
+resource: agent.run
+operation: journey
+cases:
+  - id: text-run-streams
+    desc: 发送一条消息后模型流经宿主返回，助手回复渲染到会话
+    verifies: [CE-E2E-RUN-001, CE-E2E-RUN-002]
+    input:
+      scenario: text_run_streams
+      prompt: 请说明你的运行环境。
+  - id: bash-tool-approved
+    desc: 发现工具后调用 bash 触发审批卡片，允许后命令在工作区执行并回填结果
+    verifies: [CE-E2E-RUN-003, CE-E2E-RUN-004]
+    input:
+      scenario: bash_tool_approved
+      prompt: 先发现可用的执行工具，然后在项目里执行一条命令确认环境可用。
+      command: echo e2e-ok
+  - id: bash-tool-denied
+    desc: 用户拒绝审批后 bash 命令不执行，且宿主不会签发 run_workspace_command 租约
+    verifies: [CE-E2E-RUN-005]
+    input:
+      scenario: bash_tool_denied
+      prompt: 先发现可用的执行工具，然后在项目里执行一条命令确认环境可用。
+      command: echo e2e-ok

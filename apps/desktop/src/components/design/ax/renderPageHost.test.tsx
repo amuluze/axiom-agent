@@ -6,12 +6,18 @@
  * 与用完即拆。光栅化本身（SVG foreignObject → canvas）在 jsdom 无 canvas/Image，
  * 与既有 `exportPagePng` 一样不在单测覆盖内——那一段靠浏览器实测（P4 收尾时的目检）。
  */
-import { describe, expect, it } from 'vitest'
-import { mountAxPageElement, mountPenPageElement, renderPenPageForScan } from './renderPageHost'
+import { waitFor } from '@testing-library/react'
+import { readDesignDocumentAsset } from '@/platform/designDocument'
+import { describe, expect, it, vi } from 'vitest'
+import { mountAxPageElement, mountPenPageElement, renderPenPageForScan, waitForCommittedTree } from './renderPageHost'
 import { parseAxDocument, projectAxToPenDocument } from '@/agent/design/axParser'
 import type { AxDocument } from '@/agent/design/axSchema'
 import { parsePenDocument } from '@/agent/design/penParser'
 import type { PenDocument } from '@/agent/design/penParser'
+
+vi.mock('@/platform/designDocument', () => ({
+  readDesignDocumentAsset: vi.fn(async () => ({ contentBase64: 'IMAGE', mediaType: 'image/png', sha256: 'asset' })),
+}))
 
 const SOURCE = JSON.stringify({
   ax: '1.0',
@@ -60,6 +66,18 @@ describe('mountAxPageElement（离屏挂载）', () => {
     expect(mounted?.element.querySelector('[data-ax-component="ResultChip"]')).not.toBeNull()
     expect(mounted?.element.querySelector('.session__result-chip')).not.toBeNull()
     mounted?.dispose()
+  })
+
+  it('离屏图片仍相对真实设计稿路径加载，并绑定所属工作区', async () => {
+    const document = structuredClone(document_)
+    document.pages[0]!.tree.push({ id: 'asset', kind: 'image', asset: 'assets/logo.png', width: 20, height: 20 })
+    const { mounted } = await mountAxPageElement(document, 'p-session', 'light', {
+      fileName: '.pen/real.ax', workspacePath: '/project/a',
+    })
+    try {
+      await waitFor(() => expect(readDesignDocumentAsset).toHaveBeenCalledWith('.pen/real.ax', 'assets/logo.png', '/project/a'))
+      expect(mounted).not.toBeNull()
+    } finally { mounted?.dispose() }
   })
 
   it('未知页返回 null，且不留残留容器', async () => {
@@ -244,5 +262,52 @@ describe('mountPenPageElement capture 模式（原生截图的可见挂载）', 
     expect(mounted?.fitScale).toBeCloseTo(0.25)
     expect(mounted?.element.style.transform).toContain('scale(0.25)')
     mounted?.dispose()
+  })
+})
+
+/**
+ * 首次提交只采样一次会把合法页判成「渲染树为空」——那是错误级判定（整页 fail），
+ * 扫描的并发 lane 会放大这个竞态。这三个用例锁住「有界等待」的三端：晚提交必须
+ * 等到、持续为空必须判失败且回报过程数据、rAF 被冻结时仍按预算判定。
+ */
+describe('首次提交的有界等待（扫描误报防护）', () => {
+  it('容器稍后才出现子节点时照样挂载成功', async () => {
+    const container = window.document.createElement('div')
+    window.document.body.appendChild(container)
+    window.setTimeout(() => container.appendChild(window.document.createElement('span')), 30)
+    try {
+      expect(await waitForCommittedTree(container)).not.toBeNull()
+    } finally {
+      container.remove()
+    }
+  })
+
+  it('持续为空才返回 null（失败判定不被等待抹掉），并回报等待过程', async () => {
+    const container = window.document.createElement('div')
+    window.document.body.appendChild(container)
+    const outcome = { attempts: 0, elapsedMs: 0 }
+    try {
+      expect(await waitForCommittedTree(container, { budgetMs: 80, outcome })).toBeNull()
+      expect(outcome.attempts).toBeGreaterThan(0)
+    } finally {
+      container.remove()
+    }
+  })
+
+  it('等待不依赖 requestAnimationFrame：rAF 被冻结（窗口不可见）时照样按预算判定', async () => {
+    const container = window.document.createElement('div')
+    window.document.body.appendChild(container)
+    // 模拟 WebKit 在不可见页面暂停 rAF：帧回调永不触发。帧同步的轮询会在这里
+    // 永久挂起（判定被拖成不可控的长等待，而不是按预算判失败）。
+    const frozen = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 0)
+    try {
+      window.setTimeout(() => container.appendChild(window.document.createElement('span')), 40)
+      const outcome = { attempts: 0, elapsedMs: 0 }
+      expect(await waitForCommittedTree(container, { budgetMs: 1_000, outcome })).not.toBeNull()
+      expect(outcome.elapsedMs).toBeLessThan(1_000)
+    } finally {
+      frozen.mockRestore()
+      container.remove()
+    }
   })
 })

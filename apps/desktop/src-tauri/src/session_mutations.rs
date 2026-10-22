@@ -169,7 +169,10 @@ fn validate_request(
             || request.model_provider.is_some()
             || request.reasoning_updated
         {
-            return Err("runtime_dependencies_update 必须独占并携带 systemPrompt/tools/manifest".to_string());
+            return Err(
+                "runtime_dependencies_update 必须独占并携带 systemPrompt/tools/manifest"
+                    .to_string(),
+            );
         }
     }
     if let (Some(tool_names), Some(manifest)) =

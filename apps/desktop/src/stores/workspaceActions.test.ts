@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => ({
   selectAndAuthorizeReadDirectory: vi.fn(),
   listAuthorizedReadFiles: vi.fn(),
   revokeAuthorizedReadFile: vi.fn(),
+  setWorkspaceApprovalMode: vi.fn(),
 }))
 
 vi.mock('@/platform/environment', () => ({
@@ -51,6 +52,10 @@ vi.mock('@/platform/authorizedFiles', () => ({
   selectAndAuthorizeReadDirectory: mocks.selectAndAuthorizeReadDirectory,
   listAuthorizedReadFiles: mocks.listAuthorizedReadFiles,
   revokeAuthorizedReadFile: mocks.revokeAuthorizedReadFile,
+}))
+
+vi.mock('@/platform/workspaceApproval', () => ({
+  setWorkspaceApprovalMode: mocks.setWorkspaceApprovalMode,
 }))
 
 // 隔离 localStorage 依赖：workspaceActions 经 services/sessionMetadata 读写
@@ -103,6 +108,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocks.activateAuthorizedWorkspace.mockImplementation(async (path: string) => workspace(path))
   mocks.getAuthorizedWorkspaces.mockResolvedValue([])
+  mocks.setWorkspaceApprovalMode.mockResolvedValue(undefined)
   vi.mocked(isTauriRuntime).mockReturnValue(false)
   // 重置「最近打开」状态，隔离 workspaceActions 成功路径对 uiStore 的写入。
   useUiStore.setState({ recentWorkspacePaths: [] })
@@ -126,6 +132,9 @@ beforeEach(() => {
     projectedSessions: (snapshot: { session: unknown }) => [snapshot.session],
     sessionDefaults,
     updateAuthorizedReadFiles: vi.fn(),
+    cancelPendingApprovals: vi.fn().mockReturnValue(1),
+    onAccessModeCommitted: vi.fn(),
+    refreshSystemPromptForAccessMode: vi.fn(async () => undefined),
   } as unknown as StoreRuntimeDeps
 })
 
@@ -295,6 +304,28 @@ describe('activateWorkspace', () => {
     expect(useUiStore.getState().recentWorkspacePaths).toContain('/ws/z')
   })
 
+  it('切换工作区前把当前会话重置为标准模式', async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true)
+    const created = await repository.createSession({
+      ...SESSION_DEFAULTS,
+      workspace: workspace('/ws/old'),
+    })
+    const active = { ...created.session, accessMode: 'no-approval' as const }
+    state = {
+      ...state,
+      sessions: [active],
+      activeSessionId: active.id,
+      accessMode: 'no-approval',
+      authorizedWorkspace: workspace('/ws/old'),
+      authorizedWorkspaces: [workspace('/ws/old'), workspace('/ws/new')],
+    }
+
+    await expect(activateWorkspace(set, get, deps, '/ws/new')).resolves.toBe(true)
+
+    expect(mocks.setWorkspaceApprovalMode).toHaveBeenCalledWith(active.id, 'interactive')
+    expect(state.sessions.find((session) => session.id === active.id)?.accessMode).toBe('standard')
+  })
+
   it('路径未授权时不记录最近打开', async () => {
     vi.mocked(isTauriRuntime).mockReturnValue(true)
     expect(await activateWorkspace(set, get, deps, '/ws/unknown')).toBe(false)
@@ -374,17 +405,97 @@ describe('revokeWorkspace', () => {
       isDisposed: false,
       requestAbort,
     } as unknown as AgentHarness)
-    sessionWorkspacePaths.set(createdA.session.id, '/ws/a')
-    sessionWorkspacePaths.set(createdB.session.id, '/ws/b')
+    sessionWorkspacePaths.bind(createdA.session.id, '/ws/a')
+    sessionWorkspacePaths.bind(createdB.session.id, '/ws/b')
     mocks.revokeWorkspace.mockResolvedValue(true)
     mocks.getAuthorizedWorkspaces.mockResolvedValue([wsB])
     expect(await revokeWorkspace(set, get, deps, '/ws/a')).toBe(true)
     expect(requestAbort).toHaveBeenCalledTimes(1)
-    expect(sessionWorkspacePaths.get(createdA.session.id)).toBeUndefined()
-    expect(sessionWorkspacePaths.get(createdB.session.id)).toBe('/ws/b')
+    expect(sessionWorkspacePaths.pathOf(createdA.session.id)).toBeUndefined()
+    expect(sessionWorkspacePaths.pathOf(createdB.session.id)).toBe('/ws/b')
     expect(state.providerMessage).toContain('已停止 1 个关联的运行中会话')
     dropRuntimeCachesForSession(createdA.session.id)
-    sessionWorkspacePaths.delete(createdB.session.id)
+    sessionWorkspacePaths.forget(createdB.session.id)
+  })
+
+  // 撤销工作区必须连带降级其全部会话：否则日后重新授权同一路径并把会话绑回时，
+  // resetActiveFullAccessForWorkspaceSwitch 因路径相同而跳过，完全访问无警告恢复。
+  it('撤销工作区时把该工作区下所有会话降级为标准模式', async () => {
+    const wsA = workspace('/ws/a')
+    const wsB = workspace('/ws/b')
+    const createdA = await repository.createSession({ ...SESSION_DEFAULTS, workspace: wsA })
+    const createdB = await repository.createSession({ ...SESSION_DEFAULTS, workspace: wsB })
+    state = {
+      ...state,
+      sessions: [
+        { ...createdA.session, accessMode: 'no-approval' as const },
+        createdB.session,
+      ],
+      activeSessionId: createdB.session.id,
+      accessMode: 'standard',
+      authorizedWorkspace: wsA,
+      authorizedWorkspaces: [wsA, wsB],
+    }
+    mocks.revokeWorkspace.mockResolvedValue(true)
+    mocks.getAuthorizedWorkspaces.mockResolvedValue([wsB])
+
+    expect(await revokeWorkspace(set, get, deps, '/ws/a')).toBe(true)
+
+    expect(mocks.setWorkspaceApprovalMode).toHaveBeenCalledWith(createdA.session.id, 'interactive')
+    expect(state.sessions.find((s) => s.id === createdA.session.id)?.accessMode).toBe('standard')
+    // DB 侧同步回落，重授权后不会读到 no-approval。
+    expect((await repository.loadSession(createdA.session.id)).session.accessMode).toBe('standard')
+    // 另一工作区的会话不受牵连（撤销作用域只限目标工作区）。
+    expect(mocks.setWorkspaceApprovalMode).not.toHaveBeenCalledWith(createdB.session.id, 'interactive')
+    expect(state.sessions.find((s) => s.id === createdB.session.id)?.accessMode).not.toBe('no-approval')
+  })
+
+  // 撤销工作区后，已入队的审批卡片必须被撤回：卡片按撤销前的权限状态排队，
+  // 用户点「允许一次」会让 Rust 按 held=Automatic 签发 Unrestricted 租约，
+  // 在工作区已被撤销的会话上放行一次工作区外写入。
+  it('撤销时撤回受影响会话的待决审批', async () => {
+    const wsA = workspace('/ws/a')
+    const wsB = workspace('/ws/b')
+    const createdA = await repository.createSession({ ...SESSION_DEFAULTS, workspace: wsA })
+    state = {
+      ...state,
+      sessions: [{ ...createdA.session, accessMode: 'no-approval' as const }],
+      activeSessionId: createdA.session.id,
+      authorizedWorkspace: wsA,
+      authorizedWorkspaces: [wsA, wsB],
+    }
+    mocks.revokeWorkspace.mockResolvedValue(true)
+    mocks.getAuthorizedWorkspaces.mockResolvedValue([wsB])
+
+    expect(await revokeWorkspace(set, get, deps, '/ws/a')).toBe(true)
+
+    expect(deps.cancelPendingApprovals).toHaveBeenCalledWith(
+      createdA.session.id,
+      expect.stringContaining('访问模式已变更'),
+    )
+  })
+
+  // 降级失败必须留下可见痕迹：否则「已撤销」与「已降级」在 UI 上无法区分，
+  // 用户要到重新授权时才发现完全访问又回来了。
+  it('降级失败时写入 settingsError 而非静默', async () => {
+    const wsA = workspace('/ws/a')
+    const wsB = workspace('/ws/b')
+    const createdA = await repository.createSession({ ...SESSION_DEFAULTS, workspace: wsA })
+    state = {
+      ...state,
+      sessions: [{ ...createdA.session, accessMode: 'no-approval' as const }],
+      activeSessionId: createdA.session.id,
+      authorizedWorkspace: wsA,
+      authorizedWorkspaces: [wsA, wsB],
+    }
+    mocks.revokeWorkspace.mockResolvedValue(true)
+    mocks.getAuthorizedWorkspaces.mockResolvedValue([wsB])
+    mocks.setWorkspaceApprovalMode.mockRejectedValue(new Error('native channel down'))
+
+    await revokeWorkspace(set, get, deps, '/ws/a')
+
+    expect(state.settingsError).toContain('未能降级')
+    mocks.setWorkspaceApprovalMode.mockResolvedValue(undefined)
   })
 })
 
@@ -393,7 +504,7 @@ describe('authorizeFile / revokeFile', () => {
     const file = { path: '/ws/a/README.md', name: 'README.md', sizeBytes: 42, isDirectory: false }
     mocks.selectAndAuthorizeReadFile.mockResolvedValue(file)
     mocks.listAuthorizedReadFiles.mockResolvedValue([file])
-    expect(await authorizeFile(set, get, deps)).toBe(true)
+    expect(await authorizeFile(set, get, deps)).toEqual(file)
     expect(state.authorizedFiles).toEqual([file])
     expect(deps.updateAuthorizedReadFiles).toHaveBeenCalledWith([file])
     expect(state.providerMessage).toContain('已添加文件引用')
@@ -414,9 +525,9 @@ describe('authorizeFile / revokeFile', () => {
     expect(await authorizeDirectory(set, get, deps)).toBe(false)
   })
 
-  it('授权文件取消时返回 false', async () => {
+  it('授权文件取消时返回 null', async () => {
     mocks.selectAndAuthorizeReadFile.mockResolvedValue(null)
-    expect(await authorizeFile(set, get, deps)).toBe(false)
+    expect(await authorizeFile(set, get, deps)).toBeNull()
   })
 
   it('撤销文件成功后更新列表', async () => {
@@ -429,7 +540,7 @@ describe('authorizeFile / revokeFile', () => {
 
   it('授权/撤销的异常路径写 settingsError', async () => {
     mocks.selectAndAuthorizeReadFile.mockRejectedValue(new Error('file picker down'))
-    expect(await authorizeFile(set, get, deps)).toBe(false)
+    expect(await authorizeFile(set, get, deps)).toBeNull()
     expect(state.settingsError).toContain('file picker down')
     mocks.revokeAuthorizedReadFile.mockRejectedValue(new Error('revoke file down'))
     expect(await revokeFile(set, get, deps, '/ws/a/x')).toBe(false)

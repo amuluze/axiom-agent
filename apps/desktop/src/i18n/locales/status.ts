@@ -6,7 +6,7 @@
 
 export const statusZh = {
   'status.session.noActive': '当前没有可用会话',
-  'status.session.archived': '会话已归档，可在对应工作目录的「已归档」中恢复',
+  'status.session.archived': '会话已归档，可在「设置 → 已归档」中恢复',
   'status.session.restored': '会话已从归档恢复',
   'status.provider.saveBlockedRunning': 'Agent 运行期间不能切换 Provider',
   'status.provider.needsDesktop': '真实 Provider 仅能在 Axiom 桌面应用中启用',
@@ -59,7 +59,7 @@ export const statusZh = {
 
 export const statusEn: Record<string, string> = {
   'status.session.noActive': 'No active session available',
-  'status.session.archived': 'Session archived; restore it under “Archived” for its workspace',
+  'status.session.archived': 'Session archived; restore it under Settings → Archived',
   'status.session.restored': 'Session restored from the archive',
   'status.provider.saveBlockedRunning': 'Cannot switch provider while the agent is running',
   'status.provider.needsDesktop': 'Real providers are only available in the Axiom desktop app',

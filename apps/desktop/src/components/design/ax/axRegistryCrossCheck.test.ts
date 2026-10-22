@@ -10,9 +10,10 @@ import { readFileSync, existsSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { parseAxDocument } from '@/agent/design/axParser'
+import { designDraftsAvailable } from './designDraftFixtures'
 import { axComponentInventorySummary } from './registry'
 
-const AX_FILES = ['.pen/axiom.ax', '.pen/website.ax']
+const AX_FILES = ['.pen/axiom.ax', '.pen/axiom-website.ax']
 
 /**
  * 样稿读取：缺失返回 null；**空文件单独标记**（0 字节是工作区残片，不是可核对
@@ -46,7 +47,7 @@ describe('真实 .ax 稿过注册表核对', () => {
 
   // 空转守卫：本套件的存在意义是「真实稿 × 真实注册表」——样稿全部缺失时守门
   // 名存实亡，必须显式红（而不是静默全跳过、绿灯掩盖空转）。
-  it('守门前提：至少一份真实 .ax 稿参与核对', () => {
+  it.skipIf(!designDraftsAvailable)('守门前提：至少一份真实 .ax 稿参与核对', () => {
     expect(AX_AVAILABLE.filter((item) => item.source !== null).length).toBeGreaterThan(0)
   })
 

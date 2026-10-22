@@ -168,6 +168,41 @@ const applyApprovalVerdict = async (
   }
 }
 
+/**
+ * 远程输入落盘前的访问模式门：目标会话处于完全访问时先降级为标准模式。
+ *
+ * 返回 false 表示本次远程输入已被拒绝（调用方直接 return）。降级成功或本就处于
+ * 标准模式时返回 true。
+ *
+ * 只在目标会话为 `no-approval` 时才动——标准模式是远程输入的常态，不产生额外 IPC
+ * 与提示。降级走 store 的 `setAccessMode`（作用于激活会话）：`ensureRemoteSession`
+ * 已保证目标会话是激活会话；不一致属假设被破坏，此时无法安全降级，直接拒绝而非
+ * 放行（fail-closed）。
+ */
+const enforceRemoteStandardMode = async (
+  message: InboundMessage,
+  sessionId: string,
+): Promise<boolean> => {
+  const state = useAgentStore.getState()
+  const target = state.sessions.find((session) => session.id === sessionId)
+  if (target?.accessMode !== 'no-approval') return true
+  if (state.activeSessionId !== sessionId) {
+    await reply(message, '远程会话状态异常，请在 Axiom 桌面端检查后重试')
+    return false
+  }
+  const error = await useAgentStore.getState().setAccessMode('standard')
+  if (error) {
+    await reply(message, `已阻止本次远程操作：无法把会话降级为标准模式（${error}）`)
+    return false
+  }
+  await reply(
+    message,
+    '该会话此前处于完全访问，已切换为标准模式：写操作与命令需要你在本对话中确认'
+    + '（回复 y 允许 / n 拒绝）。恢复完全访问请在 Axiom 桌面端操作。',
+  )
+  return true
+}
+
 const ensureRemoteSession = async (message: InboundMessage): Promise<string | null> => {
   const key = bindingKey(message.platform, message.chatId, message.userId)
   const store = useAgentStore.getState()
@@ -302,6 +337,13 @@ const handleInboundMessage = async (message: InboundMessage): Promise<void> => {
       : '请先在 Axiom 连接面板中选择远程会话使用的工作目录')
     return
   }
+
+  // 远程输入不享受完全访问。本通道由外部聊天触发、可能无人值守，而建立
+  // held Automatic 的唯一入口是本地原生确认对话框——不降级则远程可让既有完全访问
+  // 会话免审批执行任意写命令与 bash（无沙箱、可读写工作区外、可读凭据）。
+  // 降级后工具调用走逐次卡片，仍可远程回 y/n 放行：人工检查点在远程侧重建。
+  // 刻意不自动恢复——重新获得完全访问必须由本地用户显式操作。
+  if (!await enforceRemoteStandardMode(message, sessionId)) return
 
   const beforeSend = useAgentStore.getState()
   if (beforeSend.activeSessionId === sessionId && beforeSend.running) {
@@ -461,5 +503,6 @@ export const connectServiceInternals = {
   persistSessionMap,
   handleInboundMessage,
   applyApprovalVerdict,
+  enforceRemoteStandardMode,
   statusText,
 }

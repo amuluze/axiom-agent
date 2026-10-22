@@ -17,6 +17,17 @@ describe('agentEnvironmentHost seam', () => {
       toolName: 'bash',
       content: 'x',
     })).rejects.toMatchObject({ code: 'unavailable' })
+    await expect(getAgentEnvironment().artifacts.writeImage({
+      contentBase64: 'iVBORw0KGgo=',
+      mediaType: 'image/png',
+    })).rejects.toMatchObject({ code: 'unavailable' })
+    await expect(getAgentEnvironment().browser.command({ action: 'tabs' }))
+      .rejects.toMatchObject({ code: 'unavailable' })
+    await expect(getAgentEnvironment().api.runStep({
+      runId: 'run',
+      stepId: 'step',
+      step: { id: 'step', action: 'api.request', method: 'GET', url: 'https://api.example.test/v1' },
+    }, new AbortController().signal)).rejects.toMatchObject({ code: 'unavailable' })
   })
 
   it('forwards to the bound implementation via getAgentEnvironment', async () => {
@@ -29,20 +40,9 @@ describe('agentEnvironmentHost seam', () => {
         editTextFile: vi.fn(), applyChanges: vi.fn(), restoreTrash: vi.fn(), runCommand: vi.fn(),
         find: vi.fn(),
       },
-      artifacts: { writeToolResult: vi.fn() },
-      web: {
-        search: vi.fn(),
-        fetch: vi.fn(),
-      },
-      browser: {
-        command: vi.fn(),
-      },
-      computer: {
-        command: vi.fn(),
-      },
-      ssh: {
-        command: vi.fn(),
-      },
+      artifacts: { writeToolResult: vi.fn(), writeImage: vi.fn() },
+      browser: { command: vi.fn(), write: vi.fn() },
+      api: { runStep: vi.fn() },
       design: {
         readDocument: vi.fn(),
       },
@@ -64,20 +64,9 @@ describe('agentEnvironmentHost seam', () => {
         editTextFile: vi.fn(), applyChanges: vi.fn(), restoreTrash: vi.fn(), runCommand: vi.fn(),
         find: vi.fn(),
       },
-      artifacts: { writeToolResult: vi.fn() },
-      web: {
-        search: vi.fn(),
-        fetch: vi.fn(),
-      },
-      browser: {
-        command: vi.fn(),
-      },
-      computer: {
-        command: vi.fn(),
-      },
-      ssh: {
-        command: vi.fn(),
-      },
+      artifacts: { writeToolResult: vi.fn(), writeImage: vi.fn() },
+      browser: { command: vi.fn(), write: vi.fn() },
+      api: { runStep: vi.fn() },
       design: {
         readDocument: vi.fn(),
       },

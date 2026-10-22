@@ -182,6 +182,16 @@ describe('Agent message codec', () => {
 })
 
 describe('MemorySessionRepository', () => {
+  it('resets full access to standard during initialization', async () => {
+    const repository = new MemorySessionRepository()
+    const initialized = await repository.initialize(defaults)
+    await repository.updateSessionAccessMode(initialized.active.session.id, 'no-approval')
+
+    const restarted = await repository.initialize(defaults)
+
+    expect(restarted.active.session.accessMode).toBe('standard')
+  })
+
   it('keeps run ownership unique and allows only one active run per session', async () => {
     const repository = new MemorySessionRepository()
     const initialized = await repository.initialize(defaults)
@@ -881,7 +891,7 @@ describe('MemorySessionRepository', () => {
       messages: [],
     })).rejects.toThrow('未与 ToolResult 原子落盘')
 
-    await expect(repository.recoverRuntimeState()).resolves.toEqual({ recoveredRuns: 1 })
+    await expect(repository.recoverRuntimeState()).resolves.toMatchObject({ recoveredRuns: 1 })
     expect((await repository.loadSession(sessionId)).session.status).toBe('idle')
     await expect(repository.recordEvent(sessionId, {
       type: 'agent_start',
@@ -899,7 +909,8 @@ describe('MemorySessionRepository', () => {
     await repository.recordEvent(sessionA, { type: 'agent_start', sessionId: sessionA, runId: 'run-a' })
     await repository.recordEvent(sessionB, { type: 'agent_start', sessionId: sessionB, runId: 'run-b' })
 
-    await expect(repository.recoverRuntimeStateForSession(sessionA)).resolves.toEqual({ recoveredRuns: 1 })
+    await expect(repository.recoverRuntimeStateForSession(sessionA))
+      .resolves.toMatchObject({ recoveredRuns: 1, recoveredSessions: [sessionA] })
 
     const a = await repository.loadSession(sessionA)
     const b = await repository.loadSession(sessionB)
@@ -1438,6 +1449,7 @@ describe('MemorySessionRepository', () => {
     const repository = new MemorySessionRepository()
     const initialized = await repository.initialize(defaults)
     const sessionId = initialized.active.session.id
+    await repository.updateSessionAccessMode(sessionId, 'no-approval')
     const user: UserMessage = { id: 'u1', role: 'user', content: 'hello', createdAt: 1 }
     await repository.recordEvent(sessionId, { type: 'agent_start', sessionId, runId: 'run-1' })
     await repository.recordEvent(sessionId, {
@@ -1456,6 +1468,7 @@ describe('MemorySessionRepository', () => {
 
     expect(snapshot.messages).toEqual([])
     expect(snapshot.session.title).toBe('新会话')
+    expect(snapshot.session.accessMode).toBe('standard')
     expect(await repository.getStats()).toMatchObject({
       sessionCount: 1,
       messageCount: 0,

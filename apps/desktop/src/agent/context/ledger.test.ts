@@ -8,6 +8,7 @@ import {
   isContextLedgerMessage,
   MAX_LEDGER_BLOCK_BYTES,
   mergeReadProgress,
+  mergeSkillPhases,
   mergeToolLedger,
   normalizeFacts,
 } from './ledger'
@@ -53,6 +54,71 @@ const interruptedMessage = (toolCallId: string): ModelMessage => ({
 })
 
 describe('normalizeFacts', () => {
+  it('SDD 阶段进度从工具结果确定性提取，不采信模型自述', () => {
+    const messages = [
+      toolMessage('load_skill', 'call-1', { name: 'brainstorm', source: 'builtin', status: 'loaded' }),
+      toolMessage('inspect_subagent', 'call-2', { status: 'completed', verdict: 'pass' }),
+      toolMessage('load_skill', 'call-3', { name: 'plan', source: 'builtin', status: 'loaded' }),
+      toolMessage('examine_subagent', 'call-4', { status: 'completed', verdict: 'fail' }),
+      // 错误结果不计入：失败的 load_skill 不代表 Skill 已加载
+      errorToolMessage('load_skill', 'call-5', { name: 'finish', source: 'builtin' }),
+    ] as ModelMessage[]
+    const phases = mergeSkillPhases(undefined, undefined, messages)
+    expect(phases.loadedSkills).toEqual([
+      { name: 'brainstorm', source: 'builtin' },
+      { name: 'plan', source: 'builtin' },
+    ])
+    expect(phases.sddReviews).toEqual([
+      { reviewer: 'inspect_subagent', verdict: 'pass' },
+      { reviewer: 'examine_subagent', verdict: 'fail' },
+    ])
+  })
+
+  it('unknown 判定必须留存：partial 收口/格式漂移不是「已通过」', () => {
+    const phases = mergeSkillPhases(undefined, undefined, [
+      toolMessage('review_subagent', 'c1', { status: 'partial', verdict: 'unknown' }),
+    ] as ModelMessage[])
+    expect(phases.sddReviews).toEqual([{ reviewer: 'review_subagent', verdict: 'unknown' }])
+    const block = formatLedgerBlock({
+      readFiles: [], modifiedFiles: [], ...phases,
+    })
+    expect(block).toContain('不要把 unknown 当作通过')
+  })
+
+  it('同审查器后见覆盖、非判定结果不写入', () => {
+    const phases = mergeSkillPhases(undefined, undefined, [
+      toolMessage('review_subagent', 'c1', { verdict: 'fail' }),
+      toolMessage('review_subagent', 'c2', { verdict: 'pass' }),
+      // verdict 缺失或畸形 → 不产生条目
+      toolMessage('examine_subagent', 'c3', { status: 'completed' }),
+    ] as ModelMessage[])
+    expect(phases.sddReviews).toEqual([{ reviewer: 'review_subagent', verdict: 'pass' }])
+  })
+
+  it('跨 checkpoint 累积：上一轮加载的 Skill 与通过的审查必须留存', () => {
+    const first = mergeSkillPhases(undefined, undefined, [
+      toolMessage('load_skill', 'c1', { name: 'implement', source: 'builtin' }),
+    ] as ModelMessage[])
+    const second = mergeSkillPhases(first.loadedSkills, first.sddReviews, [
+      toolMessage('review_subagent', 'c2', { verdict: 'pass' }),
+    ] as ModelMessage[])
+    expect(second.loadedSkills).toEqual([{ name: 'implement', source: 'builtin' }])
+    expect(second.sddReviews).toEqual([{ reviewer: 'review_subagent', verdict: 'pass' }])
+  })
+
+  it('阶段块只在有阶段事实时出现；纯工具账本不受影响', () => {
+    expect(formatLedgerBlock({ readFiles: [], modifiedFiles: [] })).toBe('')
+    const block = formatLedgerBlock({
+      readFiles: [],
+      modifiedFiles: [],
+      loadedSkills: [{ name: 'domain', source: 'builtin' }],
+      sddReviews: [],
+    })
+    expect(block).toContain('<sdd-skills>')
+    expect(block).toContain('"name":"domain"')
+    expect(block).not.toContain('sdd-phase-note')
+  })
+
   it('defaults missing fields so legacy checkpoints behave identically', () => {
     const legacy = normalizeFacts({ readFiles: ['a.ts'], modifiedFiles: [] })
     expect(legacy).toEqual({
@@ -60,6 +126,9 @@ describe('normalizeFacts', () => {
       modifiedFiles: [],
       readProgress: {},
       toolLedger: [],
+      // 旧 checkpoint 无 SDD 阶段字段——按空处理，投影行为与引入前一致
+      loadedSkills: [],
+      sddReviews: [],
     })
   })
 
@@ -69,6 +138,8 @@ describe('normalizeFacts', () => {
       modifiedFiles: ['b.rs'],
       readProgress: {},
       toolLedger: [],
+      loadedSkills: [{ name: 'plan', source: 'builtin' }],
+      sddReviews: [{ reviewer: 'examine_subagent', verdict: 'pass' }],
     }
     expect(normalizeFacts(input)).toEqual(input)
     expect(input).toEqual(input)
@@ -263,3 +334,10 @@ describe('createContextLedgerMessage / isContextLedgerMessage', () => {
     expect(isContextLedgerMessage({ id: 'context-summary:x', role: 'user', content: '', createdAt: 1 })).toBe(false)
   })
 })
+
+const toolMessage = (toolName: string, id: string, details: Record<string, unknown>): ModelMessage =>
+  ({
+    id, role: 'tool', toolName, toolCallId: id, content: '', createdAt: 0, details,
+  }) as unknown as ModelMessage
+const errorToolMessage = (toolName: string, id: string, details: Record<string, unknown>): ModelMessage =>
+  ({ ...toolMessage(toolName, id, details), isError: true }) as unknown as ModelMessage

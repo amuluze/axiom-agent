@@ -1,30 +1,50 @@
 const APP_COMMANDS: &[&str] = &[
     "get_runtime_info",
+    "session_authorization_command",
     "write_artifact",
     "read_artifact",
     "trash_artifacts",
     "reconcile_artifacts",
     "gc_artifacts",
+    "maintain_session_repository",
     "get_artifact_storage_stats",
     "save_secret",
     "has_secret",
     "migrate_secret",
     "delete_secret",
+    "save_api_test_secret",
+    "has_api_test_secret",
+    "delete_api_test_secret",
     "load_provider_secret_cleanup_intent",
     "persist_provider_secret_cleanup_intent",
     "stream_model_http",
     "cancel_model_http",
     "probe_model_http",
     "query_provider_usage",
-    "web_search",
-    "web_fetch",
     "capture_webview_viewport",
     "open_external_url",
     "submit_feedback",
     "browser_command",
-    "computer_command",
+    "issue_test_target_grant",
+    "revoke_test_target_grant",
+    "run_ui_read_step",
+    "capture_ui_evidence",
+    "issue_test_step_lease",
+    "create_test_run_record",
+    "save_test_environment_record",
+    "list_test_environment_records",
+    "delete_test_environment_record",
+    "transition_test_run_record",
+    "transition_test_case_record",
+    "transition_test_step_record",
+    "list_test_run_records",
+    "get_test_run_record",
+    "latest_test_batch_record",
+    "run_ui_write_step",
+    "issue_api_test_step_lease",
+    "run_api_test_step",
+    "cancel_api_test_run",
     "ssh_command",
-    "ssh_agent_command",
     "get_connect_config",
     "save_connect_platform_config",
     "clear_connect_platform_config",
@@ -50,8 +70,13 @@ const APP_COMMANDS: &[&str] = &[
     "read_design_document_asset",
     "watch_design_document",
     "unwatch_design_document",
-    "write_design_document",
+    "delete_design_document_page",
+    "list_design_document_versions",
+    "read_design_document_version",
+    "restore_design_document_version",
     "export_design_png",
+    "read_workspace_document",
+    "save_workspace_document",
     "authorize_workspace",
     "pick_and_authorize_workspace",
     "activate_authorized_workspace",
@@ -86,6 +111,7 @@ const APP_COMMANDS: &[&str] = &[
     "query_session_repository",
     "load_session_repository_snapshot",
     "execute_session_repository",
+    "retire_session_authority_command",
     "find_workspace_files",
     "clear_session_repository",
     "delete_session_with_successor",
@@ -106,7 +132,11 @@ const APP_COMMANDS: &[&str] = &[
     "transition_session_journal_entries",
 ];
 
-const E2E_APP_COMMANDS: &[&str] = &["e2e_runtime_fault_checkpoint", "e2e_register_workspace"];
+const E2E_APP_COMMANDS: &[&str] = &[
+    "e2e_runtime_fault_checkpoint",
+    "e2e_register_workspace",
+    "e2e_automation_log",
+];
 
 fn main() {
     let mut app_commands = APP_COMMANDS.to_vec();
@@ -144,10 +174,8 @@ fn main() {
         // .rc 只引用 .manifest 文件：manifest 内容变化必须显式触发重嵌。
         println!("cargo:rerun-if-changed=windows-app-manifest.rc");
         println!("cargo:rerun-if-changed=windows-app.manifest");
-        let _ = embed_resource::compile_for_everything(
-            "windows-app-manifest.rc",
-            embed_resource::NONE,
-        );
+        let _ =
+            embed_resource::compile_for_everything("windows-app-manifest.rc", embed_resource::NONE);
     }
 }
 
@@ -160,28 +188,38 @@ fn main() {
 fn stage_webview2_loader() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".into());
-    let target_dir = std::env::var("CARGO_TARGET_DIR")
-        .unwrap_or_else(|_| format!("{manifest_dir}/target"));
+    let target_dir =
+        std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| format!("{manifest_dir}/target"));
     let build_root = format!("{target_dir}/{profile}/build");
     let mut candidates = vec![format!("{target_dir}/{profile}/WebView2Loader.dll")];
     if let Ok(entries) = std::fs::read_dir(&build_root) {
         let mut sys_dirs: Vec<_> = entries
             .flatten()
-            .filter(|entry| entry.file_name().to_string_lossy().starts_with("webview2-com-sys-"))
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("webview2-com-sys-")
+            })
             .map(|entry| entry.path())
             .collect();
         // 新产物优先（hash 变化后旧目录残留）。
-        sys_dirs.sort_by_key(|path| {
-            path.metadata().and_then(|meta| meta.modified()).ok()
-        });
+        sys_dirs.sort_by_key(|path| path.metadata().and_then(|meta| meta.modified()).ok());
         if let Some(latest) = sys_dirs.pop() {
-            candidates.push(latest.join("out/x64/WebView2Loader.dll").to_string_lossy().into_owned());
+            candidates.push(
+                latest
+                    .join("out/x64/WebView2Loader.dll")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
         }
     }
     let staged_dir = format!("{manifest_dir}/resources");
     let staged = format!("{staged_dir}/WebView2Loader.dll");
     let Some(source) = candidates.iter().find(|candidate| {
-        std::fs::metadata(candidate).map(|meta| meta.is_file()).unwrap_or(false)
+        std::fs::metadata(candidate)
+            .map(|meta| meta.is_file())
+            .unwrap_or(false)
     }) else {
         // 找不到不阻断编译：打包阶段 resources 缺失会显式报错，此处多为
         // `cargo check` 等未编译依赖的浅路径。

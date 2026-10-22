@@ -12,19 +12,6 @@ import type {
 } from '@/platform/workspace'
 import type { AuthorizedTextContent } from '@/platform/authorizedFiles'
 import type { ArtifactReference } from '@/agent/core/types'
-import type {
-  BrowserCommandRequest,
-  BrowserCommandResponse,
-} from '@/platform/browserSession'
-import type {
-  ComputerCommandRequest,
-  ComputerCommandResponse,
-} from '@/platform/computerSession'
-import type {
-  SshAgentCommandRequest,
-  SshAgentCommandResponse,
-} from '@/platform/sshAgent'
-import type { WebFetchResponse, WebSearchResponse } from '@/platform/webAccess'
 import type { DesignDocumentContent } from '@/platform/designDocument'
 
 /**
@@ -53,16 +40,8 @@ export interface FakeAgentEnvironmentOptions {
   list?: (path?: string, limit?: number) => Promise<WorkspaceListResult>
   readText?: (path: string, offset?: number, limit?: number) => Promise<WorkspaceReadResult>
   searchText?: (request: WorkspaceSearchRequest, signal: AbortSignal) => Promise<WorkspaceSearchResult>
-  find?: (request: { requestId: string; pattern: string; path?: string; limit?: number; signal: AbortSignal }) => Promise<WorkspaceFindResult>
+  find?: (request: { requestId: string; pattern: string; path?: string; limit?: number; maxDepth?: number; signal: AbortSignal }) => Promise<WorkspaceFindResult>
   authorizedReadText?: (path: string) => Promise<AuthorizedTextContent>
-  webSearch?: (request: { query: string; limit?: number }) => Promise<WebSearchResponse>
-  webFetch?: (request: { url: string; maxBytes?: number }) => Promise<WebFetchResponse>
-  browserCommand?: (request: BrowserCommandRequest) => Promise<BrowserCommandResponse>
-  computerCommand?: (request: ComputerCommandRequest) => Promise<ComputerCommandResponse>
-  sshAgentCommand?: (
-    request: SshAgentCommandRequest,
-    options?: { approvalLease?: string; workspacePath?: string },
-  ) => Promise<SshAgentCommandResponse>
 }
 
 const defaultWorkspace = (path = '/workspace/repo', name = 'repo') => ({
@@ -149,28 +128,6 @@ export const createFakeAgentEnvironment = (
     ?? (async () => ({ workspace: defaultWorkspace(), pattern: '*', rootPath: '.', matches: [], truncated: false }))
   const authorizedReadText = options.authorizedReadText
     ?? (async () => { throw new Error('authorizedFiles.readText not used in this fixture') })
-  // web 只读原语与 workspace 读原语同约定：默认空结果，按测试注入。
-  const webSearch = options.webSearch
-    ?? (async () => ({ query: '', results: [] }))
-  const webFetch = options.webFetch
-    ?? (async () => ({
-      url: '',
-      status: 200,
-      contentType: 'text/plain',
-      content: '',
-      truncated: false,
-      fetchedBytes: 0,
-    }))
-  // browser 原语默认返回最小成功形态（done），按测试注入具体响应。
-  const browserCommand = options.browserCommand
-    ?? (async () => ({ type: 'done' }) as BrowserCommandResponse)
-  // computer 原语同款默认 done。
-  const computerCommand = options.computerCommand
-    ?? (async () => ({ type: 'done' }) as ComputerCommandResponse)
-  // ssh 原语默认返回空主机清单（只读工具的最小成功形态）。
-  const sshAgentCommand = options.sshAgentCommand
-    ?? (async () => ({ type: 'hosts', hosts: [] }) as SshAgentCommandResponse)
-
   return {
     runtime: {
       getInfo: vi.fn(async () => ({
@@ -178,6 +135,7 @@ export const createFakeAgentEnvironment = (
         appVersion: '0.0.0-test',
         operatingSystem: 'macos',
         architecture: 'arm64',
+        sandboxAvailable: true,
       })),
     },
     authorizedFiles: {
@@ -203,29 +161,29 @@ export const createFakeAgentEnvironment = (
       runCommand: vi.fn(async () => {
         throw new Error('workspace.runCommand not used in this fixture')
       }),
-      find: vi.fn(async (request: { requestId: string; pattern: string; path?: string; limit?: number; signal: AbortSignal }) =>
+      find: vi.fn(async (request: { requestId: string; pattern: string; path?: string; limit?: number; maxDepth?: number; signal: AbortSignal }) =>
         find(request)),
     },
     artifacts: {
       writeToolResult: vi.fn(async () => noopArtifact()),
-    },
-    web: {
-      search: vi.fn(async (request: { query: string; limit?: number }) => webSearch(request)),
-      fetch: vi.fn(async (request: { url: string; maxBytes?: number }) => webFetch(request)),
+      writeImage: vi.fn(async () => noopArtifact()),
     },
     browser: {
-      command: vi.fn(async (request: BrowserCommandRequest) => browserCommand(request)),
+      // 默认不使用：ui_* 工具测试显式覆盖为记录请求的 mock（对齐 workspace 写通道
+      // 的「未用即抛」风格，避免静默返回错形状的响应）。
+      command: vi.fn(async () => {
+        throw new Error('browser.command not used in this fixture')
+      }),
+      write: vi.fn(async () => {
+        throw new Error('browser.write not used in this fixture')
+      }),
     },
-    computer: {
-      command: vi.fn(async (request: ComputerCommandRequest) => computerCommand(request)),
-    },
-    ssh: {
-      command: vi.fn(
-        async (
-          request: SshAgentCommandRequest,
-          options?: { approvalLease?: string; workspacePath?: string },
-        ) => sshAgentCommand(request, options),
-      ),
+    api: {
+      // 默认不使用：api_request 测试显式覆盖为 stub（对齐 browser 通道的「未用即抛」
+      // 风格，避免静默返回错形状的宿主结果）。
+      runStep: vi.fn(async () => {
+        throw new Error('api.runStep not used in this fixture')
+      }),
     },
     design: {
       // 默认空设计稿：工具路径不用的测试不受影响，需要时在测试内覆写。

@@ -364,6 +364,12 @@ export interface AgentToolExecutionContext {
   runId: string
   toolCallId: string
   approvalLease?: string
+  /**
+   * 本调用的审批来源。`automatic` 表示完全访问的自动签发租约——只有该来源下
+   * 才可能出现无沙箱执行结果。档位权威仍在 Rust 租约，这里只供工具做结果
+   * 契约一致性判定。
+   */
+  approvalSource?: ToolApprovalSource
   signal: AbortSignal
   reportProgress: (content: string, details?: JsonValue) => Promise<void>
   /** Whether the active model accepts image inputs. Tools may degrade image output when false. */
@@ -384,11 +390,21 @@ export interface AgentToolExecutionContext {
 }
 
 export type ToolApprovalState = 'not_required' | 'pending' | 'approved' | 'denied'
+export type ToolApprovalSource = 'not_required' | 'interactive' | 'automatic'
 
 export interface ToolApprovalPresentation {
   category?: 'workspace-write' | 'workspace-command'
   title: string
   description: string
+  /**
+   * UI 本地化 key（可选）。Agent 层不依赖 i18n 运行时，工具只给稳定 key +
+   * 参数；`ApprovalCard` 在渲染时经 `t()` 解析。`title/description` 仍是
+   * UI/审计的英文回退值，保持工具层可独立测试；它们不是模型可见内容。
+   */
+  titleKey?: string
+  titleParams?: Record<string, string | number>
+  descriptionKey?: string
+  descriptionParams?: Record<string, string | number>
   path?: string
   preview?: string
   changes?: Array<{ path: string; preview: string }>
@@ -432,6 +448,7 @@ export interface BeforeToolCallResult {
   decision: 'approved' | 'denied'
   reason?: string
   approvalLease?: string
+  approvalSource?: ToolApprovalSource
 }
 
 export type BeforeToolCall = (
@@ -479,6 +496,18 @@ export interface AgentTool {
   idempotencyKey?: (input: JsonValue) => string | Promise<string>
   inputSchema: Record<string, JsonValue>
   executionMode?: ToolExecutionMode
+  /**
+   * 该调用会改变被观测对象（浏览器页面）的状态。
+   *
+   * Agent 探索时模型可能在同一响应里连发多个 UI 调用，但一旦写动作落地，其后每个
+   * 调用携带的定位、快照与断言判定都基于写动作之前的页面。因此 `executeToolCalls`
+   * 只执行到本批次首个 `invalidatesPageState` 调用为止，其余调用经 `failToolCalls`
+   * 补成错误结果（截断文案含工具名与跳过数量，并要求重新 snapshot；design §8.4
+   * state guard）。本字段是纯声明，截断逻辑不硬编码工具名。
+   *
+   * 确定性 Runner 逐步执行、每个写动作后重新解析 Locator，不使用该字段。
+   */
+  invalidatesPageState?: boolean
   /** Compatibility normalization applied before validation and approval. */
   prepareArguments?: (input: JsonValue) => JsonValue
   requiresApproval?: boolean
@@ -894,6 +923,7 @@ export type AgentEvent =
       result: AgentToolResult
       isError: boolean
       approvalState: Exclude<ToolApprovalState, 'pending'>
+      approvalSource?: ToolApprovalSource
     }
   | {
       type: 'turn_end'

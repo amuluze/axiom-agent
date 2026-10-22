@@ -74,8 +74,12 @@ export const resolveActiveToolNames = (
     tools,
   )
   const active = new Set(initial)
+  const registered = new Set(tools.map((tool) => tool.name))
   for (const message of messages) {
-    const additions = validateAddedToolNames(additionsFromMessage(message), tools)
+    const additions = validateAddedToolNames(
+      additionsFromMessage(message).filter((name) => registered.has(name)),
+      tools,
+    )
     for (const name of additions) active.add(name)
   }
   return tools.flatMap((tool) => active.has(tool.name) ? [tool.name] : [])

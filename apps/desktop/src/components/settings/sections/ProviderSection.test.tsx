@@ -214,7 +214,7 @@ describe('ProviderSection', () => {
       providerHasKey: false,
       desktop: true,
     }))
-    expect(html).toContain('自定义（中转站）的 API Key 仅用于该中转站')
+    expect(html).toContain('请勿填写内置厂商的 Key')
   })
 
   it('renders localized custom provider labels under the English UI', () => {
@@ -260,7 +260,7 @@ describe('ProviderSection 图片输入能力展示', () => {
       imageInput: 'catalog',
     })
     expect(html).toContain('图片输入：支持图片（目录标注）')
-    expect(html).not.toContain('目录外模型默认按仅文本处理')
+    expect(html).not.toContain('目录外模型默认仅文本')
     // 目录内模型也有三态下拉。
     expect(html).toContain('图片输入能力')
     expect(html).toContain('跟随目录')
@@ -296,7 +296,7 @@ describe('ProviderSection 图片输入能力展示', () => {
       }],
     })
     expect(html).toContain('仅文本（目录外默认）')
-    expect(html).toContain('目录外模型默认按仅文本处理，可在此显式声明支持图片。')
+    expect(html).toContain('目录外模型默认仅文本，可在此声明支持图片。')
   })
 
   it('demo 无下拉控件但恒显示仅文本', () => {

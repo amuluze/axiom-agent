@@ -58,12 +58,12 @@ describe('DesignAssistantPanel 设计助手侧栏', () => {
     await waitFor(() => expect(mocks.createNewSession).toHaveBeenCalledTimes(1))
   })
 
-  it('有会话但无消息：保留引导 + 真实 Composer（session 变体，不劫持视图；隐藏审批下拉）', () => {
+  it('有会话但无消息：保留引导 + 真实 Composer（session 变体，并保留审批模式）', () => {
     mocks.activeSessionId = 's1'
     render(<DesignAssistantPanel />)
     expect(screen.getByText('设计助手')).toBeTruthy()
     expect(screen.getByTestId('composer-mock').getAttribute('data-variant')).toBe('session')
-    expect(screen.getByTestId('composer-mock').getAttribute('data-show-access-picker')).toBe('false')
+    expect(screen.getByTestId('composer-mock').getAttribute('data-show-access-picker')).toBe('true')
     expect(screen.queryByText('开始设计会话')).toBeNull()
     expect(screen.queryByTestId('stream-mock')).toBeNull()
   })

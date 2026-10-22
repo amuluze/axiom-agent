@@ -131,11 +131,11 @@ export const WorkspaceTerminalPanel = () => {
       aria-label={t('app.terminalPanel.aria')}
       style={{ height: terminalPanelHeight }}
     >
-      <div
+      <hr
         className="terminal-panel__resizer"
-        role="separator"
         aria-orientation="horizontal"
         aria-label={t('app.terminalPanel.resizerAria')}
+        aria-valuenow={Math.round(terminalPanelHeight)}
         tabIndex={0}
         onPointerDown={onResizePointerDown}
         onPointerMove={onResizePointerMove}

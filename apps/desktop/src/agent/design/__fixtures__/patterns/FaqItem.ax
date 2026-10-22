@@ -1,0 +1,42 @@
+{
+  "ax": "1.4",
+  "name": "FaqItem",
+  "tokens": {},
+  "components": {},
+  "symbols": {
+    "FaqItem": {
+      "props": { "question": "string", "answer": "string" },
+      "body": [
+        {
+          "id": "faq-root",
+          "kind": "frame",
+          "layout": "vertical",
+          "gap": 8,
+          "padding": [16, 0, 16, 0],
+          "width": "fill_container",
+          "strokeWidth": { "bottom": 1 },
+          "stroke": "#E7E4DE",
+          "children": [
+            { "id": "faq-q", "kind": "text", "text": { "$param": "question" }, "wrap": "width", "fontSize": 16, "fill": "#1F1E1C" },
+            { "id": "faq-a", "kind": "text", "text": { "$param": "answer" }, "wrap": "width", "fontSize": 14, "fill": "#6B6862" }
+          ]
+        }
+      ]
+    }
+  },
+  "pages": [
+    {
+      "id": "faq-page",
+      "name": "FaqItem 模式",
+      "width": 720,
+      "height": 240,
+      "layout": "vertical",
+      "padding": [24, 0, 24, 0],
+      "tree": [
+        { "id": "q1", "kind": "component", "name": "FaqItem", "props": { "question": "如何开始使用？", "answer": "注册账号后按引导创建项目，3 分钟即可完成首次部署。" } },
+        { "id": "q2", "kind": "component", "name": "FaqItem", "props": { "question": "支持私有化部署吗？", "answer": "企业版支持 VPC 内私有化部署，详情联系销售。" } },
+        { "id": "q3", "kind": "component", "name": "FaqItem", "props": { "question": "数据如何备份？", "answer": "每日全量 + 实时增量备份，跨可用区存储 30 天。" } }
+      ]
+    }
+  ]
+}

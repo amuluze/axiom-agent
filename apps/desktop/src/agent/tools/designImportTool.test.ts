@@ -5,6 +5,7 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentEnvironment } from '@/agent/environment/AgentEnvironment'
+import { createFakeAgentEnvironment } from './__fixtures__/fakeAgentEnvironment'
 import type { DesignDocumentContent } from '@/platform/designDocument'
 import type { JsonValue } from '@/agent/core/types'
 import { parseAxDocument } from '@/agent/design/axParser'
@@ -39,7 +40,8 @@ const penContent: DesignDocumentContent = {
 }
 
 const harness = (content: DesignDocumentContent | Error = penContent) => {
-  const createTextFile = vi.fn(async (path: string, text: string) => ({
+  const createTextFile = vi.fn<AgentEnvironment['workspace']['createTextFile']>(async (path, text) => ({
+    workspace: { path: '/repo', name: 'repo' },
     path,
     sha256: 'f'.repeat(64),
     sizeBytes: new TextEncoder().encode(text).length,
@@ -49,22 +51,21 @@ const harness = (content: DesignDocumentContent | Error = penContent) => {
     if (path === '.pen/axiom.pen') return content
     throw new Error('not found')
   })
-  const environment = {
-    design: { readDocument },
-    workspace: { createTextFile },
-  } as unknown as AgentEnvironment
+  const fake = createFakeAgentEnvironment()
+  const environment: AgentEnvironment = { ...fake, design: { readDocument }, workspace: { ...fake.workspace, createTextFile } }
   return { tool: createDesignImportTool(environment), createTextFile, readDocument }
 }
 
 const run = (tool: ReturnType<typeof createDesignImportTool>, input: JsonValue, lease?: string) =>
-  tool.execute(input, { signal: new AbortController().signal, ...(lease ? { approvalLease: lease } : {}) } as never)
+  tool.execute(input, { sessionId: 's1', runId: 'r1', toolCallId: 'c1', reportProgress: async () => undefined, signal: new AbortController().signal, ...(lease ? { approvalLease: lease } : {}) })
 
 describe('design_import', () => {
   it('把 .pen 编译为合法 .ax 并经审批租约落盘', async () => {
     const { tool, createTextFile } = harness()
     const result = await run(tool, { source: '.pen/axiom.pen', target: '.pen/axiom.ax' }, 'lease-1')
     expect(createTextFile).toHaveBeenCalledTimes(1)
-    const [path, text, lease] = createTextFile.mock.calls[0] as unknown as [string, string, string]
+    const [path, text, lease, scope] = createTextFile.mock.calls[0]
+    expect(scope).toEqual({ sessionId: 's1', runId: 'r1', toolCallId: 'c1' })
     expect(path).toBe('.pen/axiom.ax')
     expect(lease).toBe('lease-1')
     const validated = parseAxDocument(text)
@@ -87,7 +88,7 @@ describe('design_import', () => {
     expect(readDocument).toHaveBeenCalledTimes(1)
 
     await run(tool, input, 'lease-1')
-    const [path, text] = createTextFile.mock.calls[0] as unknown as [string, string, string]
+    const [path, text] = createTextFile.mock.calls[0]
     expect(path).toBe('.pen/axiom.ax')
     // 批准什么就写什么：落盘字节必须与租约绑定的字节完全一致。
     expect(text).toBe(bound.content)

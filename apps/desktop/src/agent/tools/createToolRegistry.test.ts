@@ -47,12 +47,11 @@ describe('tool registry', () => {
       expect(reviewer.requiresApproval).toBe(false)
       expect(reviewer.executionMode).toBe('sequential')
     }
-    // 契约版本各自独立（与 runtime-semantic-versions.json / toolNameMigrations 对齐）：
-    // review v8 / inspect·examine v6——system prompt 双语模板 + 用户覆写支持。
+    // 契约版本各自独立（与 runtime-semantic-versions.json / toolNameMigrations 对齐）。
     const byName = new Map(reviewers.map((tool) => [tool.name, tool.runtimeVersion]))
-    expect(byName.get('inspect_subagent')).toBe('6')
-    expect(byName.get('examine_subagent')).toBe('6')
-    expect(byName.get('review_subagent')).toBe('8')
+    expect(byName.get('inspect_subagent')).toBe('11')
+    expect(byName.get('examine_subagent')).toBe('11')
+    expect(byName.get('review_subagent')).toBe('13')
   })
 
   it('explore_subagent 不要求审批、sequential、recoveryPolicy never，且不在默认激活集', () => {
@@ -61,7 +60,7 @@ describe('tool registry', () => {
     expect(explore.recoveryPolicy).toBe('never')
     expect(explore.requiresApproval).toBe(false)
     expect(explore.executionMode).toBe('sequential')
-    expect(explore.runtimeVersion).toBe('11')
+    expect(explore.runtimeVersion).toBe('16')
     // 首版 discover-gated：不加入 productToolRuntime 的 ALWAYS_ACTIVE_READ_TOOLS
     expect(createProductToolRuntime(['workspace:read', 'subagent:explore'], undefined).activeToolNames)
       .not.toContain('explore_subagent')
@@ -75,62 +74,8 @@ describe('tool registry', () => {
     expect(loadSkill.executionMode).not.toBe('sequential')
   })
 
-  it('web 工具仅在 web:read 下注册，幂等只读且不进入默认激活集', () => {
-    expect(namesFor(['workspace:read'])).not.toContain('web_search')
-    expect(namesFor(['web:read'])).toEqual(['web_search', 'web_fetch'])
-    const tools = createToolRegistry({ capabilities: ['workspace:read', 'web:read'] })
-    for (const tool of tools.filter((entry) => ['web_search', 'web_fetch'].includes(entry.name))) {
-      expect(tool.recoveryPolicy).toBe('idempotent')
-      expect(tool.requiresApproval).toBe(false)
-      expect(tool.runtimeVersion).toBe('1')
-      expect(tool.executionMode).not.toBe('sequential')
-    }
-    // discover-gated：外部内容不可信且涉及查询词外发，不随会话启动默认激活。
-    expect(createProductToolRuntime(['workspace:read', 'web:read'], undefined).activeToolNames)
-      .not.toContain('web_search')
-    expect(createProductToolRuntime(['workspace:read', 'web:read'], undefined).activeToolNames)
-      .not.toContain('web_fetch')
-  })
 
-  it('browser 工具仅在 web:browser 下注册，恢复策略 never 且不进默认激活集', () => {
-    expect(namesFor(['web:read'])).not.toContain('browser')
-    expect(namesFor(['web:browser'])).toEqual(['browser'])
-    const tools = createToolRegistry({ capabilities: ['web:browser'] })
-    const browser = tools.find((tool) => tool.name === 'browser')
-    expect(browser).toBeDefined()
-    // 点击/填写是有状态副作用，崩溃恢复不重放；浏览器是共享有状态资源，
-    // 与写工具同档串行执行；不消费审批（隔离 profile 无登录态）。
-    expect(browser?.recoveryPolicy).toBe('never')
-    expect(browser?.requiresApproval).toBe(false)
-    expect(browser?.executionMode).toBe('sequential')
-    // v8：仅文本判定下 screenshot 降级文案收敛到统一占位子串（迁移链见 toolNameMigrations.ts）。
-    expect(browser?.runtimeVersion).toBe('8')
-    expect(createProductToolRuntime(['workspace:read', 'web:browser'], undefined).activeToolNames)
-      .not.toContain('browser')
-  })
 
-  it('ssh 工具仅在 ssh:remote 下注册，exec 逐次审批、hosts 只读免审批', () => {
-    expect(namesFor(['web:browser'])).not.toContain('ssh')
-    expect(namesFor(['ssh:remote'])).toEqual(['ssh_hosts', 'ssh'])
-    const tools = createToolRegistry({ capabilities: ['ssh:remote'] })
-    const hosts = tools.find((tool) => tool.name === 'ssh_hosts')!
-    const exec = tools.find((tool) => tool.name === 'ssh')!
-    // 清单只读可并行、免审批；exec 是真实远程主机的副作用操作：逐次审批
-    // （lease 绑定 {host, command}）+ Rust 会话授权表，顺序执行、崩溃不重放。
-    expect(hosts.requiresApproval).toBe(false)
-    expect(hosts.executionMode).toBe('parallel')
-    expect(hosts.recoveryPolicy).toBe('never')
-    expect(exec.requiresApproval).toBe(true)
-    expect(exec.executionMode).toBe('sequential')
-    expect(exec.recoveryPolicy).toBe('never')
-    expect(exec.runtimeVersion).toBe('2')
-    expect(hosts.runtimeVersion).toBe('2')
-    // discover-gated：不随会话启动默认激活（与 browser/computer 同一语义）。
-    expect(createProductToolRuntime(['workspace:read', 'ssh:remote'], undefined).activeToolNames)
-      .not.toContain('ssh')
-    expect(createProductToolRuntime(['workspace:read', 'ssh:remote'], undefined).activeToolNames)
-      .not.toContain('ssh_hosts')
-  })
 
   it('registers protected workspace write tools together', () => {
     const tools = createToolRegistry({ capabilities: ['workspace:write'] })
@@ -142,17 +87,113 @@ describe('tool registry', () => {
       'design_import',
     ])
     expect(tools.every((tool) => tool.requiresApproval && tool.executionMode === 'sequential')).toBe(true)
-    expect(tools.map((tool) => tool.runtimeVersion)).toEqual(['6', '7', '5', '3', '3'])
+    expect(tools.map((tool) => tool.runtimeVersion)).toEqual(['12', '12', '10', '7', '9'])
   })
 
   it('registers command execution separately and always requires serial one-time approval', () => {
     const tools = createToolRegistry({ capabilities: ['workspace:execute'] })
     expect(tools.map((tool) => tool.name)).toEqual(['bash'])
     expect(tools.every((tool) => tool.requiresApproval && tool.executionMode === 'sequential')).toBe(true)
-    expect(tools[0]?.runtimeVersion).toBe('17')
+    expect(tools[0]?.runtimeVersion).toBe('26')
   })
 
   it('returns no tools when the runtime has no granted capabilities', () => {
     expect(namesFor([])).toEqual([])
+  })
+
+  describe('UI 只读探索工具（ui-test:read）', () => {
+    const UI_TOOL_NAMES = ['ui_snapshot', 'ui_find', 'ui_screenshot', 'ui_wait', 'ui_assert']
+
+    it('仅在 workspace:read + ui-test:read 同时授予时注册，只读且不要求审批', () => {
+      expect(namesFor(['ui-test:read'])).not.toContain('ui_snapshot')
+      expect(namesFor(['workspace:read'])).not.toContain('ui_snapshot')
+      const tools = createToolRegistry({ capabilities: ['workspace:read', 'ui-test:read'] })
+      const uiTools = tools.filter((tool) => UI_TOOL_NAMES.includes(tool.name))
+      expect(uiTools.map((tool) => tool.name)).toEqual(UI_TOOL_NAMES)
+      for (const tool of uiTools) {
+        expect(tool.requiresApproval).toBeFalsy()
+        expect(tool.recoveryPolicy).toBe('idempotent')
+        expect(tool.runtimeVersion).toBe('1')
+        expect(tool.executionMode).not.toBe('sequential')
+      }
+    })
+
+    it('discover-gated：注册到完整工具表但不进默认激活集', () => {
+      const runtime = createProductToolRuntime(['workspace:read', 'ui-test:read'], undefined)
+      expect(runtime.activeToolNames).toEqual(['discover_agent_tools', 'read', 'ls', 'grep', 'find'])
+      for (const name of UI_TOOL_NAMES) {
+        expect(runtime.tools.map((tool) => tool.name)).toContain(name)
+        expect(runtime.activeToolNames).not.toContain(name)
+      }
+    })
+  })
+
+  describe('UI 写探索工具（ui-test:write）', () => {
+    const UI_WRITE_TOOL_NAMES = ['ui_navigate', 'ui_click', 'ui_input', 'ui_select', 'ui_press']
+    // ui_click/ui_input/ui_select 加宽为 locator|ref 二选一后升到 v2；ui_navigate/ui_press 不变。
+    const UI_WRITE_TOOL_VERSIONS: Record<string, string> = {
+      ui_navigate: '1',
+      ui_click: '2',
+      ui_input: '2',
+      ui_select: '2',
+      ui_press: '1',
+    }
+
+    it('仅在 workspace:read + ui-test:write 同时授予时注册，全部要求逐次审批且串行', () => {
+      expect(namesFor(['ui-test:write'])).not.toContain('ui_navigate')
+      expect(namesFor(['workspace:read'])).not.toContain('ui_navigate')
+      // 只读能力不隐含写能力：两个注册门互相独立。
+      expect(namesFor(['workspace:read', 'ui-test:read'])).not.toContain('ui_navigate')
+      const tools = createToolRegistry({ capabilities: ['workspace:read', 'ui-test:write'] })
+      const uiTools = tools.filter((tool) => UI_WRITE_TOOL_NAMES.includes(tool.name))
+      expect(uiTools.map((tool) => tool.name)).toEqual(UI_WRITE_TOOL_NAMES)
+      for (const tool of uiTools) {
+        expect(tool.requiresApproval).toBe(true)
+        expect(tool.recoveryPolicy).toBe('idempotent')
+        expect(tool.runtimeVersion).toBe(UI_WRITE_TOOL_VERSIONS[tool.name])
+        expect(tool.executionMode).toBe('sequential')
+        expect(typeof tool.idempotencyKey).toBe('function')
+        expect(typeof tool.approvalPresentation).toBe('function')
+        // browser_command 不消费审批租约：Agent 层审批即门，写工具不得声明租约绑定输入。
+        expect(tool.approvalLeaseInput).toBeUndefined()
+      }
+    })
+
+    it('discover-gated：注册到完整工具表但不进默认激活集', () => {
+      const runtime = createProductToolRuntime(['workspace:read', 'ui-test:write'], undefined)
+      expect(runtime.activeToolNames).toEqual(['discover_agent_tools', 'read', 'ls', 'grep', 'find'])
+      for (const name of UI_WRITE_TOOL_NAMES) {
+        expect(runtime.tools.map((tool) => tool.name)).toContain(name)
+        expect(runtime.activeToolNames).not.toContain(name)
+      }
+    })
+  })
+
+  describe('API 探索工具（api-test:request）', () => {
+    it('仅在 workspace:read + api-test:request 同时授予时注册，要求逐次审批且不声明幂等键', () => {
+      expect(namesFor(['api-test:request'])).not.toContain('api_request')
+      expect(namesFor(['workspace:read'])).not.toContain('api_request')
+      // UI 能力不隐含出网能力：两组注册门互相独立。
+      expect(namesFor(['workspace:read', 'ui-test:write', 'ui-test:read'])).not.toContain('api_request')
+      const tool = createToolRegistry({ capabilities: ['workspace:read', 'api-test:request'] })
+        .find((candidate) => candidate.name === 'api_request')
+      expect(tool).toBeDefined()
+      expect(tool?.requiresApproval).toBe(true)
+      expect(tool?.executionMode).toBe('sequential')
+      expect(tool?.runtimeVersion).toBe('5')
+      expect(typeof tool?.approvalPresentation).toBe('function')
+      // 工具覆盖 GET…DELETE：POST/PUT/PATCH/DELETE 不允许自动重放（设计 §9.3），
+      // 故整体取 never——never 工具不得声明幂等键（deferredTools 会直接拒绝）。
+      expect(tool?.recoveryPolicy).toBe('never')
+      expect(tool?.idempotencyKey).toBeUndefined()
+      expect(tool?.approvalLeaseInput).toBeUndefined()
+    })
+
+    it('discover-gated：注册到完整工具表但不进默认激活集', () => {
+      const runtime = createProductToolRuntime(['workspace:read', 'api-test:request'], undefined)
+      expect(runtime.activeToolNames).toEqual(['discover_agent_tools', 'read', 'ls', 'grep', 'find'])
+      expect(runtime.tools.map((candidate) => candidate.name)).toContain('api_request')
+      expect(runtime.activeToolNames).not.toContain('api_request')
+    })
   })
 })

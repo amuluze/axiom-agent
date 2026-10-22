@@ -100,6 +100,7 @@ const createBinding = (
   parentSessionId: 'parent-session',
   parentRunId: 'parent-run',
   parentToolCallId: 'parent-tool',
+  parentActiveToolNames: ['read', 'ls', 'grep', 'find'],
   model: { provider: 'test', model: 'test-model', maxOutputTokens: 32_000 },
   transport,
   environment: createFakeAgentEnvironment({
@@ -139,7 +140,7 @@ describe('createSubAgentRuntime / delegate', () => {
     expect(firstRequest.messages[0]).toMatchObject({ role: 'user' })
   })
 
-  it('只注册 read/ls/grep/find/web_search/web_fetch 且全部 active；maxOutputTokens 收窄、不继承 reasoning', async () => {
+  it('只注册 read/ls/grep/find 且全部 active；maxOutputTokens 收窄、不继承 reasoning', async () => {
     const transport = new ScriptedTransport([textResponse('结论')])
     const seen = vi.fn()
     const runtime = createSubAgentRuntime()
@@ -152,7 +153,7 @@ describe('createSubAgentRuntime / delegate', () => {
     )
     const modelRequest = seen.mock.calls[0][0] as ModelRequest
     const toolNames = modelRequest.tools.map((tool) => tool.name)
-    expect(toolNames).toEqual(['read', 'ls', 'grep', 'find', 'web_search', 'web_fetch'])
+    expect(toolNames).toEqual(['read', 'ls', 'grep', 'find'])
     expect(modelRequest.model.maxOutputTokens).toBe(DEFAULT_SUBAGENT_CHILD_BUDGET.maxOutputTokens)
     expect(modelRequest.reasoning).toBeUndefined()
   })
@@ -588,6 +589,7 @@ describe('createSubAgentRuntime / delegate', () => {
           list: async () => {
             throw new Error('workspace list path is not a directory')
           },
+          readText: createBinding(transport).environment.workspace.readText,
         }),
       }),
       new AbortController().signal,
@@ -677,7 +679,7 @@ describe('reviewer kinds（inspect/examine/review runtime 集成）', () => {
     expect(modelRequest.systemPrompt).toContain('你的上下文窗口为 100000 tokens')
     // 与 explore 同构的只读工具集：无 bash/write/edit
     expect(modelRequest.tools.map((tool) => tool.name))
-      .toEqual(['read', 'ls', 'grep', 'find', 'web_search', 'web_fetch'])
+      .toEqual(['read', 'ls', 'grep', 'find'])
   })
 
   it('review 委派：diff 分节随 task 进入子首条 user message，prompt 声明 diff 权威依据', async () => {
@@ -724,4 +726,122 @@ describe('reviewer kinds（inspect/examine/review runtime 集成）', () => {
       new AbortController().signal,
     )).rejects.toThrow('不支持的 SubAgent 种类')
   })
+})
+
+
+describe('子代理能力与委托生命周期', () => {
+  it.each(['explore', 'inspect', 'examine', 'review'] as const)('%s 只继承父活跃工具与角色交集', async (kind) => {
+    const transport = new ScriptedTransport([textResponse('结论')])
+    await createSubAgentRuntime().delegate(
+      { kind, task: '核对当前文件' },
+      createBinding(transport, { parentActiveToolNames: ['read', 'grep', 'bash', 'write', 'ssh', 'computer', 'browser', 'discover_agent_tools'] }),
+      new AbortController().signal,
+    )
+    expect(transport.requests[0].tools.map((tool) => tool.name)).toEqual(['read', 'grep'])
+    expect(transport.requests[0].systemPrompt).toContain('当前允许工具：read, grep')
+  })
+
+  it('空父工具集不会隐式补齐只读或网页工具', async () => {
+    const transport = new ScriptedTransport([textResponse('分析已提供的 diff')])
+    await createSubAgentRuntime().delegate(
+      { kind: 'review', task: '分析已提供的 diff' },
+      createBinding(transport, { parentActiveToolNames: [] }),
+      new AbortController().signal,
+    )
+    expect(transport.requests[0].tools).toEqual([])
+  })
+
+  it.each([['..'], ['/etc'], ['.'], ['src', '../secret']].map((scope) => ({ scope })))('非法范围 $scope 在任何宿主访问前拒绝', async ({ scope }) => {
+    const transport = new ScriptedTransport([textResponse('不应执行')])
+    const binding = createBinding(transport)
+    await expect(createSubAgentRuntime().delegate({ ...request, scope }, binding, new AbortController().signal)).rejects.toThrow('范围')
+    expect(binding.environment.workspace.list).not.toHaveBeenCalled()
+    expect(binding.environment.workspace.readText).not.toHaveBeenCalled()
+    expect(transport.requests).toEqual([])
+  })
+
+  it('范围探测超时也结束本次委托，迟到探测不触发模型，父与下一次委托继续', async () => {
+    vi.useFakeTimers()
+    try {
+      let release: (() => void) | undefined
+      const held = new Promise<void>((resolve) => { release = resolve })
+      const transport = new ScriptedTransport([textResponse('下一次完成')])
+      const parent = new AbortController()
+      const binding = createBinding(transport)
+      const environment = createFakeAgentEnvironment({ list: async (path) => {
+        await held
+        return { workspace: defaultWorkspace, directory: path ?? '.', entries: [], truncated: false }
+      } })
+      const runtime = createSubAgentRuntime({ childBudget: { ...DEFAULT_SUBAGENT_CHILD_BUDGET, maxDurationMs: 1200 } })
+      const timed = runtime.delegate(request, { ...binding, environment }, parent.signal)
+      const rejected = expect(timed).rejects.toThrow('time_limit')
+      await vi.advanceTimersByTimeAsync(1200)
+      await rejected
+      expect(parent.signal.aborted).toBe(false)
+      release?.()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(transport.requests).toEqual([])
+      expect(await runtime.delegate({ kind: 'review', task: '继续' }, binding, parent.signal)).toMatchObject({ status: 'completed' })
+      expect(binding.parentRunLedger.callCount).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('模型忽略取消时硬截止仍返回，迟到响应不进入观察器或预算', async () => {
+    vi.useFakeTimers()
+    try {
+      let release: (() => void) | undefined
+      const held = new Promise<void>((resolve) => { release = resolve })
+      const transport: ModelTransport = { async *stream() {
+        await held
+        yield { type: 'text_delta', delta: '迟到结果' }
+        yield { type: 'done', stopReason: 'stop', usage: { outputTokens: 123, inputTokens: 0, totalTokens: 123 } }
+      } }
+      const observe = vi.fn()
+      const binding = createBinding(transport, { observation: { onModelResponse: observe } })
+      const runtime = createSubAgentRuntime({ childBudget: { ...DEFAULT_SUBAGENT_CHILD_BUDGET, maxDurationMs: 1200 } })
+      const timed = runtime.delegate({ kind: 'review', task: '核对' }, binding, new AbortController().signal)
+      const rejected = expect(timed).rejects.toThrow('time_limit')
+      await vi.advanceTimersByTimeAsync(1200)
+      await rejected
+      release?.()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(observe).not.toHaveBeenCalled()
+      expect(binding.parentRunLedger.outputTokens).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+
+it('同父 run 并行委托中一项到期不终止另一项', async () => {
+  vi.useFakeTimers()
+  try {
+    let release: (() => void) | undefined
+    const held = new Promise<void>((resolve) => { release = resolve })
+    const siblingTransport: ModelTransport = { async *stream() {
+      await held
+      yield { type: 'text_delta', delta: '兄弟委托完成' }
+      yield { type: 'done', stopReason: 'stop' }
+    } }
+    const parent = new AbortController()
+    const ledger = createParentRunLedger()
+    const runtime = createSubAgentRuntime()
+    const deadline = runtime.delegate({ kind: 'review', task: '短时委托' }, createBinding(siblingTransport, {
+      parentRunLedger: ledger, deadlineMs: Date.now() + 2000,
+    }), parent.signal)
+    const sibling = runtime.delegate({ kind: 'review', task: '继续核对' }, createBinding(siblingTransport, {
+      parentRunLedger: ledger, parentToolCallId: 'sibling-tool',
+    }), parent.signal)
+    const rejected = expect(deadline).rejects.toThrow('time_limit')
+    await vi.advanceTimersByTimeAsync(1500)
+    await rejected
+    expect(parent.signal.aborted).toBe(false)
+    release?.()
+    expect(await sibling).toMatchObject({ status: 'completed', summary: '兄弟委托完成' })
+  } finally {
+    vi.useRealTimers()
+  }
 })

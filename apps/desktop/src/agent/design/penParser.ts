@@ -7,6 +7,9 @@
  * 解析产物与渲染解耦：PenNode 是中间表示，CSS 映射在 PenNodeView。
  */
 
+import type { DesignComponentDetail } from './componentInventoryHost'
+import type { AxDocument } from './axSchema'
+
 export type PenSize = number | 'fill_container' | 'fit_content'
 
 export type PenThemeMode = 'light' | 'dark'
@@ -171,6 +174,20 @@ export interface PenVariableEntry {
 }
 
 export interface PenDocument {
+  axSource?: string
+  axDocument?: AxDocument
+  sha256?: string
+  projectPreview?: import('./projectPreview').ProjectDesignPreview
+  projectComponents?: DesignComponentDetail[]
+  workspacePath?: string
+  pageMetadata?: Record<string, { group?: string; state?: Record<string, string> }>
+  /**
+   * symbol 实例计数（pageId → 实例数，投影期写入）。symbol 实例在投影里被展开成
+   * body 原语（实例节点本身不保留），复用事实必须单独记账——否则密度口径
+   * （part+component 合计）看不见 symbol 复用，抽过 symbol 的稿仍被判「该抽 symbol」。
+   * 无实例的稿不落此键（`.pen` 无 symbol 概念，行为不变）。
+   */
+  symbolInstanceCounts?: Record<string, number>
   fileName: string
   /** .pen spec 版本（如 "2.18"）；缺失时为 undefined。 */
   version?: string

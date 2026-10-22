@@ -16,7 +16,13 @@ const STRIPPED_ATTRIBUTES = ['data-selected-id', 'data-testid']
  * 不用「全量拷贝 computed style」：jsdom 的 CSSStyleDeclaration 不可迭代（跨环境
  * 不可移植），且 2855 节点的页面 × 每节点数百属性会让 SVG 快照体积爆炸。
  */
-const INLINED_PROPERTIES = [
+/**
+ * 导出内联的属性白名单（导出保真契约，见 `exportPagePng.styleContract.test.ts`）：
+ * foreignObject 不加载外部样式表，渲染需要的 CSS 必须逐条落到元素的 style 上。
+ * 新增画布绘制语义时，这里必须同步——否则导出图会静默丢样式（与不变量 4
+ *「渲染层对 token 的所有消费路径必须等价」同一类风险，只是发生在导出侧）。
+ */
+export const INLINED_PROPERTIES = [
   'display', 'position', 'top', 'right', 'bottom', 'left', 'z-index',
   'width', 'height', 'min-width', 'min-height', 'max-width', 'max-height',
   'flex', 'flex-direction', 'flex-wrap', 'flex-grow', 'flex-shrink', 'flex-basis',

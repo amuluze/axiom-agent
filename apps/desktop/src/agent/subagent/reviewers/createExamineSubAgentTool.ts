@@ -6,7 +6,7 @@ export const createExamineSubAgentTool = (): AgentTool => createReviewerSubAgent
   kind: 'examine',
   toolName: 'examine_subagent',
   // v6：子会话 system prompt 双语模板 + 用户覆写支持（同 inspect v6）。
-  runtimeVersion: '6',
+  runtimeVersion: '11',
   label: '检查实施方案',
   promptSnippet: '委派一个只读审查子 Agent，对照 Task Spec 检查实施方案 Plan 的可行性、验收覆盖与风险，返回通过/不通过与问题清单。',
   promptGuidelines: [
@@ -16,5 +16,5 @@ export const createExamineSubAgentTool = (): AgentTool => createReviewerSubAgent
     '审查因预算中止返回 partial 或报错时：基于已有证据直接收口，或把 scope 收窄到未覆盖部分后重新委派；不要以同等规模重复委派（配额按父 run 累计）。',
   ],
   description:
-    'Delegates a read-only examination sub-agent that reviews an implementation Plan against the Task Spec for feasibility, acceptance coverage, and risk, returning a pass/fail verdict with a prioritized issue list. The sub-agent only uses read/ls/grep/find/web_search/web_fetch; scope is a hard runtime boundary resolved against the authorized workspace root.',
+    'Delegates a read-only examination sub-agent that reviews an implementation Plan against the Task Spec for feasibility, acceptance coverage, and risk, returning a pass/fail verdict with a prioritized issue list. The sub-agent uses only the intersection of the parent active tools and read/ls/grep/find; scope is a hard runtime boundary resolved against the authorized workspace root.',
 })

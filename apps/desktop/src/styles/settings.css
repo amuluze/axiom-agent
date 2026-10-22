@@ -466,7 +466,6 @@
 .eyebrow {
   color: var(--text-tertiary);
   font-size: 0.8462rem;
-  letter-spacing: 0.06em;
   text-transform: uppercase;
   margin-bottom: 2px;
 }
@@ -704,7 +703,6 @@
   color: var(--text-tertiary);
   font-size: 0.8462rem;
   font-weight: 600;
-  letter-spacing: 0.02em;
 }
 
 /* 危险动作按钮（清除全部浏览器数据）：沿用 secondary 形态、换警示色。 */
@@ -863,6 +861,13 @@
   color: var(--text-tertiary);
   font-size: 0.9231rem;
   line-height: 1.4;
+}
+
+.archived-list,
+.archived-group__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
 
 .archived-list {
@@ -1275,6 +1280,8 @@
 
 /* ===== 设置-技能 reload 确认区 ===== */
 .settings__reload-confirm {
+  min-width: 0;
+  margin: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -1591,7 +1598,6 @@
   margin: 0.9em 0 0.4em;
   font-size: 0.9615rem;
   font-weight: 650;
-  letter-spacing: 0.02em;
   color: var(--text-secondary);
 }
 

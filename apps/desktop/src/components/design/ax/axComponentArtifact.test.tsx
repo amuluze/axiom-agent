@@ -13,15 +13,13 @@
  * 只能证明数据形状对，证明不了真实组件能吃下这份 props。这里用真实产物 + 真实组件
  * 把两端接起来验。
  */
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { parseAxDocument } from '@/agent/design/axParser'
 import type { AxDocument, AxNode } from '@/agent/design/axSchema'
+import { designDraftsAvailable, readDesignDraft } from './designDraftFixtures'
 import { mountAxPageElement } from './renderPageHost'
 
-const artifactPath = resolve(import.meta.dirname, '../../../../../../.pen/axiom.ax')
-const SOURCE = readFileSync(artifactPath, 'utf8')
+const SOURCE = designDraftsAvailable ? readDesignDraft('axiom.ax') : null
 
 /** 节点深度优先查找（页树里找第一个指定组件名的节点所在页）。 */
 const pageWithComponent = (document: AxDocument, name: string): { id: string; node: AxNode } | null => {
@@ -37,10 +35,10 @@ const pageWithComponent = (document: AxDocument, name: string): { id: string; no
 }
 
 describe('升级后的 .pen/axiom.ax', () => {
-  const parsed = parseAxDocument(SOURCE)
-  const document_ = parsed.document as AxDocument
+  const parsed = SOURCE === null ? null : parseAxDocument(SOURCE)
+  const document_ = (parsed?.document ?? null) as AxDocument | null
   const componentNodes: AxNode[] = []
-  document_.pages.forEach((page) => {
+  document_?.pages.forEach((page) => {
     const stack = [...page.tree]
     while (stack.length > 0) {
       const node = stack.shift() as AxNode
@@ -49,20 +47,23 @@ describe('升级后的 .pen/axiom.ax', () => {
     }
   })
 
-  it('产物合法，且组件实例全部落在本稿词汇表里', () => {
-    expect(parsed.error).toBeNull()
-    expect(parsed.diagnostics.filter((item) => item.level === 'error')).toEqual([])
+  it.skipIf(document_ === null)('产物合法，且组件实例全部落在本稿词汇表里', () => {
+    expect(parsed!.error).toBeNull()
+    expect(parsed!.diagnostics.filter((item) => item.level === 'error')).toEqual([])
     // 升级面必须非空——否则这条用例会「因为全都没升级」而假绿。
     expect(componentNodes.length).toBeGreaterThan(0)
     for (const node of componentNodes) {
-      expect(Object.hasOwn(document_.components, node.name as string)).toBe(true)
+      // symbol 实例在页树里同为 component 节点，但登记在 `symbols` 词汇表（1.4）——
+      // 它们的合法性由 validateSymbols 负责，不走本稿 components 词汇表这一关。
+      if (Object.hasOwn(document_!.symbols ?? {}, node.name as string)) continue
+      expect(Object.hasOwn(document_!.components, node.name as string), `组件 ${node.name} 不在本稿词汇表`).toBe(true)
     }
   })
 
-  it('工具卡渲染真组件，标题与字节数取自稿里的文案', async () => {
-    const hit = pageWithComponent(document_, 'ToolCallCard')
+  it.skipIf(document_ === null)('工具卡渲染真组件，标题与字节数取自稿里的文案', async () => {
+    const hit = pageWithComponent(document_!, 'ToolCallCard')
     expect(hit).not.toBeNull()
-    const { mounted } = await mountAxPageElement(document_, hit!.id, 'light')
+    const { mounted } = await mountAxPageElement(document_!, hit!.id, 'light')
     expect(mounted).not.toBeNull()
     const scope = mounted!.element
     expect(scope.querySelector('[data-ax-component="ToolCallCard"]')).not.toBeNull()
@@ -75,11 +76,11 @@ describe('升级后的 .pen/axiom.ax', () => {
     mounted!.dispose()
   })
 
-  it('审批卡与消息操作行渲染真组件且不落错误边界', async () => {
+  it.skipIf(document_ === null)('审批卡与消息操作行渲染真组件且不落错误边界', async () => {
     for (const name of ['ApprovalCard', 'MessageActions']) {
-      const hit = pageWithComponent(document_, name)
+      const hit = pageWithComponent(document_!, name)
       expect(hit, `${name} 在产物里没有实例`).not.toBeNull()
-      const { mounted } = await mountAxPageElement(document_, hit!.id, 'light')
+      const { mounted } = await mountAxPageElement(document_!, hit!.id, 'light')
       expect(mounted, `${name} 所在页未能挂载`).not.toBeNull()
       const scope = mounted!.element
       expect(scope.querySelector(`[data-ax-component="${name}"]`), `${name} 未渲染成真组件`).not.toBeNull()

@@ -76,3 +76,12 @@ describe('extractComponentUsage（实现源码的组件使用提取）', () => {
     expect(usage.size).toBe(0)
   })
 })
+
+
+it('Vue 默认导入与 template 真组件参与对账，HTML 注释不计使用', () => {
+  const usage = extractComponentUsage(`<script setup lang="ts">
+import ApprovalCard from './ApprovalCard.vue'
+</script>
+<template><!-- <ApprovalCard /> --><ApprovalCard :command="'test'" /></template>`, ['ApprovalCard'])
+  expect(usage.get('ApprovalCard')).toEqual({ imports: 1, jsxUses: 1 })
+})

@@ -156,7 +156,10 @@ describe('workspace approval IPC', () => {
 
   it('setWorkspaceApprovalMode forwards the mode to the Rust authoritative state', async () => {
     mockedInvoke.mockResolvedValueOnce(undefined)
-    await setWorkspaceApprovalMode('automatic')
-    expect(mockedInvoke).toHaveBeenCalledWith('set_workspace_approval_mode', { mode: 'automatic' })
+    await setWorkspaceApprovalMode('session-1', 'automatic')
+    expect(mockedInvoke).toHaveBeenCalledWith('set_workspace_approval_mode', {
+      sessionId: 'session-1',
+      mode: 'automatic',
+    })
   })
 })

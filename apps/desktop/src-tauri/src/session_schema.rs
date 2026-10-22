@@ -9,7 +9,7 @@ use sqlx::{ConnectOptions as _, Connection, Executor, Row, SqliteConnection};
 use std::path::Path;
 use std::time::Duration;
 
-pub(crate) const DATABASE_VERSION: i64 = 15;
+pub(crate) const DATABASE_VERSION: i64 = 20;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Provider / connect 凭据表（v15 起密钥由 macOS Keychain 迁入 SQLite，Rust 独占读写）。
@@ -234,6 +234,131 @@ const V14_COLUMNS: &[ColumnMigration] = &[ColumnMigration {
 
 const V15_STATEMENTS: &[&str] = &[SECRETS_TABLE_DDL];
 
+const V16_COLUMNS: &[ColumnMigration] = &[
+    ColumnMigration {
+        table: "agent_sessions",
+        column: "access_mode",
+        statement: "ALTER TABLE agent_sessions ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'standard' CHECK (access_mode IN ('standard', 'no-approval'))",
+    },
+    ColumnMigration {
+        table: "tool_executions",
+        column: "approval_source",
+        statement: "ALTER TABLE tool_executions ADD COLUMN approval_source TEXT NOT NULL DEFAULT 'not_required' CHECK (approval_source IN ('not_required', 'interactive', 'automatic'))",
+    },
+];
+
+/// UI/API 测试运行记录。`plan_content_hash` / `evidence_content_hash` 是对 artifacts 的稳定
+/// 内容引用而非外键：报告必须能在源文件修改、证据被归档回收后仍可读，GC 的权威引用集
+/// 由 R1-4 纳入这两列，因此这里刻意不加 FK 以免 reconcile 被阻塞。
+const V17_STATEMENTS: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS test_environments (
+       id TEXT PRIMARY KEY NOT NULL,
+       workspace_path TEXT NOT NULL,
+       name TEXT NOT NULL,
+       web_base_url TEXT,
+       api_base_url TEXT,
+       viewport_width INTEGER CHECK (viewport_width IS NULL OR viewport_width BETWEEN 320 AND 3840),
+       viewport_height INTEGER CHECK (viewport_height IS NULL OR viewport_height BETWEEN 240 AND 2160),
+       headers_json TEXT NOT NULL DEFAULT '{}',
+       secret_ids_json TEXT NOT NULL DEFAULT '[]',
+       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+     )",
+    "CREATE TABLE IF NOT EXISTS test_runs (
+       id TEXT PRIMARY KEY NOT NULL,
+       workspace_path TEXT NOT NULL,
+       spec_path TEXT NOT NULL,
+       spec_hash TEXT NOT NULL,
+       plan_content_hash TEXT,
+       source_session_id TEXT REFERENCES agent_sessions(id) ON DELETE SET NULL,
+       environment_id TEXT REFERENCES test_environments(id) ON DELETE SET NULL,
+       status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'waiting_approval', 'passed', 'failed', 'error', 'rejected', 'skipped', 'canceled', 'interrupted')),
+       started_at INTEGER NOT NULL,
+       finished_at INTEGER,
+       summary_json TEXT
+     )",
+    "CREATE INDEX IF NOT EXISTS idx_test_runs_workspace ON test_runs(workspace_path, started_at DESC)",
+    "CREATE TABLE IF NOT EXISTS test_case_runs (
+       id TEXT PRIMARY KEY NOT NULL,
+       run_id TEXT NOT NULL REFERENCES test_runs(id) ON DELETE CASCADE,
+       position INTEGER NOT NULL CHECK (position >= 0),
+       case_id TEXT NOT NULL,
+       case_name TEXT NOT NULL,
+       status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'waiting_approval', 'passed', 'failed', 'error', 'rejected', 'skipped', 'canceled', 'interrupted')),
+       started_at INTEGER, finished_at INTEGER,
+       failure_kind TEXT,
+       UNIQUE (run_id, position)
+     )",
+    "CREATE TABLE IF NOT EXISTS test_step_runs (
+       id TEXT PRIMARY KEY NOT NULL,
+       case_run_id TEXT NOT NULL REFERENCES test_case_runs(id) ON DELETE CASCADE,
+       position INTEGER NOT NULL CHECK (position >= 0),
+       step_id TEXT NOT NULL,
+       action TEXT NOT NULL,
+       status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'waiting_approval', 'passed', 'failed', 'error', 'rejected', 'skipped', 'canceled', 'interrupted')),
+       started_at INTEGER, finished_at INTEGER,
+       details_json TEXT,
+       evidence_content_hash TEXT,
+       UNIQUE (case_run_id, position)
+     )",
+];
+
+const V18_COLUMNS: &[ColumnMigration] = &[ColumnMigration {
+    table: "test_environments",
+    column: "allow_private_network",
+    statement: "ALTER TABLE test_environments ADD COLUMN allow_private_network INTEGER NOT NULL DEFAULT 0 CHECK (allow_private_network IN (0, 1))",
+}];
+
+/// v19：测试功能的地基列（T0-2，见 `docs/ui-api-automation-testing-plan.md` §19）。
+/// 环境档的生命周期（`kind` / `recipe_json`）、套件聚合与本次环境事实
+/// （`batch_id` / `env_facts_json`）、宿主客观归因（`failure_origin`）。
+///
+/// 全部带默认值或可空，因此 v18 升上来的旧记录语义明确、无需回填：环境是 `remote`
+/// 且没有起停配方（既有环境面板只能填地址，本来就等价于远程档），运行没有批次、
+/// 没有环境事实（那两列由 T1/T3 写入），用例没有归因（T3-2 起写入）。
+const V19_COLUMNS: &[ColumnMigration] = &[
+    ColumnMigration {
+        table: "test_environments",
+        column: "kind",
+        statement: "ALTER TABLE test_environments ADD COLUMN kind TEXT NOT NULL DEFAULT 'remote' CHECK (kind IN ('local', 'remote'))",
+    },
+    ColumnMigration {
+        table: "test_environments",
+        column: "recipe_json",
+        statement: "ALTER TABLE test_environments ADD COLUMN recipe_json TEXT",
+    },
+    ColumnMigration {
+        table: "test_runs",
+        column: "batch_id",
+        statement: "ALTER TABLE test_runs ADD COLUMN batch_id TEXT",
+    },
+    ColumnMigration {
+        table: "test_runs",
+        column: "env_facts_json",
+        statement: "ALTER TABLE test_runs ADD COLUMN env_facts_json TEXT",
+    },
+    ColumnMigration {
+        table: "test_case_runs",
+        column: "failure_origin",
+        statement: "ALTER TABLE test_case_runs ADD COLUMN failure_origin TEXT CHECK (failure_origin IS NULL OR failure_origin IN ('environment', 'approval', 'driver', 'assertion'))",
+    },
+];
+
+/// 索引必须放在 `post_statements`：`statements` 先于 `columns` 执行，把索引写在前面会
+/// 在「列还不存在」时失败。
+const V19_POST_STATEMENTS: &[&str] =
+    &["CREATE INDEX IF NOT EXISTS idx_test_runs_batch ON test_runs(batch_id)"];
+
+const V20_COLUMNS: &[ColumnMigration] = &[ColumnMigration {
+    table: "test_environments",
+    column: "logical_id",
+    statement: "ALTER TABLE test_environments ADD COLUMN logical_id TEXT NOT NULL DEFAULT ''",
+}];
+
+const V20_POST_STATEMENTS: &[&str] = &[
+    "UPDATE test_environments SET logical_id = id WHERE logical_id = ''",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_test_environments_workspace_logical ON test_environments(workspace_path, logical_id)",
+];
+
 pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -324,6 +449,36 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         statements: V15_STATEMENTS,
         columns: &[],
         post_statements: &[],
+    },
+    Migration {
+        version: 16,
+        statements: &[],
+        columns: V16_COLUMNS,
+        post_statements: &[],
+    },
+    Migration {
+        version: 17,
+        statements: V17_STATEMENTS,
+        columns: &[],
+        post_statements: &[],
+    },
+    Migration {
+        version: 18,
+        statements: &[],
+        columns: V18_COLUMNS,
+        post_statements: &[],
+    },
+    Migration {
+        version: 19,
+        statements: &[],
+        columns: V19_COLUMNS,
+        post_statements: V19_POST_STATEMENTS,
+    },
+    Migration {
+        version: 20,
+        statements: &[],
+        columns: V20_COLUMNS,
+        post_statements: V20_POST_STATEMENTS,
     },
 ];
 pub(crate) fn create_options(path: &Path) -> SqliteConnectOptions {

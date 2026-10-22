@@ -14,15 +14,20 @@ const MAX_REQUEST_ID_LEN: usize = 128;
 ///
 /// `domain` 仅用于错误消息，使调用方能定位是哪一个命令域拒收（保持与拆分前的
 /// 提示文案一致）。
-pub(crate) fn validate_request_id<'a>(domain: &str, request_id: &'a str) -> Result<&'a str, String> {
+pub(crate) fn validate_request_id<'a>(
+    domain: &str,
+    request_id: &'a str,
+) -> Result<&'a str, String> {
     let request_id = request_id.trim();
     let valid = !request_id.is_empty()
         && request_id.len() <= MAX_REQUEST_ID_LEN
-        && request_id
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-'));
+        && request_id.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+        });
     if !valid {
-        return Err(format!("{domain} request ID contains unsupported characters"));
+        return Err(format!(
+            "{domain} request ID contains unsupported characters"
+        ));
     }
     Ok(request_id)
 }
@@ -33,7 +38,10 @@ mod tests {
 
     #[test]
     fn accepts_the_union_of_characters_the_split_copies_allowed() {
-        assert_eq!(validate_request_id("t", " run-1.a_b ").unwrap(), "run-1.a_b");
+        assert_eq!(
+            validate_request_id("t", " run-1.a_b ").unwrap(),
+            "run-1.a_b"
+        );
     }
 
     #[test]

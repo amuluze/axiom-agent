@@ -13,6 +13,7 @@ import type {
   ModelRequest,
   ModelStreamEvent,
   ModelTransport,
+  ToolResultMessage,
   UserMessage,
 } from './types'
 import { describe, expect, it, vi } from 'vitest'
@@ -268,6 +269,52 @@ describe('runAgentLoop', () => {
     expect(result.messages[2]).toMatchObject({ role: 'tool', content: 'from tool', isError: false })
     expect(transport.requests).toHaveLength(2)
     expect(transport.requests[1]?.messages.at(-1)?.role).toBe('tool')
+  })
+
+  it('truncates the calls that follow the first page write and reports the skip to the next turn', async () => {
+    const executed: string[] = []
+    const snapshotTool = createObjectTool('ui_snapshot', async () => {
+      executed.push('ui_snapshot')
+      return { content: 'snapshot tree' }
+    })
+    const clickTool = createObjectTool('ui_click', async () => {
+      executed.push('ui_click')
+      return { content: 'clicked' }
+    })
+    clickTool.invalidatesPageState = true
+    const transport = new ScriptedTransport([
+      [
+        { type: 'start', responseId: 'response-multi' },
+        { type: 'tool_call_start', index: 0, id: 'call-read', name: 'ui_snapshot' },
+        { type: 'tool_call_delta', index: 0, argumentsDelta: '{}' },
+        { type: 'tool_call_end', index: 0 },
+        { type: 'tool_call_start', index: 1, id: 'call-click', name: 'ui_click' },
+        { type: 'tool_call_delta', index: 1, argumentsDelta: '{}' },
+        { type: 'tool_call_end', index: 1 },
+        { type: 'tool_call_start', index: 2, id: 'call-stale', name: 'ui_snapshot' },
+        { type: 'tool_call_delta', index: 2, argumentsDelta: '{}' },
+        { type: 'tool_call_end', index: 2 },
+        { type: 'done', stopReason: 'tool_use' },
+      ],
+      textResponse('final answer'),
+    ])
+
+    const result = await runAgentLoop({
+      context: createContext([snapshotTool, clickTool]),
+      prompts: [createUserMessage('explore the page')],
+      transport,
+    })
+
+    expect(executed).toEqual(['ui_snapshot', 'ui_click'])
+    const toolMessages = result.messages.filter(
+      (message): message is ToolResultMessage => message.role === 'tool',
+    )
+    // 每个 tool_call 仍有对应 tool_result：被截断的调用以错误结果如实入历史。
+    expect(toolMessages.map((message) => message.toolCallId)).toEqual(['call-read', 'call-click', 'call-stale'])
+    expect(toolMessages[2]?.isError).toBe(true)
+    expect(toolMessages[2]?.content).toContain('ui_click')
+    expect(toolMessages[2]?.content).toContain('跳过 1 个后续调用')
+    expect(toolMessages[2]?.content).toContain('重新')
   })
 
   it('activates deferred tools only after the declaring tool result', async () => {

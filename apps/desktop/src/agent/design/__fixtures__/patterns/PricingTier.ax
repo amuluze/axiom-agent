@@ -1,0 +1,48 @@
+{
+  "ax": "1.4",
+  "name": "PricingTier",
+  "tokens": {},
+  "components": {},
+  "symbols": {
+    "PricingTier": {
+      "props": { "name": "string", "price": "string", "feature1": "string", "feature2": "string", "feature3": "string" },
+      "body": [
+        {
+          "id": "pt-root",
+          "kind": "frame",
+          "layout": "vertical",
+          "gap": 12,
+          "padding": [24, 24, 24, 24],
+          "width": "fill_container",
+          "fill": "#FFFFFF",
+          "cornerRadius": 12,
+          "strokeWidth": 1,
+          "stroke": "#E7E4DE",
+          "children": [
+            { "id": "pt-name", "kind": "text", "text": { "$param": "name" }, "wrap": "nowrap", "fontSize": 18, "fill": "#1F1E1C" },
+            { "id": "pt-price", "kind": "text", "text": { "$param": "price" }, "wrap": "nowrap", "fontSize": 24, "fill": "#1F1E1C" },
+            { "id": "pt-f1", "kind": "text", "text": { "$param": "feature1" }, "wrap": "nowrap", "fontSize": 14, "fill": "#6B6862" },
+            { "id": "pt-f2", "kind": "text", "text": { "$param": "feature2" }, "wrap": "nowrap", "fontSize": 14, "fill": "#6B6862" },
+            { "id": "pt-f3", "kind": "text", "text": { "$param": "feature3" }, "wrap": "nowrap", "fontSize": 14, "fill": "#6B6862" }
+          ]
+        }
+      ]
+    }
+  },
+  "pages": [
+    {
+      "id": "pricing-page",
+      "name": "PricingTier 模式",
+      "width": 960,
+      "height": 320,
+      "layout": "horizontal",
+      "gap": 16,
+      "padding": [32, 32, 32, 32],
+      "tree": [
+        { "id": "p1", "kind": "component", "name": "PricingTier", "props": { "name": "基础版", "price": "¥0 / 月", "feature1": "5 个项目", "feature2": "10GB 存储", "feature3": "社区支持" } },
+        { "id": "p2", "kind": "component", "name": "PricingTier", "props": { "name": "Pro", "price": "¥99 / 月", "feature1": "无限项目", "feature2": "100GB 存储", "feature3": "工单支持" } },
+        { "id": "p3", "kind": "component", "name": "PricingTier", "props": { "name": "企业", "price": "¥999 / 月", "feature1": "SSO 与审计", "feature2": "1TB 存储", "feature3": "专属客户成功" } }
+      ]
+    }
+  ]
+}

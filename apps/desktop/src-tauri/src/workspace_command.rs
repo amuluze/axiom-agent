@@ -1,4 +1,10 @@
+#[cfg(unix)]
+use crate::bash_policy_generated::DEFAULT_SHELL;
 use crate::{
+    bash_policy_generated::{
+        MAX_COMMAND_BYTES, MAX_OUTPUT_BYTES, MAX_TIMEOUT_MS, OUTSIDE_WORKSPACE_REDIRECT_PATTERN,
+        SUDO_COMMAND_PREFIX_PATTERN,
+    },
     platform_process::{signal_process_group, TreeSignal},
     sandbox::{self, CommandTier},
     workspace_access::{authorized_root_for, WorkspaceAccessState},
@@ -17,7 +23,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
     process::{Child, Command},
@@ -26,46 +32,37 @@ use tokio::{
 };
 
 const WORKSPACE_COMMAND_EVENT: &str = "axiom:workspace-command";
-const MAX_TIMEOUT_MS: u64 = 2_147_483_647;
-const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 const PIPE_BUFFER_BYTES: usize = 8 * 1024;
 const TERMINATION_GRACE_MS: u64 = 500;
 /// 子进程环境透传白名单（浏览器会话等其它子进程通道同样复用：env_clear 后仅
 /// 保留这些与用户身份/语言相关的无敏感变量，API Key 一律不进入子进程）。
 pub(crate) const PASSTHROUGH_ENVIRONMENT: &[&str] = &[
-    "CONTAINER_HOST", "DOCKER_HOST", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "SHELL",
-    "TERM", "TMPDIR", "USER",
+    "CONTAINER_HOST",
+    "DOCKER_HOST",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LOGNAME",
+    "SHELL",
+    "TERM",
+    "TMPDIR",
+    "USER",
 ];
-/// Shell used to execute workspace commands（unix；Windows 运行期解析 Git for
-/// Windows 的 bash，见 [`default_shell_command`]）。
-#[cfg(unix)]
-const DEFAULT_SHELL: &str = "/bin/bash";
-/// 自由命令模型的最小安全基线：拒绝 sudo 提升权限。定位为"减速带"而非安全边界，
-/// 逐次审批才是主要安全阀。匹配命令上下文边界（行首/换行/分号/&&/|/子shell/$()），
-/// 不匹配 `grep sudo` 这类把 sudo 当普通参数的合法命令。
-/// 换行显式纳入分隔符字符类：命令经 /bin/bash -c 执行，`echo hi\nsudo whoami`
-/// 中的换行是合法分隔符，若漏掉可绕过行首匹配（`^` 无 multiline 标志）。
-/// 必须与 TS bashTool.ts 的 SUDO_COMMAND_PREFIX_PATTERN 逐字一致（bash-policy-audit 强制）。
-const SUDO_COMMAND_PREFIX_PATTERN: &str = r"(?:^\s*|(?:\s*[;&|(\n]\s*))\\?sudo(?:\s|$)";
-/// 拒绝把命令输出重定向到工作区外：`> /abs`、`> ~`、`> ..`、引号包裹的绝对路径
-/// （`> "$HOME/x"`）、noclobber `>|`、变量/命令替换目标（`$VAR`、`$()`、反引号）、
-/// bash 的 `>&` 文件复制形式（`echo hi >& /tmp/out`，目标非数字即文件写）与
-/// `exec {fd}> /abs`（左上下文 `}`）。
-/// 例外：目标恰为 `/dev/null`（含引号与 `2>/dev/null` 形式，后跟分隔符边界）一律放行——
-/// 空设备不产生文件写入，且 seatbelt 沙箱已显式允许。因 regex crate 不支持 lookaround，
-/// 用 RE2 兼容的子串排除交替式实现；`/dev/nullfoo`、`/dev/nulldir`、`/dev` 等仍拒绝。
-/// 必须与 TS bashTool.ts 的 OUTSIDE_WORKSPACE_REDIRECT_PATTERN 逐字一致（bash-policy-audit 强制）。
-const OUTSIDE_WORKSPACE_REDIRECT_PATTERN: &str =
-    r"(?:^|[;&|}]|\s|\d)>\s*(?:\|?\s*(?:>|&)?)?\s*[\x22']?(?:\/(?:[^d]|$|d(?:[^e]|e(?:[^v]|v(?:[^\/]|$|\/(?:[^n]|$|n(?:[^u]|u(?:[^l]|l(?:[^l]|l[^\s;&|>\x22']))))))))|~|\$|\x60|\.\.(?:[/\s]|$))";
-
+/// 自由命令模型的尽力拦截（策略常量由 `contracts/bash-policy.json` 生成）：
+/// 拒绝常见 sudo 提升与输出重定向到工作区外。定位为"减速带"而非安全边界，
+/// 标准模式的沙箱才是执行边界，完全访问没有可靠的命令级隔离。
+/// 行为语料与 TS 侧一致性由 `scripts/bash-policy-audit.mjs` 强制。
 fn compiled_pattern(pattern: &'static str) -> &'static Regex {
     static SUDO_RE: OnceLock<Regex> = OnceLock::new();
     static REDIRECT_RE: OnceLock<Regex> = OnceLock::new();
     match pattern {
-        SUDO_COMMAND_PREFIX_PATTERN => SUDO_RE
-            .get_or_init(|| Regex::new(pattern).expect("compile-time sudo pattern")),
-        _ => REDIRECT_RE
-            .get_or_init(|| Regex::new(pattern).expect("compile-time redirect pattern")),
+        SUDO_COMMAND_PREFIX_PATTERN => {
+            SUDO_RE.get_or_init(|| Regex::new(pattern).expect("compile-time sudo pattern"))
+        }
+        _ => {
+            REDIRECT_RE.get_or_init(|| Regex::new(pattern).expect("compile-time redirect pattern"))
+        }
     }
 }
 
@@ -95,7 +92,9 @@ pub(crate) struct WorkspaceCommandState {
 }
 
 impl WorkspaceCommandState {
-    fn register(
+    /// pub(crate)：并发回归测试需要直接登记一个「在途命令」来验证撤销的取消
+    /// 时序（revoke_workspace_core 的写锁临界区）。
+    pub(crate) fn register(
         &self,
         request_id: &str,
         workspace_root: &Path,
@@ -149,6 +148,10 @@ pub(crate) struct WorkspaceCommandRequest {
     command: String,
     cwd: Option<String>,
     timeout_ms: Option<u64>,
+    #[serde(default)]
+    vcs_credentials: bool,
+    #[serde(default)]
+    container_control: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -175,8 +178,6 @@ struct WorkspaceCommandEvent {
     /// seatbelt deny 条目（仅沙箱执行且非空时携带）。
     sandbox_denials: Option<Vec<String>>,
     /// 本命令是否在 seatbelt 沙箱内执行（done 事件携带；chunk 事件为 None）。
-    /// false 表示沙箱不可用、NetworkRequired 回退常规用户权限执行——写限工作区与
-    /// 凭据读取保护未生效，供模型/用户显式感知降级（而非静默裸跑）。
     sandboxed: Option<bool>,
     error: Option<String>,
 }
@@ -188,10 +189,8 @@ struct ValidatedCommand {
     cwd: PathBuf,
     workspace_root: PathBuf,
     timeout: Option<Duration>,
-    /// 命令安全分级（Phase A：仅关键字分类，declared_network 固定 false）。
-    /// SandboxSafe → 沙箱内执行（仅回环网络）；NetworkRequired → 沙箱内执行且网络
-    /// 启用（沙箱不可用时才回退常规用户权限执行）。
     tier: CommandTier,
+    privileges: sandbox::SandboxPrivileges,
 }
 
 #[derive(Clone, Debug)]
@@ -206,8 +205,6 @@ struct CommandOutcome {
     /// 本命令进程组内的 seatbelt deny 条目（去重后，可为空）。诊断辅助：
     /// 让模型/用户看到「命令到底被沙箱拒了什么操作」，而非裸 EPERM。
     sandbox_denials: Vec<String>,
-    /// 本命令是否在 seatbelt 沙箱内执行。false 仅发生在 NetworkRequired 且沙箱
-    /// 不可用的回退路径（SandboxSafe 沙箱不可用会提前 fail-closed 拒绝）。
     sandboxed: bool,
 }
 
@@ -350,14 +347,16 @@ fn validate_request(
     root: &Path,
     request: WorkspaceCommandRequest,
 ) -> Result<ValidatedCommand, String> {
-    let request_id = crate::request_id::validate_request_id("workspace command", &request.request_id)?.to_string();
+    let request_id =
+        crate::request_id::validate_request_id("workspace command", &request.request_id)?
+            .to_string();
     let workspace_root = std::fs::canonicalize(root)
         .map_err(|error| format!("failed to resolve authorized workspace: {error}"))?;
     let command = request.command.trim().to_string();
     if command.is_empty() {
         return Err("workspace command must be a non-empty string".into());
     }
-    if command.len() > 64 * 1024 {
+    if command.len() > MAX_COMMAND_BYTES {
         return Err("workspace command is too long".into());
     }
     reject_unsafe_free_command(&command)?;
@@ -385,6 +384,10 @@ fn validate_request(
         workspace_root,
         timeout,
         tier,
+        privileges: sandbox::SandboxPrivileges {
+            vcs_credentials: request.vcs_credentials,
+            container_control: request.container_control,
+        },
     })
 }
 
@@ -400,8 +403,8 @@ pub(crate) fn sanitized_path_with_toolchain_fallback(
     home: Option<&Path>,
 ) -> Option<OsString> {
     let inherited = inherited_path?;
-    let canonical_root = std::fs::canonicalize(workspace_root)
-        .unwrap_or_else(|_| workspace_root.to_path_buf());
+    let canonical_root =
+        std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
     let mut entries: Vec<PathBuf> = std::env::split_paths(inherited)
         .filter(|path| {
             path.is_absolute()
@@ -497,12 +500,20 @@ pub(crate) fn redact_credentials(bytes: &[u8]) -> Vec<u8> {
     };
     static PATTERN: OnceLock<Regex> = OnceLock::new();
     let pattern = PATTERN.get_or_init(|| {
+        // 键名形态三类：裸键值(token=…)、JSON 引号键("apiKey": "…")、复合环境
+        // 变量名(AWS_SECRET_ACCESS_KEY=…，显式枚举——`\b` 会被前导 `_` 破坏)。
+        // `authorization` 单列：值是「scheme + 空格 + 凭据」，进通用键值分支只会
+        // 遮掉 scheme 本身、留下凭据。AWS 键原文（AKIA/ASIA + 16 位大写）大小写
+        // 敏感匹配，避免 (?i) 把任意 20 字母单词误伤。
         Regex::new(
-            r#"(?i)(?:(?:https?|ftp)://[^@\s/]+:[^@\s/]+@)|(?:(?:https?|ftp)://[^@\s/]+@)|\b(?:token|password|secret|access_key|secret_key|auth_token|api[_-]?key)\s*[:=]\s*["']?[^\s"']+|\bmachine\s+\S+\s+login\s+\S+\s+password\s+\S+"#,
+            r#"(?i)(?:(?:https?|ftp)://[^@\s/]+:[^@\s/]+@)|(?:(?:https?|ftp)://[^@\s/]+@)|\b(?:token|password|secret|access_key|secret_key|auth_token|api[_-]?key|aws_secret_access_key|aws_access_key_id|aws_session_token|github_token|gitlab_token|private_token|client_secret)["']?\s*[:=]\s*["']?[^\s"']+|\bauthorization["']?\s*[:=]\s*["']?(?:bearer|basic|token|digest)\s+[^\s"',]+|\bbearer\s+[A-Za-z0-9_\-.=+/]{16,}|(?-i:\b(?:AKIA|ASIA)[0-9A-Z]{16}\b)|\bmachine\s+\S+\s+login\s+\S+\s+password\s+\S+"#,
         )
         .expect("compile-time credential redaction pattern")
     });
-    pattern.replace_all(text, "[REDACTED]").into_owned().into_bytes()
+    pattern
+        .replace_all(text, "[REDACTED]")
+        .into_owned()
+        .into_bytes()
 }
 
 fn configure_environment(
@@ -541,87 +552,17 @@ fn configure_environment(
     // 优先级高于仓库 .git/config，恶意仓库把可执行程序挂到驱动类配置键上时被压制。
     command.env(
         "GIT_CONFIG_COUNT",
-        crate::git_config::git_config_neutralization().len().to_string(),
+        crate::git_config::git_config_neutralization()
+            .len()
+            .to_string(),
     );
-    for (index, (key, value)) in crate::git_config::git_config_neutralization().iter().enumerate() {
+    for (index, (key, value)) in crate::git_config::git_config_neutralization()
+        .iter()
+        .enumerate()
+    {
         command.env(format!("GIT_CONFIG_KEY_{index}"), *key);
         command.env(format!("GIT_CONFIG_VALUE_{index}"), *value);
     }
-}
-
-/// 构造执行命令的 bash：unix 固定 `/bin/bash`；Windows 解析 Git for Windows 的
-/// bash.exe——`C:\Windows\System32\bash.exe` 与 WindowsApps 下的同名文件是 WSL 桩，
-/// 会把命令投进 Linux 子系统（路径/环境语义完全不同），显式排除。解析结果进程内
-/// 缓存一次；找不到时 fail-closed 并给出可行动指引。
-fn default_shell_command(command: &str) -> Result<Command, String> {
-    #[cfg(unix)]
-    {
-        let mut bash = Command::new(DEFAULT_SHELL);
-        bash.arg("-c").arg(command);
-        Ok(bash)
-    }
-    #[cfg(windows)]
-    {
-        static RESOLVED_BASH: OnceLock<Option<PathBuf>> = OnceLock::new();
-        let bash = RESOLVED_BASH
-            .get_or_init(windows_bash_path)
-            .clone()
-            .ok_or_else(|| {
-                "未找到 bash.exe：Windows 上工作区命令经 Git for Windows 的 bash 执行，\
-                 请安装 Git for Windows（git-scm.com/download/win）后重启 Axiom"
-                    .to_string()
-            })?;
-        let mut bash = Command::new(bash);
-        bash.arg("-c").arg(command);
-        Ok(bash)
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = command;
-        Err("workspace command execution is unsupported on this platform".into())
-    }
-}
-
-/// 定位 Windows 下的真实 bash.exe（仅 windows 目标编译）。
-#[cfg(windows)]
-fn windows_bash_path() -> Option<PathBuf> {
-    // 显式覆盖入口（便携/非标准安装）：AXIOM_BASH_PATH 指向具体 bash.exe。
-    if let Ok(custom) = std::env::var("AXIOM_BASH_PATH") {
-        let candidate = PathBuf::from(custom);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    // git.exe 同源优先：<git>\cmd\git.exe → <git>\bin\bash.exe（Git for Windows
-    // 标准布局），保证与用户实际使用的 git 同一发行版。
-    if let Ok(output) = std::process::Command::new("where").arg("git").output() {
-        if output.status.success() {
-            for line in String::from_utf8_lossy(&output.stdout).lines() {
-                let git_path = PathBuf::from(line.trim());
-                if let Some(git_root) = git_path.parent().and_then(Path::parent) {
-                    let candidate = git_root.join("bin").join("bash.exe");
-                    if candidate.is_file() {
-                        return Some(candidate);
-                    }
-                }
-            }
-        }
-    }
-    // PATH 兜底：跳过 WSL 桩目录（System32 / WindowsApps）。
-    let path_var = std::env::var_os("PATH")?;
-    for directory in std::env::split_paths(&path_var) {
-        let candidate = directory.join("bash.exe");
-        if !candidate.is_file() {
-            continue;
-        }
-        let directory_lower = directory.to_string_lossy().to_ascii_lowercase();
-        let is_wsl_stub =
-            directory_lower.contains("system32") || directory_lower.ends_with("windowsapps");
-        if !is_wsl_stub {
-            return Some(candidate);
-        }
-    }
-    None
 }
 
 /// 沙箱宿主 HOME（seatbelt profile 参数与工具链配置洞的基准）。
@@ -656,8 +597,12 @@ fn prepare_sandbox_tmpdir(request_id: &str) -> Result<PathBuf, String> {
 #[cfg(target_os = "macos")]
 fn sandbox_profile_dir(home: &Path) -> Result<PathBuf, String> {
     let dir = crate::storage_paths::ensure_data_root_at(home)?.join("sandbox");
-    std::fs::create_dir_all(&dir)
-        .map_err(|error| format!("failed to create sandbox profile dir {}: {error}", dir.display()))?;
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        format!(
+            "failed to create sandbox profile dir {}: {error}",
+            dir.display()
+        )
+    })?;
     Ok(dir)
 }
 
@@ -737,98 +682,75 @@ fn command_exit_code(status: &ExitStatus) -> Option<i32> {
     status.code()
 }
 
-async fn execute_command<F>(
-    command: ValidatedCommand,
-    mut cancellation: watch::Receiver<bool>,
-    mut emit: F,
-) -> Result<CommandOutcome, String>
-where
-    F: FnMut(WorkspaceCommandEvent) -> Result<(), String>,
-{
-    // 沙箱包装路径才赋值（cfg 裁剪后 Windows 上 mut 未消费）。
-    #[cfg_attr(target_os = "windows", allow(unused_mut))]
-    let mut sandbox_artifacts: Option<SandboxArtifacts> = None;
-    // 两级分类都优先在沙箱内执行（对齐 codex：网络命令 = 沙箱 + 网络启用，而非
-    // 脱离沙箱裸跑）——写边界与凭据 deny 对网络命令同样生效，修复审批后的
-    // `npm install` 可写全盘/读凭据的缺口。SandboxSafe 沙箱不可用时 fail-closed；
-    // NetworkRequired 回退常规用户权限执行（该分级从不以沙箱为先决条件，两种
-    // 分级的审批同为单层卡片，差异只在网络档位）。
-    let network_policy = match command.tier {
-        CommandTier::SandboxSafe => {
-            if !sandbox::sandbox_available() {
-                return Err(sandbox::sandbox_unavailable_error(
-                    "refusing to run a sandbox-tier command without sandboxing",
-                ));
-            }
-            Some(sandbox::NetworkPolicy::LoopbackOnly)
-        }
-        CommandTier::NetworkRequired if sandbox::sandbox_available() => {
-            Some(sandbox::NetworkPolicy::OutboundEnabled)
-        }
-        CommandTier::NetworkRequired => None,
-    };
-    // 记录「是否沙箱化」供 done 事件透传：NetworkRequired 且沙箱不可用时回退常规
-    // 用户权限执行（network_policy 为 None），模型/用户需显式感知这一降级。
-    let sandboxed = network_policy.is_some();
-    // seatbelt deny 捕获器（沙箱路径才有；可观测性降级为 None 不阻断命令）。
-    let mut denial_capture: Option<sandbox::SandboxDenialCapture> = None;
-    let mut process = if let Some(network_policy) = network_policy {
-        // 沙箱包装路径：macOS 为 sandbox-exec -D ... -f profile.sb /bin/bash -c cmd，
-        // Linux 为 bwrap [args] -- /bin/bash -c cmd。deny 捕获器先于命令派生启动
-        // （订阅建立需要时间；失败静默降级为无捕获——bwrap 无统一日志面，Linux 上
-        // 本就 spawn 失败返回 None，不阻断命令）。整个分支仅 macOS/Linux 参与编译；
-        // 其余平台 network_policy 恒为 None（SandboxSafe fail-closed、NetworkRequired
-        // 回退无沙箱路径），下方防御性不可达兜住类型。
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            denial_capture = sandbox::SandboxDenialCapture::start();
-            let home = host_home()?;
-            // 沙箱会话 id：request_id + 进程内原子序号，保证并发命令（即使 request_id
-            // 相同，如测试并行 / retry）不共用 profile 文件 / tmpdir / 会话命名空间。
-            let sequence = SANDBOX_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let sandbox_id = format!("{}-{sequence}", command.request_id);
-            let sandbox_tmpdir = prepare_sandbox_tmpdir(&sandbox_id)?;
-            #[cfg(target_os = "macos")]
-            let sandboxed = {
-                let sandbox_dir = sandbox_profile_dir(&home)?;
-                let profile = sandbox::generate_sandbox_profile(
-                    &command.workspace_root,
-                    &home,
-                    &sandbox_tmpdir,
-                    &sandbox_dir,
-                    &sandbox_id,
-                    network_policy,
-                    sandbox::command_requires_vcs_credentials(&command.command),
-                )?;
-                let mut wrapped = Command::new("/usr/bin/sandbox-exec");
-                wrapped
-                    .arg("-D")
-                    .arg(format!("WORKSPACE={}", command.workspace_root.display()))
-                    .arg("-D")
-                    .arg(format!("HOME={}", home.display()))
-                    .arg("-D")
-                    .arg(format!("TMPDIR={}", sandbox_tmpdir.display()))
-                    .arg("-f")
-                    .arg(&profile.path)
-                    .arg(DEFAULT_SHELL)
-                    .arg("-c")
-                    .arg(&command.command);
-                sandbox_artifacts = Some(SandboxArtifacts {
-                    profile_path: Some(profile.path),
-                    tmpdir: Some(sandbox_tmpdir),
-                });
-                wrapped
+fn sandbox_command(
+    command: &ValidatedCommand,
+    network_policy: sandbox::NetworkPolicy,
+) -> Result<
+    (
+        Command,
+        SandboxArtifacts,
+        Option<sandbox::SandboxDenialCapture>,
+    ),
+    String,
+> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let denial_capture = sandbox::SandboxDenialCapture::start();
+        let home = host_home()?;
+        sandbox::workspace_sensitive_scope(&home, &command.workspace_root)?;
+        sandbox::validate_privileged_paths(&home, command.privileges)?;
+        // 沙箱会话 id：request_id + 进程内原子序号，保证并发命令（即使 request_id
+        // 相同，如测试并行 / retry）不共用 profile 文件 / tmpdir / 会话命名空间。
+        let sequence = SANDBOX_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let sandbox_id = format!("{}-{sequence}", command.request_id);
+        let sandbox_tmpdir = prepare_sandbox_tmpdir(&sandbox_id)?;
+        #[cfg(target_os = "macos")]
+        let (process, artifacts) = {
+            let sandbox_dir = sandbox_profile_dir(&home)?;
+            let profile = sandbox::generate_sandbox_profile(
+                &command.workspace_root,
+                &home,
+                &sandbox_tmpdir,
+                &sandbox_dir,
+                &sandbox_id,
+                network_policy,
+                command.privileges,
+            )?;
+            let mut wrapped = Command::new("/usr/bin/sandbox-exec");
+            wrapped
+                .arg("-D")
+                .arg(format!("WORKSPACE={}", command.workspace_root.display()))
+                .arg("-D")
+                .arg(format!("HOME={}", home.display()))
+                .arg("-D")
+                .arg(format!("TMPDIR={}", sandbox_tmpdir.display()))
+                .arg("-f")
+                .arg(&profile.path)
+                .arg(DEFAULT_SHELL)
+                .arg("-c")
+                .arg(&command.command);
+            let artifacts = SandboxArtifacts {
+                profile_path: Some(profile.path),
+                tmpdir: Some(sandbox_tmpdir),
             };
-            #[cfg(target_os = "linux")]
-            let sandboxed = {
+            (wrapped, artifacts)
+        };
+        #[cfg(target_os = "linux")]
+        let (process, artifacts) = {
             // bwrap 参数生成是纯函数（macOS 构建同样单测其语义）；容器 socket 与
             // resolv.conf 重绑目标在此读取宿主状态后传入。
+            if command.privileges.container_control {
+                std::fs::create_dir_all(home.join(".docker")).map_err(|error| {
+                    format!("failed to prepare authorized Docker configuration directory: {error}")
+                })?;
+            }
             let args = sandbox::generate_bwrap_args(&sandbox::BwrapSandboxSpec {
                 workspace_root: &command.workspace_root,
                 home: &home,
                 tmpdir: &sandbox_tmpdir,
                 network: network_policy,
-                allow_vcs_credentials: sandbox::command_requires_vcs_credentials(&command.command),
+                allow_vcs_credentials: command.privileges.vcs_credentials,
+                allow_container_control: command.privileges.container_control,
                 var_run_is_symlink: std::path::Path::new("/var/run")
                     .symlink_metadata()
                     .map(|meta| meta.file_type().is_symlink())
@@ -842,23 +764,100 @@ where
                 .arg(DEFAULT_SHELL)
                 .arg("-c")
                 .arg(&command.command);
-            sandbox_artifacts = Some(SandboxArtifacts {
+            let artifacts = SandboxArtifacts {
                 profile_path: None,
                 tmpdir: Some(sandbox_tmpdir),
-            });
-            wrapped
+            };
+            (wrapped, artifacts)
         };
-            sandboxed
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        {
-            // 防御性不可达（见上）：本平台 network_policy 恒为 None。
-            let _ = network_policy;
-            unreachable!("sandboxed execution requires macOS or Linux")
-        }
-    } else {
-        default_shell_command(&command.command)?
-    };
+        Ok((process, artifacts, denial_capture))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = (command.privileges, network_policy);
+        Err(sandbox::sandbox_unavailable_error(
+            "command execution is unsupported",
+        ))
+    }
+}
+
+async fn execute_command<F>(
+    command: ValidatedCommand,
+    cancellation: watch::Receiver<bool>,
+    emit: F,
+) -> Result<CommandOutcome, String>
+where
+    F: FnMut(WorkspaceCommandEvent) -> Result<(), String>,
+{
+    execute_command_with_availability(command, cancellation, emit, sandbox::sandbox_available())
+        .await
+}
+
+/// `available` 由调用方注入：沙箱探测要 fork+exec，且测试进程自身可能跑在嵌套
+/// 沙箱内（探测结果不可控），故保留注入口以便固定该前置条件。
+async fn execute_command_with_availability<F>(
+    command: ValidatedCommand,
+    cancellation: watch::Receiver<bool>,
+    emit: F,
+    available: bool,
+) -> Result<CommandOutcome, String>
+where
+    F: FnMut(WorkspaceCommandEvent) -> Result<(), String>,
+{
+    // 无沙箱档（会话完全访问，对齐 ChatGPT Full Access）直跑：不生成 profile、
+    // 不探测沙箱可用性、不采集 deny。tier 由审批租约绑定，渲染进程无法自行
+    // 升级到本档。其余档位仍在 OS 沙箱内执行，沙箱不可用即 fail-closed。
+    let (process, sandbox_artifacts, denial_capture, sandboxed) =
+        if command.tier == CommandTier::Unrestricted {
+            (
+                plain_command(&command),
+                SandboxArtifacts {
+                    profile_path: None,
+                    tmpdir: None,
+                },
+                None,
+                false,
+            )
+        } else {
+            let network_policy = sandbox::command_network_policy(command.tier, available)?;
+            let (process, artifacts, capture) = sandbox_command(&command, network_policy)?;
+            (process, artifacts, capture, true)
+        };
+    execute_command_streaming(
+        command,
+        cancellation,
+        emit,
+        process,
+        sandbox_artifacts,
+        denial_capture,
+        sandboxed,
+    )
+    .await
+}
+
+/// 无沙箱直跑命令：/bin/bash -c，以宿主用户权限执行。
+///
+/// 环境处理仍与沙箱路径一致（`env_clear` + 白名单透传）——环境净化防的是
+/// 「宿主凭据经环境变量泄进命令」，与沙箱是否启用无关，保留它不削弱完全访问
+/// 的期望（用户仍可读文件系统上的凭据）。
+fn plain_command(command: &ValidatedCommand) -> Command {
+    let mut process = Command::new(DEFAULT_SHELL);
+    process.arg("-c").arg(&command.command);
+    process
+}
+
+async fn execute_command_streaming<F>(
+    command: ValidatedCommand,
+    mut cancellation: watch::Receiver<bool>,
+    mut emit: F,
+    mut process: Command,
+    sandbox_artifacts: SandboxArtifacts,
+    mut denial_capture: Option<sandbox::SandboxDenialCapture>,
+    sandboxed: bool,
+) -> Result<CommandOutcome, String>
+where
+    F: FnMut(WorkspaceCommandEvent) -> Result<(), String>,
+{
     process
         .current_dir(&command.cwd)
         .stdin(std::process::Stdio::null())
@@ -868,9 +867,7 @@ where
     configure_environment(
         &mut process,
         &command.workspace_root,
-        sandbox_artifacts
-            .as_ref()
-            .and_then(|artifacts| artifacts.tmpdir.as_deref()),
+        sandbox_artifacts.tmpdir.as_deref(),
     );
     // 独立进程组（unix）：取消/超时按组终止；Windows 无进程组可设（树终止走
     // spawn 后挂载的 Job Object，见 platform_process::attach_process_job）。
@@ -1036,20 +1033,38 @@ pub(crate) async fn run_workspace_command(
     workspace_state: State<'_, WorkspaceAccessState>,
     approval_state: State<'_, WorkspaceApprovalState>,
     approval_lease: String,
-    command_state: State<'_, WorkspaceCommandState>,
+    approval_scope: crate::workspace_approval::ApprovalScope,
     workspace_path: Option<String>,
 ) -> Result<(), String> {
     let root = authorized_root_for(&workspace_state, workspace_path.as_deref())?;
-    let lease_tier = approval_state.consume(
+    // consume→register 与撤销全序化：撤销核心（revoke_workspace_core）在
+    // per-workspace 写锁临界区内 cancel_for_workspace + generation bump，这里把
+    // 「读当代际 + consume 租约 + 校验 + 登记」放进同一把锁。两种交错都被封死：
+    // 撤销先完成 → 锁内读到的已是新代际，consume 的租约代际校验拒绝；本侧先
+    // 完成 → 撤销的 cancel_for_workspace 必能看到已登记的命令。锁内只做快速
+    // 检查与登记（毫秒级，generation/consume/validate/register 均不涉长 I/O），
+    // 命令执行不持锁——在途执行由撤销经 cancel_for_workspace 取消。锁序与写
+    // 路径一致（写锁 → 审批锁/命令表锁），与撤销链（registry → 写锁）不反向。
+    let write_lock = workspace_state.workspace_write_lock(&root);
+    let write_guard = write_lock
+        .lock()
+        .map_err(|_| "workspace write lock is poisoned".to_string())?;
+    let lease_tier = approval_state.consume_scoped(
         &approval_lease,
         "run_workspace_command",
         serde_json::json!({
             "command": &request.command,
             "cwd": request.cwd.as_deref(),
             "timeoutMs": request.timeout_ms,
+            "vcsCredentials": request.vcs_credentials,
+            "containerControl": request.container_control,
         }),
         workspace_state.generation_for(&root),
         workspace_path.as_deref(),
+        (
+            &approval_scope,
+            &app.state::<crate::session_authorization::SessionAuthorizationState>(),
+        ),
     )?;
     let mut command = validate_request(&root, request)?;
     // Phase B：执行路径采用 lease 绑定的 tier（签发时权威分类，含模型声明的 network），
@@ -1058,7 +1073,9 @@ pub(crate) async fn run_workspace_command(
         command.tier = tier;
     }
     let request_id = command.request_id.clone();
+    let command_state = app.state::<WorkspaceCommandState>();
     let cancellation = command_state.register(&request_id, &root)?;
+    drop(write_guard);
     let result = execute_command(command, cancellation, |event| {
         app.emit(WORKSPACE_COMMAND_EVENT, event)
             .map_err(|error| error.to_string())
@@ -1104,16 +1121,11 @@ mod tests {
         inherited: &std::ffi::OsStr,
         home: &Path,
     ) -> Vec<PathBuf> {
-        let filtered = sanitized_path_with_toolchain_fallback(
-            workspace_root,
-            Some(inherited),
-            Some(home),
-        )
-        .expect("sanitized PATH must resolve");
+        let filtered =
+            sanitized_path_with_toolchain_fallback(workspace_root, Some(inherited), Some(home))
+                .expect("sanitized PATH must resolve");
         std::env::split_paths(&filtered)
-            .map(|entry| {
-                std::fs::canonicalize(&entry).unwrap_or_else(|_| entry.to_path_buf())
-            })
+            .map(|entry| std::fs::canonicalize(&entry).unwrap_or_else(|_| entry.to_path_buf()))
             .collect()
     }
 
@@ -1155,13 +1167,15 @@ mod tests {
         // cargo 已在继承 PATH 中（用户 shell 已注入）：不得重复追加。
         let cargo_bin = home.path().join(".cargo/bin");
         std::fs::create_dir_all(&cargo_bin).unwrap();
-        let inherited =
-            std::env::join_paths([Path::new("/usr/bin"), cargo_bin.as_path()]).unwrap();
+        let inherited = std::env::join_paths([Path::new("/usr/bin"), cargo_bin.as_path()]).unwrap();
         let entries = path_entries(workspace.path(), inherited.as_os_str(), home.path());
 
         let cargo_canonical = std::fs::canonicalize(&cargo_bin).unwrap();
         assert_eq!(
-            entries.iter().filter(|entry| **entry == cargo_canonical).count(),
+            entries
+                .iter()
+                .filter(|entry| **entry == cargo_canonical)
+                .count(),
             1,
             "继承条目中的 cargo/bin 不得被重复追加"
         );
@@ -1180,21 +1194,24 @@ mod tests {
         let home = TempDir::new().unwrap();
         // 字典序陷阱：v10.1.0 < v9.11.2（字典序），语义化数字序 v10 > v9。
         for version in ["v9.11.2", "v10.1.0"] {
-            std::fs::create_dir_all(home.path().join(".nvm/versions/node").join(version).join("bin"))
-                .unwrap();
+            std::fs::create_dir_all(
+                home.path()
+                    .join(".nvm/versions/node")
+                    .join(version)
+                    .join("bin"),
+            )
+            .unwrap();
         }
         // 非版本目录（残留/自定义命名）应被忽略。
         std::fs::create_dir_all(home.path().join(".nvm/versions/node/custom")).unwrap();
         let inherited = std::env::join_paths(["/usr/bin"]).unwrap();
         let entries = path_entries(workspace.path(), inherited.as_os_str(), home.path());
 
-        let expected = std::fs::canonicalize(
-            home.path().join(".nvm/versions/node/v10.1.0/bin"),
-        )
-        .unwrap();
+        let expected =
+            std::fs::canonicalize(home.path().join(".nvm/versions/node/v10.1.0/bin")).unwrap();
         assert!(entries.contains(&expected), "只追加最高版本: {entries:?}");
-        let old = std::fs::canonicalize(home.path().join(".nvm/versions/node/v9.11.2/bin"))
-            .unwrap();
+        let old =
+            std::fs::canonicalize(home.path().join(".nvm/versions/node/v9.11.2/bin")).unwrap();
         assert!(!entries.contains(&old), "旧版本不应追加: {entries:?}");
     }
 
@@ -1206,8 +1223,7 @@ mod tests {
         std::fs::create_dir_all(&shim_dir).unwrap();
         let home = TempDir::new().unwrap();
         std::fs::create_dir_all(home.path().join(".cargo/bin")).unwrap();
-        let inherited =
-            std::env::join_paths([shim_dir.as_path(), Path::new("/usr/bin")]).unwrap();
+        let inherited = std::env::join_paths([shim_dir.as_path(), Path::new("/usr/bin")]).unwrap();
         let entries = path_entries(workspace.path(), inherited.as_os_str(), home.path());
 
         let shim_canonical = std::fs::canonicalize(&shim_dir).unwrap();
@@ -1223,37 +1239,19 @@ mod tests {
             command: command.into(),
             cwd: None,
             timeout_ms: Some(5_000),
+            vcs_credentials: false,
+            container_control: false,
         }
     }
 
     #[test]
     fn allows_free_form_shell_commands() {
         let workspace = TempDir::new().unwrap();
-        assert!(validate_request(
-            workspace.path(),
-            request("echo hello"),
-        )
-        .is_ok());
-        assert!(validate_request(
-            workspace.path(),
-            request("git status --short"),
-        )
-        .is_ok());
-        assert!(validate_request(
-            workspace.path(),
-            request("npm test"),
-        )
-        .is_ok());
-        assert!(validate_request(
-            workspace.path(),
-            request("cargo check --locked"),
-        )
-        .is_ok());
-        assert!(validate_request(
-            workspace.path(),
-            request("ls -la && echo done"),
-        )
-        .is_ok());
+        assert!(validate_request(workspace.path(), request("echo hello"),).is_ok());
+        assert!(validate_request(workspace.path(), request("git status --short"),).is_ok());
+        assert!(validate_request(workspace.path(), request("npm test"),).is_ok());
+        assert!(validate_request(workspace.path(), request("cargo check --locked"),).is_ok());
+        assert!(validate_request(workspace.path(), request("ls -la && echo done"),).is_ok());
     }
 
     #[test]
@@ -1268,6 +1266,14 @@ mod tests {
         let workspace = TempDir::new().unwrap();
         assert!(validate_request(workspace.path(), request("sudo rm -rf .")).is_err());
         assert!(validate_request(workspace.path(), request("  sudo -u root whoami")).is_err());
+        assert!(validate_request(workspace.path(), request("/usr/bin/sudo id")).is_err());
+        assert!(validate_request(workspace.path(), request("command sudo id")).is_err());
+        assert!(validate_request(workspace.path(), request("env sudo id")).is_err());
+        assert!(validate_request(
+            workspace.path(),
+            request("/usr/bin/env AXIOM_TEST=1 /usr/bin/sudo id")
+        )
+        .is_err());
         assert!(validate_request(workspace.path(), request("echo x > /tmp/out.log")).is_err());
         assert!(validate_request(workspace.path(), request("echo x >> /var/log/axiom")).is_err());
         assert!(validate_request(workspace.path(), request("make build 2> ~/notes")).is_err());
@@ -1317,6 +1323,8 @@ mod tests {
             command: "echo hello".into(),
             cwd: None,
             timeout_ms: None,
+            vcs_credentials: false,
+            container_control: false,
         };
         assert!(validate_request(workspace.path(), req).is_ok());
     }
@@ -1400,11 +1408,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unavailable_sandbox_never_spawns_commands_or_emits_events() {
+        for tier in [CommandTier::SandboxSafe, CommandTier::NetworkRequired] {
+            let workspace = TempDir::new().unwrap();
+            let command = ValidatedCommand {
+                request_id: "sandbox-unavailable".into(),
+                command: "printf escaped > escaped.txt".into(),
+                cwd: workspace.path().to_path_buf(),
+                workspace_root: std::fs::canonicalize(workspace.path()).unwrap(),
+                timeout: None,
+                tier,
+                privileges: sandbox::SandboxPrivileges {
+                    vcs_credentials: true,
+                    container_control: true,
+                },
+            };
+            let (_sender, receiver) = watch::channel(false);
+            let mut events = Vec::new();
+            let result = execute_command_with_availability(
+                command,
+                receiver,
+                |event| {
+                    events.push(event);
+                    Ok(())
+                },
+                false,
+            )
+            .await;
+            assert!(result.is_err());
+            assert!(!workspace.path().join("escaped.txt").exists());
+            assert!(events.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    async fn unrestricted_command_runs_without_sandbox_and_executes_side_effect_once() {
+        let workspace = TempDir::new().unwrap();
+        let marker = workspace.path().join("runs.txt");
+        let command = ValidatedCommand {
+            request_id: "unrestricted-command".into(),
+            // 追加一行：真执行两次会留下两行——这是「副作用只执行一次」的可观测断言。
+            command: format!("printf 'run\\n' >> {}", marker.display()),
+            cwd: workspace.path().to_path_buf(),
+            workspace_root: std::fs::canonicalize(workspace.path()).unwrap(),
+            timeout: None,
+            tier: CommandTier::Unrestricted,
+            privileges: sandbox::SandboxPrivileges::default(),
+        };
+        let (_sender, receiver) = watch::channel(false);
+        // 沙箱可用性显式注入 false：无沙箱档不依赖探测结果，也不得因此拒绝执行。
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let collected = events.clone();
+        let outcome = execute_command_with_availability(
+            command,
+            receiver,
+            move |event| {
+                collected.lock().unwrap().push(event);
+                Ok(())
+            },
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(!outcome.sandboxed);
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "run\n");
+        let events = events.lock().unwrap();
+        // 执行层只产生输出 chunk，不留终止事件（done 由命令处理器统一派生）；chunk
+        // 事件不携带 sandboxed 字段，避免把「未知」误读成「无沙箱」。
+        assert!(events.iter().all(|event| !event.done));
+        assert!(events.iter().all(|event| event.sandboxed.is_none()));
+    }
+
+    #[tokio::test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     async fn executes_a_shell_command_and_streams_output() {
         let workspace = TempDir::new().unwrap();
-        // NetworkRequired 是跨平台可执行的 tier 形态（Phase B：tier 由 lease 绑定传入）：
-        // macOS 走沙箱网络档（echo 在沙箱内可跑），Linux 暂无沙箱回退常规执行——
-        // 本用例验证的「执行 + 流式输出」路径与 tier 的沙箱包装无关。
         let command = ValidatedCommand {
             request_id: "echo-command".into(),
             command: "echo hello world".into(),
@@ -1412,6 +1492,7 @@ mod tests {
             workspace_root: std::fs::canonicalize(workspace.path()).unwrap(),
             timeout: None,
             tier: CommandTier::NetworkRequired,
+            privileges: sandbox::SandboxPrivileges::default(),
         };
         let (_sender, receiver) = watch::channel(false);
         let mut output = Vec::new();
@@ -1435,6 +1516,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     async fn cancellation_terminates_the_process_group() {
         let workspace = TempDir::new().unwrap();
         let command = ValidatedCommand {
@@ -1443,9 +1525,8 @@ mod tests {
             cwd: workspace.path().to_path_buf(),
             workspace_root: std::fs::canonicalize(workspace.path()).unwrap(),
             timeout: None,
-            // NetworkRequired：跨平台可执行形态（Linux 暂无沙箱时 SandboxSafe 会被
-            // fail-closed 拒绝）；取消/进程组回收路径与 tier 的沙箱包装无关。
             tier: CommandTier::NetworkRequired,
+            privileges: sandbox::SandboxPrivileges::default(),
         };
         let (sender, receiver) = watch::channel(false);
         let cancel = tokio::spawn(async move {
@@ -1468,6 +1549,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     async fn times_out_active_commands_with_continuous_output() {
         let workspace = TempDir::new().unwrap();
         // 持续输出（每 100ms 一次）会不断触发输出事件；墙钟超时必须仍然生效，
@@ -1479,6 +1561,7 @@ mod tests {
             workspace_root: std::fs::canonicalize(workspace.path()).unwrap(),
             timeout: Some(Duration::from_millis(600)),
             tier: CommandTier::NetworkRequired,
+            privileges: sandbox::SandboxPrivileges::default(),
         };
         let (_sender, receiver) = watch::channel(false);
         let started = Instant::now();
@@ -1491,6 +1574,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     async fn normal_exit_cleans_up_background_processes() {
         let workspace = TempDir::new().unwrap();
         let command = ValidatedCommand {
@@ -1500,6 +1584,7 @@ mod tests {
             workspace_root: std::fs::canonicalize(workspace.path()).unwrap(),
             timeout: None,
             tier: CommandTier::NetworkRequired,
+            privileges: sandbox::SandboxPrivileges::default(),
         };
         let (_sender, receiver) = watch::channel(false);
         let mut output = Vec::new();
@@ -1533,7 +1618,10 @@ mod tests {
                 }
                 sleep(Duration::from_millis(50)).await;
             }
-            assert!(reaped, "background process must be reaped after command exit");
+            assert!(
+                reaped,
+                "background process must be reaped after command exit"
+            );
         }
         #[cfg(windows)]
         {
@@ -1627,11 +1715,8 @@ mod tests {
         );
         let workspace = TempDir::new().unwrap();
         // 命令含 https:// 关键字 → NetworkRequired 分类；curl -V 只打印版本不走网络。
-        let command = validate_request(
-            workspace.path(),
-            request("curl -V; echo NET$TMPDIR"),
-        )
-        .unwrap();
+        let command =
+            validate_request(workspace.path(), request("curl -V; echo NET$TMPDIR")).unwrap();
         assert_eq!(command.tier, CommandTier::NetworkRequired);
         let (_sender, receiver) = watch::channel(false);
         let mut output = Vec::new();
@@ -1664,7 +1749,10 @@ mod tests {
         assert!(text.contains("github.com"), "URL 其余部分保留: {text}");
 
         let text = redacted_text(b"token = \"sk-proj-abc123\"\nAPI_KEY=xyz789\n");
-        assert!(!text.contains("sk-proj-abc123"), "token 键值应被遮盖: {text}");
+        assert!(
+            !text.contains("sk-proj-abc123"),
+            "token 键值应被遮盖: {text}"
+        );
         assert!(!text.contains("xyz789"), "API_KEY 键值应被遮盖: {text}");
         assert!(text.contains("[REDACTED]"));
     }
@@ -1676,6 +1764,88 @@ mod tests {
 
         let plain = redacted_text(b"npm test\nok\n");
         assert!(plain.contains("npm test") && plain.contains("ok"));
+    }
+
+    #[test]
+    fn redacts_json_quoted_keys() {
+        // JSON 引号键：键与冒号之间的闭引号、值侧开引号都要穿过
+        let text = redacted_text(b"{\"apiKey\": \"sk-proj-9f3k2\", \"scope\": \"read\"}\n");
+        assert!(
+            !text.contains("sk-proj-9f3k2"),
+            "JSON 引号键的凭据值应被遮盖: {text}"
+        );
+        assert!(text.contains("read"), "非凭据 JSON 值不应误伤: {text}");
+
+        let text = redacted_text(b"'token': 'ghp_abc123def456'");
+        assert!(
+            !text.contains("ghp_abc123def456"),
+            "单引号键值形态应被遮盖: {text}"
+        );
+    }
+
+    #[test]
+    fn redacts_compound_environment_variable_credentials() {
+        // 复合名的前导 `_` 会破坏 `\b` 边界——按显式枚举名覆盖
+        let text = redacted_text(b"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCY\n");
+        assert!(
+            !text.contains("wJalrXUtnFEMI"),
+            "AWS_SECRET_ACCESS_KEY 复合环境变量名应被遮盖: {text}"
+        );
+
+        // AWS 官方文档示例键运行时拼接：源码不出现「AKIA+16 位」完整键形字面量
+        // （读源码的会话会被出口护栏 model_egress.rs 拦截）。
+        let aws_key = format!("AKIA{}", "IOSFODNN7EXAMPLE");
+        let text = redacted_text(format!("aws_access_key_id: {aws_key}").as_bytes());
+        assert!(
+            !text.contains(aws_key.as_str()),
+            "复合名键值形态应被遮盖: {text}"
+        );
+    }
+
+    #[test]
+    fn redacts_authorization_header_and_bearer_tokens() {
+        let text = redacted_text(b"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload\n");
+        assert!(
+            !text.contains("eyJhbGciOiJIUzI1NiJ9"),
+            "Authorization: Bearer 应遮盖 scheme 后的令牌本体: {text}"
+        );
+        assert!(
+            !text.contains("Bearer eyJ"),
+            "不应只遮掉 scheme 留下令牌: {text}"
+        );
+
+        let text = redacted_text(b"\"Authorization\": \"Bearer abcDEF1234567890xyz\"");
+        assert!(
+            !text.contains("abcDEF1234567890xyz"),
+            "JSON 形态的 Authorization 头应被遮盖: {text}"
+        );
+
+        // 裸 bearer 长令牌（日志/CLI 常见形态）；短词不误伤
+        let text = redacted_text(b"bearer YSk3NUFQK9LmGxV4Qz2wEr5\nok bearer of the crown\n");
+        assert!(
+            !text.contains("YSk3NUFQK9LmGxV4Qz2wEr5"),
+            "裸 bearer 长令牌应被遮盖: {text}"
+        );
+        assert!(
+            text.contains("bearer of the crown"),
+            "普通英语短语不应误伤: {text}"
+        );
+    }
+
+    #[test]
+    fn redacts_aws_access_key_literals() {
+        let aws_key = format!("AKIA{}", "IOSFODNN7EXAMPLE");
+        let text = redacted_text(format!("configured key {aws_key} for deploy\n").as_bytes());
+        assert!(
+            !text.contains(aws_key.as_str()),
+            "AWS 访问键原文应被遮盖: {text}"
+        );
+        // 大小写敏感：普通小写词不受影响
+        let plain = redacted_text(b"akiawhatever1234567890 is not a key id\n");
+        assert!(
+            plain.contains("akiawhatever1234567890"),
+            "小写形态不应按 AWS 键误伤: {plain}"
+        );
     }
 
     #[test]

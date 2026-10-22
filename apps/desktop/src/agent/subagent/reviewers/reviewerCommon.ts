@@ -1,5 +1,6 @@
 import type { ExplorePromptOptions } from '../explore/buildExplorePrompt'
 import type { ResolvedLanguage } from '@/i18n/locale'
+import { readonlyToolsSection } from '../readonlyTools'
 
 /**
  * 审查类 SubAgent（inspect/examine/review）共享的 system prompt 渲染辅助。
@@ -104,18 +105,8 @@ export const renderReviewerBudgetNote = (
 
 /** 只读工具与禁止项段落（三个审查 builder 完全一致；双语由模板占位符取用）。 */
 export const REVIEWER_TOOLS_SECTIONS: Record<ReviewerPromptLanguage, string> = {
-  'zh-CN': `# 允许的工具
-- read：读取文件内容（文本或图片）
-- ls：列出目录条目
-- grep：在工作区内搜索文本
-- find：按模式查找文件
-其余工具均不可用；write、edit、bash、审批、工具发现与再次委派 SubAgent 都被禁止。`,
-  en: `# Allowed tools
-- read: read file contents (text or images)
-- ls: list directory entries
-- grep: search text within the workspace
-- find: locate files by pattern
-All other tools are unavailable; write, edit, bash, approvals, tool discovery and delegating SubAgents are all forbidden.`,
+  'zh-CN': readonlyToolsSection('zh-CN'),
+  en: readonlyToolsSection('en'),
 }
 
 export const REVIEWER_FORBIDDEN_SECTIONS: Record<ReviewerPromptLanguage, string> = {

@@ -6,7 +6,10 @@ use sqlx::{Column, Row, Sqlite, TypeInfo, ValueRef};
 
 use super::{MAX_PARAMETERS, MAX_REQUEST_BYTES};
 
-pub(super) fn validate_parameter_payload(parameters: &[Value], expected: usize) -> Result<(), String> {
+pub(super) fn validate_parameter_payload(
+    parameters: &[Value],
+    expected: usize,
+) -> Result<(), String> {
     if parameters.len() != expected || parameters.len() > MAX_PARAMETERS {
         return Err("SessionRepository 参数数量无效".to_string());
     }

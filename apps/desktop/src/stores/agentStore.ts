@@ -11,15 +11,7 @@ import {
   normalizeContextPolicySettings,
   type ContextPolicySettings,
 } from '@/agent/context/types'
-import {
-  ApprovalCoordinator,
-  buildAccessModeBeforeToolCall,
-  evaluateAccessModeToolCall,
-} from '@/agent/approval/ApprovalCoordinator'
-import type {
-  BeforeToolCall,
-  BeforeToolCallResult,
-} from '@/agent/core/types'
+import type { AccessMode } from '@/agent/approval/ApprovalCoordinator'
 import type { QueuedMessageSnapshot } from '@/agent/runtime/AgentSession'
 import { useUiStore, getGitBranchPrefix, getProjectSkillsEnabled } from '@/stores/uiStore'
 import {
@@ -34,13 +26,30 @@ import {
   registerProductRuntimeHooks,
 } from '@/agent/runtime/productRuntimeHooks'
 import { createProductToolRuntime, buildSystemPrompt } from '@/agent/runtime/productToolRuntime'
+import { projectSessionActiveToolNames } from '@/agent/runtime/toolPermissionProjection'
 import { createSubAgentRuntime } from '@/agent/subagent/SubAgentRuntime'
 import { createSubAgentObservationSink } from './services/subAgentObservability'
+import { stopSessionRuntime } from './services/stopSessionRuntime'
+import { createApprovalWiring } from './services/approvalWiring'
+import { backgroundRunCapacityError } from './services/backgroundRunPolicy'
+import { revokeSessionAuthorization } from '@/platform/sessionAuthorization'
+import { setSendManifestSink } from '@/platform/sendManifest'
 import { buildSessionBasePrompt } from '@/agent/prompt/systemPromptSections'
 import { loadProjectContext } from '@/agent/prompt/projectContext'
-import { loadProjectDocs, projectDocInventoryEqual, EMPTY_PROJECT_DOC_INVENTORY, type ProjectDocInventory } from '@/agent/prompt/projectDocs'
+import {
+  loadProjectAgents,
+  projectAgentsInventoryEqual,
+  EMPTY_PROJECT_AGENTS_INVENTORY,
+  type ProjectAgentsInventory,
+} from '@/agent/prompt/projectAgents'
+import {
+  loadProjectDocs,
+  projectDocInventoryEqual,
+  projectDocPromptInventoryEqual,
+  EMPTY_PROJECT_DOC_INVENTORY,
+  type ProjectDocInventory,
+} from '@/agent/prompt/projectDocs'
 import { createProjectDocsRefreshScheduler } from './services/projectDocsRefresh'
-import { ensureSshApprovalGrantMirror, sshHostGrantedForSession } from './services/sshApprovalGrants'
 import { reconcileSessionPromptOnActivation } from './services/sessionPromptReconcile'
 import { bindActiveProjectSkillSnapshot, getActiveProjectSkillSnapshot } from '@/agent/skills/activeProjectSkills'
 import { loadProjectSkills } from '@/agent/skills/loadProjectSkills'
@@ -84,8 +93,8 @@ import {
   resolveSessionProviderConfig,
   type ProviderProfile,
 } from '@/agent/transport/provider'
-import { RUNTIME_POLICY } from '@/config/runtimePolicy'
-import { migrateToolName } from '@/agent/tools/toolNameMigrations'
+import { createRuntimePolicy, RUNTIME_POLICY } from '@/config/runtimePolicy'
+import { getRuntimeInfo } from '@/platform/runtimeInfo'
 import { bindProviderHost } from '@/agent/transport/providerHost'
 import { createDesktopProviderHost } from '@/platform/providerHost'
 import {
@@ -99,10 +108,6 @@ import {
   desktopAgentEnvironment,
 } from '@/agent/environment/agentEnvironmentHost'
 import { createDesktopAgentEnvironment } from '@/platform/desktopAgentEnvironment'
-import {
-  requestWorkspaceApprovalLease,
-  setWorkspaceApprovalMode,
-} from '@/platform/workspaceApproval'
 import {
   activateAuthorizedWorkspace,
   restoreAuthorizedWorkspaces,
@@ -138,10 +143,12 @@ import {
 } from './settingsPersistence'
 import {
   getRuntimeBasePrompt,
+  getRuntimeProjectContext,
   getRuntimeProjection,
   getRuntimeProvider,
   getRuntimeSession,
   setRuntimeBasePrompt,
+  setRuntimeProjectContext,
   setRuntimeProvider,
   setRuntimeProjection,
   setRuntimeSession,
@@ -162,7 +169,9 @@ import {
 import {
   sessionWorkspacePaths,
 } from './workspaceActions'
+import { setProjectedWorkspacePathSource } from './services/sessionWorkspaceRegistry'
 import { createStorageStatsSlice } from './storageStatsSlice'
+import { resetSessionAccessMode } from './accessModeActions'
 import type {
   ActivateCachedRuntimeOptions,
   AgentState,
@@ -191,7 +200,6 @@ if (isTauriRuntime()) bindProviderHost(createDesktopProviderHost())
 if (isTauriRuntime()) bindAgentEnvironment(createDesktopAgentEnvironment())
 // SSH 会话授权镜像：订阅 Rust「本会话内允许该主机」事件（免审批卡预检用，
 // 权威校验仍在 Rust lease 签发路径）。
-if (isTauriRuntime()) ensureSshApprovalGrantMirror()
 
 /**
  * The Provider Secret migration service is a pure helper that does not import
@@ -211,7 +219,10 @@ const providerSecretMigrationBindings: ProviderSecretMigrationBindings = {
 // runtimeCaches 直接 import workspaceActions——那会形成模块环（workspaceActions
 // 已依赖 runtimeCaches）。删会话路径的显式 delete 保留（幂等，见红线 ①）。
 setRuntimeEvictionListener((sessionId) => {
-  sessionWorkspacePaths.delete(sessionId)
+  sessionWorkspacePaths.forget(sessionId)
+  if (isTauriRuntime()) void revokeSessionAuthorization(sessionId).catch((error: unknown) => {
+    useAgentStore.setState({ error: error instanceof Error ? error.message : String(error) })
+  })
 })
 
 // 提示词本地化宿主装配：agent 层不 import stores/i18n 运行时，此处注入
@@ -239,12 +250,16 @@ installPromptLocalizationHost({
 // 动态组装（含 # 角色 中的模型身份行），不保留模块级静态提示词常量；绑定工作区或
 // 存在授权文件的会话由 createRuntimeSession 用 buildSessionBasePrompt 重建，并把
 // 同一份 basePrompt 传给 productRuntimeHooks 做工具准则回流。
-const DESKTOP_TOOL_RUNTIME = createProductToolRuntime(
-  RUNTIME_POLICY.toolCapabilities,
+let runtimeCapabilities = RUNTIME_POLICY.toolCapabilities
+let DESKTOP_TOOL_RUNTIME = createProductToolRuntime(
+  runtimeCapabilities,
   desktopAgentEnvironment,
+  // H1-5 发布档（build-time 常量，不随 runtimeInfo 变化）：Agent 层不 import app config
+  // 的值，故由这里注入；开发档让 api_request 只放行回环/本地目标。
+  { testAutomation: RUNTIME_POLICY.testAutomation },
 )
-const REGISTERED_TOOLS = DESKTOP_TOOL_RUNTIME.tools
-const DEFAULT_ACTIVE_TOOL_NAMES = DESKTOP_TOOL_RUNTIME.activeToolNames
+let REGISTERED_TOOLS = DESKTOP_TOOL_RUNTIME.tools
+let DEFAULT_ACTIVE_TOOL_NAMES = DESKTOP_TOOL_RUNTIME.activeToolNames
 // 产品 SubAgent 运行时：无状态精简工厂，delegate 每次构造独立子会话；父 run 累计
 // ledger 由 AgentSession 按 prompt 调用维护并注入 binding。
 const productSubAgentRuntime = createSubAgentRuntime()
@@ -260,10 +275,32 @@ let activeAuthorizedReadFiles: AuthorizedReadFile[] = []
 // 调用 refreshProjectContext 异步刷新、bindSession 前确保就绪。无工作区或
 // 文件缺失时为 null，提示词会省略 # 项目上下文 段。
 let activeProjectContext: string | null = null
+// 嵌套 AGENTS.md 的路径索引镜像：根 AGENTS.md 是全局契约，子目录文件是它的局部
+// 展开，只注路径不注正文（模型按需 read）。与 activeProjectContext 同批次扫描、
+// 同批次刷新、同批次回滚——三者合成同一个 `# 项目上下文` 段，任何一面掉队都会
+// 让提示词内部出现新鲜度不一致的拼装。
+let activeProjectAgents: ProjectAgentsInventory = EMPTY_PROJECT_AGENTS_INVENTORY
 // 已扫描的工作区 SDD 文档索引镜像：refreshProjectContext 扫描 .specs/.plans/.docs
 // 后更新，供 createRuntimeSession 组装 # 项目上下文 段的 <available_docs> 子块。
 // 无工作区或目录缺失时为 EMPTY_PROJECT_DOC_INVENTORY（提示词省略该子块）。
 let activeProjectDocs: ProjectDocInventory = EMPTY_PROJECT_DOC_INVENTORY
+
+/**
+ * 通知 UI：某个会话的文档索引实际变化。DocsView 订阅该代数，后台会话在自身
+ * run 里写入 Spec/Plan 后无需切换会话即可触发重扫；同一轮多次刷新由代数递增
+ * 和 UI 侧单飞合并处理。
+ */
+const notifyProjectDocsChanged = (workspacePath?: string): void => {
+  useAgentStore.setState((state) => ({
+    projectDocsRevision: state.projectDocsRevision + 1,
+    projectDocsWorkspacePath: workspacePath ?? null,
+  }))
+}
+
+// 测试页会话上下文段镜像：仅在测试页激活时由页面发布（`setTestingPromptContext`），
+// 离开测试页或切换会话即清空。与项目上下文三面镜像同级、同生命周期，
+// 因此会话提示词重建（激活/刷新/回流）能拿到同一份值。
+let activeTestingContext: string | null = null
 // 当前活动会话的 session-scoped 基准提示词（不含工具段）：createRuntimeSession
 // 构建 sessionBasePrompt 后同步更新，productRuntimeHooks 的 getBasePrompt() 读取
 // 最新值。reload（runtime_dependencies_update 提交新 systemPrompt）后必须更新本
@@ -274,22 +311,125 @@ let activeSessionBasePrompt = ''
 // 后同步更新；reload 用它作为 `runtime_dependencies_update` 的 previous 载荷。
 let activeRuntimeManifest: RuntimeDependencyManifest | null = null
 
+const activeProjectContextSnapshot = () => ({
+  projectContext: activeProjectContext,
+  projectAgents: activeProjectAgents,
+  projectDocs: activeProjectDocs,
+  testingContext: activeTestingContext,
+})
+
+/**
+ * 活动会话当前的访问模式，供提示词重建注入 `# 访问模式` 段。
+ *
+ * 不设模块级镜像：镜像需要每个写入点同步，而写入点分散（模式切换、会话激活、
+ * 停止/归档/切换工作区…），漏一处就会让**另一个会话**的档位写进本会话提示词。
+ * 改读 store 的权威投影——本函数只在 store 就绪后的路径上被调用（模式变更、
+ * 技能/文档重载、run 结束），不受 createRuntimeSession 的模块求值期 TDZ 影响；
+ * 会话创建走快照自带的 accessMode（见 createRuntimeSession）。
+ */
+const activeSessionAccessMode = (): AccessMode => {
+  const state = useAgentStore.getState()
+  return state.sessions.find((item) => item.id === state.activeSessionId)?.accessMode
+    ?? 'standard'
+}
+
 /**
  * 按给定工作区根目录异步加载 AGENTS.md 并扫描 SDD 文档索引，更新模块级镜像。
  * 必须在 bindSession → createRuntimeSession 重建会话提示词前调用，
  * 使 # 项目上下文 段（AGENTS.md 正文 + <available_docs>）反映当前会话绑定的
  * 工作区。无工作区时清空两镜像。仅 Tauri 运行时读取；浏览器开发模式静默降级。
+ *
+ * 两条读取共用同一个 environment（无状态闭包，安全共享）且互无数据依赖，
+ * 并发发起——文档扫描最坏要发 4 次目录列举加数十次读头，串行 await 会让单次
+ * readText 的 AGENTS.md 读取被整趟扫描挡在后面。
  */
+/**
+ * 活动会话基准提示词的**唯一**构造点。
+ *
+ * 三面项目上下文镜像（AGENTS.md 正文 / 嵌套索引 / 文档索引）必须齐备传入：
+ * 漏传一面等于把那一块从 live 提示词里删掉——接入嵌套索引时，技能重载与访问
+ * 模式切换两处就漏传过，整块 `<available_agents>` 在用户切一次权限档后消失。
+ * 收成一个函数后「齐备」由构造保证，而不是靠四个调用点各自自觉。
+ *
+ * `accessMode` 由调用方显式传入而非函数内读取：激活路径必须用会话快照自带的
+ * 模式（此时 store 尚未投影 `activeSessionId`），其余路径才用 store 权威投影，
+ * 两者语义不同，混用会让重建候选与实际提示词分叉。
+ */
+const buildSessionBasePromptFromContext = ({
+  config,
+  workspacePath,
+  accessMode,
+  projectSkills,
+  projectContext,
+  projectAgents,
+  projectDocs,
+  testingContext,
+}: {
+  config: ProviderProfile
+  workspacePath: string | undefined
+  accessMode: AccessMode
+  projectSkills?: ProjectSkillInventorySnapshot | null
+  projectContext: string | null
+  projectAgents: ProjectAgentsInventory
+  projectDocs: ProjectDocInventory
+  testingContext: string | null
+}): string => buildSessionBasePrompt({
+  capabilities: runtimeCapabilities,
+  workspacePath,
+  authorizedFilePaths: activeAuthorizedReadFiles.map((file) => file.path),
+  accessMode,
+  projectContext,
+  projectAgents,
+  projectSkills: projectSkills ?? getActiveProjectSkillSnapshot(),
+  projectDocs,
+  testingContext,
+  modelName: resolvePromptModelName(config),
+})
+
+const buildActiveSessionBasePrompt = (
+  input: Omit<
+    Parameters<typeof buildSessionBasePromptFromContext>[0],
+    'projectContext' | 'projectAgents' | 'projectDocs' | 'testingContext'
+  >,
+): string => buildSessionBasePromptFromContext({ ...input, ...activeProjectContextSnapshot() })
+
 const refreshProjectContext = async (workspacePath?: string): Promise<void> => {
   const environment = workspacePath && isTauriRuntime()
     ? createDesktopAgentEnvironment(workspacePath)
     : null
-  activeProjectContext = environment
-    ? await loadProjectContext(environment)
-    : null
-  activeProjectDocs = environment
-    ? await loadProjectDocs(environment)
-    : EMPTY_PROJECT_DOC_INVENTORY
+  if (!environment) {
+    const docsChanged = !projectDocInventoryEqual(activeProjectDocs, EMPTY_PROJECT_DOC_INVENTORY)
+    activeProjectContext = null
+    activeProjectAgents = EMPTY_PROJECT_AGENTS_INVENTORY
+    activeProjectDocs = EMPTY_PROJECT_DOC_INVENTORY
+    activeTestingContext = null
+    useAgentStore.setState({ projectDocs: EMPTY_PROJECT_DOC_INVENTORY })
+    if (docsChanged) notifyProjectDocsChanged()
+    return
+  }
+  const [contextLoad, scannedAgents, inventory] = await Promise.all([
+    loadProjectContext(environment),
+    loadProjectAgents(environment),
+    loadProjectDocs(environment),
+  ])
+  // 激活路径一律以本次结果为准，**不沿用上一份**：切换工作区后旧内容属于另一个
+  // 工作区，留着等于把 A 项目的约定注入 B 项目的会话。故 unavailable 与
+  // absent 同样落空，差别只在可观测性（下次激活会重试）。
+  if (contextLoad.kind === 'unavailable') {
+    console.error('[项目上下文] 根 AGENTS.md 读取失败，激活时按无正文处理（不得沿用上一工作区的正文）')
+  }
+  activeProjectContext = contextLoad.kind === 'content' ? contextLoad.content : null
+  if (scannedAgents === null) {
+    console.error('[项目上下文] 嵌套 AGENTS.md 扫描失败，激活时按空清单处理（不得沿用上一工作区的索引）')
+    activeProjectAgents = EMPTY_PROJECT_AGENTS_INVENTORY
+  } else {
+    activeProjectAgents = scannedAgents
+  }
+  const docsChanged = !projectDocInventoryEqual(activeProjectDocs, inventory)
+  activeProjectDocs = inventory
+  activeTestingContext = null
+  useAgentStore.setState({ projectDocs: inventory })
+  if (docsChanged) notifyProjectDocsChanged(workspacePath)
 }
 /**
  * 检查 formatAvailableSkills 的 32 KiB metadata 预算省略，为每个被省略的 skill
@@ -356,24 +496,21 @@ const applyProjectSkillsToSession = async (
     const config = useAgentStore.getState().provider
     const workspacePath = useAgentStore.getState().authorizedWorkspace?.path
     const activeToolNames = Array.from(active.activeToolNames)
-    const newBasePrompt = buildSessionBasePrompt({
-      capabilities: RUNTIME_POLICY.toolCapabilities,
+    const newBasePrompt = buildActiveSessionBasePrompt({
+      config,
       workspacePath,
-      authorizedFilePaths: activeAuthorizedReadFiles.map((file) => file.path),
-      projectContext: activeProjectContext,
+      accessMode: activeSessionAccessMode(),
       projectSkills: result.snapshot,
-      projectDocs: activeProjectDocs,
-      modelName: resolvePromptModelName(config),
     })
     const newSystemPrompt = buildSystemPrompt({
       basePrompt: newBasePrompt,
-      tools: REGISTERED_TOOLS,
+      tools: active.runtimeContext.tools,
       activeToolNames,
       gitBranchPrefix: getGitBranchPrefix(),
     })
     const currentManifest = createRuntimeDependencyManifest(
       config,
-      REGISTERED_TOOLS,
+      active.runtimeContext.tools,
       active.hooks.dependencies(),
       result.snapshot,
     )
@@ -401,14 +538,107 @@ const applyProjectSkillsToSession = async (
 }
 
 /**
- * 用重扫得到的文档索引更新 <available_docs> 镜像并按需重建会话提示词。
- * 与 {@link applyProjectSkillsToSession} 同构（idle 时经 runtime_dependencies_update
- * 替换 systemPrompt + manifest，忙碌时只更新镜像、后续会话构建生效），差别在于
- * 文档不进技能 snapshot——manifest 只依赖 skills，systemPrompt 才消费文档索引。
+ * 访问模式变更后重建活动会话提示词，使 `# 访问模式` 段如实反映当前档位。
+ *
+ * **顺序是这条函数的全部要点**：先更新 basePrompt 镜像，再按运行态决定是否提交
+ * 重载。镜像更新必须先做——live systemPrompt 在 run 进行中不可热替换，而
+ * `prepare_next_turn` 每轮末从 `getBasePrompt()` 重拼提示词，这是运行中唯一能
+ * 生效的通道；若把镜像更新放在 `isRunning` 早退之后（原实现），运行中切换模式
+ * 会连镜像都不更新，该会话**后续所有 run** 都停在旧档直到下次会话激活。
+ *
+ * idle 时再经 runtime_dependencies_update 原子替换 systemPrompt + manifest，
+ * 使提示词立即对齐。
  */
-const applyProjectDocsToSession = async (inventory: ProjectDocInventory): Promise<void> => {
+const refreshSystemPromptForAccessMode = async (): Promise<void> => {
+  const active = session
+  if (!active) return
+  const config = useAgentStore.getState().provider
+  const workspacePath = useAgentStore.getState().authorizedWorkspace?.path
+  const activeToolNames = Array.from(active.activeToolNames)
+  const newBasePrompt = buildActiveSessionBasePrompt({
+    config,
+    workspacePath,
+    accessMode: activeSessionAccessMode(),
+  })
+  // 提示词未变时不做任何事：避免无谓的 manifest 写入与 checkpoint 失效。
+  if (newBasePrompt === (getRuntimeBasePrompt(active.id) ?? activeSessionBasePrompt)) return
+  setRuntimeBasePrompt(active.id, newBasePrompt)
+  if (useAgentStore.getState().activeSessionId === active.id) {
+    activeSessionBasePrompt = newBasePrompt
+  }
+  if (active.isRunning) return
+  const previousManifest = activeRuntimeManifest
+  if (!previousManifest) return
+  const newSystemPrompt = buildSystemPrompt({
+    basePrompt: newBasePrompt,
+    tools: active.runtimeContext.tools,
+    activeToolNames,
+    gitBranchPrefix: getGitBranchPrefix(),
+  })
+  const currentManifest = createRuntimeDependencyManifest(
+    config,
+    active.runtimeContext.tools,
+    active.hooks.dependencies(),
+    getActiveProjectSkillSnapshot(),
+  )
+  await active.updateRuntimeDependencies({
+    previous: {
+      systemPrompt: active.systemPrompt,
+      activeToolNames,
+      runtimeManifest: previousManifest,
+    },
+    current: {
+      systemPrompt: newSystemPrompt,
+      activeToolNames,
+      runtimeManifest: currentManifest,
+    },
+  })
+  activeRuntimeManifest = currentManifest
+}
+
+/**
+ * run 结束后对齐活动会话提示词的访问模式段。
+ *
+ * 等 harness 真正空闲再调用 {@link refreshSystemPromptForAccessMode}——agent_end
+ * 的发射时机未必已落回 idle，直接调用只会走到「仅更新镜像」的分支。等待期间用户
+ * 可能切走会话：刷新作用于当时的活动会话，读的是它自己的档位，故切换后执行也无害。
+ */
+const refreshSystemPromptAfterIdle = async (): Promise<void> => {
+  const active = session
+  if (!active || active.isDisposed) return
+  await active.waitForIdle()
+  await refreshSystemPromptForAccessMode()
+}
+
+/**
+ * 用重扫得到的项目上下文（AGENTS.md 正文 + 文档索引）更新两个镜像并按需重建
+ * 会话提示词。与 {@link applyProjectSkillsToSession} 同构（idle 时经
+ * runtime_dependencies_update 替换 systemPrompt + manifest，忙碌时只更新镜像、
+ * 后续会话构建生效），差别在于上下文不进技能 snapshot——manifest 只依赖 skills，
+ * systemPrompt 才消费上下文。
+ *
+ * 两面镜像必须在同一个动作里提交：只更新其中一面会让下一次提示词重建把
+ * 「新的文档索引 + 陈旧的 AGENTS.md」混装进同一次提交——finish 阶段要求模型
+ * 同步 AGENTS.md，若该改动要等到下次会话激活才可见，模型自己看不到自己刚写的
+ * 内容。回滚同理两面一起回，否则提交失败后镜像与 live 提示词分叉。
+ */
+const applyProjectContextToSession = async (next: {
+  projectContext: string | null
+  projectAgents: ProjectAgentsInventory
+  projectDocs: ProjectDocInventory
+  testingContext: string | null
+}): Promise<void> => {
+  const previousContext = activeProjectContext
+  const previousAgents = activeProjectAgents
   const previousDocs = activeProjectDocs
-  activeProjectDocs = inventory
+  const previousTesting = activeTestingContext
+  const docsChanged = !projectDocInventoryEqual(previousDocs, next.projectDocs)
+  activeProjectContext = next.projectContext
+  activeProjectAgents = next.projectAgents
+  activeProjectDocs = next.projectDocs
+  activeTestingContext = next.testingContext
+  useAgentStore.setState({ projectDocs: next.projectDocs })
+  if (docsChanged) notifyProjectDocsChanged()
   const active = session
   if (!active || active.isRunning) return
   const previousManifest = activeRuntimeManifest
@@ -416,24 +646,21 @@ const applyProjectDocsToSession = async (inventory: ProjectDocInventory): Promis
   const config = useAgentStore.getState().provider
   const workspacePath = useAgentStore.getState().authorizedWorkspace?.path
   const activeToolNames = Array.from(active.activeToolNames)
-  const newBasePrompt = buildSessionBasePrompt({
-    capabilities: RUNTIME_POLICY.toolCapabilities,
+  // 镜像已在函数开头写入，故此处读到的就是 next 的三面值。
+  const newBasePrompt = buildActiveSessionBasePrompt({
+    config,
     workspacePath,
-    authorizedFilePaths: activeAuthorizedReadFiles.map((file) => file.path),
-    projectContext: activeProjectContext,
-    projectSkills: getActiveProjectSkillSnapshot(),
-    projectDocs: inventory,
-    modelName: resolvePromptModelName(config),
+    accessMode: activeSessionAccessMode(),
   })
   const newSystemPrompt = buildSystemPrompt({
     basePrompt: newBasePrompt,
-    tools: REGISTERED_TOOLS,
+    tools: active.runtimeContext.tools,
     activeToolNames,
     gitBranchPrefix: getGitBranchPrefix(),
   })
   const currentManifest = createRuntimeDependencyManifest(
     config,
-    REGISTERED_TOOLS,
+    active.runtimeContext.tools,
     active.hooks.dependencies(),
     getActiveProjectSkillSnapshot(),
   )
@@ -451,13 +678,44 @@ const applyProjectDocsToSession = async (inventory: ProjectDocInventory): Promis
       },
     })
   } catch (error) {
-    // 提交失败回滚镜像：维持旧提示词与镜像一致，下次 run 结束重扫会再尝试。
+    // 提交失败回滚三面镜像：维持旧提示词与镜像一致，下次 run 结束重扫会再尝试。
+    // 调度器会吞掉异常（单轮失败不中断补扫轮），故此处必须自行记日志，
+    // 否则「上下文正在退化」在 UI 与日志里都无从发现。
+    console.error('[项目上下文] runtime_dependencies_update 提交失败，已回滚三面镜像', error)
+    activeProjectContext = previousContext
+    activeProjectAgents = previousAgents
     activeProjectDocs = previousDocs
+    activeTestingContext = previousTesting
+    useAgentStore.setState({ projectDocs: previousDocs })
     throw error
   }
   activeSessionBasePrompt = newBasePrompt
   setRuntimeBasePrompt(active.id, newBasePrompt)
   activeRuntimeManifest = currentManifest
+}
+
+/**
+ * 发布/清除测试页上下文段（测试页在挂载与数据变化时调用，卸载时传 null）。
+ *
+ * 与项目上下文共用同一个动作，因此同样是「镜像先更新、再提交 live 提示词」：
+ * 运行中的会话保持当前提示词（镜像已变，下一轮生效），提交失败回滚镜像。
+ *
+ * **门放在调用点**：`agent/**` 只接收字符串，"是否在测试页"的判定完全由页面决定——
+ * 没人在测试页时永远不发布，段自然不出现（也就不需要视图判定渗进 agent 层）。
+ */
+export const setTestingPromptContext = async (text: string | null): Promise<void> => {
+  if (activeTestingContext === text) return
+  try {
+    await applyProjectContextToSession({
+      projectContext: activeProjectContext,
+      projectAgents: activeProjectAgents,
+      projectDocs: activeProjectDocs,
+      testingContext: text,
+    })
+  } catch (error) {
+    // 提示词刷新失败不该把测试页打红：动作内已回滚镜像，下一轮激活/刷新会再对齐。
+    console.error('[测试上下文] 会话提示词提交失败，已保留原值', error)
+  }
 }
 
 /**
@@ -474,95 +732,239 @@ const buildReconcileCandidateSystemPrompt = (harness: AgentHarness, basePrompt: 
   })
 
 /**
- * run 结束后的延迟文档索引刷新（单轮刷新体）：等待会话完全 idle 后重扫受管目录，
- * 索引有变化才重建提示词。覆盖所有写入路径（write/edit/apply_changes/restore_trash
- * 以及无法可靠解析参数的 bash），无需逐工具匹配参数——未变化时零副作用。
+ * 激活会话的基准提示词（不含工具段）：授权上下文 + 项目上下文 + 访问模式段。
+ *
+ * 三处激活路径（bindSession / cached 激活 / 重启恢复）原各自拼装同一组参数——
+ * 参数一旦不同，对账候选与实际提示词就会分叉。收成一个函数后「同源」由构造保证。
+ */
+const buildActivationBasePrompt = (
+  session: Pick<StoredAgentSession, 'accessMode' | 'workspace'> | undefined,
+  config: ProviderProfile,
+): string => buildActiveSessionBasePrompt({
+  config,
+  workspacePath: session?.workspace?.path,
+  accessMode: session?.accessMode ?? 'standard',
+})
+
+/**
+ * 激活边界的提示词对账，并在替换生效后同步 per-session basePrompt 镜像。
+ *
+ * **镜像必须与 live 提示词同源**：`prepare_next_turn` 每轮末从镜像重拼提示词
+ * （`getBasePrompt()`），只替换 live 会让下一次回流把刚修掉的漂移带回——档位镜像
+ * 曾因此掩盖过一次缺陷。这里把「替换 live + 同步镜像」绑成一个动作，使对账不再是
+ * 唯一只改一半的路径。对账未生效（无漂移）时不动镜像。
+ *
+ * 异常不外吞：调用点记日志并依赖轮次回流兜底（fail-soft 策略归调用方）。
+ */
+const reconcileSessionPrompt = async (
+  harness: AgentHarness,
+  sessionId: string,
+  basePrompt: string,
+  manifest: RuntimeDependencyManifest,
+): Promise<void> => {
+  const applied = await reconcileSessionPromptOnActivation(
+    harness,
+    manifest,
+    buildReconcileCandidateSystemPrompt(harness, basePrompt),
+  )
+  if (!applied) return
+  setRuntimeBasePrompt(sessionId, basePrompt)
+  activeSessionBasePrompt = basePrompt
+}
+
+/**
+ * run 结束后的延迟项目上下文刷新（单轮刷新体）：等待会话完全 idle 后重扫
+ * AGENTS.md 正文与受管目录索引，任一有变化才重建提示词。覆盖所有写入路径
+ * （write/edit/apply_changes/restore_trash 以及无法可靠解析参数的 bash），
+ * 无需逐工具匹配参数——未变化时零副作用。
+ *
+ * **AGENTS.md 与索引必须在同一轮里刷新**：finish 阶段的收口动作就是同步
+ * AGENTS.md，若它要等到下次会话激活才对模型可见，模型改完看不到自己刚写的约定，
+ * 而同一次重建里文档索引已是新的——两面新鲜度分叉比两者都旧更难排查。
+ * AGENTS.md 是纯文本，直接比字符串即可，无需索引那样的结构化深比较。
  * fail-soft：刷新失败只跳过该轮（会话激活路径仍会兜底刷新）。
  *
- * 每轮从当前激活会话起算：触发所属会话若已被切换走，刷新对当前会话自洽执行
- * （扫描当前授权工作区、应用到当前会话，深比较未变化即零副作用）——切换路径的
- * 会话激活本身会全量重扫，并由激活边界的提示词对账（reconcileSessionPromptOnActivation）
- * 把漂移写入 live 提示词，不依赖本刷新。
+ * 调度键是触发 `agent_end` 的会话 ID：前台会话沿用活动镜像的原子提交路径；
+ * 后台缓存 harness 从 per-session 快照出发，扫描自己的绑定工作区并只更新自己。
+ * 会话切换不会改变本轮归属，不同会话之间可并行刷新。
  */
-const refreshProjectDocsOnce = async (): Promise<void> => {
-  const active = session
-  if (!active || active.isDisposed) return
-  const boundSessionId = useAgentStore.getState().activeSessionId
-  await active.waitForIdle()
-  // 等待期间用户可能已切换会话：只为刷新开始时即为激活态的会话应用结果。
-  if (useAgentStore.getState().activeSessionId !== boundSessionId) return
+const refreshBackgroundProjectContext = async (
+  sessionId: string,
+  target: AgentHarness,
+): Promise<void> => {
+  const state = useAgentStore.getState()
+  const stored = state.sessions.find((item) => item.id === sessionId)
+  const providerState = getRuntimeProvider(sessionId)
+  const previousManifest = stored?.runtimeManifest
+  const workspacePath = sessionWorkspacePaths.pathOf(sessionId) ?? stored?.workspace?.path
+  const previous = getRuntimeProjectContext(sessionId)
+  if (!stored || !providerState || !previousManifest || !workspacePath || !previous || !isTauriRuntime()) return
+  const environment = createDesktopAgentEnvironment(workspacePath)
+  const [contextLoad, scannedAgents, inventory] = await Promise.all([
+    loadProjectContext(environment),
+    loadProjectAgents(environment),
+    loadProjectDocs(environment),
+  ])
+  if (contextLoad.kind === 'unavailable') {
+    console.error(`[项目上下文] 后台会话 ${sessionId} 的根 AGENTS.md 读取失败，保留上一份正文`)
+  }
+  if (scannedAgents === null) {
+    console.error(`[项目上下文] 后台会话 ${sessionId} 的嵌套 AGENTS.md 扫描失败，保留上一份索引`)
+  }
+  const projectContext = contextLoad.kind === 'content'
+    ? contextLoad.content
+    : contextLoad.kind === 'absent'
+      ? null
+      : previous.projectContext
+  const projectAgents = scannedAgents ?? previous.projectAgents
+  const docsChanged = !projectDocInventoryEqual(inventory, previous.projectDocs)
+  const promptUnchanged = projectContext === previous.projectContext
+    && projectAgentsInventoryEqual(projectAgents, previous.projectAgents)
+    && projectDocPromptInventoryEqual(inventory, previous.projectDocs)
+  if (target.isDisposed || target.isRunning) return
+  // 后台会话与当前激活工作区相同时，把最新索引同步到全局投影，避免设置页
+  // 的文档诊断停留在旧扫描；不同工作区互不影响。
+  const mirrorsActiveWorkspace = useAgentStore.getState().authorizedWorkspace?.path === workspacePath
+  if (promptUnchanged) {
+    // 仅正文 revision 变化：后台会话的 live 提示词不变，但 DocsView 仍应重扫。
+    if (!docsChanged) return
+    setRuntimeProjectContext(sessionId, { ...previous, projectDocs: inventory })
+    if (mirrorsActiveWorkspace) useAgentStore.setState({ projectDocs: inventory })
+    notifyProjectDocsChanged(workspacePath)
+    return
+  }
+  const projectSnapshot = {
+    projectContext,
+    projectAgents,
+    projectDocs: inventory,
+    testingContext: previous.testingContext,
+  }
+  const activeToolNames = Array.from(target.activeToolNames)
+  const newBasePrompt = buildSessionBasePromptFromContext({
+    config: providerState.config,
+    workspacePath,
+    accessMode: stored.accessMode ?? 'standard',
+    projectSkills: previousManifest.skills,
+    ...projectSnapshot,
+  })
+  const currentManifest = createRuntimeDependencyManifest(
+    providerState.config,
+    target.runtimeContext.tools,
+    target.hooks.dependencies(),
+    previousManifest.skills,
+  )
+  try {
+    await target.updateRuntimeDependencies({
+      previous: {
+        systemPrompt: target.systemPrompt,
+        activeToolNames,
+        runtimeManifest: previousManifest,
+      },
+      current: {
+        systemPrompt: buildSystemPrompt({
+          basePrompt: newBasePrompt,
+          tools: target.runtimeContext.tools,
+          activeToolNames,
+          gitBranchPrefix: getGitBranchPrefix(),
+        }),
+        activeToolNames,
+        runtimeManifest: currentManifest,
+      },
+    })
+  } catch (error) {
+    console.error(`[项目上下文] 后台会话 ${sessionId} 的 runtime_dependencies_update 提交失败`, error)
+    throw error
+  }
+  setRuntimeProjectContext(sessionId, projectSnapshot)
+  setRuntimeBasePrompt(sessionId, newBasePrompt)
+  if (docsChanged) {
+    if (mirrorsActiveWorkspace) useAgentStore.setState({ projectDocs: inventory })
+    notifyProjectDocsChanged(workspacePath)
+  }
+}
+
+const refreshProjectContextOnce = async (sessionId: string): Promise<void> => {
+  const target = getRuntimeSession(sessionId)
+  if (!target || target.isDisposed) return
+  await target.waitForIdle()
+  if (getRuntimeSession(sessionId) !== target || target.isDisposed) return
+  if (sessionId !== useAgentStore.getState().activeSessionId || target !== session) {
+    await refreshBackgroundProjectContext(sessionId, target)
+    return
+  }
   const workspacePath = useAgentStore.getState().authorizedWorkspace?.path
   if (!workspacePath || !isTauriRuntime()) return
-  const inventory = await loadProjectDocs(createDesktopAgentEnvironment(workspacePath))
-  if (projectDocInventoryEqual(inventory, activeProjectDocs)) return
-  await applyProjectDocsToSession(inventory)
+  const environment = createDesktopAgentEnvironment(workspacePath)
+  const [contextLoad, scannedAgents, inventory] = await Promise.all([
+    loadProjectContext(environment),
+    loadProjectAgents(environment),
+    loadProjectDocs(environment),
+  ])
+  // 读取/扫描失败一律保留上一份镜像，而不是提交空值：一次偶发的 IPC 或权限错误
+  // 若被当成「确实没有」，整段正文与整块索引会被从 live 提示词删掉，退化窗口横跨
+  // 一整个 run，其间模型可能在「以为项目没有这些约定」的状态下改代码。下轮自愈。
+  if (contextLoad.kind === 'unavailable') {
+    console.error('[项目上下文] 根 AGENTS.md 读取失败，保留上一份正文；下一个 run 结束会重试')
+  }
+  if (scannedAgents === null) {
+    console.error('[项目上下文] 嵌套 AGENTS.md 扫描失败，保留上一份索引；下一个 run 结束会重试')
+  }
+  const projectContext = contextLoad.kind === 'content'
+    ? contextLoad.content
+    : contextLoad.kind === 'absent'
+      ? null
+      : activeProjectContext
+  const projectAgents = scannedAgents ?? activeProjectAgents
+  const docsChanged = !projectDocInventoryEqual(inventory, activeProjectDocs)
+  const promptUnchanged = projectContext === activeProjectContext
+    && projectAgentsInventoryEqual(projectAgents, activeProjectAgents)
+    && projectDocPromptInventoryEqual(inventory, activeProjectDocs)
+  if (promptUnchanged) {
+    // 只有正文 revision 变化：不重建提示词/不失效 checkpoint，但要把新索引
+    // 写回镜像与运行时快照，并通知 DocsView 重扫当前正文。
+    if (!docsChanged) return
+    activeProjectDocs = inventory
+    useAgentStore.setState({ projectDocs: inventory })
+    setRuntimeProjectContext(sessionId, {
+      projectContext,
+      projectAgents,
+      projectDocs: inventory,
+      testingContext: activeTestingContext,
+    })
+    notifyProjectDocsChanged()
+    return
+  }
+  const nextSnapshot = {
+    projectContext,
+    projectAgents,
+    projectDocs: inventory,
+    testingContext: activeTestingContext,
+  }
+  await applyProjectContextToSession(nextSnapshot)
+  setRuntimeProjectContext(sessionId, nextSnapshot)
 }
 
 /**
  * 调度器（尾沿合并单飞）：agent_end 连续触发（重试/队列排空）时，在途刷新期间
  * 到达的触发不丢弃而是合并为补扫轮——在途扫描可能已读过旧磁盘，丢弃尾沿会让
- * 索引停留在旧值直到下一次 agent_end/会话激活。
+ * 上下文停留在旧值直到下一次 agent_end/会话激活。
  */
-const projectDocsRefreshScheduler = createProjectDocsRefreshScheduler(refreshProjectDocsOnce)
-const approvalCoordinator = new ApprovalCoordinator((context) => {
-  const workspacePath = sessionWorkspacePaths.get(context.sessionId)
-  // 会话绑定的工作区已被撤销/未授权时提前给出友好提示，避免落到 Rust 侧
-  // 「was not previously authorized」类通用错误（审批失败语义模糊）。
-  if (workspacePath) {
-    const authorized = useAgentStore.getState().authorizedWorkspaces
-      .some((workspace) => workspace.path === workspacePath)
-    if (!authorized) {
-      throw new Error(`会话绑定的工作区「${workspacePath}」已撤销或未授权，无法执行需要审批的操作`)
-    }
-  }
-  return requestWorkspaceApprovalLease(
-    context,
-    // bash 统一单层 UI 审批（Rust 权威分类绑定 lease）：出网不再单独设二次原生
-    // 确认，审批卡片与其它 bash 命令同构。其余工具维持交互式原生确认。
-    context.toolName === 'bash' ? 'sandboxSafe' : 'interactive',
-    workspacePath,
-  )
+const projectContextRefreshScheduler = createProjectDocsRefreshScheduler(refreshProjectContextOnce)
+const approvalWiring = createApprovalWiring({
+  workspacePathOf: (sessionId) => sessionWorkspacePaths.pathOf(sessionId),
+  isWorkspaceAuthorized: (workspacePath) => useAgentStore.getState().authorizedWorkspaces
+    .some((workspace) => workspace.path === workspacePath),
+  approvalTimeoutMs: () => activeAgentLimitsSettings.approvalTimeoutMs,
+  accessModeOf: (sessionId) => useAgentStore.getState().sessions.find(
+    (candidate) => candidate.id === sessionId,
+  )?.accessMode ?? 'standard',
+  onAutomaticFallback: (reason) => useAgentStore.setState({
+    settingsError: `完全访问自动授权失败，已安全回落为本次逐次审批：${reason}`,
+  }),
 })
+const approvalCoordinator = approvalWiring.coordinator
+const createAccessModeAwareToolCall = approvalWiring.createBeforeToolCall
 
-const createAccessModeAwareToolCall = (): BeforeToolCall => {
-  const inner: BeforeToolCall = buildAccessModeBeforeToolCall(
-    approvalCoordinator,
-    (context) => evaluateAccessModeToolCall(
-      context,
-      useUiStore.getState().accessMode,
-      (automaticContext) => requestWorkspaceApprovalLease(
-        automaticContext,
-        'automatic',
-        sessionWorkspacePaths.get(automaticContext.sessionId),
-      ),
-    ),
-  )
-  // SSH 远程执行的免卡片预检：会话已在原生对话框授权过该主机时直接以
-  // sshSessionGranted 模式签发 lease（Rust 校验权威授权表）。镜像未命中或
-  // Rust 校验失败（授权已回收/镜像伪造）一律回落原有审批链路重新确认。
-  return async (context): Promise<BeforeToolCallResult> => {
-    if (context.requiresApproval && context.toolName === 'ssh') {
-      const host =
-        typeof (context.input as { host?: unknown } | null)?.host === 'string'
-          ? ((context.input as { host: string }).host.trim() ?? '')
-          : ''
-      if (host && sshHostGrantedForSession(context.sessionId, host)) {
-        try {
-          const approvalLease = await requestWorkspaceApprovalLease(
-            context,
-            'sshSessionGranted',
-            sessionWorkspacePaths.get(context.sessionId),
-          )
-          return { decision: 'approved', approvalLease }
-        } catch {
-          // 授权在 Rust 侧已失效：回落审批卡（原生对话框对已授权主机会静默
-          // 放行，用户只需点一次卡片「允许一次」）。
-        }
-      }
-    }
-    return inner(context)
-  }
-}
 const runtimeObservability = new RuntimeObservability()
 const runtimeHookDiagnostics = new RuntimeHookDiagnostics()
 // 装饰诊断 sink：记录后观察 invocation 阶段成功 hook 的耗时，超阈值经 console.warn
@@ -582,11 +984,11 @@ const sessionDefaults = (
     // 按 config 组装默认提示词：把 ProviderProfile.modelName 注入 # 角色 段，
     // 使 DB 播种 / 新建 / 分支会话持久化的提示词第一轮起就带模型身份。
     // 无工作区/授权文件/项目上下文时结果与 createRuntimeSession 重建的
-    // sessionBasePrompt 严格相等（都使用 RUNTIME_POLICY.toolCapabilities、
+    // sessionBasePrompt 严格相等（都使用 runtimeCapabilities、
     // REGISTERED_TOOLS / DEFAULT_ACTIVE_TOOL_NAMES 与当前 gitBranchPrefix）。
     systemPrompt: buildSystemPrompt({
       basePrompt: buildSessionBasePrompt({
-        capabilities: RUNTIME_POLICY.toolCapabilities,
+        capabilities: runtimeCapabilities,
         modelName: resolvePromptModelName(config),
       }),
       tools: REGISTERED_TOOLS,
@@ -617,18 +1019,7 @@ const reasoningSettingsForSession = (
 }, config.apiFormat, config.maxOutputTokens)
 
 const restoredActiveToolNames = (restored?: Pick<StoredAgentSession, 'activeToolNames'>): string[] => {
-  if (!restored?.activeToolNames.length) return DEFAULT_ACTIVE_TOOL_NAMES.slice()
-  const registered = new Set(REGISTERED_TOOLS.map((tool) => tool.name))
-  const migrated = restored.activeToolNames.map((name) => migrateToolName(name))
-  const missing = migrated.filter((name) => !registered.has(name))
-  if (missing.length > 0) {
-    throw new Error(`Session 活动工具未注册：${missing.join(', ')}`)
-  }
-  const deduped = Array.from(new Set(migrated))
-  for (const required of DEFAULT_ACTIVE_TOOL_NAMES) {
-    if (!deduped.includes(required)) deduped.unshift(required)
-  }
-  return deduped
+  return projectSessionActiveToolNames(restored?.activeToolNames, REGISTERED_TOOLS, DEFAULT_ACTIVE_TOOL_NAMES)
 }
 
 /**
@@ -665,11 +1056,13 @@ const createRuntimeSession = (
 ): AgentHarness => {
   const resolvedSessionId = sessionId ?? createId('session')
   const workspacePath = restoredRuntime?.workspace?.path
-  const subAgentEnvironment = workspacePath
-    ? createDesktopAgentEnvironment(workspacePath)
+  const subAgentEnvironment = workspacePath || isTauriRuntime()
+    ? createDesktopAgentEnvironment(workspacePath, resolvedSessionId)
     : undefined
-  const toolRuntime = workspacePath
-    ? createProductToolRuntime(RUNTIME_POLICY.toolCapabilities, subAgentEnvironment)
+  const toolRuntime = subAgentEnvironment
+    ? createProductToolRuntime(runtimeCapabilities, subAgentEnvironment, {
+      testAutomation: RUNTIME_POLICY.testAutomation,
+    })
     : DESKTOP_TOOL_RUNTIME
   const model = resolveProviderModel(config)
   const transport = providerRequiresApiKey(config.providerId) && !configuredKey
@@ -677,26 +1070,18 @@ const createRuntimeSession = (
     : createProviderTransport(config, configuredKey).transport
   // 端点绑定已下沉到 Rust 侧 provider_profiles::resolve_profile（stream/probe 时强校验），
   // 激活时不再需要前端主动登记 origin。
-  if (workspacePath) sessionWorkspacePaths.set(resolvedSessionId, workspacePath)
-  else sessionWorkspacePaths.delete(resolvedSessionId)
+  sessionWorkspacePaths.bind(resolvedSessionId, workspacePath)
   // 按会话授权状态重建基准/完整提示词：授权上下文段（工作区根目录 + 已授权
   // 文件）+ 项目上下文段（AGENTS.md）+ 模型身份段（config.modelName）使安全
   // 边界、项目约定与底层模型身份如实可执行。无授权上下文、无项目上下文且
   // 模型身份一致时，结果与 sessionDefaults 的默认提示词严格相等。hooks 用
   // 同一份 basePrompt 做工具准则回流，保证重建候选与当前提示词可比。
-  const sessionBasePrompt = buildSessionBasePrompt({
-    capabilities: RUNTIME_POLICY.toolCapabilities,
-    workspacePath,
-    authorizedFilePaths: activeAuthorizedReadFiles.map((file) => file.path),
-    projectContext: activeProjectContext,
-    projectSkills: getActiveProjectSkillSnapshot(),
-    projectDocs: activeProjectDocs,
-    modelName: resolvePromptModelName(config),
-  })
+  const sessionBasePrompt = buildActivationBasePrompt(restoredRuntime, config)
   activeSessionBasePrompt = sessionBasePrompt
   // per-session basePrompt 镜像：harness hook（prepareNextTurn 工具准则回流）按会话
   // 读取，避免后台会话被其他会话的激活/刷新覆盖（不同工作目录会话串台）。
   setRuntimeBasePrompt(resolvedSessionId, sessionBasePrompt)
+  setRuntimeProjectContext(resolvedSessionId, activeProjectContextSnapshot())
   const sessionSystemPrompt = buildSystemPrompt({
     basePrompt: sessionBasePrompt,
     tools: toolRuntime.tools,
@@ -753,7 +1138,7 @@ const createRuntimeSession = (
     // 按会话读取 basePrompt 镜像：后台会话 hook 回流不得使用被其他会话覆盖的
     // 模块级 activeSessionBasePrompt（不同工作目录会话串台）。镜像在会话激活/文档
     // 或技能刷新时同步更新，语义上仍是「读取最新值」。
-    getBasePrompt: () => getRuntimeBasePrompt(resolvedSessionId) ?? activeSessionBasePrompt,
+    getBasePrompt: () => getRuntimeBasePrompt(resolvedSessionId) ?? (session.id === resolvedSessionId ? activeSessionBasePrompt : sessionBasePrompt),
     gitBranchPrefix: getGitBranchPrefix(),
   }))
   harness.hooks.seal()
@@ -815,7 +1200,12 @@ const bindSession = (
   let currentManifest: RuntimeDependencyManifest | undefined
   const runtimeManifestForMutation = (): RuntimeDependencyManifest => {
     if (!currentManifest) throw new Error('Runtime dependency manifest 尚未就绪')
-    return currentManifest
+    return createRuntimeDependencyManifest(
+      getRuntimeProvider(sessionId)?.config ?? config,
+      REGISTERED_TOOLS,
+      nextSession.hooks.dependencies(),
+      useAgentStore.getState().sessions.find((item) => item.id === sessionId)?.runtimeManifest?.skills ?? currentManifest.skills,
+    )
   }
   const bindings = createMutationBindings(sessionId, runtimeManifestForMutation)
   const nextSession = createRuntimeSession(
@@ -882,11 +1272,20 @@ const bindSession = (
       // 的队列消息重新入队（重复投递）。
       projectionError = markPersistenceUnrelated(error)
     }
-    // run 结束后延迟重扫 SDD 文档索引：会话内新写/删除的 .specs/.plans/.docs
+    // run 结束后延迟重扫项目上下文：会话内新写/删除的 .specs/.plans/.docs
     // 文档要在 <available_docs> 中可见，否则后续轮次（尤其压缩后）按陈旧索引
-    // 误判「不存在对应 Spec」。放在 handleSessionEvent 之后、fail-soft 异步执行。
+    // 误判「不存在对应 Spec」；同一轮也重读 AGENTS.md，让 finish 阶段刚同步的
+    // 项目约定立即对模型可见。放在 handleSessionEvent 之后、fail-soft 异步执行。
     if (event.type === 'agent_end') {
-      projectDocsRefreshScheduler.trigger()
+      projectContextRefreshScheduler.trigger(boundSessionId)
+      // run 结束再对齐一次访问模式段：运行中切换模式时 live systemPrompt 无法热替换，
+      // 只能先改 basePrompt 镜像、由 prepare_next_turn 在下一个 turn 边界生效；若切换
+      // 发生在末段（此后没有新的 turn 边界），提示词会停在旧档。这里空闲后补一次完整
+      // 重建——文档重扫有「索引未变即返回」的相等门，不能依赖它兜底。
+      // 只对激活会话做：refreshSystemPromptForAccessMode 作用于模块级活动 harness。
+      if (boundSessionId === useAgentStore.getState().activeSessionId) {
+        void refreshSystemPromptAfterIdle()
+      }
     }
     if (persistenceError !== undefined) throw persistenceError
     if (projectionError !== undefined) throw projectionError
@@ -1005,18 +1404,11 @@ const commitSessionActivation = async (
     // 在下一次模型调用之前写入 live 提示词。fail-soft：失败不阻断激活，轮次回流兜底。
     if (activeRuntimeManifest) {
       try {
-        await reconcileSessionPromptOnActivation(
+        await reconcileSessionPrompt(
           session,
+          prepared.snapshot.session.id,
+          buildActivationBasePrompt(prepared.snapshot.session, prepared.config),
           activeRuntimeManifest,
-          buildReconcileCandidateSystemPrompt(session, buildSessionBasePrompt({
-            capabilities: RUNTIME_POLICY.toolCapabilities,
-            workspacePath: prepared.snapshot.session.workspace?.path,
-            authorizedFilePaths: activeAuthorizedReadFiles.map((file) => file.path),
-            projectContext: activeProjectContext,
-            projectSkills: getActiveProjectSkillSnapshot(),
-            projectDocs: activeProjectDocs,
-            modelName: resolvePromptModelName(prepared.config),
-          })),
         )
       } catch (error) {
         console.warn('激活边界提示词对账失败，将由轮次回流兜底', error)
@@ -1122,11 +1514,11 @@ const activateCachedRuntimeSession = async (
     queuedMessages: [],
   }
   const workspace = options.snapshot.session.workspace
-  // 缓存激活不经过 createRuntimeSession，此处重建工作区映射：revokeWorkspace
-  // 清理过被撤销工作区的映射后，切回该会话必须重新绑定原路径（即使已撤销也要
-  // 保留），使审批继续 fail-closed 而非因缺少映射而 fallback 到其他工作区。
-  if (workspace?.path) sessionWorkspacePaths.set(options.snapshot.session.id, workspace.path)
-  else sessionWorkspacePaths.delete(options.snapshot.session.id)
+  // 缓存激活不经过 createRuntimeSession，此处按快照重建工作区绑定。
+  // 撤销工作区时绑定与快照的 session.workspace 一并不保留（同源、同时失效）：
+  // 被撤销的会话此处绑定为空，且其工作区为 null 使全局 authorizedWorkspace 也
+  // 为 null → Composer 的 workspaceReady 为假，该会话在重新绑定工作区前不可运行。
+  sessionWorkspacePaths.bind(options.snapshot.session.id, workspace?.path)
   // 对齐 prepareSessionActivation（744-745）：cached 激活同样刷新 AGENTS.md 与
   // .axiom/skills 模块级镜像，并重建 basePrompt / runtimeManifest 镜像。否则切回
   // 缓存会话后 applyProjectSkillsToSession / prepareNextTurn 会用上一个工作区的
@@ -1135,22 +1527,17 @@ const activateCachedRuntimeSession = async (
     refreshProjectContext(workspace?.path),
     refreshProjectSkills(workspace?.path),
   ])
-  const sessionBasePrompt = buildSessionBasePrompt({
-    capabilities: RUNTIME_POLICY.toolCapabilities,
-    workspacePath: workspace?.path,
-    authorizedFilePaths: activeAuthorizedReadFiles.map((file) => file.path),
-    projectContext: activeProjectContext,
-    projectSkills: getActiveProjectSkillSnapshot(),
-    projectDocs: activeProjectDocs,
-    modelName: resolvePromptModelName(config),
-  })
+  // 会话绑定边界重建基准提示词：此处 store 尚未投影 activeSessionId，但快照自带
+  // 模式与工作区，取用同一构建函数使镜像与 live 提示词同源。
+  const sessionBasePrompt = buildActivationBasePrompt(options.snapshot.session, config)
   activeSessionBasePrompt = sessionBasePrompt
   setRuntimeBasePrompt(options.snapshot.session.id, sessionBasePrompt)
+  setRuntimeProjectContext(options.snapshot.session.id, activeProjectContextSnapshot())
   activeRuntimeManifest = createRuntimeDependencyManifest(
     config,
-    REGISTERED_TOOLS,
+    options.runtime.runtimeContext.tools,
     options.runtime.hooks.dependencies(),
-    getActiveProjectSkillSnapshot(),
+    options.snapshot.session.runtimeManifest?.skills ?? getActiveProjectSkillSnapshot(),
   )
   // 激活边界提示词对账：cached 会话复用原 harness 的 live 提示词，后台/闲置期间的
   // 文档漂移（自己后台 run 写入、外部编辑）在此写入，否则要等下一次 run 的首个
@@ -1158,10 +1545,11 @@ const activateCachedRuntimeSession = async (
   // 优先：对账只换提示词，不把 skills 快照悄悄换成磁盘现状（削弱 load_skill 的
   // fail-closed 语义）。运行中的后台会话被切回时由回流在 turn_end 自愈，此处跳过。
   try {
-    await reconcileSessionPromptOnActivation(
+    await reconcileSessionPrompt(
       options.runtime,
+      options.snapshot.session.id,
+      sessionBasePrompt,
       options.snapshot.session.runtimeManifest ?? activeRuntimeManifest,
-      buildReconcileCandidateSystemPrompt(options.runtime, sessionBasePrompt),
     )
   } catch (error) {
     console.warn('激活边界提示词对账失败，将由轮次回流兜底', error)
@@ -1206,6 +1594,7 @@ const activateCachedRuntimeSession = async (
     : options.runtime.messages
   useAgentStore.setState({
     activeSessionId: options.snapshot.session.id,
+    accessMode: options.snapshot.session.accessMode ?? 'standard',
     sessions,
     messages: projectedMessages,
     running: options.runtime.isRunning,
@@ -1261,6 +1650,9 @@ const runtimeDeps: StoreRuntimeDeps = {
   updateAuthorizedReadFiles: (files) => {
     activeAuthorizedReadFiles = files
   },
+  cancelPendingApprovals: (sessionId, reason) =>
+    approvalCoordinator.cancelForSession(sessionId, reason),
+  refreshSystemPromptForAccessMode,
 }
 
 const storageStatsSlice = createStorageStatsSlice({
@@ -1275,15 +1667,35 @@ const handleSessionEvent = (event: AgentEvent, boundSessionId: string, boundRunt
       reducer as unknown as (state: AgentState) => Partial<AgentState>,
     ),
     getState: () => useAgentStore.getState() as unknown as AgentCoreProjection,
-    getRegisteredTools: () => REGISTERED_TOOLS,
+    getRegisteredTools: () => boundRuntime.runtimeContext.tools,
     buildRuntimeManifest: (provider, runtime) => createRuntimeDependencyManifest(
       provider,
-      REGISTERED_TOOLS,
+      boundRuntime.runtimeContext.tools,
       runtime.hooks.dependencies(),
-      getActiveProjectSkillSnapshot(),
+      useAgentStore.getState().sessions.find((item) => item.id === boundSessionId)?.runtimeManifest?.skills ?? getActiveProjectSkillSnapshot(),
     ),
   })
 }
+
+/** 后台 run 容量拒绝：写入该会话投影，切回会话时可见原因。 */
+const reportBackgroundRunCapacity = (sessionId: string, message: string): void => {
+  const projection = getRuntimeProjection(sessionId)
+  if (projection) {
+    projection.error = message
+    setRuntimeProjection(sessionId, projection)
+    return
+  }
+  setRuntimeProjection(sessionId, {
+    activeTools: {},
+    endReason: null,
+    error: message,
+    compactionRunning: false,
+    queuedMessages: [],
+  })
+}
+
+const backgroundRunCount = (sessions: AgentState['sessions'], excludedId: string): number =>
+  sessions.filter((session) => session.id !== excludedId && session.status === 'running').length
 
 export const useAgentStore = create<AgentState>()((set, get) => ({
   ...createAgentSessionSlice(set, get, runtimeDeps),
@@ -1293,12 +1705,30 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
   ...createAgentSettingsSlice(set, get, runtimeDeps),
   ...storageStatsSlice,
   settingsError: null,
+  sendManifests: {},
+  recordSendManifest: (manifest) => set((state) => ({
+    sendManifests: {
+      ...state.sendManifests,
+      [manifest.sessionId ?? manifest.requestId]: manifest,
+    },
+  })),
   initializationError: null,
   runtimeLifecycle: 'initializing',
   storageStats: null,
   contextPolicySaving: false,
   projectSkills: EMPTY_PROJECT_SKILL_INVENTORY,
   skillDiagnostics: [],
+  projectDocs: EMPTY_PROJECT_DOC_INVENTORY,
+  projectDocsRevision: 0,
+  projectDocsWorkspacePath: null,
+  refreshActiveProjectContext: async () => {
+    const sessionId = useAgentStore.getState().activeSessionId
+    if (!sessionId) return
+    // 走与 agent_end 相同的按会话单飞 + 尾沿合并：保存后直接调
+    // refreshProjectContextOnce 会与在途的 run 结束刷新并发扫描，旧快照可能
+    // 后提交。flush 会确保在途轮之后再补扫一轮并等待其结束。
+    await projectContextRefreshScheduler.flush(sessionId)
+  },
   skillReloadPreview: null,
   previewSkillReload: async () => {
     const workspacePath = useAgentStore.getState().authorizedWorkspace?.path
@@ -1333,6 +1763,18 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
         // retryInitialize 将因 `!== 'failed'` 提前返回而无法恢复。
         let loadedProviderProfiles: ProviderProfile[] = []
         try {
+          const runtimeInfo = isTauriRuntime() ? await getRuntimeInfo().catch(() => null) : null
+          runtimeCapabilities = createRuntimePolicy({
+            development: RUNTIME_POLICY.mode === 'development',
+            desktop: RUNTIME_POLICY.desktop,
+            operatingSystem: runtimeInfo?.operatingSystem,
+            sandboxAvailable: runtimeInfo?.sandboxAvailable === true,
+          }).toolCapabilities
+          DESKTOP_TOOL_RUNTIME = createProductToolRuntime(runtimeCapabilities, desktopAgentEnvironment, {
+            testAutomation: RUNTIME_POLICY.testAutomation,
+          })
+          REGISTERED_TOOLS = DESKTOP_TOOL_RUNTIME.tools
+          DEFAULT_ACTIVE_TOOL_NAMES = DESKTOP_TOOL_RUNTIME.activeToolNames
           // 持久化的 Provider selection 需经 Rust 权威解析（异步），在此加载后覆盖模块级 fallback。
           const initialProviderSelection = await loadProviderSelection()
           const config = initialProviderSelection.config
@@ -1341,10 +1783,6 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
             !initialProviderSelection.requiresSetup,
           )
           set({ initializationError: null, runtimeLifecycle: 'initializing' })
-          // 启动即把持久化的 access-mode 同步为 Rust 权威审批模式（fail-closed）
-          await setWorkspaceApprovalMode(
-            useUiStore.getState().accessMode === 'standard' ? 'interactive' : 'automatic',
-          ).catch(() => undefined)
           setRepository(await createSessionRepository())
           const initialized = await getRepository().initialize(sessionDefaults(config))
           const providerProfileMigrations = await getRepository().prepareProviderProfileMigrations()
@@ -1443,18 +1881,16 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
           // 覆盖「恢复后第一次 run 首轮仍用旧索引」的窗口。fail-soft 同上。
           if (activeRuntimeManifest) {
             try {
-              await reconcileSessionPromptOnActivation(
+              await reconcileSessionPrompt(
                 session,
+                canonical.snapshot.session.id,
+                // 重启恢复：会话快照的 workspace 可能尚未回填到 store，用已恢复授权的
+                // 工作区路径（与 createRuntimeSession 的取值一致，见 prepareSessionActivation）。
+                buildActivationBasePrompt(
+                  { ...canonical.snapshot.session, workspace: authorizedWorkspace ?? canonical.snapshot.session.workspace },
+                  activeConfig,
+                ),
                 activeRuntimeManifest,
-                buildReconcileCandidateSystemPrompt(session, buildSessionBasePrompt({
-                  capabilities: RUNTIME_POLICY.toolCapabilities,
-                  workspacePath: authorizedWorkspace?.path,
-                  authorizedFilePaths: activeAuthorizedReadFiles.map((file) => file.path),
-                  projectContext: activeProjectContext,
-                  projectSkills: getActiveProjectSkillSnapshot(),
-                  projectDocs: activeProjectDocs,
-                  modelName: resolvePromptModelName(activeConfig),
-                })),
               )
             } catch (error) {
               console.warn('激活边界提示词对账失败，将由轮次回流兜底', error)
@@ -1474,7 +1910,9 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
             messages: canonical.snapshot.messages,
             sessions: initializedSessions,
             activeSessionId: canonical.snapshot.session.id,
+            accessMode: canonical.snapshot.session.accessMode ?? 'standard',
             recoveredRuns: initialized.recoveredRuns,
+            recoverySummary: initialized.recoverySummary,
             storageStats,
             contextUsage: session.getContextUsage(),
             contextCheckpoint: canonical.snapshot.checkpoint,
@@ -1516,6 +1954,7 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
               messages: fallback.active.messages,
               sessions: fallback.sessions,
               activeSessionId: fallback.active.session.id,
+              accessMode: fallback.active.session.accessMode ?? 'standard',
               storageStats,
               contextUsage: session.getContextUsage(),
               reasoningSettings: activeReasoningSettings,
@@ -1554,7 +1993,18 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
     await get().initialize()
   },
 
-  stop: () => session.abortAndWait(),
+  stop: async () => {
+    const sessionId = session.id
+    const result = await stopSessionRuntime(session, (error) => set({ settingsError: `停止时收口会话权限失败：${errorMessage(error)}` }))
+    await resetSessionAccessMode(
+      set,
+      get,
+      runtimeDeps,
+      sessionId,
+    )
+    await refreshSystemPromptForAccessMode()
+    return result
+  },
 
   // 后台会话停止入口：直接作用于目标会话的缓存 harness（含激活会话），与
   // stop()（模块级激活 harness）等价——多会话并行时侧栏可直接停后台 run，
@@ -1562,7 +2012,15 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
   stopSession: async (sessionId) => {
     const runtime = getRuntimeSession(sessionId)
     if (!runtime) return null
-    return runtime.abortAndWait()
+    const result = await stopSessionRuntime(runtime, (error) => set({ settingsError: `停止时收口会话权限失败：${errorMessage(error)}` }))
+    await resetSessionAccessMode(
+      set,
+      get,
+      runtimeDeps,
+      sessionId,
+    )
+    await refreshSystemPromptForAccessMode()
+    return result
   },
 
   // 后台会话发送入口：不切换激活会话即可给后台 idle 会话发消息启动 run——
@@ -1620,6 +2078,11 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
         }
         return false
       }
+    }
+    const capacityError = backgroundRunCapacityError(backgroundRunCount(get().sessions, sessionId))
+    if (capacityError) {
+      reportBackgroundRunCapacity(sessionId, capacityError)
+      return false
     }
     try {
       await runtime.prompt(content)
@@ -1682,6 +2145,13 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
     }
     const targetId = runtime.queuedMessages[0]?.id ?? runtime.recoveredMessages[0]?.id
     if (!targetId) return false
+    // 容量检查必须在 restoreQueuedMessage 之前：restore 会把队首取出队列，
+    // 若随后才拒绝，消息既没启动 run 也不在队列里，只能等恢复草稿兜底。
+    const capacityError = backgroundRunCapacityError(backgroundRunCount(get().sessions, sessionId))
+    if (capacityError) {
+      reportBackgroundRunCapacity(sessionId, capacityError)
+      return false
+    }
     let snapshot: QueuedMessageSnapshot | undefined
     try {
       snapshot = await runtime.restoreQueuedMessage(targetId)
@@ -1719,6 +2189,12 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
   },
 
 }))
+
+// 工作区绑定自检的投影来源：在此注入（store 之后）而非模块顶部——
+// createRuntimeSession 在模块求值期即绑定一次，那时 useAgentStore 尚不可用。
+// 注入后每次 bind 都会比对运行时绑定与列表投影，分叉即记诊断。
+setProjectedWorkspacePathSource((sessionId) => useAgentStore.getState().sessions
+  .find((item) => item.id === sessionId)?.workspace?.path)
 
 /** Narrow test-only bridge for exercising a durable mutation during a real Agent run. */
 export const appendRuntimeFaultAutomationMessage = async (content: string): Promise<void> => {
@@ -1769,3 +2245,5 @@ const syncApprovalState = (): void => {
 }
 approvalCoordinator.subscribe(syncApprovalState)
 
+// 发送清单投递口：平台在真正发送前生成清单，经这里投影到本会话的最近一次请求。
+setSendManifestSink((manifest) => useAgentStore.getState().recordSendManifest(manifest))

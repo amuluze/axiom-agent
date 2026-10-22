@@ -25,10 +25,11 @@ describe('WorkspaceTerminalPanel', () => {
     const markup = renderToStaticMarkup(<WorkspaceTerminalPanel />)
 
     expect(markup).toContain('aria-label="终端面板"')
-    expect(markup).toContain('role="separator"')
+    expect(markup).toContain('<hr class="terminal-panel__resizer"')
     expect(markup).toContain('aria-label="拖拽调整终端面板高度"')
+    expect(markup).toContain('aria-valuenow="240"')
     expect(markup).toContain('aria-label="关闭终端面板"')
-    expect(markup).toContain('请先选择一个工作目录后再打开终端。')
+    expect(markup).toContain('请先选择工作目录。')
     expect(markup).not.toContain('terminal-panel__viewport')
   })
 

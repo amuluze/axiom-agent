@@ -20,7 +20,7 @@ import type {
 /** 规范化单个相对路径：拒绝绝对路径、`..`、NUL、Windows 盘符、空项，移除 `.` 与尾随 `/`。 */
 export const normalizeScopeEntry = (path: string): string | null => {
   if (!path) return null
-  if (path.startsWith('/')) return null
+  if (path.startsWith('/') || path.includes('\\')) return null
   if (/^[a-z]:[\\/]/iu.test(path)) return null
   if (path.includes('\0')) return null
   const parts = path.split('/').filter((part) => part.length > 0 && part !== '.')
@@ -32,13 +32,14 @@ export const normalizeScopeEntry = (path: string): string | null => {
   return normalized.length > 0 ? normalized : null
 }
 
-/** 规范化 scope 清单：去重、排序。非法项保持不在 scope（fail-closed 拒绝访问）。 */
+
 export const normalizeScope = (scope: string[]): string[] => {
   const seen = new Set<string>()
   const result: string[] = []
   for (const entry of scope) {
     const normalized = normalizeScopeEntry(entry)
-    if (!normalized || seen.has(normalized)) continue
+    if (!normalized) throw outOfScope(entry)
+    if (seen.has(normalized)) continue
     seen.add(normalized)
     result.push(normalized)
   }
@@ -50,9 +51,10 @@ export const normalizeScope = (scope: string[]): string[] => {
  * 前缀碰撞（`src/a` vs `src/ab`）用 `entry + '/'` 边界防止误放行。
  */
 export const pathWithinScope = (relativePath: string, scope: string[]): boolean => {
-  if (scope.length === 0) return true
+  if (scope.length === 0 && ['', '.', './'].includes(relativePath)) return true
   const normalized = normalizeScopeEntry(relativePath)
   if (!normalized) return false
+  if (scope.length === 0) return true
   return scope.some((entry) => normalized === entry || normalized.startsWith(`${entry}/`))
 }
 
@@ -66,8 +68,32 @@ const outOfScope = (what: string): AgentEnvironmentError =>
 export const createScopedReadEnvironment = (
   base: AgentEnvironment,
   scope: string[],
+  options: { allowedToolNames: readonly string[]; signal: AbortSignal },
 ): AgentEnvironment => {
+  options = { ...options, allowedToolNames: [...options.allowedToolNames] }
   const normalizedScope = normalizeScope(scope)
+  const assertLive = (): void => {
+    if (options.signal.aborted) throw new EnvError('aborted', '子任务已取消')
+  }
+  const gate = <Args extends unknown[], Result>(
+    name: string,
+    operation: (...args: Args) => Promise<Result>,
+  ) => async (...args: Args): Promise<Result> => {
+    assertLive()
+    if (!options.allowedToolNames.includes(name)) throw outOfScope(name)
+    const result = await operation(...args)
+    assertLive()
+    return result
+  }
+  const queryPath = (path?: string): string | undefined => {
+    if (path !== undefined && !['', '.', './'].includes(path)) {
+      assertInScope(path)
+      return path
+    }
+    if (normalizedScope.length === 0) return path
+    if (normalizedScope.length === 1) return normalizedScope[0]
+    throw outOfScope(`请指定一个委托路径：${normalizedScope.join(', ')}`)
+  }
 
   const assertInScope = (relativePath: string): void => {
     if (!pathWithinScope(relativePath, normalizedScope)) throw outOfScope(relativePath)
@@ -77,7 +103,7 @@ export const createScopedReadEnvironment = (
     entries.filter((entry) => pathWithinScope(entry.path, normalizedScope))
 
   return {
-    runtime: base.runtime,
+    runtime: { getInfo: async (): Promise<never> => { throw outOfScope('runtime.getInfo') } },
     authorizedFiles: {
       // 不泄露工作区外绝对授权文件清单。
       list: async (): Promise<AuthorizedReadFile[]> => [],
@@ -87,13 +113,13 @@ export const createScopedReadEnvironment = (
       },
     },
     workspace: {
-      list: async (path?: string, limit?: number): Promise<WorkspaceListResult> => {
-        if (path !== undefined) assertInScope(path)
+      list: gate('ls', async (path?: string, limit?: number): Promise<WorkspaceListResult> => {
+        path = queryPath(path)
         const result = await base.workspace.list(path, limit)
         if (!pathWithinScope(result.directory, normalizedScope)) throw outOfScope(result.directory)
         return { ...result, entries: filterResults(result.entries) }
-      },
-      readText: async (
+      }),
+      readText: gate('read', async (
         path: string,
         offset?: number,
         limit?: number,
@@ -102,28 +128,29 @@ export const createScopedReadEnvironment = (
         const result = await base.workspace.readText(path, offset, limit)
         if (!pathWithinScope(result.path, normalizedScope)) throw outOfScope(result.path)
         return result
-      },
-      searchText: async (
+      }),
+      searchText: gate('grep', async (
         request: WorkspaceSearchRequest,
         signal: AbortSignal,
       ): Promise<WorkspaceSearchResult> => {
-        if (request.path !== undefined) assertInScope(request.path)
-        const result = await base.workspace.searchText(request, signal)
+        const path = queryPath(request.path)
+        const result = await base.workspace.searchText({ ...request, path }, signal)
         return { ...result, matches: filterResults(result.matches) }
-      },
-      find: async (request: {
+      }),
+      find: gate('find', async (request: {
         requestId: string
         pattern: string
         path?: string
         limit?: number
+        maxDepth?: number
         signal: AbortSignal
       }): Promise<WorkspaceFindResult> => {
         // workspace.find 只接受单个 path（无 roots 语义）：path 必须落在 scope 内，多根请求由调用方拒绝。
-        if (request.path !== undefined) assertInScope(request.path)
-        const result = await base.workspace.find(request)
+        const path = queryPath(request.path)
+        const result = await base.workspace.find({ ...request, path })
         if (!pathWithinScope(result.rootPath, normalizedScope)) throw outOfScope(result.rootPath)
         return { ...result, matches: filterResults(result.matches) }
-      },
+      }),
       createTextFile: async (): Promise<never> => {
         throw outOfScope('createTextFile')
       },
@@ -146,31 +173,19 @@ export const createScopedReadEnvironment = (
       writeToolResult: async (): Promise<never> => {
         throw outOfScope('writeToolResult')
       },
+      writeImage: async (): Promise<never> => {
+        throw outOfScope('writeImage')
+      },
     },
-    // web 只读能力直接透传父 environment：目标空间是公网而非工作区，没有
-    // scope 可收窄；公网主机校验/体积上限由 Rust 权威执行，与主 Agent 同一策略。
-    web: base.web,
-    // 浏览器不透传：browser 是主 Agent 专用的有状态交互通道（tab/焦点/输入
-    // 都跨调用共享），只读子 Agent 共享会互相踩踏会话状态（对齐 ZCode 的
-    // main-agent-only Browser Use 边界）。结构性封死而非省略字段。
+    // UI 探索通道对子代理结构性不可达：子代理无 ui-test:read / ui-test:write 授权，
+    // 也不得观测/控制页面（设计 §14「子代理不可达 UI 控制和 API 出网」）。读、写
+    // 两条通道都显式封死，与父会话能力门是两道独立防线。
     browser: {
       command: async (): Promise<never> => {
         throw outOfScope('browser.command')
       },
-    },
-    // 电脑控制不透传：computer 操作的是真用户桌面（登录态、真实数据），
-    // 爆炸半径远大于隔离 profile 的浏览器；子 Agent 不得代主 Agent 注入输入。
-    computer: {
-      command: async (): Promise<never> => {
-        throw outOfScope('computer.command')
-      },
-    },
-    // SSH 远程执行不透传：目标是用户新凭据可达的真实远程主机（生产环境），
-    // 属主 Agent 专用的特权通道；审批与「会话内允许」授权也按主 Agent 会话
-    // 锚定，子 Agent 无法也不应共享。
-    ssh: {
-      command: async (): Promise<never> => {
-        throw outOfScope('ssh.command')
+      write: async (): Promise<never> => {
+        throw outOfScope('browser.write')
       },
     },
     // 设计稿读取不透传：scoped 子 Agent 的职责是限定范围内的文本/结构检索，
@@ -178,6 +193,14 @@ export const createScopedReadEnvironment = (
     design: {
       readDocument: async (): Promise<never> => {
         throw outOfScope('design.readDocument')
+      },
+    },
+    // API 出网对子代理结构性不可达：子代理无 api-test:request 授权，也不得让外网请求
+    // 由委派会话发起（设计 §14「子代理不可达 UI 控制和 API 出网」）。显式封死，
+    // 与父会话能力门是两道独立防线。
+    api: {
+      runStep: async (): Promise<never> => {
+        throw outOfScope('api.runStep')
       },
     },
   }

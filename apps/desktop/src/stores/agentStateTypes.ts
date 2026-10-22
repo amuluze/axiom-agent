@@ -1,4 +1,5 @@
 import type { AgentAbortSettlement } from '@/agent/runtime/AgentSession'
+import type { SendManifest } from '@/agent/context/sendManifest'
 import type { AgentHarness } from '@/agent/runtime/AgentHarness'
 import type { ProviderProfile } from '@/agent/transport/provider'
 import type {
@@ -9,6 +10,7 @@ import type {
 } from '@/persistence/types'
 import type { ProjectSkillInventorySnapshot, SkillDiagnostic } from '@/agent/skills/types'
 import type { ProjectSkillDiff } from '@/agent/skills/diffProjectSkills'
+import type { ProjectDocInventory } from '@/agent/prompt/projectDocs'
 import type { StorageStatsSlice } from './storageStatsSlice'
 
 /** 设置-技能页的 reload 预览：diff 摘要 + 待应用的新快照与诊断（docs §7.3）。 */
@@ -36,6 +38,9 @@ export interface AgentState extends
   AgentSettingsSlice,
   StorageStatsSlice {
   settingsError: string | null
+  /** 每会话最近一次实际发送的模型请求清单（发送前由平台从最终请求体生成）。 */
+  sendManifests: Record<string, SendManifest>
+  recordSendManifest: (manifest: SendManifest) => void
   initializationError: string | null
   runtimeLifecycle: 'initializing' | 'ready' | 'failed'
   storageStats: StorageStats | null
@@ -44,6 +49,19 @@ export interface AgentState extends
   projectSkills: ProjectSkillInventorySnapshot
   /** 技能扫描/解析的独立诊断（不含正文；与 Hook 诊断分离）。 */
   skillDiagnostics: SkillDiagnostic[]
+  /** 当前激活工作区的项目文档索引与逐根扫描诊断。 */
+  projectDocs: ProjectDocInventory
+  /**
+   * 任一会话完成项目上下文刷新且文档索引实际变化时递增。
+   * DocsView 订阅它，使后台会话写入的 Spec/Plan 不必切换会话即可出现在树中。
+   */
+  projectDocsRevision: number
+  /**
+   * 触发 `projectDocsRevision` 的工作区路径；null 表示当前激活工作区。
+   * DocsView 据此忽略其它工作区后台会话造成的无关重扫。
+   */
+  projectDocsWorkspacePath: string | null
+  refreshActiveProjectContext: () => Promise<void>
   /** reload 预览（重新扫描后、应用前）；null 表示无待确认的预览。 */
   skillReloadPreview: SkillReloadPreview | null
   /** 重新扫描 .axiom/skills 并生成 diff 预览（不替换 live 运行时）。 */
@@ -75,7 +93,7 @@ export type ProviderSaveResult =
 
 export type RestoredRuntimeState = Pick<
   StoredAgentSession,
-  'systemPrompt' | 'reasoning' | 'activeToolNames' | 'runtimeManifest' | 'workspace'
+  'systemPrompt' | 'reasoning' | 'activeToolNames' | 'runtimeManifest' | 'workspace' | 'accessMode'
 >
 
 export interface SessionActivationOptions {

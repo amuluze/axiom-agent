@@ -18,7 +18,8 @@ import {
   modelRequestByteLength,
   utf8ByteLength,
 } from './budget'
-import { createContextLedgerMessage, mergeReadProgress, mergeToolLedger } from './ledger'
+import { createContextLedgerMessage, mergeReadProgress, mergeSkillPhases, mergeToolLedger } from './ledger'
+import { mergeFileFacts } from './fileFacts'
 import { resolveSummaryInstructions, type SummaryInstructionOptions } from './summaryInstructions'
 import type {
   CompactionReason,
@@ -220,27 +221,17 @@ const mergeFacts = (
   previous: ContextCheckpointFacts | undefined,
   messages: ModelMessage[],
 ): ContextCheckpointFacts => {
-  const readFiles = new Set(previous?.readFiles ?? [])
-  const modifiedFiles = new Set(previous?.modifiedFiles ?? [])
-  for (const message of messages) {
-    if (message.role !== 'tool' || message.isError || typeof message.details !== 'object' || !message.details) continue
-    const details = message.details as Record<string, JsonValue>
-    const path = typeof details.path === 'string' ? details.path : undefined
-    if (!path) continue
-    if (details.operation === 'created' || details.operation === 'edited') modifiedFiles.add(path)
-    else if (
-      message.toolName === 'read'
-      || message.toolName === 'read_workspace_file'
-      || message.toolName === 'read_authorized_text'
-    ) readFiles.add(path)
-  }
-  for (const path of modifiedFiles) readFiles.delete(path)
-  const modifiedFilesArray = Array.from(modifiedFiles).sort()
+  const fileFacts = mergeFileFacts(previous, messages)
   return {
-    readFiles: Array.from(readFiles).sort(),
-    modifiedFiles: modifiedFilesArray,
-    readProgress: mergeReadProgress(previous?.readProgress, messages, modifiedFilesArray),
+    ...fileFacts,
+    readProgress: mergeReadProgress(previous?.readProgress, messages, fileFacts.modifiedFiles),
     toolLedger: mergeToolLedger(previous?.toolLedger, messages),
+    // SDD 阶段进度：CHECKPOINT_RULES 那句「保留已加载 Skill 名单与阶段」的
+    // 程序化兜底——阶段由模型判断，但判断所需的事实必须跨压缩留存。
+    ...(() => {
+      const phases = mergeSkillPhases(previous?.loadedSkills, previous?.sddReviews, messages)
+      return { loadedSkills: phases.loadedSkills, sddReviews: phases.sddReviews }
+    })(),
   }
 }
 

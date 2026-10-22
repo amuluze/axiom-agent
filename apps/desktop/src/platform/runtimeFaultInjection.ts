@@ -16,6 +16,13 @@ export const runtimeFaultCheckpoint = async (checkpoint: RuntimeFaultCheckpoint)
   throw new Error(`E2E runtime fault checkpoint did not terminate the process: ${checkpoint}`)
 }
 
+/** E2E 构建专属：把自动化进度落到 `AXIOM_E2E_AUTOMATION_LOG`。webview console 不落宿主
+ * stdout、AX dump 又需辅助功能权限——这是无人值守下唯一可观测的进度通道。生产构建为空操作。 */
+export const e2eAutomationLog = (line: string): void => {
+  if (!isTauriRuntime()) return
+  void invoke('e2e_automation_log', { line }).catch(() => undefined)
+}
+
 /** E2E 构建专属：登记并授权一个确实存在的目录（authorize_workspace 是恢复
  * 专用、只认注册表既有路径；自动化需要无人值守地为会话绑定工作区）。
  * 返回 canonical 化后的工作区摘要——调用方必须以它（而非原始入参路径）做
