@@ -1,0 +1,65 @@
+{
+  "kind": "axiom.test",
+  "version": 1,
+  "id": "native-mixed-cleanup-failure",
+  "name": "cleanup 失败闭环",
+  "target": {
+    "webBaseUrl": "${env.WEB_BASE_URL}",
+    "apiBaseUrl": "${env.API_BASE_URL}"
+  },
+  "hooks": {
+    "beforeAll": [
+      {
+        "id": "suite-audit",
+        "action": "api.request",
+        "method": "GET",
+        "url": "${env.API_BASE_URL}/api/orders",
+        "expect": [{ "status": 200 }]
+      }
+    ],
+    "beforeEach": [
+      {
+        "id": "seed-order",
+        "action": "api.request",
+        "method": "POST",
+        "url": "${env.API_BASE_URL}/api/orders",
+        "headers": {
+          "content-type": "application/json",
+          "authorization": { "secretId": "apitest.native-token" }
+        },
+        "body": { "coupon": "SHOPAIM10" },
+        "expect": [
+          { "status": 201 },
+          { "jsonPointerEquals": { "pointer": "/total", "value": "¥240.00" } }
+        ],
+        "extract": {
+          "orderId": { "jsonPointer": "/id" },
+          "orderTotal": { "jsonPointer": "/total" }
+        }
+      }
+    ],
+    "afterEach": [
+      {
+        "id": "cleanup-order",
+        "action": "api.request",
+        "method": "POST",
+        "url": "${env.API_BASE_URL}/api/orders/${vars.orderId}/cancel-fail",
+        "expect": [{ "status": 200 }]
+      }
+    ]
+  },
+  "cases": [
+    {
+      "id": "cleanup-failure",
+      "name": "断言失败后仍清理",
+      "steps": [
+        {
+          "id": "assert-refunded",
+          "action": "ui.assert",
+          "locator": { "testId": "order-status" },
+          "expect": { "textEquals": "refunded" }
+        }
+      ]
+    }
+  ]
+}

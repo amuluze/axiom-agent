@@ -1,0 +1,123 @@
+{
+  "kind": "axiom.test",
+  "version": 1,
+  "id": "native-mixed-e2e",
+  "name": "混合闭环",
+  "target": {
+    "webBaseUrl": "${env.WEB_BASE_URL}",
+    "apiBaseUrl": "${env.API_BASE_URL}"
+  },
+  "hooks": {
+    "beforeAll": [
+      {
+        "id": "suite-audit",
+        "action": "api.request",
+        "method": "GET",
+        "url": "${env.API_BASE_URL}/api/orders",
+        "expect": [{ "status": 200 }]
+      }
+    ],
+    "beforeEach": [
+      {
+        "id": "seed-order",
+        "action": "api.request",
+        "method": "POST",
+        "url": "${env.API_BASE_URL}/api/orders",
+        "headers": {
+          "content-type": "application/json",
+          "authorization": { "secretId": "apitest.native-token" }
+        },
+        "body": { "coupon": "SHOPAIM10" },
+        "expect": [
+          { "status": 201 },
+          { "jsonPointerEquals": { "pointer": "/total", "value": "¥240.00" } }
+        ],
+        "extract": {
+          "orderId": { "jsonPointer": "/id" },
+          "orderTotal": { "jsonPointer": "/total" }
+        }
+      }
+    ],
+    "afterEach": [
+      {
+        "id": "cleanup-order",
+        "action": "api.request",
+        "method": "POST",
+        "url": "${env.API_BASE_URL}/api/orders/${vars.orderId}/cancel",
+        "expect": [{ "status": 200 }]
+      }
+    ],
+    "afterAll": [
+      {
+        "id": "final-audit",
+        "action": "api.request",
+        "method": "GET",
+        "url": "${env.API_BASE_URL}/api/orders",
+        "expect": [{ "status": 200 }]
+      }
+    ]
+  },
+  "cases": [
+    {
+      "id": "api-to-ui",
+      "name": "API 创建订单 → UI 展示",
+      "steps": [
+        {
+          "id": "open-detail",
+          "action": "ui.navigate",
+          "url": "${env.WEB_BASE_URL}/orders?id=${vars.orderId}"
+        },
+        {
+          "id": "assert-status",
+          "action": "ui.wait",
+          "locator": { "testId": "order-status" },
+          "expect": { "visible": true },
+          "extract": { "uiStatus": { "source": "text" } }
+        },
+        {
+          "id": "assert-total",
+          "action": "ui.assert",
+          "locator": { "testId": "order-total" },
+          "expect": { "textEquals": "${vars.orderTotal}" }
+        },
+        {
+          "id": "assert-secure-scope",
+          "action": "api.request",
+          "method": "GET",
+          "url": "${env.API_BASE_URL}/api/secure",
+          "headers": { "authorization": { "secretId": "apitest.native-token" } },
+          "expect": [
+            { "status": 200 },
+            { "jsonPointerEquals": { "pointer": "/scope", "value": "orders:read" } }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ui-to-api",
+      "name": "UI 提交订单 → API 查询",
+      "steps": [
+        { "id": "open-form", "action": "ui.navigate", "url": "${env.WEB_BASE_URL}/orders/new" },
+        { "id": "fill-coupon", "action": "ui.input", "locator": { "css": "#coupon" }, "value": "SHOPAIM10" },
+        { "id": "submit-order", "action": "ui.click", "locator": { "css": "#submit" } },
+        {
+          "id": "wait-created",
+          "action": "ui.wait",
+          "locator": { "testId": "created-order-id" },
+          "expect": { "textContains": "ord-" },
+          "extract": { "uiOrderId": { "source": "text" } }
+        },
+        {
+          "id": "query-order",
+          "action": "api.request",
+          "method": "GET",
+          "url": "${env.API_BASE_URL}/api/orders/${vars.uiOrderId}",
+          "expect": [
+            { "status": 200 },
+            { "jsonPointerEquals": { "pointer": "/total", "value": "¥240.00" } }
+          ]
+        }
+      ]
+    }
+  ]
+}
