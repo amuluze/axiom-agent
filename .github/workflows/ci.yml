@@ -28,6 +28,10 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: node:22-bookworm
+      # Linux 沙箱后端是 bubblewrap，需要非特权 user namespace（unshare CLONE_NEWUSER）。
+      # Docker 默认 seccomp/AppArmor 会拦下它，导致 sandbox::/workspace_command::
+      # 的 Linux 侧测试因「沙箱不可用」而 fail-closed——此前两次公开仓 CI 就是这么红的。
+      options: --privileged
     timeout-minutes: 60
     env:
       # GHA 容器 job 默认 HOME=/github/home，与 euid home（/root）不一致会被 rustup
@@ -48,7 +52,10 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential curl ca-certificates git file xz-utils pkg-config patchelf \
             librsvg2-dev libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
-            libssl-dev
+            libssl-dev \
+            # Linux 沙箱后端：缺它时 sandbox/workspace_command 的 Linux 侧测试会
+            # 因「沙箱不可用」fail-closed（与 release.yml build-linux 同源）。
+            bubblewrap
       - name: 安装 Rust 工具链（rust-toolchain.toml 固定 1.96.0 + clippy/rustfmt）
         shell: bash
         run: |
