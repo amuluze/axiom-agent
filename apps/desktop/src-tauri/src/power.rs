@@ -99,6 +99,23 @@ pub(crate) struct PowerManagementState {
 #[derive(Default)]
 pub(crate) struct PowerManagementState;
 
+// 统一构造入口：非 macOS 的 unit 桩若在调用点写 `::default()`，会触发
+// clippy::default_constructed_unit_structs（该 lint 只在 Linux 的 clippy 门禁
+// 到达，macOS 主机跑不出来）；两侧各自提供 new()，调用点形态保持一致。
+#[cfg(target_os = "macos")]
+impl PowerManagementState {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl PowerManagementState {
+    pub(crate) fn new() -> Self {
+        Self
+    }
+}
+
 #[cfg(target_os = "macos")]
 impl PowerManagementState {
     /// 幂等切换 idle-sleep 阻止：重复开启/关闭为 no-op，避免泄漏重复 assertion。

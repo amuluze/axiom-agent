@@ -297,7 +297,7 @@ pub fn run() -> Result<(), String> {
         .manage(WorkspaceCommandState::default())
         .manage(DesignWatchState::new())
         .manage(SessionRepositoryState::default())
-        .manage(PowerManagementState::default())
+        .manage(PowerManagementState::new())
         .manage(TerminalState::default())
         .manage(BrowserSessionState::default())
         .manage(test_target::TestTargetGrants::default())
