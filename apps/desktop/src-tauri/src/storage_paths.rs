@@ -327,14 +327,14 @@ mod tests {
         let legacy = dir.path().join("legacy");
         let root = dir.path().join("root");
         fs::create_dir_all(&legacy).unwrap();
-        fs::create_dir_all(&root).unwrap();
         touch(&legacy.join("axiom.db"));
         touch(&legacy.join("axiom.db-wal"));
-        // 数据根去写权限 → rename 失败 → Err（fail-closed）
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o500)).unwrap();
+        // root 故意是普通文件：目标父路径不是目录时 rename 对任何 uid 都返回
+        // ENOTDIR。旧的注入方式（chmod 0o500 去写权限）依赖权限位生效，而 root
+        // （CAP_DAC_OVERRIDE）无视权限位——GHA 容器 job 以 root 跑测试时迁移会
+        // 静默成功、断言反红。ENOTDIR 形态对 root 与普通用户同样 fail-closed。
+        touch(&root);
         let result = migrate_legacy_entries_at(&legacy, &root);
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
         assert!(result.is_err(), "数据库迁移失败必须阻止启动");
         // 失败后旧位置条目仍在（未丢数据）
         assert!(entry_exists(&legacy.join("axiom.db")));

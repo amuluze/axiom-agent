@@ -11,6 +11,8 @@
 - **Provider profile 解码按持久化 JSON 复用**：`listSessions` 不再为每行会话各发一次 Rust 权威解码 IPC；并发解码合并为同一个 in-flight Promise，返回克隆保持调用方隔离。
 
 ### Fixed
+- **Linux 沙箱在装有 Docker 的 merged-usr 系统上整体失效**：bwrap 对容器引擎 socket 的遮蔽/放行使用符号链接原始路径（`/var/run/docker.sock`），而「遮蔽 /run」已把符号链接指向的目录换成空 tmpfs——bwrap 随后沿符号链接创建绑定目标失败（`Can't create file at /var/run/docker.sock`），沙箱内**全部命令 exit 1**（装了 Docker 的 Debian/Ubuntu 宿主与 GHA 容器 job 均实测复现）。现在绑定目标一律取 canonical 形态（`/run/docker.sock`）并按目标去重：canonical 目标落在被遮蔽的 /run 内时 bwrap 可在 tmpfs 内正常创建（实测验证）；符号链接经只读根保留，客户端用任一形态连接都解析到同一绑定。
+- **`database_migration_failure_is_fail_closed` 在 root 环境必红**：失败注入靠 chmod 0o500 去写权限，而 root（CAP_DAC_OVERRIDE）无视权限位——GHA 容器 job 以 root 跑测试时迁移静默成功、断言反红（公开仓完整 check 的 7 个失败测试之一）。改用「数据根是普通文件」的 ENOTDIR 注入：目标父路径不是目录时 rename 对任何 uid 都失败，对 root 与普通用户同样 fail-closed。
 - **文档页右侧目录树无法调宽**：正文与目录树之间原来只有一条不可交互的 1px 分隔线，目录树宽度写死在 CSS（280px，上限 360px）。现在改为可拖拽的调宽把手：鼠标拖拽（pointer capture）、方向键（±16px）与双击复位，宽度经 `uiStore.docsTreeWidth` clamp 到 220–520px（窄视口按正文保留宽度进一步收紧）并持久化到 localStorage。
 
 ## [0.7.0] - 2026-10-22

@@ -1064,13 +1064,27 @@ pub(crate) fn generate_bwrap_args(spec: &BwrapSandboxSpec) -> Vec<std::ffi::OsSt
     if spec.network == NetworkPolicy::LoopbackOnly {
         args.push(std::ffi::OsString::from("--unshare-net"));
     }
+    // 容器 socket 只按 canonical 形态绑定并去重：socket 清单同时列出符号链接形态
+    // （merged-usr 下 /var/run/docker.sock → /run/docker.sock）与 canonical 形态——
+    // seatbelt 的路径匹配需要两侧，bwrap 侧一个真实目标只应有一个绑定。对符号
+    // 链接路径挂 bind 时，bwrap 在「遮蔽 /run」之后沿符号链接创建目标文件会整体
+    // 失败（Can't create file …：装了 Docker 的 Debian/Ubuntu 宿主与 GHA 容器 job
+    // 均实测复现，沙箱内全部命令 exit 1）；canonical 目标落在被遮蔽的 /run 内时
+    // bwrap 可在 tmpfs 内正常创建目标。符号链接本身经只读根保留，客户端用任一
+    // 形态连接都解析到同一绑定。悬空链接无法 canonical 化，跳过（/run 遮蔽已覆盖）。
+    let mut bound_sockets: Vec<PathBuf> = Vec::new();
     for socket in spec.container_sockets {
-        if socket.symlink_metadata().is_ok() {
-            if spec.allow_container_control && privileges_safe {
-                pair!("--bind", socket, socket);
-            } else {
-                pair!("--ro-bind", Path::new("/dev/null"), socket);
-            }
+        let Ok(target) = std::fs::canonicalize(socket) else {
+            continue;
+        };
+        if bound_sockets.contains(&target) {
+            continue;
+        }
+        bound_sockets.push(target.clone());
+        if spec.allow_container_control && privileges_safe {
+            pair!("--bind", &target, &target);
+        } else {
+            pair!("--ro-bind", Path::new("/dev/null"), &target);
         }
     }
 
@@ -2290,7 +2304,12 @@ mod tests {
         // 生产约定：传入生成器的 home 已 canonical 化（host_home 同一坐标系）。
         let home = std::fs::canonicalize(&home).unwrap();
         let docker = home.join(".docker").to_string_lossy().into_owned();
-        let socket_text = socket.to_string_lossy().into_owned();
+        // 绑定目标一律 canonical 形态（tempdir 在 macOS 上经 /var → /private/var
+        // 符号链接，literal 与 canonical 不同）。
+        let socket_text = std::fs::canonicalize(&socket)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
 
         for network in [NetworkPolicy::LoopbackOnly, NetworkPolicy::OutboundEnabled] {
             for allow_container_control in [false, true] {
@@ -2317,6 +2336,54 @@ mod tests {
                 }
                 assert!(!rendered.iter().any(|arg| arg.contains("missing.sock")));
             }
+        }
+    }
+
+    /// socket 清单同时含符号链接形态与 canonical 形态（`container_engine_sockets`
+    /// 的生产形态：merged-usr 宿主上 /var/run/docker.sock 与 /run/docker.sock 并列）
+    /// 时，bwrap 只对 canonical 目标绑定一次——对符号链接路径挂目标会在「遮蔽
+    /// /run 后沿符号链接创建目标」时让整个沙箱失败（GHA 容器 job 与装了 Docker
+    /// 的 Debian/Ubuntu 宿主均实测复现：沙箱内全部命令 exit 1）。
+    #[test]
+    #[cfg(unix)]
+    fn bwrap_args_bind_sockets_by_canonical_form_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let (workspace, tmpdir, home) = bwrap_spec_paths(&dir);
+        let engine = dir.path().join("engine");
+        std::fs::create_dir_all(&engine).unwrap();
+        let socket = engine.join("docker.sock");
+        std::fs::write(&socket, "").unwrap();
+        let alias = dir.path().join("alias.sock");
+        std::os::unix::fs::symlink(&socket, &alias).unwrap();
+        let canonical = std::fs::canonicalize(&socket).unwrap();
+        let home = std::fs::canonicalize(&home).unwrap();
+        for allow_container_control in [false, true] {
+            let sockets = vec![alias.clone(), socket.clone(), canonical.clone()];
+            let spec = BwrapSandboxSpec {
+                workspace_root: &workspace,
+                home: &home,
+                tmpdir: &tmpdir,
+                network: NetworkPolicy::OutboundEnabled,
+                allow_vcs_credentials: false,
+                allow_container_control,
+                var_run_is_symlink: true,
+                resolv_conf_rebind: None,
+                container_sockets: &sockets,
+            };
+            let rendered = bwrap_args_strings(&generate_bwrap_args(&spec));
+            let target_text = canonical.to_string_lossy().into_owned();
+            let alias_text = alias.to_string_lossy().into_owned();
+            // canonical 目标恰好出现一次（去重后的唯一绑定）；符号链接形态不得
+            // 作为绑定目标出现。
+            assert_eq!(
+                rendered
+                    .iter()
+                    .filter(|arg| arg.as_str() == target_text)
+                    .count(),
+                if allow_container_control { 2 } else { 1 },
+                "container_control={allow_container_control}"
+            );
+            assert!(!rendered.iter().any(|arg| arg.as_str() == alias_text));
         }
     }
 
