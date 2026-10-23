@@ -262,7 +262,7 @@
         "src-tauri/src/workspace_command.rs",
         "src/platform/workspaceApproval.ts"
       ],
-      "semanticDigest": "12706bf63cdceac514e13ce30f7d3640683822d045269a53a5a3584441342668"
+      "semanticDigest": "4bbd9afe14a7f08c66b762ac660174e79a3fb895f9f27c52e8e004cc13f26cc5"
     },
     {
       "id": "tool:discover_agent_tools",
