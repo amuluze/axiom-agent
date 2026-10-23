@@ -271,6 +271,33 @@ describe('selectSession', () => {
     expect(deps.activateCachedRuntimeSession).toHaveBeenCalledTimes(1)
   })
 
+  it('空闲缓存会话切换不读取整段历史快照', async () => {
+    const created = await repository.createSession(SESSION_DEFAULTS)
+    state = { ...state, sessions: [created.session] }
+    setRuntimeSession(created.session.id, {
+      isDisposed: false,
+      isRunning: false,
+    } as unknown as AgentHarness)
+    const loadSession = vi.spyOn(repository, 'loadSession')
+    expect(await selectSession(set, get, deps, created.session.id)).toBe(true)
+    expect(loadSession).not.toHaveBeenCalled()
+    expect(deps.activateCachedRuntimeSession).toHaveBeenCalledWith(expect.objectContaining({
+      snapshot: expect.objectContaining({ session: created.session, messages: [] }),
+    }))
+  })
+
+  it('运行中的缓存会话仍读取 DB 快照（harness 尚未合并本轮消息）', async () => {
+    const created = await repository.createSession(SESSION_DEFAULTS)
+    state = { ...state, sessions: [created.session] }
+    setRuntimeSession(created.session.id, {
+      isDisposed: false,
+      isRunning: true,
+    } as unknown as AgentHarness)
+    const loadSession = vi.spyOn(repository, 'loadSession')
+    expect(await selectSession(set, get, deps, created.session.id)).toBe(true)
+    expect(loadSession).toHaveBeenCalledWith(created.session.id)
+  })
+
   it('无缓存运行时经投影激活并恢复已授权工作区', async () => {
     const ws = workspace('/ws/sel')
     const created = await repository.createSession({ ...SESSION_DEFAULTS, workspace: ws })

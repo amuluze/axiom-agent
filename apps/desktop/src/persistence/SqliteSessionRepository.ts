@@ -171,10 +171,42 @@ const decodeActiveToolNames = (value: string): string[] => {
   return parsed
 }
 
+/**
+ * Provider profile 解码缓存（按持久化 JSON 字符串）。
+ *
+ * `listSessions()` 会为**每一行**解码 provider_config——生产解析器是 Rust 权威
+ * 命令（一次 IPC）。会话数上百时，每次激活/切换都付数百次跨进程往返，且绝大多数
+ * 会话共享同几份 profile JSON。解码结果是纯函数，按原串复用；返回克隆保证调用方
+ * 拿到的对象互不影响。并发解码合并为同一个 in-flight Promise，避免冷启动时
+ * `Promise.all` 把同一份 profile 重复发给宿主。
+ */
+const MAX_CACHED_PROVIDER_PROFILES = 64
+const decodedProviderProfileCache = new Map<string, ProviderProfile>()
+const pendingProviderProfileDecodes = new Map<string, Promise<ProviderProfile>>()
+
+const decodeProviderProfileForSession = async (value: string): Promise<ProviderProfile> => {
+  const cached = decodedProviderProfileCache.get(value)
+  if (cached) return structuredClone(cached)
+  const pending = pendingProviderProfileDecodes.get(value)
+  if (pending) return structuredClone(await pending)
+  const decoding = decodeProviderProfile(JSON.parse(value) as unknown)
+  pendingProviderProfileDecodes.set(value, decoding)
+  try {
+    const profile = await decoding
+    if (decodedProviderProfileCache.size >= MAX_CACHED_PROVIDER_PROFILES) {
+      decodedProviderProfileCache.clear()
+    }
+    decodedProviderProfileCache.set(value, profile)
+    return structuredClone(profile)
+  } finally {
+    pendingProviderProfileDecodes.delete(value)
+  }
+}
+
 const decodeProviderProfileJson = async (value: string | null): Promise<ProviderProfile | null> => {
   if (value === null) return null
   try {
-    return await decodeProviderProfile(JSON.parse(value) as unknown)
+    return await decodeProviderProfileForSession(value)
   } catch {
     throw new Error('SQLite 中存在格式无效的 Provider profile')
   }

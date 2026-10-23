@@ -42,6 +42,7 @@ import {
   EMPTY_PROJECT_AGENTS_INVENTORY,
   type ProjectAgentsInventory,
 } from '@/agent/prompt/projectAgents'
+import { createWorkspaceScanCache } from './services/workspaceScanCache'
 import {
   loadProjectDocs,
   projectDocInventoryEqual,
@@ -52,7 +53,7 @@ import {
 import { createProjectDocsRefreshScheduler } from './services/projectDocsRefresh'
 import { reconcileSessionPromptOnActivation } from './services/sessionPromptReconcile'
 import { bindActiveProjectSkillSnapshot, getActiveProjectSkillSnapshot } from '@/agent/skills/activeProjectSkills'
-import { loadProjectSkills } from '@/agent/skills/loadProjectSkills'
+import { loadProjectSkills, type LoadProjectSkillsResult } from '@/agent/skills/loadProjectSkills'
 import { diffProjectSkills } from '@/agent/skills/diffProjectSkills'
 import { formatAvailableSkills } from '@/agent/skills/formatAvailableSkills'
 import { installPromptLocalizationHost, resolvePromptLanguage } from '@/agent/prompt/promptLocalizationHost'
@@ -280,6 +281,22 @@ let activeProjectContext: string | null = null
 // 同批次刷新、同批次回滚——三者合成同一个 `# 项目上下文` 段，任何一面掉队都会
 // 让提示词内部出现新鲜度不一致的拼装。
 let activeProjectAgents: ProjectAgentsInventory = EMPTY_PROJECT_AGENTS_INVENTORY
+
+/** 工作区扫描结果（嵌套索引 / Skills）的复用窗口，见 services/workspaceScanCache。 */
+const WORKSPACE_SCAN_CACHE_TTL_MS = 5 * 60_000
+
+/**
+ * 嵌套 AGENTS.md 索引的工作区级缓存（见 services/workspaceScanCache）。
+ *
+ * 全树遍历是会话准备里唯一随项目文件数增长的成本；根 AGENTS.md 正文与文档索引
+ * 仍每次激活扫描（前者一个文件，后者有 metadata 读头缓存），外部编辑因此仍能
+ * 及时进入提示词。本缓存的 TTL 只覆盖「没有 run、纯切换/新建会话」的窗口；
+ * run 结束重扫会显式失效并写回，模型写入的局部约定下一轮即可见。索引只含路径，
+ * 条目正文始终由模型按需 `read` 当前磁盘内容。
+ */
+const projectAgentsCache = createWorkspaceScanCache<ProjectAgentsInventory>({
+  ttlMs: WORKSPACE_SCAN_CACHE_TTL_MS,
+})
 // 已扫描的工作区 SDD 文档索引镜像：refreshProjectContext 扫描 .specs/.plans/.docs
 // 后更新，供 createRuntimeSession 组装 # 项目上下文 段的 <available_docs> 子块。
 // 无工作区或目录缺失时为 EMPTY_PROJECT_DOC_INVENTORY（提示词省略该子块）。
@@ -407,11 +424,15 @@ const refreshProjectContext = async (workspacePath?: string): Promise<void> => {
     if (docsChanged) notifyProjectDocsChanged()
     return
   }
+  const cachedAgents = workspacePath ? projectAgentsCache.get(workspacePath) : undefined
   const [contextLoad, scannedAgents, inventory] = await Promise.all([
     loadProjectContext(environment),
-    loadProjectAgents(environment),
+    cachedAgents !== undefined ? Promise.resolve(cachedAgents) : loadProjectAgents(environment),
     loadProjectDocs(environment),
   ])
+  if (scannedAgents !== null && workspacePath && cachedAgents === undefined) {
+    projectAgentsCache.set(workspacePath, scannedAgents)
+  }
   // 激活路径一律以本次结果为准，**不沿用上一份**：切换工作区后旧内容属于另一个
   // 工作区，留着等于把 A 项目的约定注入 B 项目的会话。故 unavailable 与
   // absent 同样落空，差别只在可观测性（下次激活会重试）。
@@ -463,6 +484,11 @@ const appendBudgetDiagnostics = (
   ]
 }
 
+/** `.axiom/skills` 扫描结果的工作区级缓存；显式重载技能前会失效。 */
+const projectSkillsCache = createWorkspaceScanCache<LoadProjectSkillsResult>({
+  ttlMs: WORKSPACE_SCAN_CACHE_TTL_MS,
+})
+
 // 当前会话 project Skill 快照的 store 镜像：refreshProjectSkills 扫描 .axiom/skills
 // 后同时更新模块级宿主（供 load_skill 工具与 createRuntimeSession 同步消费）与
 // store state（供设置-技能页读取）。扫描本身 fail-soft，绝不阻断会话激活。
@@ -470,9 +496,17 @@ const refreshProjectSkills = async (workspacePath?: string): Promise<void> => {
   const environment = workspacePath && isTauriRuntime()
     ? createDesktopAgentEnvironment(workspacePath)
     : null
-  const result = environment
-    ? await loadProjectSkills(environment)
-    : { snapshot: EMPTY_PROJECT_SKILL_INVENTORY, diagnostics: [] }
+  let result: LoadProjectSkillsResult
+  if (!environment) {
+    result = { snapshot: EMPTY_PROJECT_SKILL_INVENTORY, diagnostics: [] }
+  } else {
+    // 技能文件按正文全量读取（上限 64 KiB/个）并计算 hash：大项目里几十个 Skill
+    // 会让每次激活都付一遍读取与解析成本。纯切换窗口内复用同一次扫描；文件
+    // 真实内容仍由 load_skill 调用时的 hash 校验 fail-closed。
+    const cached = workspacePath ? projectSkillsCache.get(workspacePath) : undefined
+    result = cached ?? await loadProjectSkills(environment)
+    if (workspacePath && cached === undefined) projectSkillsCache.set(workspacePath, result)
+  }
   bindActiveProjectSkillSnapshot(result.snapshot)
   useAgentStore.setState({
     projectSkills: result.snapshot,
@@ -800,11 +834,14 @@ const refreshBackgroundProjectContext = async (
   const previous = getRuntimeProjectContext(sessionId)
   if (!stored || !providerState || !previousManifest || !workspacePath || !previous || !isTauriRuntime()) return
   const environment = createDesktopAgentEnvironment(workspacePath)
+  // run 结束必须读磁盘现状：先失效缓存，扫描成功后写回供随后激活复用。
+  projectAgentsCache.invalidate(workspacePath)
   const [contextLoad, scannedAgents, inventory] = await Promise.all([
     loadProjectContext(environment),
     loadProjectAgents(environment),
     loadProjectDocs(environment),
   ])
+  if (scannedAgents !== null) projectAgentsCache.set(workspacePath, scannedAgents)
   if (contextLoad.kind === 'unavailable') {
     console.error(`[项目上下文] 后台会话 ${sessionId} 的根 AGENTS.md 读取失败，保留上一份正文`)
   }
@@ -895,11 +932,14 @@ const refreshProjectContextOnce = async (sessionId: string): Promise<void> => {
   const workspacePath = useAgentStore.getState().authorizedWorkspace?.path
   if (!workspacePath || !isTauriRuntime()) return
   const environment = createDesktopAgentEnvironment(workspacePath)
+  // run 结束必须读磁盘现状：先失效缓存，扫描成功后写回供随后激活复用。
+  projectAgentsCache.invalidate(workspacePath)
   const [contextLoad, scannedAgents, inventory] = await Promise.all([
     loadProjectContext(environment),
     loadProjectAgents(environment),
     loadProjectDocs(environment),
   ])
+  if (scannedAgents !== null) projectAgentsCache.set(workspacePath, scannedAgents)
   // 读取/扫描失败一律保留上一份镜像，而不是提交空值：一次偶发的 IPC 或权限错误
   // 若被当成「确实没有」，整段正文与整块索引会被从 live 提示词删掉，退化窗口横跨
   // 一整个 run，其间模型可能在「以为项目没有这些约定」的状态下改代码。下轮自愈。
@@ -1732,6 +1772,9 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
   skillReloadPreview: null,
   previewSkillReload: async () => {
     const workspacePath = useAgentStore.getState().authorizedWorkspace?.path
+    // 用户显式重扫即「以磁盘现状为准」：失效激活复用缓存，后续 apply/激活
+    // 都不得再落回旧清单。
+    if (workspacePath) projectSkillsCache.invalidate(workspacePath)
     const environment = workspacePath && isTauriRuntime()
       ? createDesktopAgentEnvironment(workspacePath)
       : null
@@ -1751,6 +1794,13 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
     if (!preview) throw new Error('请先重新扫描技能')
     // 失败时（会话 busy / CAS 拒绝）保持旧状态与 preview，用户可取消或重试。
     await applyProjectSkillsToSession(preview)
+    const workspacePath = useAgentStore.getState().authorizedWorkspace?.path
+    if (workspacePath) {
+      projectSkillsCache.set(workspacePath, {
+        snapshot: preview.snapshot,
+        diagnostics: preview.diagnostics,
+      })
+    }
     useAgentStore.setState({ skillReloadPreview: null })
   },
 

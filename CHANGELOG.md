@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### Performance
+- **会话准备不再每次重扫整个项目约定**：嵌套 `AGENTS.md` 索引（全树遍历）的复用窗口从 10 秒延长到 5 分钟，`.axiom/skills` 扫描结果（每个 Skill 全文读取 + hash）也按工作区缓存复用；run 结束重扫与显式技能重载仍先失效缓存，模型自己写入的约定下一轮即可见。根 `AGENTS.md` 正文与文档索引保持每次激活扫描（前者一个文件，后者已有 metadata 读头缓存），外部编辑仍能及时进入提示词。
+- **工作区读/列命令移出主线程**：`list_workspace` / `read_workspace_text` 改为 async + `spawn_blocking`（与写命令、`find`/`search` 一致）。文档扫描并发发起的多次读取不再在主线程串行执行并阻塞 UI，blocking 线程池可真正并行完成 I/O。
+- **缓存会话切换跳过历史快照**：切回空闲缓存会话时直接用 store 中的会话元数据，不再 `loadSession` 读取并逐条解码整段历史；运行中会话仍读 DB 快照（harness 要到 run 返回才合并本轮消息）。
+- **Provider profile 解码按持久化 JSON 复用**：`listSessions` 不再为每行会话各发一次 Rust 权威解码 IPC；并发解码合并为同一个 in-flight Promise，返回克隆保持调用方隔离。
+
+### Fixed
+- **文档页右侧目录树无法调宽**：正文与目录树之间原来只有一条不可交互的 1px 分隔线，目录树宽度写死在 CSS（280px，上限 360px）。现在改为可拖拽的调宽把手：鼠标拖拽（pointer capture）、方向键（±16px）与双击复位，宽度经 `uiStore.docsTreeWidth` clamp 到 220–520px（窄视口按正文保留宽度进一步收紧）并持久化到 localStorage。
+
 ## [0.7.0] - 2026-10-22
 
 ### Added

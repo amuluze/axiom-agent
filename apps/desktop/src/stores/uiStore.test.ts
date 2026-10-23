@@ -284,6 +284,41 @@ describe('uiStore runtime rail width', () => {
   })
 })
 
+describe('uiStore docs tree width', () => {
+  it('restores the persisted tree width and clamps it into the allowed range', async () => {
+    const dom = installDomStorage({ 'axiom.docs.treeWidth.v1': '360' })
+    const { useUiStore } = await import('./uiStore')
+    expect(useUiStore.getState().docsTreeWidth).toBe(360)
+
+    useUiStore.getState().setDocsTreeWidth(9999)
+    expect(useUiStore.getState().docsTreeWidth).toBe(520)
+    expect(dom.values.get('axiom.docs.treeWidth.v1')).toBe('520')
+
+    useUiStore.getState().setDocsTreeWidth(1)
+    expect(useUiStore.getState().docsTreeWidth).toBe(220)
+    expect(dom.values.get('axiom.docs.treeWidth.v1')).toBe('220')
+  })
+
+  it('falls back to the default width for non-numeric stored values and ignores invalid input', async () => {
+    const dom = installDomStorage({ 'axiom.docs.treeWidth.v1': 'not-a-number' })
+    const { useUiStore } = await import('./uiStore')
+    expect(useUiStore.getState().docsTreeWidth).toBe(280)
+
+    useUiStore.getState().setDocsTreeWidth(Number.NaN)
+    expect(useUiStore.getState().docsTreeWidth).toBe(280)
+    expect(dom.values.get('axiom.docs.treeWidth.v1')).toBe('not-a-number')
+  })
+
+  it('clamps the tree width to the viewport so the document body keeps room', async () => {
+    installDomStorage({ 'axiom.docs.treeWidth.v1': '9999' }, { innerWidth: 900 })
+    const { useUiStore } = await import('./uiStore')
+    // 窄视口：上限 = 900 - 520（正文保留）= 380，而非绝对上限 520。
+    expect(useUiStore.getState().docsTreeWidth).toBe(380)
+    useUiStore.getState().setDocsTreeWidth(9999)
+    expect(useUiStore.getState().docsTreeWidth).toBe(380)
+  })
+})
+
 describe('uiStore sidebar width', () => {
   it('restores the persisted sidebar width and clamps it into the allowed range', async () => {
     const dom = installDomStorage({ 'axiom.ui.sidebarWidth.v1': '360' })

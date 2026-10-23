@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocsView } from './DocsView'
 
@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   running: false,
   projectDocsRevision: 0,
   projectDocsWorkspacePath: null as string | null,
+  docsTreeWidth: 280,
+  setDocsTreeWidth: vi.fn(),
   addWorkspace: vi.fn(async () => true),
   createNewSession: vi.fn(async () => true),
   refreshActiveProjectContext: vi.fn(async () => undefined),
@@ -29,6 +31,9 @@ vi.mock('@/stores/agentStore', () => ({
 
 vi.mock('@/stores/uiStore', () => ({
   installViewChangeGuard: vi.fn(() => () => undefined),
+  DEFAULT_DOCS_TREE_WIDTH: 280,
+  MIN_DOCS_TREE_WIDTH: 220,
+  docsTreeMaxWidth: () => 520,
   useUiStore: Object.assign(
     (selector: (state: typeof mocks) => unknown) => selector(mocks),
     { getState: () => mocks },
@@ -80,6 +85,8 @@ beforeEach(() => {
   mocks.running = false
   mocks.projectDocsRevision = 0
   mocks.projectDocsWorkspacePath = null
+  mocks.docsTreeWidth = 280
+  mocks.setDocsTreeWidth.mockClear()
   mocks.requestComposerInsertion.mockClear()
   mocks.listWorkspace.mockReset()
   mocks.readWorkspaceText.mockReset()
@@ -739,5 +746,35 @@ describe('DocsView', () => {
     })
 
     await waitFor(() => expect(mocks.saveWorkspaceDocument).toHaveBeenCalledTimes(1))
+  })
+
+  it('右侧目录树可拖拽/键盘调宽，双击复位', async () => {
+    mocks.listWorkspace.mockResolvedValue(listResult([{ path: '.specs/domain/spec.md', name: 'spec.md' }]))
+    mocks.readWorkspaceText.mockResolvedValue(readResult('.specs/domain/spec.md', '# Spec\n'))
+    render(<DocsView />)
+    const resizer = await screen.findByRole('separator', { name: '拖拽调整文档目录宽度' })
+    expect(resizer).toHaveAttribute('aria-orientation', 'vertical')
+    expect(resizer).toHaveAttribute('aria-valuenow', '280')
+
+    const setPointerCapture = vi.fn()
+    const releasePointerCapture = vi.fn()
+    const hasPointerCapture = vi.fn(() => true)
+    Object.assign(resizer, { setPointerCapture, releasePointerCapture, hasPointerCapture })
+
+    // 目录树在右侧：向左拖（clientX 减小）增大宽度。
+    fireEvent.pointerDown(resizer, { button: 0, pointerId: 1, clientX: 500 })
+    fireEvent.pointerMove(resizer, { pointerId: 1, clientX: 440 })
+    expect(mocks.setDocsTreeWidth).toHaveBeenCalledWith(340)
+    fireEvent.pointerUp(resizer, { pointerId: 1, clientX: 440 })
+    expect(releasePointerCapture).toHaveBeenCalledWith(1)
+    expect(document.documentElement.classList.contains('docs-view--resizing')).toBe(false)
+
+    mocks.setDocsTreeWidth.mockClear()
+    fireEvent.keyDown(resizer, { key: 'ArrowLeft' })
+    expect(mocks.setDocsTreeWidth).toHaveBeenCalledWith(296)
+    fireEvent.keyDown(resizer, { key: 'ArrowRight' })
+    expect(mocks.setDocsTreeWidth).toHaveBeenCalledWith(264)
+    fireEvent.doubleClick(resizer)
+    expect(mocks.setDocsTreeWidth).toHaveBeenCalledWith(280)
   })
 })

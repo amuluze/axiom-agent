@@ -288,7 +288,7 @@
         "src-tauri/src/workspace_access.rs",
         "src/platform/workspaceApproval.ts"
       ],
-      "semanticDigest": "ed963a1d498f3804054c01f8806bfc83af85200bfd6543146bd9341f7e0ffe03"
+      "semanticDigest": "e4048f11ffd4d571eace1776b9c2404917a1e0d53b937103103b1ce6a0c6988f"
     },
     {
       "id": "tool:examine_subagent",
@@ -384,7 +384,7 @@
         "src-tauri/src/workspace_access.rs",
         "src/platform/workspaceApproval.ts"
       ],
-      "semanticDigest": "58c9c1dbfa48e27ecf1571a448974fea360f441ba76ba260c04321e7c2d080c1"
+      "semanticDigest": "554c8998423c0047a94d78fc6ec08150e741d373c114d2dece4fd34cd7d8c292"
     },
     {
       "id": "tool:find",
@@ -517,7 +517,7 @@
         "src-tauri/src/workspace_access.rs",
         "src/platform/workspaceApproval.ts"
       ],
-      "semanticDigest": "fb22b8a312c7fe983bbdfcef5ac604379eee8d5f8bcddb5b8921269105722157"
+      "semanticDigest": "fdc9acc60ef95d9b8c8e21f8d2f7d1875a0294dcb2daa8a7d7f72c7ee9dd8e4c"
     },
     {
       "id": "tool:ui_snapshot",

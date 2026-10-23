@@ -1,5 +1,14 @@
 #[cfg(unix)]
 use crate::bash_policy_generated::DEFAULT_SHELL;
+/// Windows 上的解释器占位。
+///
+/// Unix 分支用的是契约生成物 `bash_policy_generated::DEFAULT_SHELL`（/bin/bash）。
+/// Windows 上 `bash` 工具**不注册**（capability 契约：Windows 无 bash、无沙箱），
+/// 因此这里的三处执行点在 Windows 上不可达；该常量只为让跨平台编译通过而存在。
+/// 不用生成的契约常量：契约里的 DEFAULT_SHELL=/bin/bash 是 Unix 语义，
+/// 写进 Windows 分支会让「平台可执行文件」这件事看起来像被支持过。
+#[cfg(windows)]
+const DEFAULT_SHELL: &str = "cmd.exe";
 use crate::{
     bash_policy_generated::{
         MAX_COMMAND_BYTES, MAX_OUTPUT_BYTES, MAX_TIMEOUT_MS, OUTSIDE_WORKSPACE_REDIRECT_PATTERN,

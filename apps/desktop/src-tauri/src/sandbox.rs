@@ -1382,6 +1382,15 @@ fn path_inside(path: &Path, root: &Path) -> bool {
     }
 }
 
+/// canonical 路径前缀判定（无分配）。
+///
+/// 与 `path_inside` 的区别只在大小写：本函数逐组件逐字节比较。仅当两侧都已
+/// canonical 时使用——此时大小写就是磁盘上的真实形式，无法命中「同一文件、
+/// 不同大小写」的漏判；任意用户输入仍必须走 `path_inside`（大小写不敏感）。
+fn path_inside_canonical(path: &Path, root: &Path) -> bool {
+    path.starts_with(root)
+}
+
 fn private_scopable(sub: &str) -> bool {
     matches!(
         sub,
@@ -1530,6 +1539,36 @@ impl SensitivePathPolicy {
                         path_inside(root, &entry.path)
                             && !path_inside(&entry.path, root)
                             && path_inside(&canonical, root)
+                    }))
+        })
+    }
+
+    /// 已 canonical 路径的判定快路径。
+    ///
+    /// **调用方保证**：`path` 不需要再做 symlink 解析——典型场景是工作区遍历：
+    /// 起点是 canonical 授权根，`WalkBuilder` 不跟随 symlink，因此每个条目的
+    /// 父链都是真实目录，末段最多是一个未解析的 symlink。symlink 条目仍走
+    /// `read_denied`（见 workspace_access 的 filter_entry），本方法只服务
+    /// 非 symlink 条目。
+    ///
+    /// 相比 `read_denied`：跳过逐条 `canonicalize`（一次 walk 可省数百毫秒），
+    /// 并用 `Path::starts_with` 做无分配的逐组件比较——`protected_paths` 已把
+    /// home 与每个条目 canonicalize（非 canonical 时两种形式都入表），遍历路径
+    /// 也来自 canonical 根，两侧大小写均为磁盘真实形式，故此处逐字节比较安全。
+    /// 这是热路径专用的等价判定，**不**替代任意输入的 `read_denied`。
+    pub(crate) fn read_denied_canonical(&self, path: &Path) -> bool {
+        self.entries.iter().any(|entry| {
+            let denied = if entry.literal {
+                path_inside_canonical(path, &entry.path) && path_inside_canonical(&entry.path, path)
+            } else {
+                path_inside_canonical(path, &entry.path)
+            };
+            denied
+                && !(entry.source == ProtectedSource::Private
+                    && self.workspace_roots.iter().any(|root| {
+                        path_inside_canonical(root, &entry.path)
+                            && !path_inside_canonical(&entry.path, root)
+                            && path_inside_canonical(path, root)
                     }))
         })
     }

@@ -83,6 +83,7 @@ const TERMINAL_PANEL_HEIGHT_STORAGE_KEY = 'axiom.terminal.panelHeight.v1'
 const SFTP_PANEL_HEIGHT_STORAGE_KEY = 'axiom.sftp.panelHeight.v1'
 const RUNTIME_RAIL_WIDTH_STORAGE_KEY = 'axiom.runtime.railWidth.v1'
 const SIDEBAR_WIDTH_STORAGE_KEY = 'axiom.ui.sidebarWidth.v1'
+const DOCS_TREE_WIDTH_STORAGE_KEY = 'axiom.docs.treeWidth.v1'
 const MAX_RECENT_WORKSPACES = 20
 
 export const DEFAULT_TERMINAL_PANEL_HEIGHT = 240
@@ -110,6 +111,13 @@ export const MIN_SIDEBAR_WIDTH = 200
 // 560 让侧栏放得下长任务名与设计页的助手面板（会话主体最少保留宽度见
 // SIDEBAR_BODY_RESERVED_WIDTH，侧栏可见的视口下恒满足该保留量）。
 export const MAX_SIDEBAR_WIDTH = 560
+export const DEFAULT_DOCS_TREE_WIDTH = 280
+// 与文档页原固定宽度上下限一致；下限保证分组名 + 路径可读，上限让长嵌套
+// 路径不换行。窄视口下由 docsTreeMaxWidth 再收紧，给正文留出阅读宽度。
+export const MIN_DOCS_TREE_WIDTH = 220
+export const MAX_DOCS_TREE_WIDTH = 520
+// 目录树之外至少为文档正文保留的宽度：窄窗口下目录树让位，不把正文挤成一条。
+const DOCS_TREE_BODY_RESERVED_WIDTH = 520
 // 侧边栏之外至少为会话主体保留的宽度：窄窗口下侧边栏让位，不把消息列挤没。
 const SIDEBAR_BODY_RESERVED_WIDTH = 480
 // innerHeight 不可用（SSR / 测试 stub window）时的兜底视口高度。
@@ -290,6 +298,25 @@ export const clampSidebarWidth = (width: number, maxWidth: number): number =>
     Math.max(MIN_SIDEBAR_WIDTH, maxWidth),
   )
 
+/** 当前视口下文档目录树宽度上限：与侧栏同思路，窄窗口先给正文让位。 */
+export const docsTreeMaxWidth = (): number => {
+  if (typeof window === 'undefined') return MAX_DOCS_TREE_WIDTH
+  const viewport = typeof window.innerWidth === 'number' && window.innerWidth > 0
+    ? window.innerWidth
+    : FALLBACK_VIEWPORT_WIDTH
+  return Math.max(
+    MIN_DOCS_TREE_WIDTH,
+    Math.min(MAX_DOCS_TREE_WIDTH, viewport - DOCS_TREE_BODY_RESERVED_WIDTH),
+  )
+}
+
+/** 文档目录树宽度统一在此 clamp：下限保证分组名可读，上限保证正文仍有阅读宽度。 */
+export const clampDocsTreeWidth = (width: number, maxWidth: number): number =>
+  Math.min(
+    Math.max(width, MIN_DOCS_TREE_WIDTH),
+    Math.max(MIN_DOCS_TREE_WIDTH, maxWidth),
+  )
+
 const terminalPanelMaxHeight = (): number => {
   if (typeof window === 'undefined') return FALLBACK_VIEWPORT_HEIGHT - TERMINAL_PANEL_BODY_RESERVED_HEIGHT
   const viewport = typeof window.innerHeight === 'number' && window.innerHeight > 0
@@ -344,6 +371,16 @@ const loadRuntimeRailWidth = (): number => {
   return clampRuntimeRailWidth(stored, runtimeRailMaxWidth())
 }
 
+const loadDocsTreeWidth = (): number => {
+  if (typeof window === 'undefined') return DEFAULT_DOCS_TREE_WIDTH
+  const raw = window.localStorage.getItem(DOCS_TREE_WIDTH_STORAGE_KEY)
+  // 注意 Number(null) === 0：缺失键必须显式回默认，不能走数值解析。
+  if (raw === null) return DEFAULT_DOCS_TREE_WIDTH
+  const stored = Number(raw)
+  if (!Number.isFinite(stored)) return DEFAULT_DOCS_TREE_WIDTH
+  return clampDocsTreeWidth(stored, docsTreeMaxWidth())
+}
+
 /**
  * 以下 getter 供 agent 层（非 React 上下文）同步读取当前 UI 偏好。
  * 定义为模块内函数（闭包引用模块内 useUiStore），即使测试 vi.mock 覆盖了
@@ -367,6 +404,7 @@ interface UiState {
   runtimeRailOpen: boolean
   runtimeRailPane: RuntimeRailPane
   runtimeRailWidth: number
+  docsTreeWidth: number
   terminalPanelOpen: boolean
   terminalPanelHeight: number
   sftpPanelHeight: number
@@ -407,6 +445,7 @@ interface UiState {
   /** 指定 pane 打开 rail：右上角 SSH toggle 等入口直达具体面板，不落 picker 页。 */
   openRuntimeRailPane: (pane: RuntimeRailTab) => void
   setRuntimeRailWidth: (width: number) => void
+  setDocsTreeWidth: (width: number) => void
   toggleTerminalPanel: () => void
   setTerminalPanelOpen: (open: boolean) => void
   toggleConnectPanel: () => void
@@ -456,6 +495,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   runtimeRailOpen: false,
   runtimeRailPane: 'picker',
   runtimeRailWidth: loadRuntimeRailWidth(),
+  docsTreeWidth: loadDocsTreeWidth(),
   terminalPanelOpen: false,
   terminalPanelHeight: loadTerminalPanelHeight(),
   sftpPanelHeight: loadSftpPanelHeight(),
@@ -542,6 +582,15 @@ export const useUiStore = create<UiState>((set, get) => ({
       window.localStorage.setItem(RUNTIME_RAIL_WIDTH_STORAGE_KEY, String(next))
     }
     set({ runtimeRailWidth: next })
+  },
+  // 宽度是显式布局偏好：clamp 后持久化，拖拽/键盘共用此入口。
+  setDocsTreeWidth: (docsTreeWidth) => {
+    if (!Number.isFinite(docsTreeWidth)) return
+    const next = clampDocsTreeWidth(docsTreeWidth, docsTreeMaxWidth())
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(DOCS_TREE_WIDTH_STORAGE_KEY, String(next))
+    }
+    set({ docsTreeWidth: next })
   },
   toggleTerminalPanel: () => set((state) => ({ terminalPanelOpen: !state.terminalPanelOpen })),
   setTerminalPanelOpen: (terminalPanelOpen) => set({ terminalPanelOpen }),

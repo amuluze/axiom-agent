@@ -1579,7 +1579,17 @@ fn search_impl_with_policy(
         .follow_links(false)
         .max_filesize(Some(MAX_TEXT_FILE_BYTES))
         .filter_entry(move |entry| {
-            should_walk_entry(entry) && !walk_policy.read_denied(entry.path())
+            if !should_walk_entry(entry) {
+                return false;
+            }
+            if entry
+                .file_type()
+                .is_some_and(|file_type| file_type.is_symlink())
+            {
+                !walk_policy.read_denied(entry.path())
+            } else {
+                !walk_policy.read_denied_canonical(entry.path())
+            }
         });
 
     let mut matches = Vec::new();
@@ -1600,9 +1610,7 @@ fn search_impl_with_policy(
         if glob.as_ref().is_some_and(|glob| !glob.is_match(&relative)) {
             continue;
         }
-        if policy.read_denied(entry.path()) {
-            continue;
-        }
+        // 敏感路径已在 filter_entry 中剪枝，此处不再重复判定。
         let content = match std::fs::read_to_string(entry.path()) {
             Ok(content) => content,
             Err(_) => continue,
@@ -1772,7 +1780,19 @@ fn find_impl_with_policy(
         .require_git(false)
         .follow_links(false)
         .filter_entry(move |entry| {
-            should_walk_entry(entry) && !walk_policy.read_denied(entry.path())
+            if !should_walk_entry(entry) {
+                return false;
+            }
+            // 遍历起点是 canonical 授权根且不跟随 symlink：父链无需再次解析。
+            // 仅末段可能是未解析的 symlink，仍走完整判定以保持原语义。
+            if entry
+                .file_type()
+                .is_some_and(|file_type| file_type.is_symlink())
+            {
+                !walk_policy.read_denied(entry.path())
+            } else {
+                !walk_policy.read_denied_canonical(entry.path())
+            }
         });
     // 深度受限时（顶层列举）不进入子目录：glob 的 `*` 跨分隔符，
     // 仅靠 pattern 无法把结果限制在顶层。
@@ -1787,9 +1807,7 @@ fn find_impl_with_policy(
         if entry.path() == search_root {
             continue;
         }
-        if policy.read_denied(entry.path()) {
-            continue;
-        }
+        // 敏感路径已在 filter_entry 中剪枝（含目录不下钻），此处不再重复判定。
         let relative = relative_display(root, entry.path());
         if !glob_matcher.is_match(&relative) {
             continue;
@@ -2144,32 +2162,56 @@ fn command_authorized_root(
 
 #[tauri::command]
 #[specta::specta]
-pub(crate) fn list_workspace(
-    state: tauri::State<'_, WorkspaceAccessState>,
+pub(crate) async fn list_workspace(
+    app: tauri::AppHandle,
     path: Option<String>,
     limit: Option<u32>,
     workspace_path: Option<String>,
 ) -> Result<WorkspaceListResult, WorkspaceCommandError> {
-    let root = command_authorized_root(&state, workspace_path.as_deref())?;
-    list_impl(&root, path.as_deref(), limit.map(|value| value as usize))
+    // 目录列举含逐条目 metadata 与敏感路径策略构建：会话准备期间文档扫描会并发
+    // 发多次请求，同步 command 在主线程执行会把它们串行化并占住 UI。整体移入
+    // blocking 线程池（State 经 AppHandle 在闭包内解析）。
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<WorkspaceAccessState>();
+        let root = command_authorized_root(&state, workspace_path.as_deref())?;
+        list_impl(&root, path.as_deref(), limit.map(|value| value as usize))
+    })
+    .await
+    .map_err(|error| {
+        WorkspaceCommandError::new(
+            WorkspaceCommandErrorCode::Unavailable,
+            format!("workspace list task failed: {error}"),
+        )
+    })?
 }
 
 #[tauri::command]
 #[specta::specta]
-pub(crate) fn read_workspace_text(
-    state: tauri::State<'_, WorkspaceAccessState>,
+pub(crate) async fn read_workspace_text(
+    app: tauri::AppHandle,
     path: String,
     offset: Option<u32>,
     limit: Option<u32>,
     workspace_path: Option<String>,
 ) -> Result<WorkspaceReadResult, WorkspaceCommandError> {
-    let root = command_authorized_root(&state, workspace_path.as_deref())?;
-    read_impl(
-        &root,
-        &path,
-        offset.map(|value| value as usize),
-        limit.map(|value| value as usize),
-    )
+    // 同 list_workspace：文件读取 + 敏感路径解析是阻塞 I/O，激活扫描会并发调用。
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<WorkspaceAccessState>();
+        let root = command_authorized_root(&state, workspace_path.as_deref())?;
+        read_impl(
+            &root,
+            &path,
+            offset.map(|value| value as usize),
+            limit.map(|value| value as usize),
+        )
+    })
+    .await
+    .map_err(|error| {
+        WorkspaceCommandError::new(
+            WorkspaceCommandErrorCode::Unavailable,
+            format!("workspace read task failed: {error}"),
+        )
+    })?
 }
 
 #[tauri::command]
@@ -2388,6 +2430,45 @@ mod tests {
         ));
         std::fs::create_dir_all(&path).unwrap();
         std::fs::canonicalize(path).unwrap()
+    }
+
+    #[test]
+    fn find_prunes_sensitive_paths_and_symlinks_to_them() {
+        let root = temporary_directory();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/keep.ts"), "keep").unwrap();
+        std::fs::create_dir_all(root.join(".ssh")).unwrap();
+        std::fs::write(root.join(".ssh/id_rsa"), "secret").unwrap();
+        std::fs::create_dir_all(root.join(".axiom")).unwrap();
+        std::fs::write(root.join(".axiom/axiom.db"), "secret").unwrap();
+        // symlink 指向受保护目录：walker 不跟随，但条目本身也不得出现在结果里。
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join(".ssh"), root.join("ssh-link")).unwrap();
+
+        let policy = crate::sandbox::SensitivePathPolicy::new(&root, std::slice::from_ref(&root));
+        let result =
+            find_impl_with_policy(&root, "**/*", None, Some(100), Some(6), &policy).unwrap();
+        let paths: Vec<&str> = result
+            .matches
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect();
+        assert!(
+            paths.iter().any(|path| path.ends_with("keep.ts")),
+            "{paths:?}"
+        );
+        assert!(!paths.iter().any(|path| path.contains(".ssh")), "{paths:?}");
+        assert!(
+            !paths.iter().any(|path| path.contains(".axiom")),
+            "{paths:?}"
+        );
+        #[cfg(unix)]
+        assert!(
+            !paths.iter().any(|path| path.contains("ssh-link")),
+            "{paths:?}"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

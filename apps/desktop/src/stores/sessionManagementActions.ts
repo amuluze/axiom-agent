@@ -158,10 +158,24 @@ export const selectSession = async (
   if (!structuralLease) return false
   set({ settingsError: null })
   try {
-    const loaded = await deps.getRepository().loadSession(sessionId)
-    const snapshot = { ...loaded, session: hydrateSessionMetadata(loaded.session) }
     const cached = getRuntimeSession(sessionId)
     if (cached && !cached.isDisposed) {
+      // 空闲缓存会话的切换不需要消息历史：cached 激活只用会话元数据（消息仅在
+      // 运行中才从 repository 取完整视图），模型消息直接沿用 harness。此前无条件
+      // `loadSession` 会把整个历史（含逐条解码）压在每次切回的路径上——长会话
+      // 比项目扫描更贵。运行中会话仍读快照：harness 要到 run 返回才合并本轮消息。
+      const stored = get().sessions.find((candidate) => candidate.id === sessionId)
+      const snapshot: SessionSnapshot = cached.isRunning || !stored
+        ? await deps.getRepository().loadSession(sessionId).then((loaded) => ({
+            ...loaded,
+            session: hydrateSessionMetadata(loaded.session),
+          }))
+        : {
+            session: hydrateSessionMetadata(stored),
+            messages: [],
+            checkpoint: null,
+            journalEntries: [],
+          }
       await deps.activateCachedRuntimeSession({
         repository: deps.getRepository(),
         snapshot,
@@ -170,6 +184,8 @@ export const selectSession = async (
       })
       return true
     }
+    const loaded = await deps.getRepository().loadSession(sessionId)
+    const snapshot = { ...loaded, session: hydrateSessionMetadata(loaded.session) }
     await deps.activateSessionSnapshot({
       repository: deps.getRepository(),
       snapshot,

@@ -159,19 +159,48 @@
   overflow: hidden;
 }
 
-.docs-view__divider {
+/* 目录树调宽把手：命中区 7px，视觉线居中 1px，仅 hover/聚焦时着色。
+   宽度由 uiStore.docsTreeWidth 内联到 aside，clamp 也集中在 store。 */
+.docs-view__tree-resizer {
   flex: none;
+  width: 7px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  position: relative;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.docs-view__tree-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
   width: 1px;
   background: var(--border-subtle);
 }
 
+.docs-view__tree-resizer:hover::after,
+.docs-view__tree-resizer:focus-visible::after {
+  background: var(--accent-soft);
+}
+
+/* 拖拽期间（把手 pointer capture）全局锁定光标并禁止选择，避免指针甩出把手后光标闪变。 */
+.docs-view--resizing,
+.docs-view--resizing * {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
 .docs-view__tree {
-  flex: 0 0 280px;
-  min-width: 220px;
-  max-width: 360px;
+  flex: none;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  border-left: 1px solid var(--border-subtle);
   background: var(--bg-sidebar);
 }
 

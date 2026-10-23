@@ -2,8 +2,8 @@
  * 文档视图（AppView 'docs'，从侧栏「文档」进入；侧栏此时切换为文档助手会话列）。
  * 形态按 .pen 设计稿 docs-view / docs-edit / docs-empty 三页对齐：
  * 顶部标签栏（已打开文档 + 同步状态 + 编辑/重新扫描 或 保存⌘S/放弃），
- * 主区为 Markdown 正文（或编辑态的源码编辑面），右侧 280px 文档目录树
- * （分组含项目指南 AGENTS.md 与子目录指南，见 docsIndex.ts）。
+ * 主区为 Markdown 正文（或编辑态的源码编辑面），右侧文档目录树默认 280px、
+ * 可拖拽/键盘调宽并持久化（分组含项目指南 AGENTS.md 与子目录指南，见 docsIndex.ts）。
  *
  * 文档是用户/Agent 共写的可信说明：阅读与编辑都在本页，编辑保存走用户手势
  * CAS 通道（platform/workspaceDocument.ts，路径白名单在 Rust 权威执行）；
@@ -16,7 +16,9 @@ import {
   useRef,
   useState,
   type Dispatch,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
+  type PointerEvent,
   type SetStateAction,
 } from 'react'
 import Markdown, { type Components } from 'react-markdown'
@@ -24,7 +26,13 @@ import remarkGfm from 'remark-gfm'
 import { AlertTriangle, Archive, ChevronRight, FileText, RefreshCw } from 'lucide-react'
 import { useT } from '@/i18n'
 import { useAgentStore } from '@/stores/agentStore'
-import { installViewChangeGuard, useUiStore } from '@/stores/uiStore'
+import {
+  DEFAULT_DOCS_TREE_WIDTH,
+  MIN_DOCS_TREE_WIDTH,
+  docsTreeMaxWidth,
+  installViewChangeGuard,
+  useUiStore,
+} from '@/stores/uiStore'
 import { MAX_NESTED_AGENTS_DEPTH } from '@/agent/prompt/projectAgents'
 import { openExternalUrl } from '@/platform/webAccess'
 import { confirmDialog } from '@/components/dialogService'
@@ -79,12 +87,20 @@ const openExternalLink = (event: MouseEvent<HTMLAnchorElement>, href: string): v
   void openExternalUrl(href)
 }
 
+/** 键盘调整步长（px）：resizer 聚焦后 ArrowLeft/ArrowRight 增减目录树宽度。 */
+const KEYBOARD_RESIZE_STEP = 16
+/** 拖拽期间挂在 <html> 上的类名：全局 col-resize 光标 + 禁止文本选择。 */
+const RESIZING_CLASS = 'docs-view--resizing'
+
 const WorkspaceDocsView = ({ workspacePath, workspaceName }: { workspacePath?: string; workspaceName?: string }) => {
   const { t } = useT()
   const running = useAgentStore((state) => state.running)
   const projectDocsRevision = useAgentStore((state) => state.projectDocsRevision)
   const projectDocsWorkspacePath = useAgentStore((state) => state.projectDocsWorkspacePath)
   const storageKey = `${SELECTED_PATH_STORAGE_KEY}:${workspacePath ?? 'none'}`
+  const docsTreeWidth = useUiStore((state) => state.docsTreeWidth)
+  const setDocsTreeWidth = useUiStore((state) => state.setDocsTreeWidth)
+  const treeDragRef = useRef<{ startX: number; startWidth: number } | null>(null)
   /** 已打开文档的标签页集合（设计稿 dvd-tabs：mono 文件名，点击切换）。 */
   const [collapsedRoles, setCollapsedRoles] = useState<ReadonlySet<DocsGroupRole>>(new Set())
   /** 当前正文是在哪一代扫描之后读到的；避免选中 AGENTS.md 时首读后立刻重复读一遍。 */
@@ -351,6 +367,44 @@ const WorkspaceDocsView = ({ workspacePath, workspaceName }: { workspacePath?: s
     [syncedAt],
   )
 
+  // 目录树在右侧，向左拖增大宽度；clamp 集中在 uiStore.setDocsTreeWidth。
+  // pointer capture 保证指针移出把手后仍持续收到 move/up。
+  const onTreeResizerPointerDown = (event: PointerEvent<HTMLElement>): void => {
+    if (event.button !== 0 || !event.currentTarget.setPointerCapture) return
+    event.preventDefault()
+    treeDragRef.current = { startX: event.clientX, startWidth: docsTreeWidth }
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId)
+    } catch {
+      treeDragRef.current = null
+      return
+    }
+    document.documentElement.classList.add(RESIZING_CLASS)
+  }
+
+  const onTreeResizerPointerMove = (event: PointerEvent<HTMLElement>): void => {
+    const drag = treeDragRef.current
+    if (!drag) return
+    const next = drag.startWidth + (drag.startX - event.clientX)
+    if (next !== useUiStore.getState().docsTreeWidth) setDocsTreeWidth(next)
+  }
+
+  const onTreeResizerPointerEnd = (event: PointerEvent<HTMLElement>): void => {
+    if (!treeDragRef.current) return
+    treeDragRef.current = null
+    document.documentElement.classList.remove(RESIZING_CLASS)
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+  }
+
+  const onTreeResizerKeyDown = (event: ReactKeyboardEvent<HTMLElement>): void => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    event.preventDefault()
+    const delta = event.key === 'ArrowLeft' ? KEYBOARD_RESIZE_STEP : -KEYBOARD_RESIZE_STEP
+    setDocsTreeWidth(useUiStore.getState().docsTreeWidth + delta)
+  }
+
   if (!docsIndexHasContent(index ?? { groups: [] }) && !scanning && !edit) {
     return <DocsEmptyState onRescan={() => void scan()} error={scanError ?? undefined} />
   }
@@ -477,8 +531,22 @@ const WorkspaceDocsView = ({ workspacePath, workspaceName }: { workspacePath?: s
               </>
             )}
           </div>
-          <div className="docs-view__divider" />
-          <aside className="docs-view__tree">
+          <hr
+            className="docs-view__tree-resizer"
+            aria-orientation="vertical"
+            aria-label={t('app.docs.treeResizerAria')}
+            aria-valuemin={MIN_DOCS_TREE_WIDTH}
+            aria-valuemax={docsTreeMaxWidth()}
+            aria-valuenow={docsTreeWidth}
+            tabIndex={0}
+            onPointerDown={onTreeResizerPointerDown}
+            onPointerMove={onTreeResizerPointerMove}
+            onPointerUp={onTreeResizerPointerEnd}
+            onPointerCancel={onTreeResizerPointerEnd}
+            onKeyDown={onTreeResizerKeyDown}
+            onDoubleClick={() => setDocsTreeWidth(DEFAULT_DOCS_TREE_WIDTH)}
+          />
+          <aside className="docs-view__tree" style={{ width: docsTreeWidth }}>
             <div className="docs-view__tree-header">
               <span className="docs-view__tree-title">{t('app.docs.title')}</span>
               <span className="docs-view__tree-workspace" title={workspacePath}>{workspaceName}</span>
