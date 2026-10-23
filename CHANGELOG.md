@@ -12,7 +12,7 @@
 
 ### Fixed
 - **Linux 沙箱在装有 Docker 的 merged-usr 系统上整体失效**：bwrap 对容器引擎 socket 的遮蔽/放行使用符号链接原始路径（`/var/run/docker.sock`），而「遮蔽 /run」已把符号链接指向的目录换成空 tmpfs——bwrap 随后沿符号链接创建绑定目标失败（`Can't create file at /var/run/docker.sock`），沙箱内**全部命令 exit 1**（装了 Docker 的 Debian/Ubuntu 宿主与 GHA 容器 job 均实测复现）。现在绑定目标一律取 canonical 形态（`/run/docker.sock`）并按目标去重：canonical 目标落在被遮蔽的 /run 内时 bwrap 可在 tmpfs 内正常创建（实测验证）；符号链接经只读根保留，客户端用任一形态连接都解析到同一绑定。
-- **`database_migration_failure_is_fail_closed` 在 root 环境必红**：失败注入靠 chmod 0o500 去写权限，而 root（CAP_DAC_OVERRIDE）无视权限位——GHA 容器 job 以 root 跑测试时迁移静默成功、断言反红（公开仓完整 check 的 7 个失败测试之一）。改用「数据根是普通文件」的 ENOTDIR 注入：目标父路径不是目录时 rename 对任何 uid 都失败，对 root 与普通用户同样 fail-closed。
+- **公开仓 ci 完整源码门禁在 Linux 容器必红（两轮共 7 个失败测试全修复）**：① bwrap 符号链接根因（见上条）打挂 4 个 `workspace_command` 集成测试；② `database_migration_failure_is_fail_closed` 的失败注入靠 chmod 0o500 去写权限，root（CAP_DAC_OVERRIDE）无视权限位——改用「数据根是普通文件」的 ENOTDIR 注入（目标父路径不是目录时 rename 对任何 uid 都失败，同样 fail-closed）；③ 两个 seatbelt 专属硬化测试缺 `#[cfg(target_os = "macos")]` 门控——`write_boundary_hardening_covers_workspace_inside_deny_paths` 断言 macOS deny 分表的 `Library/Mail` Concrete 条目、`sandbox_hardening_blocks_rename_escape…` 实跑 `/usr/bin/sandbox-exec`，按「macOS 专属测试 cfg 跳过」的既有约定补门（Linux 侧等价语义由 bwrap 参数单测覆盖）；④ 后台进程回收断言只认 ESRCH——容器 PID 1 不替孤儿收尸时，被杀进程以 zombie 态占住 pid 槽（`kill(pid,0)` 仍成功），探测改为同时接受 zombie 态（zombie 即进程已死，不再执行、不持有资源；macOS 行为不变）。
 - **文档页右侧目录树无法调宽**：正文与目录树之间原来只有一条不可交互的 1px 分隔线，目录树宽度写死在 CSS（280px，上限 360px）。现在改为可拖拽的调宽把手：鼠标拖拽（pointer capture）、方向键（±16px）与双击复位，宽度经 `uiStore.docsTreeWidth` clamp 到 220–520px（窄视口按正文保留宽度进一步收紧）并持久化到 localStorage。
 
 ## [0.7.0] - 2026-10-22

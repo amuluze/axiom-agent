@@ -2863,7 +2863,10 @@ except PermissionError:
     /// 写边界硬化（P0-1）：锚点/fcntl/xpc deny 恒在且位于全部 allow 之后；
     /// workspace == HOME 形态下凭据子路径/凭据文件/敏感目录全部获得写保护，
     /// 覆盖 SubpathParam / LiteralParam / Concrete 三种规则形态。
+    /// （seatbelt 专属断言：Concrete 形态取 macOS deny 分表的 Library/Mail；
+    /// Linux 侧等价语义由 bwrap_args_* 系列覆盖。）
     #[test]
+    #[cfg(target_os = "macos")]
     fn write_boundary_hardening_covers_workspace_inside_deny_paths() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
@@ -2975,7 +2978,10 @@ except PermissionError:
     /// 端到端回归（workspace == HOME 形态，最尖锐的硬化场景）：读取 deny 的凭据
     /// 路径必须无法经 rename 逃逸后读取；普通工作区写入不受影响；工作区根本身
     /// 不可被 rename/rmdir（锚点 deny）。
+    /// （依赖 /usr/bin/sandbox-exec 实跑，macOS 专属；Linux 侧由 bwrap 参数单测
+    /// 与 workspace_command 的沙箱集成测试覆盖。）
     #[test]
+    #[cfg(target_os = "macos")]
     fn sandbox_hardening_blocks_rename_escape_of_read_denied_credentials() {
         assert!(
             sandbox_available(),

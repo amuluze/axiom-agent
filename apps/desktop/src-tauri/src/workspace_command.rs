@@ -1614,14 +1614,28 @@ mod tests {
         {
             // 后台 sleep 必须随进程组回收（unix 组信号）。清理是异步落地的
             // （信号后内核回收），给一段重试窗口再断言 pid 已死（ESRCH 精确）。
+            // 容器环境的 PID 1 不替孤儿收尸时，被杀进程停留在 zombie 态占住
+            // pid 槽（kill(pid,0) 仍成功）——zombie 意味着进程已死（不再执行、
+            // 不再持有资源），与「已回收」等价，一并判定通过（GHA 容器实跑）。
             let process_id = String::from_utf8(output)
                 .unwrap()
                 .trim()
                 .parse::<i32>()
                 .unwrap();
+            let effectively_dead = |pid: i32| {
+                !crate::platform_process::process_alive(pid as u32)
+                    || std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                        .ok()
+                        .and_then(|stat| {
+                            stat.rsplit(')')
+                                .next()
+                                .map(|rest| rest.trim_start().starts_with('Z'))
+                        })
+                        .unwrap_or(false)
+            };
             let mut reaped = false;
             for _ in 0..100 {
-                if !crate::platform_process::process_alive(process_id as u32) {
+                if effectively_dead(process_id) {
                     reaped = true;
                     break;
                 }
