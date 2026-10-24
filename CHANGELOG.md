@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-24
+
 ### Performance
 - **会话准备不再每次重扫整个项目约定**：嵌套 `AGENTS.md` 索引（全树遍历）的复用窗口从 10 秒延长到 5 分钟，`.axiom/skills` 扫描结果（每个 Skill 全文读取 + hash）也按工作区缓存复用；run 结束重扫与显式技能重载仍先失效缓存，模型自己写入的约定下一轮即可见。根 `AGENTS.md` 正文与文档索引保持每次激活扫描（前者一个文件，后者已有 metadata 读头缓存），外部编辑仍能及时进入提示词。
 - **工作区读/列命令移出主线程**：`list_workspace` / `read_workspace_text` 改为 async + `spawn_blocking`（与写命令、`find`/`search` 一致）。文档扫描并发发起的多次读取不再在主线程串行执行并阻塞 UI，blocking 线程池可真正并行完成 I/O。
@@ -11,6 +13,7 @@
 - **Provider profile 解码按持久化 JSON 复用**：`listSessions` 不再为每行会话各发一次 Rust 权威解码 IPC；并发解码合并为同一个 in-flight Promise，返回克隆保持调用方隔离。
 
 ### Fixed
+- **浏览器面板在 Chrome 156+ 上对慢站点误报「CDP 命令超时」，且 screencast 帧断流会冻结整个标签页**：两个叠加的 Chrome 156 行为变化。① `Page.navigate`/`Page.reload`/`Page.navigateToHistoryEntry` 的 CDP 应答被推迟到**导航 commit**（目标站点首字节到达）——首字节超过通用命令预算（8s）的站点会让面板直接报「导航失败：CDP 命令超时」（Chrome 155 及以前在导航启动即应答）。三类导航命令改用独立的 60s 应答预算，其余 CDP 命令维持 8s。② screencast 帧不被 ack 时，Chrome 156 会冻结页面生命周期（导航 commit 永不发生、`Runtime.evaluate` 超时、标签页停在 about:blank——裸 CDP 探针实测复现）；而 App 的 CDP socket 任务此前**同步执行** `app.emit` 推帧，UI 主线程被重负载（如无障碍轮询风暴）反压时任务停止读 WS，ack 随之停止入队，最终触发冻结链。修复：socket 任务上的全部事件投递（帧/导航/对话框/console）移到独立 spawn，任务只保留「ack 入队 + 解析」快路径；ack 改走专用无界通道并由 socket 任务**优先**写出（此前有界通道满时会丢 ack）。③ `take_tab` 的补连接路径存在并发竞态：面板并发动作会让同一 target 建出**两条** DevTools 连接（实测追踪证实），第二个 `Page.enable`/screencast 会话顶掉第一个——补连接加 per-target 互斥（connect-once，等待者复用首个注册结果）。④ Chrome 启动参数追加反后台节流三件套（`--disable-background-timer-throttling`/`--disable-backgrounding-occluded-windows`/`--disable-renderer-backgrounding`）：宿主 GUI 应用后台化时 macOS 会节流无头 renderer，实时画面与受控导航都是前台语义。附带修复原生 E2E 三处漂移断言：审批卡本地化后的英文标题（`Run bash command?` → `执行 bash 命令？`）、`api_request` 环境引用键从 `id` 列改为 `logical_id`（23a1885a 起 Rust 按 logical_id 查询）、地址栏 fill 与 tab 轮询重置的竞态（fill 成功后立即回车 + 组合重试）。已知残留：App 语境下 Chrome 156 仍存在低概率导航冻结（App 侧追踪证实 renderer 停摆，App 外 15+ 组裸 CDP 探针无法复现，Chrome 155 不受影响），待 Chrome 侧根因澄清；原生 E2E 浏览器旅程在该环境下可能仍间歇红。
 - **Linux 沙箱在装有 Docker 的 merged-usr 系统上整体失效**：bwrap 对容器引擎 socket 的遮蔽/放行使用符号链接原始路径（`/var/run/docker.sock`），而「遮蔽 /run」已把符号链接指向的目录换成空 tmpfs——bwrap 随后沿符号链接创建绑定目标失败（`Can't create file at /var/run/docker.sock`），沙箱内**全部命令 exit 1**（装了 Docker 的 Debian/Ubuntu 宿主与 GHA 容器 job 均实测复现）。现在绑定目标一律取 canonical 形态（`/run/docker.sock`）并按目标去重：canonical 目标落在被遮蔽的 /run 内时 bwrap 可在 tmpfs 内正常创建（实测验证）；符号链接经只读根保留，客户端用任一形态连接都解析到同一绑定。
 - **公开仓 ci 完整源码门禁在 Linux 容器必红（两轮共 7 个失败测试全修复）**：① bwrap 符号链接根因（见上条）打挂 4 个 `workspace_command` 集成测试；② `database_migration_failure_is_fail_closed` 的失败注入靠 chmod 0o500 去写权限，root（CAP_DAC_OVERRIDE）无视权限位——改用「数据根是普通文件」的 ENOTDIR 注入（目标父路径不是目录时 rename 对任何 uid 都失败，同样 fail-closed）；③ 两个 seatbelt 专属硬化测试缺 `#[cfg(target_os = "macos")]` 门控——`write_boundary_hardening_covers_workspace_inside_deny_paths` 断言 macOS deny 分表的 `Library/Mail` Concrete 条目、`sandbox_hardening_blocks_rename_escape…` 实跑 `/usr/bin/sandbox-exec`，按「macOS 专属测试 cfg 跳过」的既有约定补门（Linux 侧等价语义由 bwrap 参数单测覆盖）；④ 后台进程回收断言只认 ESRCH——容器 PID 1 不替孤儿收尸时，被杀进程以 zombie 态占住 pid 槽（`kill(pid,0)` 仍成功），探测改为同时接受 zombie 态（zombie 即进程已死，不再执行、不持有资源；macOS 行为不变）。
 - **文档页右侧目录树无法调宽**：正文与目录树之间原来只有一条不可交互的 1px 分隔线，目录树宽度写死在 CSS（280px，上限 360px）。现在改为可拖拽的调宽把手：鼠标拖拽（pointer capture）、方向键（±16px）与双击复位，宽度经 `uiStore.docsTreeWidth` clamp 到 220–520px（窄视口按正文保留宽度进一步收紧）并持久化到 localStorage。

@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "axiom"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "base64 0.22.1",
  "block2",

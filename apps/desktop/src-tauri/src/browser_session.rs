@@ -97,6 +97,11 @@ fn trace_phase(label: &str) {
 fn trace_phase(_label: &str) {}
 
 const CDP_COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
+/// 导航类命令（navigate/reload/history）的应答预算。Chrome 156 起这些命令的
+/// 应答被推迟到**导航 commit**（首字节到达）——首字节慢的站点会让命令在旧的
+/// 8s 通用预算内无应答，面板对任何 >8s 才开始响应的 URL 都误报
+/// 「CDP 命令超时」（Chrome 155 及以前在导航启动即应答，无此耦合）。
+const NAVIGATE_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 /// DevTools WebSocket 握手超时：引擎接受了 TCP 但握手不完成时，缺这条边界会让
 /// `browser_command` **永不返回**（命令卡住、面板无错可报）。与命令超时同档。
 const CDP_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
@@ -830,6 +835,13 @@ fn chrome_args(
         // 弹窗拦截会静默吞掉新开窗口，破坏「动作后观测受控/用户 tab」的闭环，
         // 关闭以保证模型可见的行为确定性。
         "--disable-popup-blocking".into(),
+        // macOS 会把「宿主 GUI 应用处于后台且无用户输入」时的子进程计入后台
+        // 节流（App Nap / renderer backgrounding）：无头 renderer 被挂起后，
+        // 导航 commit 永不发生、Runtime.evaluate 超时（Chrome 156 实测，155
+        // 不受影响）。实时画面与受控导航都是前台语义，显式关闭全部后台节流。
+        "--disable-background-timer-throttling".into(),
+        "--disable-backgrounding-occluded-windows".into(),
+        "--disable-renderer-backgrounding".into(),
         "about:blank".into(),
     ]);
     args
@@ -1078,6 +1090,14 @@ fn spawn_browser_process_sync(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
+    // e2e 构建：Chrome 自身日志透传到 app stderr（failure.app.log 收集），
+    // renderer/合成器故障时能看到 Chrome 侧的第一手报错。
+    #[cfg(feature = "e2e")]
+    {
+        command
+            .arg("--enable-logging=stderr")
+            .stderr(Stdio::inherit());
+    }
     configure_browser_environment(&mut command);
     // 独立进程组（unix）：shutdown 时可以整组发信号，覆盖 Chrome 派生的辅助
     // 进程。Windows 无进程组，spawn no-op，树终止由 platform_process 的
@@ -1250,6 +1270,9 @@ struct ScreencastState {
 /// （地址同步）、screencastFrame（实时画面）、Runtime/Log（console 观测）。
 struct CdpTab {
     outgoing: mpsc::Sender<String>,
+    /// screencast ack 专用无界通道：ack 积压会让 Chrome（156+ 实测）整流暂停并
+    /// **冻结页面生命周期**（导航 commit 永不发生），宁可无界排队也不能丢。
+    acks: mpsc::UnboundedSender<String>,
     pending: CdpPending,
     next_id: AtomicI64,
     /// loadEventFired 计数：导航前取基线，等待计数增长即「下一次 load 完成」。
@@ -1285,10 +1308,24 @@ impl CdpTab {
     }
 
     async fn send(&self, method: &str, params: Value) -> Result<Value, String> {
-        self.send_unchecked(method, params).await
+        self.send_with_deadline(method, params, CDP_COMMAND_TIMEOUT)
+            .await
     }
 
-    async fn send_unchecked(&self, method: &str, params: Value) -> Result<Value, String> {
+    /// 导航类命令（navigate/reload/history）：Chrome 156 起应答被推迟到导航
+    /// commit，需要独立于通用命令预算的更长应答窗口。
+    async fn send_navigation(&self, method: &str, params: Value) -> Result<Value, String> {
+        self.send_with_deadline(method, params, NAVIGATE_COMMAND_TIMEOUT)
+            .await
+    }
+
+    async fn send_with_deadline(
+        &self,
+        method: &str,
+        params: Value,
+        budget: Duration,
+    ) -> Result<Value, String> {
+        trace_phase(&format!("cdp:send {method} {params}"));
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         {
@@ -1301,9 +1338,7 @@ impl CdpTab {
         let payload = json!({"id": id, "method": method, "params": params});
         // 写通道是有界 mpsc（容量 32）：socket 写任务被对端挂住时，队列满会让
         // `send().await` **永久等待**——这里给它与命令同档的 deadline，避免命令级静默挂起。
-        match tokio::time::timeout(CDP_COMMAND_TIMEOUT, self.outgoing.send(payload.to_string()))
-            .await
-        {
+        match tokio::time::timeout(budget, self.outgoing.send(payload.to_string())).await {
             Ok(Ok(())) => {}
             Ok(Err(_)) => {
                 if let Ok(mut pending) = self.pending.lock() {
@@ -1318,7 +1353,7 @@ impl CdpTab {
                 return Err(format!("CDP 命令发送超时（写通道拥塞）：{method}"));
             }
         }
-        match tokio::time::timeout(CDP_COMMAND_TIMEOUT, rx).await {
+        match tokio::time::timeout(budget, rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err("CDP 响应通道已关闭".into()),
             Err(_) => {
@@ -1396,7 +1431,8 @@ fn handle_cdp_frame(tab: &CdpTab, text: &str) {
             if is_main {
                 if let Some(url) = value.pointer("/params/frame/url").and_then(Value::as_str) {
                     if let Some(sink) = &tab.events {
-                        let _ = sink.app.emit(
+                        spawn_emit(
+                            sink,
                             BROWSER_NAVIGATED_EVENT,
                             &BrowserNavigatedEvent {
                                 tab_id: sink.tab_id.clone(),
@@ -1417,7 +1453,8 @@ fn handle_cdp_frame(tab: &CdpTab, text: &str) {
 
 fn emit_dialog_event(tab: &CdpTab) {
     if let Some(sink) = &tab.events {
-        let _ = sink.app.emit(
+        spawn_emit(
+            sink,
             BROWSER_DIALOG_EVENT,
             &BrowserDialogEvent {
                 tab_id: sink.tab_id.clone(),
@@ -1469,7 +1506,8 @@ fn handle_screencast_frame(tab: &CdpTab, value: &Value) {
         return;
     }
     if let Some(sink) = &tab.events {
-        let _ = sink.app.emit(
+        spawn_emit(
+            sink,
             BROWSER_FRAME_EVENT,
             &BrowserFrameEvent {
                 tab_id: sink.tab_id.clone(),
@@ -1482,29 +1520,39 @@ fn handle_screencast_frame(tab: &CdpTab, value: &Value) {
     }
 }
 
-/// ack 是带 id 的常规命令：注册 pending 后经 outgoing 通道送出，响应到达时
-/// 由 id 匹配路径自然回收（rx 端无人等待，结果被丢弃）。try_send 失败（通道
-/// 满，意味着命令积压已异常）时放弃本帧 ack——Chrome 会暂停 screencast，
-/// 面板表现为画面暂停而非错误。
+/// ack 走专用无界通道、由 socket 任务优先写出。ack 是「帧处理→Chrome」的活性
+/// 信号：丢失一帧 ack 就会让 Chrome（156+ 实测）整流暂停并冻结页面生命周期
+/// （导航 commit 永不发生，Page.navigate 超时），宁可无界排队也不能丢。
+/// 无界通道的接收端随 socket 任务存活，发送失败仅意味着 tab 已关闭。
 fn enqueue_screencast_ack(tab: &CdpTab, session_id: i64) {
-    let id = tab.next_id.fetch_add(1, Ordering::Relaxed);
-    {
-        let Ok(mut pending) = tab.pending.lock() else {
-            return;
-        };
-        let (tx, _rx) = oneshot::channel();
-        pending.insert(id, tx);
+    static ACK_COUNT: AtomicI64 = AtomicI64::new(0);
+    let seen = ACK_COUNT.fetch_add(1, Ordering::Relaxed);
+    if seen % 50 == 0 {
+        trace_phase(&format!("screencast-acks:{seen}"));
     }
+    let id = tab.next_id.fetch_add(1, Ordering::Relaxed);
     let payload = json!({
         "id": id,
         "method": "Page.screencastFrameAck",
         "params": {"sessionId": session_id},
     });
-    if tab.outgoing.try_send(payload.to_string()).is_err() {
-        if let Ok(mut pending) = tab.pending.lock() {
-            pending.remove(&id);
-        }
-    }
+    let _ = tab.acks.send(payload.to_string());
+}
+
+/// 帧处理器一律不得在 socket 任务上同步 emit：emit 若被 UI 主线程反压（重负载
+/// 下的无障碍轮询即可造成），socket 任务会停止读 WS，screencast ack 随之停止
+/// 入队，最终触发上面的表面冻结链。所有事件投递移到独立 spawn，socket 任务只
+/// 保留「ack 入队 + 解析」的快路径；emit 乱序对面板无影响（各事件独立消费）。
+fn spawn_emit(sink: &TabEventSink, event: &str, payload: &impl serde::Serialize) {
+    let sink = TabEventSink {
+        app: sink.app.clone(),
+        tab_id: sink.tab_id.clone(),
+    };
+    let event = event.to_string();
+    let payload = serde_json::to_value(payload).unwrap_or(serde_json::Value::Null);
+    tokio::spawn(async move {
+        let _ = sink.app.emit(&event, payload);
+    });
 }
 
 fn handle_console_called(tab: &CdpTab, value: &Value) {
@@ -1609,7 +1657,8 @@ fn push_console_entry(tab: &CdpTab, level: &str, source: &str, raw: &str) {
         }
     }
     if let Some(sink) = &tab.events {
-        let _ = sink.app.emit(
+        spawn_emit(
+            sink,
             BROWSER_CONSOLE_EVENT,
             &BrowserConsoleEvent {
                 tab_id: sink.tab_id.clone(),
@@ -1633,12 +1682,26 @@ async fn run_cdp_socket(
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
     mut outgoing: mpsc::Receiver<String>,
+    mut acks: mpsc::UnboundedReceiver<String>,
     tab: Arc<CdpTab>,
 ) {
     loop {
         tokio::select! {
             biased;
             _ = std::future::pending::<()>() => break,
+            // ack 优先写：帧处理只在快路径入队 ack，Chrome 在途帧窗口极小，
+            // ack 稍有延迟就会整流暂停并（156+ 实测）冻结导航 commit。
+            ack = acks.recv() => {
+                if let Some(text) = ack {
+                    let result = ws
+                        .send(Message::Text(text.into()))
+                        .await
+                        .map_err(|error| error.to_string());
+                    if result.is_err() {
+                        break;
+                    }
+                }
+            }
             message = outgoing.recv() => {
                 match message {
                     Some(text) => {
@@ -1692,10 +1755,13 @@ async fn connect_tab(
         )
     })?
     .map_err(|error| format!("连接浏览器调试通道失败：{error}"))?;
+    trace_phase(&format!("connect_tab:{tab_id} {ws_url}"));
     let (outgoing_tx, outgoing_rx) = mpsc::channel(32);
+    let (acks_tx, acks_rx) = mpsc::unbounded_channel();
     let (load_tx, _) = watch::channel(0u64);
     let tab = Arc::new(CdpTab {
         outgoing: outgoing_tx,
+        acks: acks_tx,
         pending: Arc::new(StdMutex::new(HashMap::new())),
         next_id: AtomicI64::new(1),
         load_tx,
@@ -1707,7 +1773,12 @@ async fn connect_tab(
             tab_id: tab_id.to_string(),
         }),
     });
-    tokio::spawn(run_cdp_socket(stream, outgoing_rx, Arc::clone(&tab)));
+    tokio::spawn(run_cdp_socket(
+        stream,
+        outgoing_rx,
+        acks_rx,
+        Arc::clone(&tab),
+    ));
     tab.send("Page.enable", json!({}))
         .await
         .map_err(|error| format!("启用 Page 域失败：{error}"))?;
@@ -1864,6 +1935,12 @@ struct BrowserRuntime {
     headless: bool,
     version: String,
     tabs: HashMap<String, Arc<CdpTab>>,
+    /// per-target 连接互斥：面板并发动作（startScreencast / navigate / snapshot）
+    /// 会同时走 take_tab 的补连接路径——双重检查各自落空时会建出**两条**到同一
+    /// target 的 DevTools 连接，第二个 Page.enable/screencast 会话会顶掉第一个，
+    /// Chrome 156 起 tab 生命周期随之冻结（导航 commit 永不发生）。串行化后
+    /// 第二个等待者复用第一个的注册结果。
+    connecting: HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>,
     /// 当前激活 tab：open_new_tab/activate_tab 更新，close_tab 命中时清除。
     /// /json/list 不暴露 active 标记，靠自身记录（无记录时以首位近似）。
     active_tab_id: Option<String>,
@@ -2037,6 +2114,7 @@ pub(crate) async fn ensure_running(
             headless: config.headless,
             version: version.clone(),
             tabs,
+            connecting: HashMap::new(),
             active_tab_id: None,
         };
         let info = runtime_info(&runtime);
@@ -2267,6 +2345,28 @@ async fn take_tab(
         return Ok(found);
     }
     let port = require_runtime_port(state)?;
+    // 并发补连接串行化：同一 target 的并发 take_tab 只允许一条 DevTools 连接
+    // （双连接的第二个会话会顶掉第一个，Chrome 156 起 tab 生命周期冻结）。
+    let connect_gate = {
+        let mut guard = state
+            .0
+            .lock()
+            .map_err(|_| "browser state lock poisoned".to_string())?;
+        let runtime = guard
+            .as_mut()
+            .ok_or("浏览器未运行：请先在 设置 → 浏览器 启用并通过 newTab 打开页面")?;
+        std::sync::Arc::clone(
+            runtime
+                .connecting
+                .entry(tab_id.to_string())
+                .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(()))),
+        )
+    };
+    let _serialized = connect_gate.lock().await;
+    // 拿到锁后二次查表：首个等待者已完成连接并注册，直接复用。
+    if let Ok(found) = take_connected_tab(state, tab_id) {
+        return Ok(found);
+    }
     let targets = list_targets(port).await?;
     let target = targets
         .iter()
@@ -2557,16 +2657,22 @@ async fn navigate_tab(
     url: &str,
 ) -> Result<BrowserCommandResponse, String> {
     let base = tab.load_generation();
+    trace_phase(&format!("navigate:send {url}"));
     let result = tab
-        .send("Page.navigate", json!({"url": url}))
+        .send_navigation("Page.navigate", json!({"url": url}))
         .await
-        .map_err(|error| format!("导航失败：{error}"))?;
+        .map_err(|error| {
+            trace_phase(&format!("navigate:cmd-err {error}"));
+            format!("导航失败：{error}")
+        })?;
+    trace_phase("navigate:responded");
     if let Some(error_text) = result.get("errorText").and_then(Value::as_str) {
         if !error_text.is_empty() {
             return Err(format!("导航失败：{error_text}"));
         }
     }
     tab.wait_load(base, NAVIGATE_LOAD_TIMEOUT).await;
+    trace_phase("navigate:load-settled");
     let info = tab_info(state, port, target_id).await?;
     Ok(BrowserCommandResponse::Navigated {
         url: info.url,
@@ -3380,6 +3486,7 @@ pub(crate) async fn dispatch_browser_command(
             if let Ok(mut guard) = state.0.lock() {
                 if let Some(runtime) = guard.as_mut() {
                     runtime.tabs.remove(&tab_id);
+                    runtime.connecting.remove(&tab_id);
                     if runtime.active_tab_id.as_deref() == Some(tab_id.as_str()) {
                         runtime.active_tab_id = None;
                     }
@@ -3735,7 +3842,7 @@ pub(crate) async fn dispatch_browser_command(
         BrowserCommandRequest::Reload { tab_id } => {
             let (tab, _) = take_tab(events, state, &tab_id).await?;
             let base = tab.load_generation();
-            tab.send("Page.reload", json!({}))
+            tab.send_navigation("Page.reload", json!({}))
                 .await
                 .map_err(|error| format!("刷新失败：{error}"))?;
             tab.wait_load(base, NAVIGATE_LOAD_TIMEOUT).await;
@@ -3912,7 +4019,7 @@ async fn history_navigate(
         .and_then(Value::as_i64)
         .ok_or("导航历史条目缺少 id")?;
     let base = tab.load_generation();
-    tab.send("Page.navigateToHistoryEntry", json!({"entryId": entry_id}))
+    tab.send_navigation("Page.navigateToHistoryEntry", json!({"entryId": entry_id}))
         .await
         .map_err(|error| format!("历史导航失败：{error}"))?;
     tab.wait_load(base, NAVIGATE_LOAD_TIMEOUT).await;
@@ -4597,13 +4704,16 @@ mod tests {
         assert_eq!(names, BROWSER_EXECUTABLE_NAMES.to_vec());
     }
 
-    /// 无 WS 连接的 CdpTab 测试替身：返回 outgoing 接收端以便检查 ack 出队。
-    fn test_cdp_tab() -> (Arc<CdpTab>, mpsc::Receiver<String>) {
-        let (outgoing_tx, outgoing_rx) = mpsc::channel(32);
+    /// 无 WS 连接的 CdpTab 测试替身：返回 ack 接收端以便检查 ack 出队
+    /// （ack 走专用无界通道，与命令通道分离）。
+    fn test_cdp_tab() -> (Arc<CdpTab>, mpsc::UnboundedReceiver<String>) {
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(32);
+        let (acks_tx, acks_rx) = mpsc::unbounded_channel();
         let (load_tx, _) = watch::channel(0u64);
         (
             Arc::new(CdpTab {
                 outgoing: outgoing_tx,
+                acks: acks_tx,
                 pending: Arc::new(StdMutex::new(HashMap::new())),
                 next_id: AtomicI64::new(1),
                 load_tx,
@@ -4612,7 +4722,7 @@ mod tests {
                 screencast: Arc::new(StdMutex::new(ScreencastState::default())),
                 events: None,
             }),
-            outgoing_rx,
+            acks_rx,
         )
     }
 

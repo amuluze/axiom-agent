@@ -365,7 +365,7 @@
         "src/agent/design/axSerialize.ts",
         "src/agent/core/stripUnsupportedImages.ts"
       ],
-      "semanticDigest": "239ce7f624c8790be73607027fd54790087842e0945f43cad0a4ec3123e109cf"
+      "semanticDigest": "d95b52ba4e1aaee6f3b864654cfcc15c49236e404f960749fc5b62150647a49c"
     },
     {
       "id": "tool:design_import",
@@ -530,7 +530,7 @@
         "src/platform/browserSession.ts",
         "src-tauri/src/browser_session.rs"
       ],
-      "semanticDigest": "336776acbae2129d52e35de51d955349ee45364ea595e29cbcdeecf0157b596b"
+      "semanticDigest": "d78b38ec096ed8b198cb5557a489b10f8482e0a9d0c300930705907085bfc892"
     },
     {
       "id": "tool:ui_find",
@@ -543,7 +543,7 @@
         "src/platform/browserSession.ts",
         "src-tauri/src/browser_session.rs"
       ],
-      "semanticDigest": "172937c34f3c1e7cdfe9b45f3b1d9200725b7146c60ac9552efe90669de4a314"
+      "semanticDigest": "764cd3200cd56a81d64c32b9008b3d5f4308bd5812817768e80a32f03dc50446"
     },
     {
       "id": "tool:ui_wait",
@@ -556,7 +556,7 @@
         "src/platform/browserSession.ts",
         "src-tauri/src/browser_session.rs"
       ],
-      "semanticDigest": "8f629af17f286f9d065d4fa6343f7282c0962c8445e42481b084650ffe52aeb1"
+      "semanticDigest": "c05be8877a8d2c9cb2cdf98511c1d079a469e4fc078160aa8ed1287455cf1c51"
     },
     {
       "id": "tool:ui_assert",
@@ -570,7 +570,7 @@
         "src-tauri/src/browser_session.rs",
         "src-tauri/src/browser_locator.rs"
       ],
-      "semanticDigest": "075eaa24e71d59186ddeda30989f0a9f8a29b04af75495d47502f0f027284d26"
+      "semanticDigest": "f4d8ceb296c6e4596e5c689bff71b8d6f0cd29590fb19c59897cb620acc60d40"
     },
     {
       "id": "tool:ui_screenshot",
@@ -585,7 +585,7 @@
         "src-tauri/src/browser_session.rs",
         "src/agent/core/stripUnsupportedImages.ts"
       ],
-      "semanticDigest": "2a15637354c4999673c369435a0d183f2fc6b6d4a1a6258b8121ac93f2c632ba"
+      "semanticDigest": "284319592ea06ddd7e51acb34d462bacd85c96d6f00c19428baa8d1a6a6e805d"
     },
     {
       "id": "tool:ui_navigate",
@@ -598,7 +598,7 @@
         "src/platform/browserSession.ts",
         "src-tauri/src/browser_session.rs"
       ],
-      "semanticDigest": "e50c2f62186266f18c36a5ea8acc613da6f22a0df5dd05ffb24f11538cf276f0"
+      "semanticDigest": "87cd0a16a414839273e9032c070d1004a973effa3b5c657d1c50f69f305641be"
     },
     {
       "id": "tool:ui_click",
@@ -611,7 +611,7 @@
         "src/platform/browserSession.ts",
         "src-tauri/src/browser_session.rs"
       ],
-      "semanticDigest": "f7f862de34f4bc18e7bc9f7b96be73496ed313982a13a30a506675e4ec100a46"
+      "semanticDigest": "271c96219b051df17c4d7e39cd72c7ee88f70cbe75a9bfe745e63c3898056a0a"
     },
     {
       "id": "tool:ui_input",
@@ -624,7 +624,7 @@
         "src/platform/browserSession.ts",
         "src-tauri/src/browser_session.rs"
       ],
-      "semanticDigest": "45f696a194a039d5df03850bdf9ff8db2dd5c48bf972126fa7a57a6e73292792"
+      "semanticDigest": "2d98799dcf75029d1911094c05ad9d2aac1d11536aad3535e91114f2f4c22c6e"
     },
     {
       "id": "tool:ui_select",
@@ -637,7 +637,7 @@
         "src/platform/browserSession.ts",
         "src-tauri/src/browser_session.rs"
       ],
-      "semanticDigest": "197f6e0b13e93602069128afd8237c387dc7c36828e4036cb1a3b29764ae6944"
+      "semanticDigest": "3163df17c0b186517c8aacec31ef5716c9732d2530f838a926ebe32fb8a3c846"
     },
     {
       "id": "tool:ui_press",
@@ -650,7 +650,7 @@
         "src/platform/browserSession.ts",
         "src-tauri/src/browser_session.rs"
       ],
-      "semanticDigest": "124d182afa7e43f6bcad4bab9a3a33784386026853f61d670fe387708a263541"
+      "semanticDigest": "f47e34b7b416d1fcd2bf260c25ae0b4476a0c891fb60a3e821208972c3ec026a"
     }
   ]
 }
