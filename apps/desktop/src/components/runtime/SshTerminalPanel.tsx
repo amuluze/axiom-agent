@@ -398,8 +398,11 @@ export const SshTerminalPanel = () => {
 
   if (hosts.length === 0) {
     // 列表未就绪（idle/loading）只呈现加载态：此刻不能区分「真的没主机」与
-    // 「列表还没到」，误导进添加引导；错误态提供重试。
-    if (listStatus === 'idle' || listStatus === 'loading') {
+    // 「列表还没到」，误导进添加引导；错误态提供重试。覆盖层打开期间例外：
+    // SshHostsPanel 挂载即重拉主机列表（listStatus → loading），若仍提前
+    // return 会连带卸载覆盖层，拉取落定后空态分支又把它挂回——无限卸载/重挂
+    // 循环，表现为「点添加主机后一直 loading、表单无法使用」。
+    if (!manageOpen && (listStatus === 'idle' || listStatus === 'loading')) {
       return (
         <section ref={paneRef} className="sshview__terminal-pane sshpanel" aria-label={t('app.sshView.terminal.aria')}>
           <div className="sshview__empty" role="status">
@@ -409,7 +412,7 @@ export const SshTerminalPanel = () => {
         </section>
       )
     }
-    if (listStatus === 'error') {
+    if (!manageOpen && listStatus === 'error') {
       return (
         <section ref={paneRef} className="sshview__terminal-pane sshpanel" aria-label={t('app.sshView.terminal.aria')}>
           <div className="sshview__empty">

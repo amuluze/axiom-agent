@@ -167,6 +167,38 @@ describe('SshTerminalPanel 空态（无主机）', () => {
     await waitFor(() => expect(terminalInstances).toHaveLength(1))
     expect(screen.queryByText('主机列表加载失败')).toBeNull()
   })
+
+  it('添加主机覆盖层打开期间不被列表重拉的 loading 卸载（一直 loading 回归）', async () => {
+    // 回归：空态点击「添加主机…」后 SshHostsPanel 挂载即重拉 listHosts
+    //（listStatus → loading），此前 loading 分支提前 return 会把覆盖层连同
+    // 表单一起卸载、拉取落定后空态分支又把它挂回——无限卸载/重挂循环，
+    // 用户视角即「点击添加主机后一直 loading」。
+    let listCalls = 0
+    let resolveSecondList: ((value: { type: 'hosts'; hosts: SshHostEntry[] }) => void) | null = null
+    mocks.sshCommand.mockImplementation(async (input: unknown) => {
+      const action = (input as { action: string }).action
+      if (action !== 'listHosts') return { type: 'sessions', sessions: [] }
+      listCalls += 1
+      if (listCalls === 1) return { type: 'hosts', hosts: [] }
+      return new Promise((resolve) => {
+        resolveSecondList = resolve
+      })
+    })
+    render(<SshTerminalPanel />)
+    fireEvent.click(await screen.findByRole('button', { name: '添加主机…' }))
+    // 覆盖层已挂载并触发重拉（第二次 listHosts 已发出）。
+    expect(await screen.findByText('主机管理')).toBeTruthy()
+    expect(listCalls).toBe(2)
+    // 重拉仍 pending（listStatus = loading）：覆盖层必须保持渲染——修复前
+    // 此刻整个面板退回纯 loading 分支，「主机管理/返回」消失。
+    expect(screen.getByText('返回')).toBeTruthy()
+    await act(async () => {
+      resolveSecondList?.({ type: 'hosts', hosts: [] })
+    })
+    // 拉取落定后覆盖层仍在，列表区不再是加载 hint。
+    expect(screen.getByText('主机管理')).toBeTruthy()
+    expect(screen.queryByText('正在加载主机…')).toBeNull()
+  })
 })
 
 describe('SshTerminalPanel 终端态', () => {

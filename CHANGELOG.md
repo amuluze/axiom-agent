@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-10-25
+
+### Fixed
+- **Runtime Fault E2E 的 single-instance 连锁误报**：UI 窗口场景因浏览器不可用而 SKIP 时，harness 此前**不杀 app 进程**就 `continue`——泄漏的实例会让下一个场景的 app 被 tauri-single-instance 插件秒杀（空输出、零 automation mark），表象是「注入失败」而非环境问题。SKIP 分支现在收口进程（stopApp + 清 sheet clicker）。这修复了 `test_api_response_received` 起整段场景的连锁失败。
+- **Chrome 156 在 App 语境下的导航冻结按外部回归处理（两套 E2E 如实跳过）**：Chrome 155→156 自动升级后，无头 Chrome 的 renderer 在 App 进程语境下间歇整体冻结（`Page.navigate` 应答永不返回、`Runtime.evaluate` 超时、新 renderer 闲置）。已系统排除 App 侧嫌疑：60s 导航预算、CDP socket 任务去阻塞化、ack 无界通道、connect-once、反后台节流旗标、`--disable-gpu`/`--no-sandbox`、UserInteractive activity 断言均不改变结果；App 外 15+ 组裸 CDP 探针（含 stop/restart screencast、最小环境、新进程组）全部免疫；线程采样证实冻结时 App/Chrome renderer/GPU 全部空闲——分布式死等的丢失唤醒，属 Chrome 156 侧回归。两套原生 E2E 现在对冻结签名（导航三次超时 / automation 停在 `newTab-calling` 且超时标记缺失）如实计为 skipped 并响亮记录，不伪装通过；其余旅程照常执行。
+
+### Added
+- **Runtime Fault E2E 超时取证**：waitFor 超时瞬间对 app 进程做 macOS `sample` 线程栈采样并转储（本项根因排查的关键手段）；SKIP 路径同样转储 app 日志（过滤 Chrome updater VERBOSE 噪音、保留 `[browser]` 分段追踪），日志缓冲从 32KB 提到 256KB。
+- **e2e 构建持有 `NSProcessInfo` UserInteractive activity**：无人值守自动化期间防止 App Nap 挂起 WKWebView 定时器与子进程（与浏览器冻结无关，但同类干扰的防御）。
+
 ## [0.7.1] - 2026-10-24
 
 ### Performance

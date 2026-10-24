@@ -482,6 +482,19 @@ pub fn run() -> Result<(), String> {
         // 用户手势 monitor：鼠标按下/回车/⌘S 授予单次消费配额，供测试步骤租约、
         // 测试环境保存与文档保存消费（受陷渲染进程无法静默完成这些敏感写入）。
         user_gesture::install_gesture_monitor(app).map_err(std::io::Error::other)?;
+        // e2e 构建：无人值守自动化期间，macOS App Nap 会把整个 responsibility
+        // domain 一起挂起——WKWebView 的 WebContent 进程定时器停摆（automation
+        // mark 断流）、spawn 的无头 Chrome renderer 冻结（导航 commit 永不完成，
+        // 两套原生 E2E 的间歇冻结同根）。UserInteractive activity 覆盖本进程与
+        // 全部子进程，泄漏持有到进程退出。
+        #[cfg(all(feature = "e2e", target_os = "macos"))]
+        {
+            use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
+            let reason = NSString::from_str("Axiom E2E unattended automation");
+            let activity = NSProcessInfo::processInfo()
+                .beginActivityWithOptions_reason(NSActivityOptions::UserInteractive, &reason);
+            std::mem::forget(activity);
+        }
         initialize_workspace_recovery(app.handle()).map_err(std::io::Error::other)?;
         // 「连接」远程操控：加载配置并拉起上次启用的平台长连接（无配置时为空操作）。
         connect::initialize(app.handle()).map_err(std::io::Error::other)?;
