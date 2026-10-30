@@ -81,28 +81,32 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   { previousName: 'write', previousVersion: '9', currentName: 'write', currentVersion: '12' },
   { previousName: 'edit', previousVersion: '10', currentName: 'edit', currentVersion: '14' },
   { previousName: 'design_import', previousVersion: '7', currentName: 'design_import', currentVersion: '9' },
+  // design_query → v26（会话 render/compare 复用同 SHA 画布原位截图，并先取景到
+  // 「完整可见且 ≤1:1」再截取——截图分辨率不再取决于用户当前缩放；原生环境
+  // 无匹配画布时显式失败，不再回退全屏 capture staging。输入/输出 schema 不变）。
+  { previousName: 'design_query', previousVersion: '25', currentName: 'design_query', currentVersion: '26' },
   // design_query → v25（scan 命中当前画布同一 SHA 时复用画布原位扫掠，避免单页
   // staging 铺满窗口；无匹配画布/无原生截图时仍走离屏单页回退。schema 不变）。
-  { previousName: 'design_query', previousVersion: '24', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '24', currentName: 'design_query', currentVersion: '26' },
   // design_query → v24（工具描述声明：无 .axiom/design/components.json 时清单来自 Axiom 宿主
   // 注册表，不得用于本项目稿与 codegen；输入 schema 与 details 字段不变）。
-  { previousName: 'design_query', previousVersion: '23', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '23', currentName: 'design_query', currentVersion: '26' },
   // design_query → v23（scan 报告页级判定新增 `renderReason`：`render: 'skipped'` 现在带
   // 结构化原因 unavailable / no-size / interrupted，消费方不必读 issue 文案去猜「没验」；
   // 输入 schema 不变，既有 details 字段只增不改）。
-  { previousName: 'design_query', previousVersion: '22', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '22', currentName: 'design_query', currentVersion: '26' },
   // design_query → v22（共享 Browser SetViewport 实现统一，输入与输出 schema 不变）。
-  { previousName: 'design_query', previousVersion: '21', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '21', currentName: 'design_query', currentVersion: '26' },
   // design_query → v21（输入 schema 改为按 mode 判别的 anyOf，运行时兼容旧式省略 mode 入参）。
-  { previousName: 'design_query', previousVersion: '20', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '20', currentName: 'design_query', currentVersion: '26' },
   // design_query → v20（契约扩展：.ax 1.5 slots——mode=component 详单新增 slots 段、
   // 读取路径核对 decl.slots；compare 新增可选 via='preview' 同引擎档（阈值 0.5%）。
   // 输入新增可选 via 字段，既有入参不变）。
   // design_query → v19（契约扩展：.ax 1.4 symbols——summary/page 返回 symbols 段、
   // node 可寻址 symbol body 子树、code 发射局部组件；输入 schema 不变）。
-  { previousName: 'design_query', previousVersion: '19', currentName: 'design_query', currentVersion: '25' },
-  { previousName: 'design_query', previousVersion: '18', currentName: 'design_query', currentVersion: '25' },
-  { previousName: 'design_query', previousVersion: '17', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '19', currentName: 'design_query', currentVersion: '26' },
+  { previousName: 'design_query', previousVersion: '18', currentName: 'design_query', currentVersion: '26' },
+  { previousName: 'design_query', previousVersion: '17', currentName: 'design_query', currentVersion: '26' },
   { previousName: 'write', previousVersion: '8', currentName: 'write', currentVersion: '12' },
   { previousName: 'edit', previousVersion: '9', currentName: 'edit', currentVersion: '14' },
   { previousName: 'apply_changes', previousVersion: '8', currentName: 'apply_changes', currentVersion: '12' },
@@ -141,13 +145,13 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   { previousName: 'bash', previousVersion: '20', currentName: 'bash', currentVersion: '26' },
   { previousName: 'bash', previousVersion: '19', currentName: 'bash', currentVersion: '26' },
   { previousName: 'design_import', previousVersion: '5', currentName: 'design_import', currentVersion: '9' },
-  { previousName: 'design_query', previousVersion: '16', currentName: 'design_query', currentVersion: '25' },
-  { previousName: 'design_query', previousVersion: '15', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '16', currentName: 'design_query', currentVersion: '26' },
+  { previousName: 'design_query', previousVersion: '15', currentName: 'design_query', currentVersion: '26' },
   { previousName: 'discover_agent_tools', previousVersion: '6', currentName: 'discover_agent_tools', currentVersion: '7' },
   { previousName: 'discover_agent_tools', previousVersion: '5', currentName: 'discover_agent_tools', currentVersion: '7' },
   { previousName: 'discover_agent_tools', previousVersion: '4', currentName: 'discover_agent_tools', currentVersion: '7' },
   { previousName: 'design_import', previousVersion: '4', currentName: 'design_import', currentVersion: '9' },
-  { previousName: 'design_query', previousVersion: '14', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '14', currentName: 'design_query', currentVersion: '26' },
   { previousName: 'bash', previousVersion: '18', currentName: 'bash', currentVersion: '26' },
   { previousName: 'restore_trash', previousVersion: '3', currentName: 'restore_trash', currentVersion: '7' },
   { previousName: 'apply_changes', previousVersion: '6', currentName: 'apply_changes', currentVersion: '12' },
@@ -180,19 +184,19 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   // design_query → v9：说明文案收敛到与其它产图工具同一占位子串，并明确
   // 「模型能力所限 ≠ 环境无渲染能力」（Domain 不变量 6）。
   // 历史条目随 bump 统一改指 live v10（恢复查表要求 currentVersion === live）。
-  { previousName: 'design_query', previousVersion: '13', currentName: 'design_query', currentVersion: '25' },
-  { previousName: 'design_query', previousVersion: '12', currentName: 'design_query', currentVersion: '25' },
-  { previousName: 'design_query', previousVersion: '11', currentName: 'design_query', currentVersion: '25' },
-  { previousName: 'design_query', previousVersion: '1', currentName: 'design_query', currentVersion: '25' },
-  { previousName: 'design_query', previousVersion: '2', currentName: 'design_query', currentVersion: '25' },
-  { previousName: 'design_query', previousVersion: '3', currentName: 'design_query', currentVersion: '25' },
-  { previousName: 'design_query', previousVersion: '4', currentName: 'design_query', currentVersion: '25' },
-  { previousName: 'design_query', previousVersion: '5', currentName: 'design_query', currentVersion: '25' },
-  { previousName: 'design_query', previousVersion: '6', currentName: 'design_query', currentVersion: '25' },
-  { previousName: 'design_query', previousVersion: '7', currentName: 'design_query', currentVersion: '25' },
-  { previousName: 'design_query', previousVersion: '10', currentName: 'design_query', currentVersion: '25' },
-  { previousName: 'design_query', previousVersion: '9', currentName: 'design_query', currentVersion: '25' },
-  { previousName: 'design_query', previousVersion: '8', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '13', currentName: 'design_query', currentVersion: '26' },
+  { previousName: 'design_query', previousVersion: '12', currentName: 'design_query', currentVersion: '26' },
+  { previousName: 'design_query', previousVersion: '11', currentName: 'design_query', currentVersion: '26' },
+  { previousName: 'design_query', previousVersion: '1', currentName: 'design_query', currentVersion: '26' },
+  { previousName: 'design_query', previousVersion: '2', currentName: 'design_query', currentVersion: '26' },
+  { previousName: 'design_query', previousVersion: '3', currentName: 'design_query', currentVersion: '26' },
+  { previousName: 'design_query', previousVersion: '4', currentName: 'design_query', currentVersion: '26' },
+  { previousName: 'design_query', previousVersion: '5', currentName: 'design_query', currentVersion: '26' },
+  { previousName: 'design_query', previousVersion: '6', currentName: 'design_query', currentVersion: '26' },
+  { previousName: 'design_query', previousVersion: '7', currentName: 'design_query', currentVersion: '26' },
+  { previousName: 'design_query', previousVersion: '10', currentName: 'design_query', currentVersion: '26' },
+  { previousName: 'design_query', previousVersion: '9', currentName: 'design_query', currentVersion: '26' },
+  { previousName: 'design_query', previousVersion: '8', currentName: 'design_query', currentVersion: '26' },
   // design_import → v2：租约改按 create_workspace_file 口径绑定编译产物（approvalLeaseInput）
   // ——v1 的租约绑定模型输入 {source,target}，与写通道消费侧失配，该工具从未能落盘；
   // schema 不变，属行为修复。

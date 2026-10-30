@@ -35,7 +35,7 @@ export interface DesignScanState {
 }
 
 /**
- * 批量渲染器（画布原位扫掠注入；缺省走 staging 单页渲染路径）。
+ * 批量渲染器（画布原位扫掠注入；缺省走离屏单页渲染路径）。
  * DesignCanvas 提供它时扫描在画布内原位并行进行；否则（jsdom 测试 / 无原生
  * 截图能力）回落到既有 per-page 渲染回调路径。
  */
@@ -48,7 +48,7 @@ export const useDesignScan = ({
 }: {
   doc: PenDocument
   requireSize: boolean
-  /** 画布原位扫掠（原生截图可用时由 DesignCanvas 注入）；缺省 staging 路径。 */
+  /** 画布原位扫掠（原生截图可用时由 DesignCanvas 注入）；缺省离屏单页路径。 */
   batchRender?: DesignScanBatchRender
 }): DesignScanState => {
   const [running, setRunning] = useState(false)

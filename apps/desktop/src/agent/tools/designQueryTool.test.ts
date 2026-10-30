@@ -95,7 +95,7 @@ const run = (input: JsonValue, tool = axTool, context: Record<string, unknown> =
 
 describe('design_query tool：按模式判别的输入契约', () => {
   it('九种模式各自声明必需参数，不再暴露无类型大对象', () => {
-    expect(axTool.runtimeVersion).toBe('25')
+    expect(axTool.runtimeVersion).toBe('26')
     const variants = axTool.inputSchema.anyOf
     if (!Array.isArray(variants)) throw new Error('design_query schema must use anyOf')
     const modes = variants.map((variant) => {
@@ -572,7 +572,7 @@ describe('design_query tool：scan 模式（逐页渲染扫描验证）', () => 
       expect(stagingStub).not.toHaveBeenCalled()
       expect(parsed.rendered).toBe(false)
       expect(parsed.summary.total).toBe(2)
-      expect(parsed.renderNote).toContain('设计画布未打开')
+      expect(parsed.renderNote).toContain('设计画布未就绪')
       expect(parsed.pages.every((page) => page.render === 'skipped')).toBe(true)
       expect(parsed.pages.every((page) => page.renderReason === 'unavailable')).toBe(true)
     } finally {

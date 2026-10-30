@@ -99,7 +99,7 @@ export const createDesignQueryTool = (
     '按子树操作，不要用 read 整读设计稿；写坏 JSON 时再次调用本工具按 parse error 自修。',
     '工作区没有 .axiom/design/components.json 时，返回的组件清单来自 Axiom 宿主注册表（sourcePath 指向 Axiom 自身源码）：不得把其中组件写进本项目稿件与 codegen，此时只用 symbol / part / 原语。',
   ],
-  runtimeVersion: '25',
+  runtimeVersion: '26',
   recoveryPolicy: 'idempotent',
   idempotencyKey: (input) => {
     if (!isJsonObject(input)) return 'design_query:invalid'

@@ -61,7 +61,7 @@ export const createCanvasScanSweep = ({
   setScale,
   setSweeping,
 }: CanvasScanSweepOptions): DesignScanBatchRender => async (pages, onPageDone, onActive, options) => {
-  const stagingOutcomeOf = async (pageId: string): Promise<DesignScanRenderOutcome> => {
+  const fallbackOutcomeOf = async (pageId: string): Promise<DesignScanRenderOutcome> => {
     try {
       const result = await renderPenPageForScan({ doc, pageIdOrIndex: pageId, maxBytes: options?.thumbnailMaxBytes ?? 16 * 1024 })
       if (!result) return { ok: false, reason: '渲染器不可用' }
@@ -73,7 +73,9 @@ export const createCanvasScanSweep = ({
         samples: result.samples,
         distinctColors: result.distinctColors,
         topColorFraction: result.topColorFraction,
-        ...(options?.thumbnailMaxBytes !== undefined && result.base64 ? { base64: result.base64 } : {}),
+        ...(options?.thumbnailMaxBytes !== undefined && result.base64
+          ? { base64: result.base64, imageWidth: result.width, imageHeight: result.height }
+          : {}),
       }
     } catch (error) {
       return { ok: false, reason: error instanceof Error ? error.message : String(error) }
@@ -108,22 +110,11 @@ export const createCanvasScanSweep = ({
   }
 
   /**
-   * 走「全屏 staging 遮罩」采集的页集合——**只剩项目组件页**。
+   * 不能原位采集的页集合：项目组件页必须走隔离浏览器实拍（画布位图可能尚未刷新）；
+   * 若内部布局异常导致普通页缺少 placement，也由单页渲染器明确失败，不再提供
+   * 全屏 capture 回退。
    *
-   * 遮罩路径（`renderPageHost.tsx` 的 capture 模式）会挂一个
-   * `position:fixed;inset:0;z-index:2147483000` 的全窗口不透明容器——用户看到的
-   * 「检查设计稿时全屏浮现」就是它，逐页切换即逐页闪屏。
-   *
-   * 原本还有两类降级理由，本轮一并消掉：
-   * - **巨页**（当前倍率下装不进视口）：改为**原地取景**——把相机临时缩到该页
-   *   装得下的倍率，页仍留在画布原位，采集全程不引入任何遮罩。
-   * - **相交页**（与邻页矩形重叠）：原位截取会拍到压在上面的邻页内容，像素统计
-   *   失真。改为**隔离采集**——采集时临时隐藏压在目标页上的邻页，拍到的仍是目标
-   *   页自己的像素，同样全程在画布内。
-   *
-   * 项目组件页仍留 staging：画布上的预览是 `ProjectDesignPreview` 渲染的位图，
-   * 可能尚未刷新（占位态），必须走隔离浏览器实拍——但它不产生全屏遮罩
-   * （隔离浏览器是独立实例，headless 默认）。
+   * 巨页通过原地取景缩到视口内，相交页通过临时隐藏邻页隔离采集，均不离开画布。
    */
   const fallbackIds = new Set<string>()
   for (const page of doc.axDocument?.pages ?? []) {
@@ -131,7 +122,7 @@ export const createCanvasScanSweep = ({
   }
   const sweepable = pages.filter((page) => placementOf.has(page.id) && !fallbackIds.has(page.id))
   const sweepableIds = new Set(sweepable.map((page) => page.id))
-  const stagingPages = pages.filter((page) => !sweepableIds.has(page.id))
+  const fallbackPages = pages.filter((page) => !sweepableIds.has(page.id))
   /** 画布坐标下互相重叠的页：采集时需隔离（隐藏压在上面的邻页），否则拍到邻页像素。 */
   const overlapping = overlappingPageIds(
     placements.map((item) => ({
@@ -157,6 +148,14 @@ export const createCanvasScanSweep = ({
   }
   setSweeping(true)
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  /** 相机缩放：巨页原地取景时降到装得下的倍率（页仍留在画布原位）。 */
+  const applyScale = async (value: number): Promise<void> => {
+    if (value === sweepScale) return
+    sweepScale = value
+    setScale(value)
+    scaleRef.current = value
+    await sleep(SWEEP_SETTLE_MS)
+  }
   /**
    * 采集一页：原位矩形截图（无遮罩）。
    *
@@ -191,13 +190,106 @@ export const createCanvasScanSweep = ({
         samples: stats.stats.samples,
         distinctColors: stats.stats.distinctColors,
         topColorFraction: stats.stats.topColorFraction,
-        ...(stats.base64 ? { base64: stats.base64 } : {}),
+        ...(stats.base64
+          ? {
+            base64: stats.base64,
+            imageWidth: stats.thumbnailWidth ?? stats.width,
+            imageHeight: stats.thumbnailHeight ?? stats.height,
+          }
+          : {}),
       })
     } catch (error) {
       onPageDone(id, { ok: false, reason: `原位截图失败：${error instanceof Error ? error.message : String(error)}` })
     } finally {
       for (const entry of hidden) entry.element.style.visibility = entry.visibility
     }
+  }
+  /**
+   * 相机收口：采完（或中断）后把相机还给用户——除非用户中途自己改写了相机，
+   * 那时保留用户现场。
+   */
+  const restoreCamera = (): void => {
+    const cameraOwnedBySweep = scaleRef.current === sweepScale
+      && offsetRef.current.x === sweepOffset.x
+      && offsetRef.current.y === sweepOffset.y
+    setSweeping(false)
+    onActive(null)
+    if (cameraOwnedBySweep) {
+      applyOffset(restoreOffset)
+      if (scaleRef.current !== restoreScale) {
+        setScale(restoreScale)
+        scaleRef.current = restoreScale
+      }
+    }
+  }
+  /**
+   * 单页渲染快路径（会话 render/compare、画布导出 PNG）。
+   *
+   * 与逐页扫描不同：这里只要一页，且要的是**该页的图**而不是扫描报告，因此
+   * 不走扫描的逐页推进——只做两件事：把目标页取景到「完整可见、且不超过 1:1」
+   * 的倍率，再原位截一张。但光束停驻保留：会话触发的截图与导出也是画布上的
+   * 采集动作，与批量扫描共用同一「点亮 → 扫完一个周期 → 出 DOM → 截图」的
+   * 光栅节拍（onActive 分接到画布光束），否则相机凭空滑动一下就截走了。
+   *
+   * 取景这一步不能省：截图分辨率取决于用户当前缩放，画布缩到 30% 时导出的
+   * PNG 只有设计尺寸的三分之一，模型自查拿到的也是糊图。取景只改相机（页仍
+   * 在画布原位），采完由 restoreCamera 段把机位还给用户。
+   */
+  if (options?.fitTarget && pages.length === 1) {
+    const targetId = pages[0]?.id ?? ''
+    const item = placementOf.get(targetId)
+    try {
+      if (!item) {
+        onPageDone(targetId, { ok: false, reason: '页面矩形不可用（该页未在画布中渲染）' })
+        return
+      }
+      if (fallbackIds.has(targetId)) {
+        // 项目组件页在画布上只是可能未刷新的预览位图，不能就地采集——交单页渲染器
+        // 转交隔离浏览器实拍（不产生全屏容器）。
+        onPageDone(targetId, await fallbackOutcomeOf(targetId))
+        return
+      }
+      const fitScale = Math.min(1, fitScaleFor(item, viewport, FRAME_INSET))
+      // 倍率与平移一次性写入，随后只等一次落定：表面变换带 220ms 缓动
+      // （.is-sweeping），一次 260ms 足够 DOM 真值收敛。
+      if (fitScale !== sweepScale) {
+        sweepScale = fitScale
+        setScale(fitScale)
+        scaleRef.current = fitScale
+      }
+      applyOffset(panTargetFor(
+        { x: item.x, y: item.y, width: item.width, height: item.height },
+        fitScale,
+        viewport,
+      ))
+      await sleep(SWEEP_SETTLE_MS)
+      // DOM 真值复核：取景是「请求过的机位」，DOM 可能尚未提交或矩形已陈旧。
+      // 复核不过就明确失败——否则会把越界矩形交给原生截图（拍到半页）。
+      if (!fullyInsideViewport(screenRectOf(item), viewport)) {
+        onPageDone(targetId, { ok: false, reason: '页面取景后仍未完整落入视口，无法原位采集' })
+        return
+      }
+      if (sweepAbortRef.current) {
+        onPageDone(targetId, { ok: false, reason: '截图已被用户的画布操作中断' })
+        return
+      }
+      // 光束停驻节拍与批量路径一致：点亮 → 扫完一个周期 → 出 DOM → 截图。
+      // 光带画在页矩形内，必须在截图前离开 DOM（80ms 缓冲），否则光带像素
+      // 混进截图统计（空白检测漏报）。
+      onActive([targetId])
+      await sleep(SWEEP_BEAM_MS)
+      if (sweepAbortRef.current) {
+        onPageDone(targetId, { ok: false, reason: '截图已被用户的画布操作中断' })
+        return
+      }
+      onActive(null)
+      await sleep(SWEEP_BEAM_CLEAR_MS)
+      await captureInPlace(targetId)
+    } finally {
+      restoreCamera()
+      sweepActiveRef.current = false
+    }
+    return
   }
   try {
     let pending = rasterOrderOf(
@@ -216,13 +308,6 @@ export const createCanvasScanSweep = ({
      * 采完这一页立刻恢复用户倍率，其余页不受影响。
      */
     let framedTargetId: string | null = null
-    const applyScale = async (value: number): Promise<void> => {
-      if (value === sweepScale) return
-      sweepScale = value
-      setScale(value)
-      scaleRef.current = value
-      await sleep(SWEEP_SETTLE_MS)
-    }
     while (pending.length > 0) {
       if (sweepAbortRef.current) break
       if (framedTargetId) {
@@ -289,25 +374,14 @@ export const createCanvasScanSweep = ({
       await sleep(SWEEP_SETTLE_MS)
     }
   } finally {
-    const cameraOwnedBySweep = scaleRef.current === sweepScale
-      && offsetRef.current.x === sweepOffset.x
-      && offsetRef.current.y === sweepOffset.y
-    setSweeping(false)
-    onActive(null)
     // 文档换代等内部中断恢复扫描前机位；用户已经改写相机时保留用户现场。
-    if (cameraOwnedBySweep) {
-      applyOffset(restoreOffset)
-      if (scaleRef.current !== restoreScale) {
-        setScale(restoreScale)
-        scaleRef.current = restoreScale
-      }
-    }
+    restoreCamera()
   }
 
-  for (const page of stagingPages) {
+  for (const page of fallbackPages) {
     if (sweepAbortRef.current) break
     onActive([page.id])
-    onPageDone(page.id, await stagingOutcomeOf(page.id))
+    onPageDone(page.id, await fallbackOutcomeOf(page.id))
   }
   onActive(null)
   sweepActiveRef.current = false

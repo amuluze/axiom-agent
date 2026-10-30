@@ -464,7 +464,7 @@
     },
     {
       "id": "tool:design_query",
-      "version": "25",
+      "version": "26",
       "sourceFiles": [
         "src/agent/tools/designQueryTool.ts",
         "src/agent/tools/workspaceToolUtils.ts",
@@ -475,6 +475,7 @@
         "src/agent/design/designQueryReconcile.ts",
         "src/agent/design/designQueryComponent.ts",
         "src/agent/design/designQueryVisual.ts",
+        "src/agent/design/designScan.ts",
         "src/agent/design/emitPage.ts",
         "src/agent/design/componentInstance.ts",
         "src/agent/design/axParser.ts",
@@ -493,7 +494,7 @@
         "src/agent/design/axSerialize.ts",
         "src/agent/core/stripUnsupportedImages.ts"
       ],
-      "semanticDigest": "4fa025a2d113e893ea6a9b0ce1a4f165ad49ebfe55c8a3e50ea88585178b9f27"
+      "semanticDigest": "689fba46135bdbf0c3034b546a948ebaec2dcde174f28e138baa76819c1e8c3e"
     },
     {
       "id": "tool:design_import",

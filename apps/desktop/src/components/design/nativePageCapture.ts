@@ -1,7 +1,6 @@
 /**
- * 原生截图光栅化（WKWebView 路径，docs/ax-format.md §4.6）：页面以「可见挂载 +
- * 等比缩放适配视口」呈现，Rust `capture_webview_viewport` 截取页面矩形，回传的
- * 普通 PNG 画到 canvas 做像素统计与预算降采样。
+ * 原生截图光栅化（WKWebView 路径）：直接截取已打开画布中的页面矩形，
+ * 回传的普通 PNG 画到 canvas 做像素统计与预算降采样。
  *
  * 为什么需要原生路径：SVG foreignObject 管线会被 WebKit 污染画布（SecurityError），
  * 只在 Chromium 可用——见 exportPagePng.ts 顶部说明与 renderPageHost.tsx 的回退链。
@@ -89,11 +88,14 @@ export interface CapturedRegionStats {
   height: number
   /** 会话扫描显式请求时才生成的 PNG。 */
   base64?: string
+  /** base64 图片的实际像素尺寸（降采样后）。 */
+  thumbnailWidth?: number
+  thumbnailHeight?: number
 }
 
 /**
- * 原位矩形采集（画布扫描的光栅步骤）：视口坐标 rect → 原生截图 → 解码 → 像素
- * 统计。页面已经在画布上渲染，无须挂载全屏 staging。底部按钮只取统计；会话
+ * 原位矩形采集（画布扫描与画布导出的光栅步骤）：视口坐标 rect → 原生截图 → 解码 →
+ * 像素统计。页面已经在画布上渲染，无须另挂全屏容器。底部按钮只取统计；会话
  * 扫描传 thumbnailMaxBytes 时按同一预算阶梯附缩略图。
  */
 export const captureRectStats = async (
@@ -107,12 +109,16 @@ export const captureRectStats = async (
   const image = await loadImageFromBase64(shot.imageBase64)
   const canvas = canvasFromImage(image, image.width, image.height)
   let base64: string | undefined
+  let thumbnailWidth: number | undefined
+  let thumbnailHeight: number | undefined
   if (options.thumbnailMaxBytes !== undefined) {
     for (const factor of [1, 0.5, 0.25] as const) {
       const output = factor === 1
         ? canvas
         : canvasFromImage(image, Math.max(1, Math.round(image.width * factor)), Math.max(1, Math.round(image.height * factor)))
       base64 = dataUrlBase64Of(output)
+      thumbnailWidth = output.width
+      thumbnailHeight = output.height
       if (base64.length <= options.thumbnailMaxBytes) break
     }
   }
@@ -120,79 +126,7 @@ export const captureRectStats = async (
     stats: sampleCanvasPixels(canvas),
     width: image.width,
     height: image.height,
-    ...(base64 !== undefined ? { base64 } : {}),
+    ...(base64 !== undefined ? { base64, thumbnailWidth, thumbnailHeight } : {}),
   }
 }
 
-export interface CapturedPagePng {
-  base64: string
-  /** 输出像素尺寸。 */
-  width: number
-  height: number
-  /** 相对页面设计尺寸的倍率（Retina 截图 ≈ dpr × 适配缩放）。 */
-  scale: number
-  /** 全分辨率下的像素统计（空白判定不随预算降采样失真）。 */
-  stats: PngPixelStats
-}
-
-export interface CaptureMountedPageOptions {
-  /** 输出 base64 字符数上限；超出沿阶梯降采样，到底仍超则抛错（调用方显式降级）。 */
-  maxBytes: number
-  /** 降采样阶梯（相对全分辨率的倍率，逐级取半到底）。 */
-  scaleLadder?: readonly number[]
-  /** 预算耗尽不抛错、返回阶梯最低档（扫描验证的语义：统计有效，缩略图降级）。 */
-  returnSmallestOnExhausted?: boolean
-}
-
-const DEFAULT_CAPTURE_LADDER = [1, 0.5, 0.25] as const
-
-/**
- * 截取已挂载（capture 模式）的页面元素：整幅截图 → 像素统计 → 按预算降采样。
- * element 必须由 renderPageHost 的 capture 模式挂载（可见且完整落在视口内）。
- */
-export const captureMountedPage = async (
-  element: HTMLElement,
-  pageWidth: number,
-  pageHeight: number,
-  options: CaptureMountedPageOptions,
-): Promise<CapturedPagePng> => {
-  const rect = element.getBoundingClientRect()
-  if (rect.width <= 0 || rect.height <= 0) {
-    throw new Error('页面没有可截取的可见区域')
-  }
-  const shot = await captureViewportWithRetry([rect.x, rect.y, rect.width, rect.height])
-  if (!shot.imageBase64) {
-    throw new Error('原生截图返回空数据')
-  }
-  const image = await loadImageFromBase64(shot.imageBase64)
-  // 全分辨率统计：空白判定在最高保真度上做，不随预算降采样失真。
-  const fullCanvas = canvasFromImage(image, image.width, image.height)
-  const stats = sampleCanvasPixels(fullCanvas)
-
-  // 倍率取宽高两向的较大估计（非等比内容的保守值；等比挂载下两者应一致）。
-  const naturalScale = Math.max(
-    pageWidth > 0 ? image.width / pageWidth : 1,
-    pageHeight > 0 ? image.height / pageHeight : 1,
-  )
-  const ladder = options.scaleLadder ?? DEFAULT_CAPTURE_LADDER
-  let base64 = dataUrlBase64Of(fullCanvas)
-  let outputWidth = image.width
-  let outputHeight = image.height
-  let scale = naturalScale
-  for (const factor of ladder) {
-    if (base64.length <= options.maxBytes) {
-      return { base64, width: outputWidth, height: outputHeight, scale, stats }
-    }
-    const nextWidth = Math.max(1, Math.round(image.width * factor))
-    const nextHeight = Math.max(1, Math.round(image.height * factor))
-    const downsized = canvasFromImage(image, nextWidth, nextHeight)
-    base64 = dataUrlBase64Of(downsized)
-    outputWidth = nextWidth
-    outputHeight = nextHeight
-    scale = naturalScale * factor
-  }
-  if (options.returnSmallestOnExhausted) {
-    return { base64, width: outputWidth, height: outputHeight, scale, stats }
-  }
-  throw new Error(`截图超出字节预算（${base64.length} > ${options.maxBytes}）`)
-}

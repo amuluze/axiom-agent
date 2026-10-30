@@ -11,32 +11,42 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import DesignCanvas from './DesignCanvas'
 import { nativeCaptureSupported, captureRectStats } from './nativePageCapture'
-import { renderPenPageForScan } from './ax/renderPageHost'
+import { renderPenPageForScan, renderAxPageToPng } from './ax/renderPageHost'
 import { parsePenDocument } from '@/agent/design/penParser'
+import { parseAxDocument, projectAxToPenDocument } from '@/agent/design/axParser'
 import { designScanBatchRenderer } from '@/agent/design/designRenderHost'
 import { extractScanPages } from '@/agent/design/designScan'
 import type { PenDocument } from '@/agent/design/penParser'
 import type { AxDocument } from '@/agent/design/axSchema'
 import type { DesignComponentDetail } from '@/agent/design/componentInventoryHost'
 import { useUiStore } from '@/stores/uiStore'
+import { exportDesignPng } from '@/platform/designDocument'
+
+vi.mock('@/platform/designDocument', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/platform/designDocument')>(),
+  exportDesignPng: vi.fn(async () => '/tmp/会话.png'),
+}))
 
 vi.mock('./nativePageCapture', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./nativePageCapture')>()
   return {
     ...actual,
     nativeCaptureSupported: vi.fn(async () => true),
-    captureRectStats: vi.fn(async () => ({
+    captureRectStats: vi.fn(async (_rect: [number, number, number, number], options?: { thumbnailMaxBytes?: number }) => ({
       stats: { samples: 9600, distinctColors: 96, topColorFraction: 0.42 },
       width: 200,
       height: 120,
+      ...(options?.thumbnailMaxBytes !== undefined
+        ? { base64: 'UE5HQkFTRTY0', thumbnailWidth: 100, thumbnailHeight: 60 }
+        : {}),
     })),
   }
 })
 
 // staging 回退探针：扫掠健康（页可见、原位采集）时不应被调用。
-vi.mock('./ax/renderPageHost', () => ({
+vi.mock('./ax/renderPageHost', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./ax/renderPageHost')>(),
   renderPenPageForScan: vi.fn(async () => ({ ok: false as const, reason: 'staging 不应被调用' })),
-  renderPenPageToPngBase64: vi.fn(async () => 'UE5HQkFTRTY0'),
 }))
 
 const SWEEP_PAGES = {
@@ -87,6 +97,7 @@ describe('DesignCanvas 画布原位扫掠（原生截图路径）', () => {
     vi.mocked(nativeCaptureSupported).mockClear()
     vi.mocked(captureRectStats).mockClear()
     vi.mocked(renderPenPageForScan).mockClear()
+    vi.mocked(exportDesignPng).mockClear()
     useUiStore.setState({ requestComposerInsertion: vi.fn() })
     Object.defineProperty(window, 'matchMedia', {
       writable: true,
@@ -139,7 +150,7 @@ describe('DesignCanvas 画布原位扫掠（原生截图路径）', () => {
     expect(panel.textContent).not.toContain('staging')
   })
 
-  it('当前画布向会话暴露同一批量渲染器：设计扫描全程原位采集，不走全屏 staging', async () => {
+  it('当前画布向会话暴露同一批量渲染器：设计扫描全程原位采集、点亮扫描光束，不走全屏 staging', async () => {
     const parsed = parsePenDocument(JSON.stringify(SWEEP_PAGES), '.pen/axiom.pen')
     const doc = parsed.document as PenDocument
     doc.sha256 = 'd'.repeat(64)
@@ -161,17 +172,147 @@ describe('DesignCanvas 画布原位扫掠（原生截图路径）', () => {
     const batch = designScanBatchRenderer(doc, {})
     expect(batch).toBeDefined()
     const done: string[] = []
-    await batch!(
+    // 会话触发的扫描不经 scanOpen：光束点亮来自 trampoline 对 onActive 的画布
+    // 分接（sweepBeamIds），与底部按钮路径的 scan.activeIds 无关。
+    const runPromise = batch!(
       extractScanPages(doc).pages,
       (pageId) => done.push(pageId),
       () => undefined,
       { thumbnailMaxBytes: 32 * 1024 },
     )
+    await waitFor(() => expect(document.querySelectorAll('.design-canvas__scan-beam').length).toBe(2))
+    await runPromise
     expect(done.sort()).toEqual(['page-1', 'page-2'])
+    // 光束清除是 setState：经 React scheduler 刷新，用 waitFor 等 DOM 落定。
+    await waitFor(() => expect(document.querySelector('.design-canvas__scan-beam')).toBeNull())
     expect(vi.mocked(captureRectStats)).toHaveBeenCalledTimes(2)
     expect(vi.mocked(renderPenPageForScan)).not.toHaveBeenCalled()
     unmount()
     expect(designScanBatchRenderer(doc, {})).toBeUndefined()
+  })
+
+  it('会话 render 与导出 PNG 共用画布原位截图：尺寸准确、采集期间点亮扫描光束，无画布也不回退全屏', async () => {
+    const source = JSON.stringify({
+      ax: '1.0',
+      tokens: {},
+      components: {},
+      pages: [{
+        id: 'page-1', name: '会话', width: 200, height: 120,
+        tree: [{ id: 'text-1', kind: 'text', text: { $mock: '内容' }, wrap: 'nowrap' }],
+      }],
+    })
+    const parsed = parseAxDocument(source)
+    expect(parsed.document, parsed.error ?? JSON.stringify(parsed.diagnostics)).not.toBeNull()
+    const axDocument = parsed.document as AxDocument
+    const doc = projectAxToPenDocument(axDocument, '.pen/axiom.ax').document as PenDocument
+    doc.axDocument = axDocument
+    doc.workspacePath = '/workspace'
+    doc.sha256 = 'e'.repeat(64)
+    const { unmount } = render(<DesignCanvas doc={doc} />)
+    await waitFor(() => expect(vi.mocked(nativeCaptureSupported).mock.calls.length).toBeGreaterThan(0))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    stubRect(
+      document.querySelector('.design-canvas__viewport') as HTMLElement,
+      { x: VIEWPORT_ORIGIN.left, y: VIEWPORT_ORIGIN.top, ...VIEWPORT_SIZE },
+    )
+    stubRect(
+      document.querySelector('[data-page-wrapper="page-1"]') as HTMLElement,
+      { x: VIEWPORT_ORIGIN.left + 412, y: VIEWPORT_ORIGIN.top + 324, width: 200, height: 120 },
+    )
+    const request = {
+      source,
+      fileName: '.pen/axiom.ax',
+      workspacePath: '/workspace',
+      sha256: doc.sha256,
+      pageIdOrIndex: 'page-1',
+      maxBytes: 32 * 1024,
+    }
+
+    // 单页采集（fitTarget）与批量扫描同一光束节拍：取景落定后点亮，扫完一个
+    // 周期出 DOM 才截图，采完清除。
+    const renderedPromise = renderAxPageToPng(request)
+    await waitFor(() => expect(document.querySelector('.design-canvas__scan-beam')).not.toBeNull())
+    const rendered = await renderedPromise
+    expect(rendered).toMatchObject({
+      base64: 'UE5HQkFTRTY0',
+      width: 100,
+      height: 60,
+      scale: 0.5,
+      pageName: '会话',
+    })
+    expect(vi.mocked(captureRectStats)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(renderPenPageForScan)).not.toHaveBeenCalled()
+    await waitFor(() => expect(document.querySelector('.design-canvas__scan-beam')).toBeNull())
+    expect(document.querySelector('[data-ax-render-host]')).toBeNull()
+
+    const pageElement = document.querySelector('[data-pen-id="page-1"]') as HTMLElement
+    fireEvent.pointerDown(pageElement, { button: 0, pointerId: 1, clientX: 10, clientY: 10 })
+    fireEvent.pointerUp(pageElement, { pointerId: 1, clientX: 10, clientY: 10 })
+    fireEvent.click(screen.getByText('导出 PNG'))
+    await waitFor(() => expect(document.querySelector('.design-canvas__scan-beam')).not.toBeNull())
+    // 导出全程含 900ms 光束停驻，超出 waitFor 默认 1s 窗口。
+    await waitFor(() => expect(vi.mocked(exportDesignPng)).toHaveBeenCalledWith('会话.png', 'UE5HQkFTRTY0'), { timeout: 4000 })
+    expect(vi.mocked(captureRectStats)).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(document.querySelector('.design-canvas__scan-beam')).toBeNull())
+    expect(vi.mocked(renderPenPageForScan)).not.toHaveBeenCalled()
+    expect(document.querySelector('[data-ax-render-host]')).toBeNull()
+
+    unmount()
+    const withoutCanvas = await renderAxPageToPng(request)
+    expect(withoutCanvas).toMatchObject({ ok: false })
+    if (withoutCanvas && 'ok' in withoutCanvas) {
+      expect(withoutCanvas.reason).toContain('设计画布未就绪或稿件已更新')
+    }
+    expect(vi.mocked(captureRectStats)).toHaveBeenCalledTimes(2)
+    expect(document.querySelector('[data-ax-render-host]')).toBeNull()
+  })
+
+  it('会话 render 先把目标页取景到 1:1 再采集：分辨率不随用户缩放变化，采完机位归位', async () => {
+    const source = JSON.stringify({
+      ax: '1.0',
+      tokens: {},
+      components: {},
+      pages: [{
+        id: 'page-1', name: '会话', width: 200, height: 120,
+        tree: [{ id: 'text-1', kind: 'text', text: { $mock: '内容' }, wrap: 'nowrap' }],
+      }],
+    })
+    const parsed = parseAxDocument(source)
+    expect(parsed.document, parsed.error ?? JSON.stringify(parsed.diagnostics)).not.toBeNull()
+    const axDocument = parsed.document as AxDocument
+    const doc = projectAxToPenDocument(axDocument, '.pen/axiom.ax').document as PenDocument
+    doc.axDocument = axDocument
+    doc.workspacePath = '/workspace'
+    doc.sha256 = 'e'.repeat(64)
+    render(<DesignCanvas doc={doc} />)
+    await waitFor(() => expect(vi.mocked(nativeCaptureSupported).mock.calls.length).toBeGreaterThan(0))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const viewport = document.querySelector('.design-canvas__viewport') as HTMLElement
+    const surface = document.querySelector('[data-testid="design-canvas-surface"]') as HTMLElement
+    stubRect(viewport, { x: VIEWPORT_ORIGIN.left, y: VIEWPORT_ORIGIN.top, ...VIEWPORT_SIZE })
+    stubCanvasRect(
+      document.querySelector('[data-page-wrapper="page-1"]') as HTMLElement,
+      { x: 0, y: 0, width: 200, height: 120 },
+    )
+    // 用户把画布缩到 20%：不取景的话截图只有设计尺寸的五分之一。
+    for (let step = 0; step < 4; step += 1) fireEvent.click(screen.getByLabelText('缩小'))
+    const userTransform = surface.style.transform
+    expect(userTransform).toMatch(/scale\(0\.2/)
+
+    const rendered = await renderAxPageToPng({
+      source,
+      fileName: '.pen/axiom.ax',
+      workspacePath: '/workspace',
+      sha256: doc.sha256,
+      pageIdOrIndex: 'page-1',
+      maxBytes: 32 * 1024,
+    })
+    expect(rendered).toMatchObject({ base64: 'UE5HQkFTRTY0', pageName: '会话' })
+    // 采集时页面按 1:1 呈现（截图矩形 = 设计像素尺寸），而不是用户的 20%。
+    const [, , capturedWidth] = vi.mocked(captureRectStats).mock.calls[0]![0]
+    expect(capturedWidth).toBe(200)
+    // 采完把机位还给用户。
+    await waitFor(() => expect(surface.style.transform).toBe(userTransform))
   })
 
   it('原生探测未完成时打开扫描：等待原位路径就绪，不落全屏 capture staging', async () => {

@@ -56,10 +56,10 @@ setDesignComponentDetailProvider(axComponentDetailOf)
 setDesignPageRenderProvider(renderAxPageToPng)
 // 扫描验证：逐页离屏渲染 + 像素统计（`design_query` mode=scan 与画布扫描面板共用）。
 setDesignScanPageRenderProvider(renderPenPageForScan)
-// 原生截图只能截当前视口：没有已打开的设计画布时，会话扫描不得退回 capture
-// staging（会铺满窗口），改为显式跳过渲染并提示打开设计视图。
+// 原生截图只能截当前视口，且只允许在画布内原位完成：没有已打开的设计画布时，
+// 会话扫描显式跳过单页渲染并提示打开设计视图。
 setDesignScanViewportCaptureProbe(nativeCaptureSupported)
-// 扫描渲染并发度按光栅化路径定：native（capture 挂载铺满视口）必须串行，
+// 扫描渲染并发度按光栅化路径定：native 单页回退已禁用（保守串行 1），
 // offscreen 独立容器 3 路并行安全。
 configureScanRenderConcurrency()
 // 视觉对拍（`design_query` mode=compare）的 PNG 解码：设计渲染与实现截图都经

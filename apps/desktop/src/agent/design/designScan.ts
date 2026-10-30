@@ -31,6 +31,9 @@ export interface DesignScanRenderOutcome {
   topColorFraction?: number
   /** 会话扫描可选回传的 PNG；画布按钮不请求，避免无谓编码与内存占用。 */
   base64?: string
+  /** base64 图片的实际像素尺寸（降采样后）；缺省时与 width/height 一致。 */
+  imageWidth?: number
+  imageHeight?: number
 }
 
 /** 单页扫描的输入（从 PenDocument 提取，纯数据）。 */
@@ -215,9 +218,8 @@ export interface DesignScanOptions {
   onActive?: (pageIds: readonly string[] | null) => void
   /**
    * 渲染并发 lane 数（默认 1 = 逐页串行；上限 8）。判定与进度**始终按页序**产出，
-   * 与并发无关。是否可以并行由宿主渲染路径决定——例如 capture 模式的挂载容器
-   * 铺满视口（WKWebView 原生截图的前提），并行挂载会互相污染截图，必须传 1；
-   * offscreen（视口外独立容器）并行安全。
+   * 与并发无关。只有宿主确认渲染路径并行安全时才放宽：native 单页回退已禁用，
+   * 保守串行；offscreen（视口外独立容器）可并行。
    */
   renderConcurrency?: number
   /**
@@ -460,6 +462,12 @@ const verdictOf = (
 export interface DesignScanBatchRenderOptions {
   /** 会话扫描需要 warn 页缩略图时传入；缺省只回像素统计。 */
   thumbnailMaxBytes?: number
+  /**
+   * 单页渲染时先把目标页取景到「完整可见且不超过 1:1」的倍率再原位采集
+   * （会话 render/compare、画布导出 PNG）。缺省按用户当前缩放采集——用户把
+   * 画布缩得很小时截图只剩几百像素，模型自查与导出 PNG 都拿不到可读内容。
+   */
+  fitTarget?: boolean
 }
 
 export type DesignScanBatchRenderPage = (
@@ -528,7 +536,7 @@ export const scanDesignPagesBatch = async (
 }
 
 /**
- * 串行单页扫描（staging 回退路径）：结构检查与判定合成**复用批量路径的纯函数**
+ * 串行单页扫描（浏览器离屏渲染路径）：结构检查与判定合成**复用批量路径的纯函数**
  * （`structureIssuesOf`/`verdictOf`）——同一份检查规则只存在一份实现，改规则不会
  * 出现单页/批量口径漂移。渲染回调抛错按「渲染器不可用或超时」合成失败结果。
  */

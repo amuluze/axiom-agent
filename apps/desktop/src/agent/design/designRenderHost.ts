@@ -31,6 +31,8 @@ export interface DesignPageRenderRequest {
   source: string
   /** 原始文件相对路径（诊断与页面名回显用）。 */
   fileName: string
+  /** 原稿内容哈希：原生截图只复用同 SHA 的已打开画布，避免拍到旧稿。 */
+  sha256: string
   /** 页 id 或 1 起始序号。 */
   pageIdOrIndex: string | number
   /** PNG 字节预算：宿主按需降采样，仍超预算则返回 null。 */
@@ -148,7 +150,7 @@ export const registerDesignScanBatchRenderer = (
 
 /**
  * 会话扫描优先复用底部「扫描验证」的同一个批量渲染器。无画布、原生能力不可用
- * 或稿件版本不匹配时返回 undefined，由调用方保留单页 staging 兜底。
+ * 或稿件版本不匹配时返回 undefined，由调用方跳过逐页渲染。
  */
 export const designScanBatchRenderer = (
   doc: PenDocument,
@@ -173,7 +175,7 @@ let scanViewportCaptureProbe: ViewportCaptureProbe | null = null
 
 /**
  * 注入「原生截图只能截当前视口」的能力探针。会话扫描在没有画布批量渲染器
- * 时据此拒绝进入 capture staging——那会挂全窗口容器铺满用户窗口。
+ * 时据此跳过单页渲染：原生截图只允许在同稿画布内原位完成。
  */
 export const setDesignScanViewportCaptureProbe = (next: ViewportCaptureProbe | null): void => {
   scanViewportCaptureProbe = next
@@ -189,9 +191,9 @@ export const designScanRequiresViewportCapture = async (): Promise<boolean> => {
 }
 
 /**
- * 是否可以并行渲染多页：capture 模式的挂载容器铺满视口（WKWebView 原生截图
- * 只能截当前视口），并行挂载会互相污染截图——native 路径必须串行（1）；
- * offscreen（视口外独立容器）并行安全（3）。main.tsx 注入 provider 处一并设置。
+ * 是否可以并行渲染多页：native 单页回退已禁用（只允许画布原位采集），保守
+ * 保持串行（1）；offscreen（视口外独立容器）并行安全（3）。main.tsx 注入
+ * provider 处一并设置。
  */
 export const setDesignScanRenderConcurrency = (lanes: number): void => {
   scanRenderConcurrency = Math.max(1, Math.min(8, Math.floor(lanes)))

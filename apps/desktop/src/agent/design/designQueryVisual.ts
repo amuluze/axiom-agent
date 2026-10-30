@@ -64,10 +64,10 @@ const MAX_SCAN_THUMBNAILS = 4
 const IMAGE_UNSUPPORTED_NOTE = `${UNSUPPORTED_IMAGE_NOTE}。这是模型能力所限（当前模型不接受图片输入），不是环境没有渲染能力；需要视觉自查请切换到视觉模型。`
 
 /**
- * 原生截图只能截当前视口：设计画布未打开时没有原位扫掠可用，退回 capture
- * staging 会把某页铺满用户窗口。宁可不渲染像素，也不能为了自检破坏用户界面。
+ * 原生截图只能截当前视口：没有可用的原位扫掠（画布未打开，或打开的不是这一稿）
+ * 时单页渲染路径已禁用。宁可不渲染像素，也不能为了自检破坏用户界面。
  */
-const SCAN_CANVAS_REQUIRED_NOTE = '设计画布未打开：原生截图只能在画布内原位完成，本次未做逐页渲染（结构检查照常执行）。请打开设计视图后重试，或在设计画布底部点「扫描验证」。'
+const SCAN_CANVAS_REQUIRED_NOTE = '设计画布未就绪（未打开该稿，或打开的稿件已更新）：原生截图只能在画布内原位完成，本次未做逐页渲染（结构检查照常执行）。请打开对应设计视图后重试，或在设计画布底部点「扫描验证」。'
 
 /** scan 模式的缩略图缓存条目（渲染成功时随像素统计一起拿到）。 */
 interface ScanThumbnail {
@@ -157,13 +157,14 @@ export const executeScan = async (
   }
 
   // 当前设计画布已打开同一 SHA 的稿时，会话与底部按钮共用原位批量扫掠；
-  // 无匹配画布才走单页 staging。缩略图仍按既有 warn 页契约回传。
+  // 无匹配画布则跳过单页渲染。缩略图仍按既有 warn 页契约回传。
   const thumbnails = new Map<string, ScanThumbnail>()
   const thumbnailMaxBytes = typeof input.imageMaxBytes === 'number' ? input.imageMaxBytes : DEFAULT_SCAN_THUMBNAIL_BYTES
   const batchRender = designScanBatchRenderer(doc, {
     thumbnailMaxBytes: input.modelAcceptsImage === false ? undefined : thumbnailMaxBytes,
   })
-  // 无画布可复用且宿主确认原生截图需要可见视口 → 不进入单页 capture staging。
+  // 无画布可复用且宿主确认原生截图需要可见视口 → 跳过单页渲染；
+  // 原生截图只允许在画布内原位完成。
   const fallbackRequiresCanvas = !batchRender && await designScanRequiresViewportCapture()
   const renderPage: DesignScanRenderPage | undefined = canRenderDesignScanPage()
     ? async (page) => {
@@ -205,7 +206,7 @@ export const executeScan = async (
       // `.ax` 的页面按格式必须声明尺寸；`.pen` 的无高度顶层 frame 是组织性带（正常形态）。
       requireSize,
       pageMetadata: doc.pageMetadata,
-      // 渲染并发度由宿主按光栅化路径注入（native capture 挂载铺满视口必须串行=1，
+      // 渲染并发度由宿主按光栅化路径注入（native 单页回退已禁用，保守串行=1；
       // offscreen 独立容器并行安全）——引擎保证判定与进度始终按页序，消费方无感。
       renderConcurrency: designScanRenderConcurrency(),
     })
@@ -314,6 +315,7 @@ export const executeAxRenderMode = async (
       projectPreview: context.projectPreview,
       projectBrowserCommand: context.projectBrowserCommand,
       fileName: context.file,
+      sha256: context.sha256,
       workspacePath: context.workspacePath,
       pageIdOrIndex: target.id,
       maxBytes: imageBudget,
@@ -450,6 +452,7 @@ export const executeAxCompareMode = async (
     projectPreview: context.projectPreview,
     projectBrowserCommand: context.projectBrowserCommand,
     fileName: context.file,
+    sha256: context.sha256,
     workspacePath: context.workspacePath,
     pageIdOrIndex: target.id,
     maxBytes: MAX_IMAGE_MAX_BYTES,

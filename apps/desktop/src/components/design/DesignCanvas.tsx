@@ -156,8 +156,8 @@ const DesignCanvas = ({
   const sweepActiveRef = useRef(false)
   const sweepAbortRef = useRef(false)
   // 原生截图可用性（异步探测，一次缓存）：null = 探测中。原生可用时画布扫描走
-  // 原位扫掠，否则回落视口外 staging；探测未完成不得启动扫描——那会误选原生
-  // staging 的可见 capture 容器，把设计页重新铺满窗口。
+  // 原位扫掠，否则回落视口外离屏渲染；探测未完成不得启动扫描——原生单页回退
+  // 已禁用，误判会让画布扫描落到离屏路径。
   const [nativeScanReady, setNativeScanReady] = useState<boolean | null>(null)
   useEffect(() => {
     let cancelled = false
@@ -173,6 +173,10 @@ const DesignCanvas = ({
   // 底部按钮与会话扫描共用同一相机：批量调用排队，避免两条扫掠争用机位。
   const scanQueueRef = useRef<Promise<void>>(Promise.resolve())
   const [sweeping, setSweeping] = useState(false)
+  // 扫掠在途页（onActive 广播）的画布本地分接：光束渲染不再依赖扫描面板开合
+  //（scanOpen 门控的 scan.activeIds 只覆盖底部按钮路径）——会话扫描、会话
+  // render/compare 与导出 PNG 经 trampoline 走同一条扫掠，同样要点亮光束。
+  const [sweepBeamIds, setSweepBeamIds] = useState<ReadonlySet<string>>(new Set())
 
   const viewDoc = doc
 
@@ -187,7 +191,17 @@ const DesignCanvas = ({
     const execute = async () => {
       const impl = scanBatchRef.current
       if (!impl) throw new Error('扫掠编排器未就绪')
-      await impl(pages, onPageDone, onActive, options)
+      try {
+        // 分接在途集合到画布光束：无论发起方是底部按钮、会话扫描还是单页截图，
+        // onActive 都是扫掠的「在途页」广播通道，这里照原样转发给调用方。
+        await impl(pages, onPageDone, (ids) => {
+          setSweepBeamIds(new Set(ids ?? []))
+          onActive(ids)
+        }, options)
+      } finally {
+        // 正常路径由扫掠收尾的 onActive(null) 清空；这里是 throw 兜底。
+        setSweepBeamIds(new Set())
+      }
     }
     const queued = scanQueueRef.current.then(execute)
     scanQueueRef.current = queued.catch(() => undefined)
@@ -1034,8 +1048,10 @@ const DesignCanvas = ({
             // 判定显示状态描边（ok 不描——65 页全绿时满屏描边等于没有信息）。
             const scanStatus = scanOpen ? scan.statuses.get(placement.page.id) : undefined
             // 在途页集合驱动扫描环（批量扫掠可多页并行；串行路径由 useDesignScan
-            // 维护为单页集合，行为与旧 currentId 一致）。
-            const scanning = scanOpen && scan.activeIds.has(placement.page.id)
+            // 维护为单页集合，行为与旧 currentId 一致）。按钮路径走 hook 状态
+            //（scanOpen 门控），会话触发的扫掠/单页截图走 sweepBeamIds 分接。
+            const scanning = (scanOpen && scan.activeIds.has(placement.page.id))
+              || sweepBeamIds.has(placement.page.id)
             return (
               <Fragment key={placement.page.id}>
                 {/* 卡片框的尺寸同样依赖兜底高度，对组织性 frame 画出来就是假边界。 */}

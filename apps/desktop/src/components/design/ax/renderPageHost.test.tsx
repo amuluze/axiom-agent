@@ -14,6 +14,12 @@ import { parseAxDocument, projectAxToPenDocument } from '@/agent/design/axParser
 import type { AxDocument } from '@/agent/design/axSchema'
 import { parsePenDocument } from '@/agent/design/penParser'
 import type { PenDocument } from '@/agent/design/penParser'
+import { nativeCaptureSupported } from '../nativePageCapture'
+
+vi.mock('../nativePageCapture', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../nativePageCapture')>(),
+  nativeCaptureSupported: vi.fn(async () => false),
+}))
 
 vi.mock('@/platform/designDocument', () => ({
   readDesignDocumentAsset: vi.fn(async () => ({ contentBase64: 'IMAGE', mediaType: 'image/png', sha256: 'asset' })),
@@ -161,6 +167,16 @@ describe('renderPenPageForScan（扫描渲染）', () => {
     expect(noSize?.ok).toBe(false)
     if (!noSize?.ok) expect(noSize?.reason).toContain('没有有效尺寸')
   })
+
+  it('原生环境未命中画布时明确失败：不挂载全屏截图页面', async () => {
+    vi.mocked(nativeCaptureSupported).mockResolvedValueOnce(true)
+    const result = await renderPenPageForScan({ doc: penDocument_, pageIdOrIndex: 'pen-page-1', maxBytes: 16384 })
+    expect(result).toEqual({
+      ok: false,
+      reason: '原生截图只能在画布内原位完成：当前页未命中可原位采集的画布',
+    })
+    expect(window.document.querySelector('[data-ax-render-host]')).toBeNull()
+  })
 })
 
 describe('mountAxPageElement 复用 PenDocument 直挂', () => {
@@ -228,39 +244,6 @@ describe('节点 shadow 的画布渲染（1.3）', () => {
     // 投影（offsetX/offsetY → x/y）+ 渲染（`${x}px ${y}px ${blur}px ${color}`，token → var(--shadow-color)）。
     expect(card.style.boxShadow).toBe('0px 4px 12px var(--shadow-color)')
     expect(mounted?.element.textContent).toContain('卡片内容')
-    mounted?.dispose()
-  })
-})
-
-describe('mountPenPageElement capture 模式（原生截图的可见挂载）', () => {
-  it('可见挂载：容器铺满视口 + 内容照常渲染；视口大于页面时 fitScale 为 1', async () => {
-    const { mounted, error } = await mountPenPageElement(penDocument_, 'pen-page-1', 'light', { mode: 'capture' })
-    expect(error).toBeUndefined()
-    expect(mounted).not.toBeNull()
-    // jsdom 视口（1024×768）大于页（480×360）：不缩放。
-    expect(mounted?.fitScale).toBe(1)
-    expect(mounted?.element.textContent).toContain('直挂内容')
-    const host = window.document.querySelector('[data-ax-render-host]') as HTMLElement
-    expect(host.style.position).toBe('fixed')
-    expect(host.style.zIndex).toBe('2147483000')
-    expect(host.style.background).not.toBe('')
-    mounted?.dispose()
-    expect(window.document.querySelector('[data-ax-render-host]')).toBeNull()
-  })
-
-  it('大页等比缩放适配视口（fitScale < 1，transform 落在页面根上）', async () => {
-    const big: PenDocument = {
-      ...penDocument_,
-      pages: [{
-        type: 'frame', id: 'big-page', name: '大页', width: 4096, height: 3072,
-        children: [{ type: 'text', id: 'big-t1', content: '大页内容', fontSize: 14 }],
-      }],
-    }
-    const { mounted } = await mountPenPageElement(big, 'big-page', 'light', { mode: 'capture' })
-    expect(mounted).not.toBeNull()
-    // 1024/4096 = 0.25；768/3072 = 0.25 → fitScale 0.25。
-    expect(mounted?.fitScale).toBeCloseTo(0.25)
-    expect(mounted?.element.style.transform).toContain('scale(0.25)')
     mounted?.dispose()
   })
 })
