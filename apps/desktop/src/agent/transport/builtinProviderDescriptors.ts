@@ -185,7 +185,7 @@ const demoDescriptor: BuiltinProviderDescriptor = freezeDescriptor({
   providerId: 'demo',
   label: '离线 Demo',
   apiFormat: 'demo',
-  transportVersion: '3',
+    transportVersion: '7',
   auth: { kind: 'none' },
   supportedCapabilities: { toolReferences: false, toolSearch: false },
   defaultProfile: {

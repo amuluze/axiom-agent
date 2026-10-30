@@ -73,7 +73,7 @@ import type { ComposerAttachment } from '@/components/composer/composerModel'
 
 export interface ComposerProps {
   variant?: 'new-task' | 'session'
-  /** 审批模式下拉默认显示；窄栏投影（设计助手侧栏）按设计稿 XjPQ 隐藏——Controls Row 只留模型/预算/发送。 */
+  /** 审批模式下拉默认显示；窄栏可独立隐藏审批入口，附件按钮不受此开关影响。 */
   showAccessPicker?: boolean
 }
 
@@ -207,6 +207,8 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
   const stop = agentPreview?.stop ?? storeStop
   const storeQueueSteering = useAgentStore((state) => state.queueSteering)
   const queueSteering = agentPreview?.queueSteering ?? storeQueueSteering
+  const storeQueueAside = useAgentStore((state) => state.queueAside)
+  const queueAside = agentPreview?.queueAside ?? storeQueueAside
   const storeClearQueuedMessages = useAgentStore((state) => state.clearQueuedMessages)
   const clearQueuedMessages = agentPreview?.clearQueuedMessages ?? storeClearQueuedMessages
   const storeRestoreQueuedMessage = useAgentStore((state) => state.restoreQueuedMessage)
@@ -269,6 +271,8 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
   const recentWorkspacePaths = uiPreview?.recentWorkspacePaths ?? storeRecentWorkspacePaths
   const storePendingSteeringCount = useAgentStore((state) => state.pendingSteeringCount)
   const pendingSteeringCount = agentPreview?.pendingSteeringCount ?? storePendingSteeringCount
+  const storePendingAsideCount = useAgentStore((state) => state.pendingAsideCount)
+  const pendingAsideCount = agentPreview?.pendingAsideCount ?? storePendingAsideCount
   const storePendingFollowUpCount = useAgentStore((state) => state.pendingFollowUpCount)
   const pendingFollowUpCount = agentPreview?.pendingFollowUpCount ?? storePendingFollowUpCount
   const storePendingNextTurnCount = useAgentStore((state) => state.pendingNextTurnCount)
@@ -307,7 +311,10 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
     sessionBusy,
     compactionRunning,
   })
-  const hasQueuedMessages = pendingSteeringCount > 0 || pendingFollowUpCount > 0 || pendingNextTurnCount > 0
+  const hasQueuedMessages = pendingSteeringCount > 0
+    || pendingAsideCount > 0
+    || pendingFollowUpCount > 0
+    || pendingNextTurnCount > 0
   const placeholder = providerSetupRequired
     ? t('app.composer.placeholder.provider')
     : sessionBusy
@@ -456,7 +463,7 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
     })
   }, [authorizeFile])
 
-  const deliverInput = useCallback(async () => {
+  const deliverInput = useCallback(async (delivery: 'steering' | 'aside' = 'steering') => {
     const content = input.trim()
     const images = attachments
       .map((attachment) => toImageContentBlock(attachment))
@@ -481,7 +488,7 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
 
     if (running) {
       const acceptance = await deliverQueuedContent(
-        queueSteering,
+        delivery === 'aside' ? queueAside : queueSteering,
         content,
         accept,
         images.length > 0 ? images : undefined,
@@ -513,6 +520,7 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
     editRequest,
     editUserMessage,
     input,
+    queueAside,
     queueSteering,
     running,
     send,
@@ -1216,17 +1224,15 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
           </section>
         )}
         <div className="composer__controls">
-          {showAccessPicker && (
-            <button
-              aria-label={t('app.composer.attach.add')}
-              className="composer__attach-button"
-              onClick={() => { void attachReferenceFile() }}
-              title={t('app.composer.attach.add')}
-              type="button"
-            >
-              <Plus size={15} />
-            </button>
-          )}
+          <button
+            aria-label={t('app.composer.attach.add')}
+            className="composer__attach-button"
+            onClick={() => { void attachReferenceFile() }}
+            title={t('app.composer.attach.add')}
+            type="button"
+          >
+            <Plus size={15} />
+          </button>
           {showAccessPicker && (
             <div className="composer__access-picker" ref={accessPickerRef}>
               <button
@@ -1348,6 +1354,17 @@ export const Composer = ({ variant = 'session', showAccessPicker = true }: Compo
               type="button"
             >
               <Square size={12} fill="currentColor" />
+            </button>
+          )}
+          {running && !editRequest && (
+            <button
+              className="composer__aside"
+              disabled={!composerAvailable || (!input.trim() && attachments.length === 0)}
+              onClick={() => { void deliverInput('aside') }}
+              title={t('app.composer.aside.title')}
+              type="button"
+            >
+              {t('app.composer.aside')}
             </button>
           )}
           <button

@@ -8,7 +8,7 @@ import { useT } from '@/i18n'
 
 const TestingAssistantPanel = () => {
   const { t } = useT()
-  return <AssistantSidebarPanel copy={assistantCopyFrom(t, 'app.testing.assistant')} />
+  return <AssistantSidebarPanel copy={assistantCopyFrom(t, 'app.testing.assistant')} showAccessPicker={false} />
 }
 
 export default TestingAssistantPanel

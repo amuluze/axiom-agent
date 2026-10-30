@@ -26,6 +26,8 @@ const environment = (overrides: Partial<TestEnvironmentRecord> = {}): TestEnviro
   allowPrivateNetwork: true,
   headersJson: '{}',
   secretIdsJson: '[]',
+  extraVarsJson: '{}',
+  secretOriginsJson: '[]',
   createdAt: 1,
   updatedAt: 2,
   ...overrides,

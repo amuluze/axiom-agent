@@ -4,13 +4,21 @@ import type { DesignDocumentContent } from '@/platform/designDocument'
 import type { JsonValue } from '@/agent/core/types'
 import { vi } from 'vitest'
 import { createDesignQueryTool } from './designQueryTool'
-import { setDesignPageRenderProvider, setPngDecodeProvider, setDesignScanPageRenderProvider } from '@/agent/design/designRenderHost'
+import {
+  registerDesignScanBatchRenderer,
+  setDesignPageRenderProvider,
+  setPngDecodeProvider,
+  setDesignScanPageRenderProvider,
+  setDesignScanViewportCaptureProbe,
+} from '@/agent/design/designRenderHost'
 import { setDesignComponentDetailProvider } from '@/agent/design/componentInventoryHost'
 import { AX_FORMAT_VERSION } from '@/agent/design/axSchema'
 import { executeAxCompareMode } from '@/agent/design/designQueryVisual'
 import { axKindHistogram } from '@/agent/design/designQueryProjection'
 import { parseAxDocument } from '@/agent/design/axParser'
 import { setDesignBrowserCommandProvider } from '@/agent/design/designBrowserHost'
+import type { PenDocument } from '@/agent/design/penParser'
+import type { DesignScanBatchRenderPage } from '@/agent/design/designScan'
 
 const browserCommandMock = vi.fn()
 
@@ -87,7 +95,7 @@ const run = (input: JsonValue, tool = axTool, context: Record<string, unknown> =
 
 describe('design_query tool：按模式判别的输入契约', () => {
   it('九种模式各自声明必需参数，不再暴露无类型大对象', () => {
-    expect(axTool.runtimeVersion).toBe('24')
+    expect(axTool.runtimeVersion).toBe('25')
     const variants = axTool.inputSchema.anyOf
     if (!Array.isArray(variants)) throw new Error('design_query schema must use anyOf')
     const modes = variants.map((variant) => {
@@ -481,7 +489,97 @@ describe('design_query tool：scan 模式（逐页渲染扫描验证）', () => 
     }
   })
 
+  it('当前画布 SHA 匹配时复用原位批量扫描，不再挂载单页 staging', async () => {
+    const scanSource = JSON.stringify({
+      ax: '1.0',
+      name: 'blank-scan',
+      tokens: {},
+      pages: [{
+        id: 'p-blank',
+        name: '空白卡片',
+        width: 320,
+        height: 240,
+        tree: [{ id: 'rect', kind: 'rect', width: 320, height: 240, fill: '#ffffff' }],
+      }],
+    })
+    const scanTool = createDesignQueryTool(environmentWith(() => Promise.resolve({
+      contentBase64: Buffer.from(scanSource, 'utf-8').toString('base64'),
+      sha256: 'b'.repeat(64),
+      sizeBytes: scanSource.length,
+      modifiedMs: null,
+      unchanged: false,
+    })), { componentInventory: () => [] })
+    const canvasDoc = {
+      fileName: '.pen/axiom.ax',
+      workspacePath: undefined,
+      sha256: 'b'.repeat(64),
+    } as PenDocument
+    const batchImpl: DesignScanBatchRenderPage = async (pages, onPageDone, _onActive, options) => {
+      expect(options?.thumbnailMaxBytes).toBe(32 * 1024)
+      for (const page of pages) {
+        onPageDone(page.id, {
+          ok: true,
+          width: 400,
+          height: 300,
+          samples: 16000,
+          distinctColors: page.id === 'p-blank' ? 1 : 2,
+          topColorFraction: page.id === 'p-blank' ? 1 : 0.6,
+          ...(page.id === 'p-blank' ? { base64: 'c2Nhbg==' } : {}),
+        })
+      }
+    }
+    const batchStub = vi.fn(batchImpl)
+    const stagingStub = vi.fn(async () => {
+      throw new Error('不应进入全屏单页 staging')
+    })
+    const unregister = registerDesignScanBatchRenderer(canvasDoc, batchStub)
+    setDesignScanPageRenderProvider(stagingStub)
+    try {
+      const result = await run({ file: '.pen/axiom.ax', mode: 'scan' }, scanTool)
+      const parsed = JSON.parse(result.content) as {
+        rendered: boolean
+        summary: { total: number }
+      }
+      expect(batchStub).toHaveBeenCalledTimes(1)
+      expect(stagingStub).not.toHaveBeenCalled()
+      expect(parsed.rendered).toBe(true)
+      expect(parsed.summary.total).toBe(1)
+      expect(result.details).toMatchObject({ thumbnails: 1 })
+      expect(result.contentBlocks).toEqual([
+        { type: 'text', text: result.content },
+        { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: 'c2Nhbg==' } },
+      ])
+    } finally {
+      unregister()
+      setDesignScanPageRenderProvider(null)
+    }
+  })
 
+  it('原生截图需要可见视口且画布未打开时：跳过逐页渲染，不进全屏 staging', async () => {
+    const stagingStub = vi.fn(async () => {
+      throw new Error('不应进入全屏单页 staging')
+    })
+    setDesignScanPageRenderProvider(stagingStub)
+    setDesignScanViewportCaptureProbe(async () => true)
+    try {
+      const result = await run({ file: '.pen/axiom.ax', mode: 'scan' })
+      const parsed = JSON.parse(result.content) as {
+        rendered: boolean
+        summary: { total: number }
+        renderNote?: string
+        pages: Array<{ render: string; renderReason?: string }>
+      }
+      expect(stagingStub).not.toHaveBeenCalled()
+      expect(parsed.rendered).toBe(false)
+      expect(parsed.summary.total).toBe(2)
+      expect(parsed.renderNote).toContain('设计画布未打开')
+      expect(parsed.pages.every((page) => page.render === 'skipped')).toBe(true)
+      expect(parsed.pages.every((page) => page.renderReason === 'unavailable')).toBe(true)
+    } finally {
+      setDesignScanViewportCaptureProbe(null)
+      setDesignScanPageRenderProvider(null)
+    }
+  })
 })
 
 describe('design_query tool：code 模式（生成骨架）', () => {

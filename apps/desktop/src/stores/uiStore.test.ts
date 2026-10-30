@@ -354,6 +354,60 @@ describe('uiStore sidebar width', () => {
     useUiStore.getState().setSidebarWidth(9999)
     expect(useUiStore.getState().sidebarWidth).toBe(220)
   })
+  it('switches between independent session and assistant widths without overwriting either preference', async () => {
+    const dom = installDomStorage()
+    const { DEFAULT_ASSISTANT_SIDEBAR_WIDTH, selectSidebarWidth, useUiStore } = await import('./uiStore')
+    expect(DEFAULT_ASSISTANT_SIDEBAR_WIDTH).toBe(360)
+
+    useUiStore.getState().setView('session')
+    useUiStore.getState().setSidebarWidth(300)
+    useUiStore.getState().setView('design')
+    expect(selectSidebarWidth(useUiStore.getState())).toBe(360)
+
+    useUiStore.getState().setSidebarWidth(420)
+    expect(useUiStore.getState().designSidebarWidth).toBe(420)
+    expect(useUiStore.getState().sidebarWidth).toBe(300)
+    expect(dom.values.get('axiom.ui.designSidebarWidth.v1')).toBe('420')
+    expect(dom.values.get('axiom.ui.sidebarWidth.v1')).toBe('300')
+
+    useUiStore.getState().setView('docs')
+    expect(selectSidebarWidth(useUiStore.getState())).toBe(360)
+    useUiStore.getState().setSidebarWidth(440)
+    expect(useUiStore.getState().docsSidebarWidth).toBe(440)
+    expect(useUiStore.getState().designSidebarWidth).toBe(420)
+    expect(useUiStore.getState().sidebarWidth).toBe(300)
+    expect(dom.values.get('axiom.ui.docsSidebarWidth.v1')).toBe('440')
+
+    useUiStore.getState().setView('testing')
+    expect(selectSidebarWidth(useUiStore.getState())).toBe(360)
+    useUiStore.getState().setSidebarWidth(460)
+    expect(useUiStore.getState().testingSidebarWidth).toBe(460)
+    expect(useUiStore.getState().docsSidebarWidth).toBe(440)
+    expect(useUiStore.getState().designSidebarWidth).toBe(420)
+    expect(useUiStore.getState().sidebarWidth).toBe(300)
+    expect(dom.values.get('axiom.ui.testingSidebarWidth.v1')).toBe('460')
+
+    useUiStore.getState().setView('session')
+    expect(selectSidebarWidth(useUiStore.getState())).toBe(300)
+  })
+
+  it('restores persisted assistant widths independently of the session width', async () => {
+    installDomStorage({
+      'axiom.ui.sidebarWidth.v1': '280',
+      'axiom.ui.designSidebarWidth.v1': '400',
+      'axiom.ui.docsSidebarWidth.v1': '410',
+      'axiom.ui.testingSidebarWidth.v1': '420',
+    })
+    const { selectSidebarWidth, useUiStore } = await import('./uiStore')
+    useUiStore.getState().setView('design')
+    expect(selectSidebarWidth(useUiStore.getState())).toBe(400)
+    useUiStore.getState().setView('docs')
+    expect(selectSidebarWidth(useUiStore.getState())).toBe(410)
+    useUiStore.getState().setView('testing')
+    expect(selectSidebarWidth(useUiStore.getState())).toBe(420)
+    useUiStore.getState().setView('session')
+    expect(selectSidebarWidth(useUiStore.getState())).toBe(280)
+  })
 })
 
 describe('uiStore navigation and layout actions', () => {

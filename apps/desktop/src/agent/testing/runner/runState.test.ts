@@ -75,15 +75,21 @@ describe('failure origin', () => {
     expect(failureOriginForOutcome({ verdict: 'canceled' })).toBeNull()
   })
 
-  it('takes the case origin from the first step that did not pass', () => {
+  it('takes the case origin from the first attributable failed step', () => {
     expect(failureOriginForCase([
       { status: 'passed' },
       { status: 'error', origin: 'environment' },
       { status: 'skipped' },
     ])).toBe('environment')
-    // 没有驱动事实时按状态兜底，取消/中断/跳过不产生归因。
+    // 条件执行产生的 skipped 是正常分支，不能遮蔽其后的真实失败。
+    expect(failureOriginForCase([
+      { status: 'skipped' },
+      { status: 'failed', origin: 'assertion' },
+    ])).toBe('assertion')
+    // 没有驱动事实时按状态兜底，取消/中断/纯跳过不产生归因。
     expect(failureOriginForCase([{ status: 'rejected' }])).toBe('approval')
     expect(failureOriginForCase([{ status: 'canceled' }, { status: 'passed' }])).toBeNull()
+    expect(failureOriginForCase([{ status: 'skipped' }, { status: 'passed' }])).toBeNull()
     expect(failureOriginForCase([])).toBeNull()
   })
 

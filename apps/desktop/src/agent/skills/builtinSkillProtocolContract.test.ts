@@ -31,7 +31,7 @@ describe('test-design Skill 内联协议与解析器接受面一致', () => {
   })
 
   it('列出的步骤动作集合与 TEST_SPEC_STEP_KEYS 完全一致', () => {
-    const declared = new Set(testDesignBody().match(/\b(?:ui\.[a-z]+|api\.request)\b/gu) ?? [])
+    const declared = new Set(testDesignBody().match(/\b(?:ui\.[a-z]+|api\.[a-z]+)\b/gu) ?? [])
     expect([...declared].sort()).toEqual([...Object.keys(TEST_SPEC_STEP_KEYS)].sort())
   })
 

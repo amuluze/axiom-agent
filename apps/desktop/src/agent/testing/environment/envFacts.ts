@@ -10,17 +10,28 @@
 import type { EnvironmentMode } from './environmentFile'
 import type { EnvironmentReadiness, EnvironmentReadinessVerdict } from './readiness'
 
+export interface EnvironmentProbeFact {
+  /** 目标服务变量名（v2 多服务探针）；旧记录缺省视为 API_BASE_URL。 */
+  var?: string
+  method: string
+  url: string
+  status: number | null
+  verdict: EnvironmentReadinessVerdict
+}
+
 export interface TestEnvironmentFacts {
   environmentId: string
   /** 运行当时的展示名（环境后来改名不影响历史报告）。 */
   name: string
   kind: EnvironmentMode
-  /** 探针实际打的目标：报告里可直接核对。 */
+  /** 探针实际打的目标（多服务时为首个/失败的那个）：报告里可直接核对。 */
   probe: { method: string; url: string }
   verdict: EnvironmentReadinessVerdict
   /** 探针实际拿到的状态码（无状态码时 null）。 */
   status: number | null
   elapsedMs: number
+  /** v2：多服务探针的逐项事实（全部通过才 ready）。 */
+  probes?: readonly EnvironmentProbeFact[]
   /**
    * 就绪结论的来源：`probe` = 本次真打一次接口；`cache` = 命中会话内就绪缓存。
    * 两者都算「已就绪」，但报告必须能区分——否则「30 秒前探过」会被读成「刚才验过」。
@@ -33,6 +44,8 @@ export interface EnvironmentFactsInput {
   probe: { method: string; url: string } | null
   readiness: EnvironmentReadiness
   preparedBy: TestEnvironmentFacts['preparedBy']
+  /** v2：多服务探针逐项事实（单探针时省略）。 */
+  probes?: readonly EnvironmentProbeFact[]
 }
 
 /**
@@ -48,6 +61,7 @@ export const environmentFactsFrom = (input: EnvironmentFactsInput): TestEnvironm
   status: input.readiness.status,
   elapsedMs: input.readiness.elapsedMs,
   preparedBy: input.preparedBy,
+  ...(input.probes && input.probes.length > 0 ? { probes: input.probes } : {}),
 })
 
 export const serializeEnvironmentFacts = (facts: TestEnvironmentFacts): string => JSON.stringify(facts)
@@ -83,9 +97,19 @@ export const describeEnvironmentFacts = (json: string | null | undefined): strin
     ? `结论 ${String(facts.verdict ?? '未知')}`
     : `返回 ${status}`
   const timing = elapsedMs === null ? '' : `（${elapsedMs} ms）`
+  const probes = Array.isArray(facts.probes)
+    ? facts.probes.flatMap((entry) => {
+      if (typeof entry !== 'object' || entry === null) return []
+      const probeFact = entry as Record<string, unknown>
+      if (typeof probeFact.url !== 'string' || typeof probeFact.verdict !== 'string') return []
+      const failed = probeFact.verdict !== 'ready'
+      return [`${failed ? '未就绪' : '就绪'} ${String(probeFact.var ?? '服务')} ${probeFact.url}（${probeFact.verdict}）`]
+    })
+    : []
   return [
     `本次环境：${name}（${kind}）`,
     `探针 ${method} ${url} → ${outcome}${timing}`,
+    ...(probes.length > 1 ? [probes.join('；')] : []),
     source,
   ].join(' · ')
 }

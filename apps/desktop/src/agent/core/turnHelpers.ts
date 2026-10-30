@@ -10,6 +10,58 @@ import type {
 } from './types'
 import type { AgentTurnSnapshot } from './runAgentLoop'
 import { snapshotAgentMessages, snapshotAgentContext, snapshotAssistantMessage, snapshotToolResultMessage } from './snapshots'
+import { PLANNING_GUARD_DIAGNOSTIC } from './planningGuard'
+import { STEERING_INTERRUPT_DIAGNOSTIC } from './streamInterruption'
+
+export type StopCorrectionKind =
+  | 'length_with_tools'
+  | 'length_without_tools'
+  | 'empty_stop'
+  | 'textual_tool_call'
+  | 'planning_loop'
+
+const textualToolCallName = (content: string): string | undefined => {
+  const trimmed = content.trim()
+  if (!/<(?:tool_call|function_call)\b/iu.test(trimmed) && !/^```(?:json|tool|tool_call|function_call)\b[\s\S]*```$/iu.test(trimmed)) {
+    return undefined
+  }
+  return /["']name["']\s*:\s*["']([^"']+)["']/iu.exec(trimmed)?.[1]
+}
+
+export const classifyStopCorrection = (
+  message: AssistantMessage,
+  activeToolNames: Iterable<string>,
+): StopCorrectionKind | undefined => {
+  if (message.diagnostics?.some((diagnostic) => diagnostic.type === STEERING_INTERRUPT_DIAGNOSTIC)) {
+    return undefined
+  }
+  if (message.diagnostics?.some((diagnostic) => diagnostic.type === PLANNING_GUARD_DIAGNOSTIC)) {
+    return 'planning_loop'
+  }
+  if (message.stopReason === 'length') {
+    return message.toolCalls.length > 0 ? 'length_with_tools' : 'length_without_tools'
+  }
+  if (message.stopReason !== 'stop' || message.toolCalls.length > 0) return undefined
+  if (message.excludeFromModelContext === true || !message.content.trim()) return 'empty_stop'
+  const toolName = textualToolCallName(message.content)
+  if (toolName && new Set(activeToolNames).has(toolName)) return 'textual_tool_call'
+  return undefined
+}
+
+export const stopCorrectionNotice = (kind: StopCorrectionKind): string => {
+  switch (kind) {
+    case 'length_with_tools':
+      return '运行时纠错：上一轮达到输出长度上限，其中的工具参数可能不完整且工具未执行。不要假设调用已生效；如仍需该工具，请重新发出完整的原生工具调用。'
+    case 'length_without_tools':
+      return '运行时纠错：上一轮达到输出长度上限。请从中断处继续并尽快收口，不要重复已经完整输出的内容。'
+    case 'empty_stop':
+      return '运行时纠错：上一轮在没有可见内容或工具调用时停止。当前轮必须给出有效答复，或使用已注册工具的原生调用协议。'
+    case 'textual_tool_call':
+      return '运行时纠错：上一轮把工具调用写成了普通文本，因此没有执行。需要工具时必须使用已注册工具的原生调用协议，不要再次输出伪造的工具调用文本。'
+    case 'planning_loop':
+      return '运行时纠错：上一轮长时间停留在重复规划且没有调用工具，已由运行时提前中止。请停止重复描述计划；需要证据时立即调用合适的只读工具，否则直接基于已有信息给出结论。'
+  }
+}
 
 /**
  * runAgentLoop 的纯函数拆件。把预算提示注入、turn 快照与 save point 结构构建从主循环

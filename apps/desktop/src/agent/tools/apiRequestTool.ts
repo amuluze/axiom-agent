@@ -70,6 +70,27 @@ const FORBIDDEN_HEADER_TABLE: Record<string, true> = {
   host: true, 'content-length': true, 'transfer-encoding': true, connection: true,
 }
 
+/** v4：Host 头覆盖的调用前镜像（Rust `validate_virtual_host` 同判据）。 */
+const VIRTUAL_HOST_LABEL_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/
+
+const validateVirtualHost = (value: JsonValue | undefined): string | null => {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return 'virtualHost must be a non-empty host[:port] string.'
+  }
+  const text = value.trim()
+  if (text.length > 253) return 'virtualHost must be at most 253 chars.'
+  const segments = text.split(':')
+  if (segments.length > 2) return 'virtualHost must be host[:port] without scheme, path or credentials.'
+  const [host, port] = segments
+  if (host === '' || !host.split('.').every((label) => VIRTUAL_HOST_LABEL_PATTERN.test(label))) {
+    return 'virtualHost must be host[:port] without scheme, path or credentials.'
+  }
+  if (port !== undefined && (!/^\d{1,5}$/u.test(port) || Number(port) < 1 || Number(port) > 65535)) {
+    return 'virtualHost port must be between 1 and 65535.'
+  }
+  return null
+}
+
 /** RFC 7230 token：镜像 Rust `HeaderName::from_bytes`（权威校验仍在 Rust）。 */
 const HTTP_TOKEN_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u
 
@@ -77,7 +98,7 @@ const HTTP_TOKEN_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u
 const PRIVATE_NETWORK_BLOCKED_MARKER = '未授权访问回环或私网地址'
 
 const API_INPUT_KEYS = [
-  'method', 'url', 'query', 'headers', 'body', 'bodyMode', 'timeoutMs', 'redirect', 'environmentId',
+  'method', 'url', 'query', 'headers', 'body', 'bodyMode', 'timeoutMs', 'redirect', 'virtualHost', 'environmentId',
 ]
 
 interface ApiRequestInput {
@@ -89,6 +110,8 @@ interface ApiRequestInput {
   bodyMode?: 'json' | 'text' | 'form'
   timeoutMs?: number
   redirect?: 'manual' | 'same-origin'
+  /** Host 头覆盖（`host[:port]`）：按 Host 路由的反代/网关目标系统探索用。 */
+  virtualHost?: string
   environmentId?: string
 }
 
@@ -144,6 +167,9 @@ const asApiRequestInput = (input: JsonValue): ApiRequestInput => {
       : {}),
     ...(typeof input.timeoutMs === 'number' ? { timeoutMs: input.timeoutMs } : {}),
     ...(input.redirect === 'manual' || input.redirect === 'same-origin' ? { redirect: input.redirect } : {}),
+    ...(typeof input.virtualHost === 'string' && input.virtualHost.trim() !== ''
+      ? { virtualHost: input.virtualHost.trim() }
+      : {}),
     ...(typeof input.environmentId === 'string' ? { environmentId: input.environmentId } : {}),
   }
 }
@@ -315,6 +341,10 @@ const validateApiRequestInput = (input: JsonValue, externalTargets: boolean): st
   if (!optionalInteger(input.timeoutMs, 1, MAX_API_TIMEOUT_MS)) {
     return `timeoutMs must be an integer between 1 and ${MAX_API_TIMEOUT_MS}.`
   }
+  if (input.virtualHost !== undefined) {
+    const virtualHostError = validateVirtualHost(input.virtualHost)
+    if (virtualHostError) return virtualHostError
+  }
   if (input.environmentId !== undefined
     && (typeof input.environmentId !== 'string' || !input.environmentId.trim()
       || input.environmentId.length > MAX_ENVIRONMENT_ID_CHARS)) {
@@ -410,7 +440,7 @@ export const createApiRequestTool = (
     '判定与证据都由宿主给出：非 2xx 不是工具错误（期望状态由测试文件里的断言决定），响应正文与 Secret 不回灌会话，不要凭摘要臆造响应内容。',
     '不要把密钥、令牌或用户隐私写进 url/query/body：它们会进入会话记录与审计。',
   ],
-  runtimeVersion: '5',
+  runtimeVersion: '6',
   recoveryPolicy: 'never',
   executionMode: 'sequential',
   requiresApproval: true,
@@ -477,6 +507,13 @@ export const createApiRequestTool = (
         description: 'Redirect policy: manual (default, never follow) or same-origin (follow same-origin '
           + 'redirects only; cross-origin redirects are blocked).',
       },
+      virtualHost: {
+        type: 'string',
+        description: 'Optional Host header override (host[:port]) for targets routed by virtual host '
+          + '(reverse proxies, gateways). The network destination is still decided by url: DNS/SSRF/TLS '
+          + 'checks are unchanged and the Host header only affects server-side routing. Must not contain '
+          + 'a scheme, path or credentials.',
+      },
       environmentId: {
         type: 'string',
         description: 'Test environment id configured for this workspace. Omit to run with no environment; '
@@ -495,8 +532,12 @@ export const createApiRequestTool = (
     return { ok: true, value: { ...input, method: input.method.trim().toUpperCase() } }
   },
   approvalPresentation: (input) => {
-    const { method, url, query, headers, body, bodyMode } = asApiRequestInput(input)
-    const card = describeApiTestStepApproval({ method, url })
+    const { method, url, query, headers, body, bodyMode, virtualHost } = asApiRequestInput(input)
+    const card = describeApiTestStepApproval({
+      method,
+      url,
+      ...(virtualHost === undefined ? {} : { virtualHost }),
+    })
     const scope = [
       query ? `${Object.keys(query).length} 个查询参数` : '无查询参数',
       headers ? `${Object.keys(headers).length} 个自定义请求头` : '无自定义请求头',
@@ -526,6 +567,7 @@ export const createApiRequestTool = (
       ...(request.bodyMode ? { bodyMode: request.bodyMode } : {}),
       ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
       ...(request.redirect ? { redirect: request.redirect } : {}),
+      ...(request.virtualHost === undefined ? {} : { virtualHost: request.virtualHost }),
     }
     const result = await environment.api.runStep({
       runId: context.runId,

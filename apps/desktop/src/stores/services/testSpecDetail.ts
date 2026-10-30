@@ -1,5 +1,6 @@
 import { parseTestSpec } from '@/agent/testing/spec/parseTestSpec'
 import type { TestCaseSpec, TestStepSpec, UiExpectation } from '@/agent/testing/spec/types'
+import { isApiDriverStep, isApiTestStep } from '@/agent/testing/spec/stepActions'
 import { readWorkspaceText } from '@/platform/workspace'
 
 /**
@@ -49,7 +50,7 @@ export const describeUiExpectation = (expect: UiExpectation): string => {
 const describeStep = (step: TestStepSpec): string | null => {
   if (step.action === 'ui.assert') return describeUiExpectation(step.expect)
   if (step.action === 'ui.wait') return `等待：${describeUiExpectation(step.expect)}`
-  if (step.action === 'api.request') {
+  if (isApiDriverStep(step)) {
     const expectations = step.expect ?? []
     if (expectations.length === 0) return `${step.method} ${step.url}`
     const status = expectations.find((item): item is { status: number } => 'status' in item)
@@ -61,19 +62,18 @@ const describeStep = (step: TestStepSpec): string | null => {
 }
 
 /**
- * 一个步骤贡献的断言数：`ui.assert` / `ui.wait` 各 1，API 请求按 expect 条目数计。
- * 测试页 KPI 与用例表必须用同一口径，否则纯 API 用例会显示 0 断言。
+ * 一个步骤贡献的断言数：`ui.assert` / `ui.wait` 各 1，API 请求与轮询按 expect 条目数计。
+ * 测试页 KPI 与用例表必须用同一口径，否则 API 用例会显示 0 断言。
  */
 export const assertionCountOf = (step: TestStepSpec): number => {
   if (step.action === 'ui.assert' || step.action === 'ui.wait') return 1
-  if (step.action === 'api.request') return step.expect?.length ?? 0
+  if (isApiDriverStep(step)) return step.expect?.length ?? 0
   return 0
 }
 
 const toCaseRow = (testCase: TestCaseSpec): SpecCaseRow => {
-  const actions = testCase.steps.map((step) => step.action)
-  const hasApi = actions.includes('api.request')
-  const hasUi = actions.some((action) => action !== 'api.request')
+  const hasApi = testCase.steps.some(isApiTestStep)
+  const hasUi = testCase.steps.some((step) => !isApiTestStep(step))
   const assertSteps = testCase.steps.filter((step) => assertionCountOf(step) > 0)
   const firstAssert = assertSteps[0]
   return {

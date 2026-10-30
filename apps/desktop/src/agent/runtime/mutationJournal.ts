@@ -1,6 +1,6 @@
 import type { AgentMessage, ModelReasoning, ModelRef } from '@/agent/core/types'
 
-export type QueuedMessageKind = 'steering' | 'follow-up' | 'next-turn'
+export type QueuedMessageKind = 'steering' | 'aside' | 'follow-up' | 'next-turn'
 export type AgentJournalStatus = 'pending' | 'consuming' | 'applied' | 'discarded'
 
 export interface DurableRuntimeUpdate {

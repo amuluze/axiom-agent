@@ -12,6 +12,10 @@ import {
   type ReasoningSettings,
   resolveReasoningSettings,
 } from '@/agent/runtime/reasoningSettings'
+import {
+  resolveSyntaxRepairSettings,
+  type SyntaxRepairSettings,
+} from '@/agent/runtime/syntaxRepairSettings'
 import { initialProviderFallback } from '@/agent/transport/provider'
 import { RUNTIME_POLICY } from '@/config/runtimePolicy'
 import { loadProviderSelection } from './services/providerStorage'
@@ -59,6 +63,10 @@ export let activeAgentLimitsSettings: AgentLimitsSettings = resolveAgentLimitsSe
   isTauriRuntime() ? localStorage.getItem('axiom.agent.limits.v1') : null,
 )
 
+export let activeSyntaxRepairSettings: SyntaxRepairSettings = resolveSyntaxRepairSettings(
+  isTauriRuntime() ? localStorage.getItem('axiom.syntax-repair.v1') : null,
+)
+
 export const setActiveContextPolicySettings = (next: ContextPolicySettings): void => {
   activeContextPolicySettings = next
 }
@@ -73,6 +81,10 @@ export const setActiveReasoningSettings = (next: ReasoningSettings): void => {
 
 export const setActiveAgentLimitsSettings = (next: AgentLimitsSettings): void => {
   activeAgentLimitsSettings = next
+}
+
+export const setActiveSyntaxRepairSettings = (next: SyntaxRepairSettings): void => {
+  activeSyntaxRepairSettings = next
 }
 
 // 异步修正：持久化的 Provider selection 经 Rust 权威解析后，按真实 bounds 重播种

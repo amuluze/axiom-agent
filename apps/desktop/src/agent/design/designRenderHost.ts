@@ -13,6 +13,7 @@
 import type { PenDocument } from './penParser'
 import type { RgbaImage } from './visualCompare'
 import type { DesignComponentSummary, DesignComponentDetail } from './componentInventoryHost'
+import type { DesignScanBatchRenderOptions, DesignScanBatchRenderPage } from './designScan'
 
 export interface DesignPageRenderRequest {
   projectBrowserCommand?: import('@/platform/projectDesignPreview').ProjectPreviewBrowserCommand
@@ -123,8 +124,69 @@ type ScanProvider = (
 
 let scanProvider: ScanProvider | null = null
 
-/** 扫描渲染的并发 lane 数：由宿主按渲染路径安全性注入（默认 1 = 串行）。 */
+interface DesignScanBatchRegistration {
+  doc: PenDocument
+  render: DesignScanBatchRenderPage
+}
+
+let batchRegistration: DesignScanBatchRegistration | null = null
+
+/**
+ * 当前设计画布注册的原位批量扫描。返回的注销函数只移除自己，避免旧画布卸载时
+ * 误清新画布的注册。文档以路径 + 工作区 + SHA-256 匹配，绝不用旧画布验证新稿。
+ */
+export const registerDesignScanBatchRenderer = (
+  doc: PenDocument,
+  render: DesignScanBatchRenderPage,
+): (() => void) => {
+  const registration = { doc, render }
+  batchRegistration = registration
+  return () => {
+    if (batchRegistration === registration) batchRegistration = null
+  }
+}
+
+/**
+ * 会话扫描优先复用底部「扫描验证」的同一个批量渲染器。无画布、原生能力不可用
+ * 或稿件版本不匹配时返回 undefined，由调用方保留单页 staging 兜底。
+ */
+export const designScanBatchRenderer = (
+  doc: PenDocument,
+  options: DesignScanBatchRenderOptions,
+): DesignScanBatchRenderPage | undefined => {
+  const registration = batchRegistration
+  if (!registration) return undefined
+  const current = registration.doc
+  if (
+    current.fileName !== doc.fileName
+    || current.workspacePath !== doc.workspacePath
+    || current.sha256 !== doc.sha256
+  ) return undefined
+  return (pages, onPageDone, onActive) => registration.render(pages, onPageDone, onActive, options)
+}
+
+/** 扫描渲染的并发 lane 数:由宿主按渲染路径安全性注入(默认 1 = 串行)。 */
 let scanRenderConcurrency = 1
+
+type ViewportCaptureProbe = () => Promise<boolean>
+let scanViewportCaptureProbe: ViewportCaptureProbe | null = null
+
+/**
+ * 注入「原生截图只能截当前视口」的能力探针。会话扫描在没有画布批量渲染器
+ * 时据此拒绝进入 capture staging——那会挂全窗口容器铺满用户窗口。
+ */
+export const setDesignScanViewportCaptureProbe = (next: ViewportCaptureProbe | null): void => {
+  scanViewportCaptureProbe = next
+}
+
+export const designScanRequiresViewportCapture = async (): Promise<boolean> => {
+  if (!scanViewportCaptureProbe) return false
+  try {
+    return await scanViewportCaptureProbe()
+  } catch {
+    return false
+  }
+}
 
 /**
  * 是否可以并行渲染多页：capture 模式的挂载容器铺满视口（WKWebView 原生截图

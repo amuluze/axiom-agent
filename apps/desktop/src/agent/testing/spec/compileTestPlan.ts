@@ -1,5 +1,5 @@
 import { sha256Text } from '../../tools/workspaceToolUtils'
-import type { TestSpecIssue } from './parseTestSpec'
+import { TEST_SPEC_LIMITS, type TestSpecIssue } from './parseTestSpec'
 import type {
   ApiExpectation,
   TestCaseSpec,
@@ -13,6 +13,15 @@ import type {
   UiExpectation,
   UiStepSpec,
 } from './types'
+import { isApiDriverStep } from './stepActions'
+
+/**
+ * 编译产物里的 case：数据驱动行已展开为独立 case，附带 `seeds`（该行的输入值）。
+ * `seeds` 是计划层事实——源文件里只有 `inputs` 数组，解析器从不产出 `seeds`。
+ */
+export type CompiledTestCase = TestCaseSpec & {
+  readonly seeds?: Readonly<Record<string, TestValue>>
+}
 
 export interface CompiledTestPlan {
   specId: string
@@ -25,7 +34,7 @@ export interface CompiledTestPlan {
   hooks?: TestHooksSpec
   /** v2：测试点清单（用例经 `verifies` 指向它），随计划一起冻结供报告使用。 */
   testPoints?: readonly TestPointSpec[]
-  cases: readonly TestCaseSpec[]
+  cases: readonly CompiledTestCase[]
 }
 
 export interface CompileTestSpecOptions {
@@ -135,7 +144,9 @@ const resolveStepUrl = (
   target: TestTargetSpec,
   path: string,
 ): { step?: TestStepSpec; issue?: TestSpecIssue } => {
-  if (step.action !== 'ui.navigate' && step.action !== 'api.request') return { step }
+  if (step.action !== 'ui.navigate' && !isApiDriverStep(step)) {
+    return { step }
+  }
   if (!step.url.startsWith('/')) return { step }
   const base = step.action === 'ui.navigate' ? target.webBaseUrl : target.apiBaseUrl
   try {
@@ -161,8 +172,11 @@ export const materializeTestPlan = (
     ...options.targetOverrides,
   }
   const issues: TestSpecIssue[] = []
-  const cases = plan.cases.map((testCase, caseIndex): TestCaseSpec => ({
+  const cases = plan.cases.map((testCase, caseIndex): CompiledTestCase => ({
     ...testCase,
+    ...(testCase.seeds
+      ? { seeds: interpolateValue(testCase.seeds, environment, run) as Record<string, TestValue> }
+      : {}),
     steps: testCase.steps.flatMap((sourceStep, stepIndex) => {
       const step = interpolateValue(sourceStep, environment, run) as TestStepSpec
       const resolved = resolveStepUrl(step, target, `$.cases[${caseIndex}].steps[${stepIndex}]`)
@@ -221,6 +235,24 @@ const collectVariableRefs = (value: unknown, found: Set<string>): void => {
 const extractionNames = (step: TestStepSpec): readonly string[] =>
   'extract' in step && step.extract ? Object.keys(step.extract) : []
 
+/** v6：步骤里以 `{ variable }` 引用的运行时凭据（按变量名）。 */
+const credentialHeaderVariables = (step: TestStepSpec): readonly string[] => {
+  if (!isApiDriverStep(step)) return []
+  const names: string[] = []
+  for (const value of Object.values(step.headers ?? {})) {
+    if (typeof value === 'object' && 'variable' in value) names.push(value.variable)
+  }
+  return names
+}
+
+/** v6：抽取是否标记为敏感（敏感值才能进请求头做运行时凭据）。 */
+const sensitiveExtractionNames = (step: TestStepSpec): readonly string[] =>
+  'extract' in step && step.extract
+    ? Object.entries(step.extract)
+      .filter(([, extraction]) => extraction.sensitive === true)
+      .map(([name]) => name)
+    : []
+
 const requiresLocator = (expect: UiExpectation): boolean =>
   ELEMENT_EXPECTATION_KEYS.some((key) => key in expect)
 
@@ -236,12 +268,13 @@ const collectStructuralIssues = (
   const issues: TestSpecIssue[] = []
   steps.forEach((step, stepIndex) => {
     const path = `${pathPrefix}[${stepIndex}]`
-    if (step.action === 'api.request') {
+    if (isApiDriverStep(step)) {
       if (step.url.startsWith('/') && !target.apiBaseUrl) {
         issues.push({ path: `${path}.url`, message: '站内相对路径需要在 target.apiBaseUrl 中声明基址' })
       }
       return
     }
+    if (step.action === 'api.delay') return
     if (step.action === 'ui.navigate' && step.url.startsWith('/') && !target.webBaseUrl) {
       issues.push({ path: `${path}.url`, message: '站内相对路径需要在 target.webBaseUrl 中声明基址' })
     }
@@ -267,15 +300,45 @@ const collectVariableIssues = (
   steps: readonly TestStepSpec[],
   pathPrefix: string,
   produced: Set<string>,
+  sensitive: Set<string>,
+  conditional: Set<string>,
+  fileProduced: ReadonlySet<string>,
 ): TestSpecIssue[] => {
   const issues: TestSpecIssue[] = []
   steps.forEach((step, stepIndex) => {
     const path = `${pathPrefix}[${stepIndex}]`
+    // v7 条件执行：守卫变量必须在本文件某处生产，否则条件永远不成立（死步骤）。
+    const guard = 'whenProduced' in step ? step.whenProduced : undefined
+    if (guard !== undefined && !fileProduced.has(guard)) {
+      issues.push({
+        path,
+        message: `whenProduced 变量「${guard}」在本文件中没有任何步骤生产（条件永远不成立）`,
+      })
+    }
     const referenced = new Set<string>()
     collectVariableRefs(step, referenced)
+    for (const name of credentialHeaderVariables(step)) referenced.add(name)
     for (const name of [...referenced].sort()) {
-      if (!produced.has(name)) {
+      // 守卫允许引用「本作用域可能未产出」的变量（条件清理）：缺省跳过，产出后执行。
+      if (!produced.has(name) && name !== guard) {
         issues.push({ path, message: `变量「${name}」必须由当前作用域中的前序步骤生产` })
+      } else if (conditional.has(name) && name !== guard) {
+        // 条件产物的存在性不确定：没有同变量守卫的消费者会把缺失值物化为
+        // 「undefined」继续发请求，必须在这里拒绝。
+        issues.push({
+          path,
+          message: `变量「${name}」由条件步骤生产；引用它的步骤必须声明 whenProduced: "${name}"`,
+        })
+      }
+    }
+    // v6：运行时凭据头只接受 sensitive 抽取的变量——非敏感值会以明文进证据/报告，
+    // 也让「这个值从哪来」失去可审计性。
+    for (const name of credentialHeaderVariables(step)) {
+      if (!sensitive.has(name)) {
+        issues.push({
+          path,
+          message: `请求头变量「${name}」必须来自 sensitive 抽取（extract.${name}.sensitive = true）`,
+        })
       }
     }
     for (const name of extractionNames(step)) {
@@ -283,10 +346,35 @@ const collectVariableIssues = (
         issues.push({ path: `${path}.extract.${name}`, message: `变量「${name}」已由当前作用域的前序步骤生产` })
       } else {
         produced.add(name)
+        if (guard !== undefined) conditional.add(name)
       }
     }
+    for (const name of sensitiveExtractionNames(step)) sensitive.add(name)
   })
   return issues
+}
+
+/**
+ * v7：文件级「可能产出」的变量名集合——所有 hook/case 步骤的抽取键 ∪ 数据行键。
+ * 只在校验 `whenProduced` 守卫时使用（守卫要引用的是某条用例产物，而非当前作用域）。
+ */
+const collectFileProducedNames = (spec: TestSpec): Set<string> => {
+  const names = new Set<string>()
+  const addSteps = (steps: readonly TestStepSpec[] | undefined): void => {
+    for (const step of steps ?? []) {
+      for (const name of extractionNames(step)) names.add(name)
+    }
+  }
+  const hooks = spec.hooks
+  addSteps(hooks?.beforeAll)
+  addSteps(hooks?.beforeEach)
+  addSteps(hooks?.afterEach)
+  addSteps(hooks?.afterAll)
+  for (const testCase of spec.cases) {
+    addSteps(testCase.steps)
+    for (const name of Object.keys(testCase.inputs?.[0] ?? {})) names.add(name)
+  }
+  return names
 }
 
 const collectStepIssues = (spec: TestSpec): TestSpecIssue[] => {
@@ -299,22 +387,64 @@ const collectStepIssues = (spec: TestSpec): TestSpecIssue[] => {
     issues.push(...collectStructuralIssues(testCase.steps, `$.cases[${caseIndex}].steps`, spec.target))
   })
 
+  const fileProduced = collectFileProducedNames(spec)
   const suiteVariables = new Set<string>()
+  const suiteSensitive = new Set<string>()
+  const suiteConditional = new Set<string>()
   if (spec.hooks?.beforeAll) {
-    issues.push(...collectVariableIssues(spec.hooks.beforeAll, '$.hooks.beforeAll', suiteVariables))
+    issues.push(...collectVariableIssues(
+      spec.hooks.beforeAll,
+      '$.hooks.beforeAll',
+      suiteVariables,
+      suiteSensitive,
+      suiteConditional,
+      fileProduced,
+    ))
   }
   spec.cases.forEach((testCase, caseIndex) => {
+    // v5：数据行键在该 case 作用域开始时预置（beforeEach 也能用），与 extract 共用命名空间。
     const caseVariables = new Set(suiteVariables)
+    const caseSensitive = new Set(suiteSensitive)
+    const caseConditional = new Set(suiteConditional)
+    for (const name of Object.keys(testCase.inputs?.[0] ?? {})) caseVariables.add(name)
     if (spec.hooks?.beforeEach) {
-      issues.push(...collectVariableIssues(spec.hooks.beforeEach, '$.hooks.beforeEach', caseVariables))
+      issues.push(...collectVariableIssues(
+        spec.hooks.beforeEach,
+        '$.hooks.beforeEach',
+        caseVariables,
+        caseSensitive,
+        caseConditional,
+        fileProduced,
+      ))
     }
-    issues.push(...collectVariableIssues(testCase.steps, `$.cases[${caseIndex}].steps`, caseVariables))
+    issues.push(...collectVariableIssues(
+      testCase.steps,
+      `$.cases[${caseIndex}].steps`,
+      caseVariables,
+      caseSensitive,
+      caseConditional,
+      fileProduced,
+    ))
     if (spec.hooks?.afterEach) {
-      issues.push(...collectVariableIssues(spec.hooks.afterEach, '$.hooks.afterEach', caseVariables))
+      issues.push(...collectVariableIssues(
+        spec.hooks.afterEach,
+        '$.hooks.afterEach',
+        caseVariables,
+        caseSensitive,
+        caseConditional,
+        fileProduced,
+      ))
     }
   })
   if (spec.hooks?.afterAll) {
-    issues.push(...collectVariableIssues(spec.hooks.afterAll, '$.hooks.afterAll', new Set(suiteVariables)))
+    issues.push(...collectVariableIssues(
+      spec.hooks.afterAll,
+      '$.hooks.afterAll',
+      new Set(suiteVariables),
+      new Set(suiteSensitive),
+      new Set(suiteConditional),
+      fileProduced,
+    ))
   }
   const targetVariables = new Set<string>()
   collectVariableRefs(spec.target, targetVariables)
@@ -367,12 +497,18 @@ const interpolateRuntimeValue = (
   preserveScalar: boolean,
 ): unknown => {
   if (typeof value === 'string') {
+    const read = (name: string): TestValue => {
+      if (!Object.hasOwn(variables, name)) {
+        throw new Error(`运行时变量「${name}」未产出`)
+      }
+      return variables[name]
+    }
     const exact = value.match(EXACT_VARIABLE_REF_PATTERN)
     if (exact) {
-      const variable = variables[exact[1] ?? '']
+      const variable = read(exact[1] ?? '')
       return preserveScalar ? variable : stringifyVariable(variable)
     }
-    return value.replace(VARIABLE_REF_PATTERN, (_match, name: string) => stringifyVariable(variables[name]))
+    return value.replace(VARIABLE_REF_PATTERN, (_match, name: string) => stringifyVariable(read(name)))
   }
   if (Array.isArray(value)) return value.map((item) => interpolateRuntimeValue(item, variables, preserveScalar))
   if (isRecord(value)) {
@@ -390,14 +526,16 @@ export const materializeTestStepVariables = (
   target: TestTargetSpec = {},
 ): TestStepSpec => {
   const materialized = interpolateRuntimeValue(step, variables, true) as TestStepSpec
-  if (materialized.action === 'api.request') {
+  if (isApiDriverStep(materialized)) {
     const headers = materialized.headers && Object.fromEntries(Object.entries(materialized.headers).map(([name, value]) => [
       name,
       typeof value === 'object' ? value : stringifyVariable(value as TestValue),
     ]))
-    const body = materialized.bodyMode === 'text' && materialized.body !== undefined
+    const body = materialized.action === 'api.request' && materialized.bodyMode === 'text' && materialized.body !== undefined
       ? stringifyVariable(materialized.body as TestValue)
-      : materialized.body
+      : materialized.action === 'api.request'
+        ? materialized.body
+        : undefined
     const url = stringifyVariable(materialized.url as TestValue)
     return deepFreeze({
       ...materialized,
@@ -459,6 +597,53 @@ export const compileTestSpec = async (
   }
   if (issues.length > 0) return { ok: false, issues }
 
+  // v5：数据行按行展开成独立 case（id/name 带行号，verifies 原样复制，行值进 seeds）。
+  const expandedCases: CompiledTestCase[] = []
+  const expandedPaths: string[] = []
+  /** 源 case → 计划 case 基座：只复制协议字段，不把 `inputs` 带进计划（行值改由 seeds 承载）。 */
+  const caseBase = (source: TestCaseSpec): TestCaseSpec => ({
+    id: source.id,
+    name: source.name,
+    steps: source.steps,
+    ...(source.verifies ? { verifies: source.verifies } : {}),
+  })
+  spec.cases.forEach((testCase, caseIndex) => {
+    const inputs = testCase.inputs
+    if (inputs === undefined) {
+      expandedCases.push(structuredClone(caseBase(testCase)))
+      expandedPaths.push(`$.cases[${caseIndex}]`)
+      return
+    }
+    inputs.forEach((row, variantIndex) => {
+      expandedCases.push({
+        ...structuredClone({
+          ...caseBase(testCase),
+          id: inputs.length > 1 ? `${testCase.id}-v${variantIndex + 1}` : testCase.id,
+          name: inputs.length > 1
+            ? `${testCase.name.slice(0, 180)} · ${variantIndex + 1}/${inputs.length}`
+            : testCase.name,
+        }),
+        ...(Object.keys(row).length > 0 ? { seeds: structuredClone(row) } : {}),
+      })
+      expandedPaths.push(`$.cases[${caseIndex}].inputs[${variantIndex}]`)
+    })
+  })
+  // 展开后的 ID 可能撞上用户手写的 `x-v2` 之类；重复在报告里会互相覆盖。
+  const seenIds = new Set<string>()
+  expandedCases.forEach((testCase, index) => {
+    if (seenIds.has(testCase.id)) {
+      issues.push({ path: `${expandedPaths[index]}.id`, message: `展开后的用例 ID「${testCase.id}」重复` })
+    }
+    seenIds.add(testCase.id)
+  })
+  if (expandedCases.length > TEST_SPEC_LIMITS.maxCases) {
+    issues.push({
+      path: '$.cases',
+      message: `数据行展开后共 ${expandedCases.length} 个用例，超过上限 ${TEST_SPEC_LIMITS.maxCases}`,
+    })
+  }
+  if (issues.length > 0) return { ok: false, issues }
+
   const specHash = await sha256Text(canonicalJson(spec))
   const plan: CompiledTestPlan = {
     specId: spec.id,
@@ -469,7 +654,7 @@ export const compileTestSpec = async (
     environmentNames: [...referenced].sort(),
     ...(spec.hooks ? { hooks: structuredClone(spec.hooks) } : {}),
     ...(spec.testPoints ? { testPoints: structuredClone(spec.testPoints) } : {}),
-    cases: structuredClone(spec.cases),
+    cases: expandedCases,
   }
   return { ok: true, plan: deepFreeze(plan) }
 }

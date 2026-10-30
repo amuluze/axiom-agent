@@ -33,10 +33,60 @@ describe('testSpecDetail assertion counts', () => {
       expect: [{ status: 200 }, { jsonPointerExists: '/id' }],
     })).toBe(2)
     expect(assertionCountOf({
+      id: 'poll',
+      action: 'api.poll',
+      method: 'GET',
+      url: 'https://api.test/orders',
+      expect: [{ status: 200 }, { jsonPointerExists: '/id' }],
+    })).toBe(2)
+    expect(assertionCountOf({
+      id: 'delay',
+      action: 'api.delay',
+      durationMs: 10,
+    })).toBe(0)
+    expect(assertionCountOf({
       id: 'click',
       action: 'ui.click',
       locator: { testId: 'go' },
     })).toBe(0)
+  })
+
+  it('classifies a polling-only file as API instead of UI', async () => {
+    mocks.readWorkspaceText.mockResolvedValue({
+      content: JSON.stringify({
+        kind: 'axiom.test',
+        version: 9,
+        id: 'poll',
+        name: '轮询',
+        target: {},
+        testPoints: [{ id: 'tp', kind: 'regression', title: '轮询', acceptance: '最终一致' }],
+        cases: [{
+          id: 'case-one',
+          name: '轮询',
+          verifies: ['tp'],
+          steps: [
+            { id: 'delay', action: 'api.delay', durationMs: 10 },
+            {
+              id: 'poll',
+              action: 'api.poll',
+              method: 'GET',
+              url: 'https://api.test/ready',
+              expect: [{ status: 200 }],
+            },
+          ],
+        }],
+      }),
+      truncated: false,
+    })
+
+    const detail = await loadSpecDetail('tests/poll.testspec.json', '/repo')
+    expect(detail?.cases[0]).toMatchObject({
+      type: 'api',
+      assertCount: 1,
+      assertSummary: 'GET https://api.test/ready → 200（1 项断言）',
+    })
+    expect(detail?.apiCaseCount).toBe(1)
+    expect(detail?.uiCaseCount).toBe(0)
   })
 
   it('projects the total into the case detail KPI source', async () => {

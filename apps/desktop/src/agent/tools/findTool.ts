@@ -13,7 +13,7 @@ export const createFindTool = (environment: AgentEnvironment): AgentTool => ({
     '工作区授权不能解除凭据或 Axiom 数据保护；隐私目录只开放经原生确认的项目子目录，拒绝后不要通过改名或其他工具绕过。',
     `传入更窄的工作区相对路径可限制搜索深度；遍历上限为 ${FIND_MAX_RESULTS} 条，遵循 .gitignore，.git/node_modules/dist 等已跳过。`,
   ],
-  runtimeVersion: '6',
+  runtimeVersion: '7',
   recoveryPolicy: 'idempotent',
   idempotencyKey: (input) => {
     if (!isJsonObject(input)) return 'find:invalid'
@@ -84,6 +84,7 @@ export const createFindTool = (environment: AgentEnvironment): AgentTool => ({
         sizeBytes: entry.sizeBytes,
       })),
       truncated: result.truncated,
+      ...(result.matches.length === 0 ? { contextRetention: 'discardable' } : {}),
     }
     return {
       content: `${lines.join('\n')}${footer}`,

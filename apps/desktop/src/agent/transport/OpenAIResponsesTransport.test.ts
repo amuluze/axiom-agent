@@ -48,6 +48,13 @@ const request: ModelRequest = {
     { name: 'edit', description: 'Edit', inputSchema: { type: 'object' } },
   ],
   reasoning: { level: 'high', mode: 'effort' },
+  stablePrefix: {
+    fingerprint: 'stable-prefix-fingerprint',
+    revision: 1,
+    systemPromptBytes: 10,
+    toolSchemaBytes: 20,
+    dynamicSuffixBytes: 0,
+  },
 }
 
 const collect = async (
@@ -80,6 +87,7 @@ describe('OpenAIResponsesTransport', () => {
         tools: [expect.objectContaining({ name: 'edit', defer_loading: true })],
       }),
     ]))
+    expect(JSON.stringify(body)).not.toContain('stable-prefix-fingerprint')
   })
 
   it('parses text, reasoning, function calls, usage and controlled lifecycle hooks', async () => {

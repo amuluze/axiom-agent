@@ -5,13 +5,14 @@ import type {
   WorkspaceChangeRequest,
   WorkspaceChangeResult,
 } from '@/platform/workspace'
-import type { AgentToolExecutionContext, JsonValue } from '@/agent/core/types'
+import type { AgentToolExecutionContext, AgentToolPreparationContext, JsonValue } from '@/agent/core/types'
 import { applyChangesTool } from './applyChangesTool'
 import { createApplyChangesTool } from './applyChangesTool'
 import {
   buildSuccessResult,
   createFakeAgentEnvironment,
 } from './__fixtures__/fakeAgentEnvironment'
+import { sha256Text } from './workspaceToolUtils'
 
 const ZERO_ABORT = new AbortController().signal
 const ZERO_LEASE = 'lease-test'
@@ -139,6 +140,44 @@ describe('applyChangesTool audit arguments', () => {
         { type: 'patch-file', paths: ['src/one.ts'], textBytes: 22 },
         { type: 'trash', paths: ['src/secret.ts'], expectedSha256: 'f'.repeat(64) },
       ],
+    })
+  })
+})
+
+describe('applyChangesTool prepareForApproval', () => {
+  it('repairs only eligible patch-file operations and preserves the expected hash', async () => {
+    const content = '{"enabled":true}'
+    const hash = await sha256Text(content)
+    const environment = createFakeAgentEnvironment({
+      readText: async () => ({
+        workspace: { path: '/w', name: 'w' },
+        path: 'config.json',
+        content,
+        sha256: hash,
+        startLine: 1,
+        endLine: 1,
+        totalLines: 1,
+        truncated: false,
+      }),
+    })
+    const context: AgentToolPreparationContext = {
+      sessionId: 'session-test',
+      runId: 'run-test',
+      toolCallId: 'tool-call-test',
+      signal: ZERO_ABORT,
+      repairSyntax: async () => ['false'],
+    }
+    const tool = createApplyChangesTool(environment)
+    const prepared = await tool.prepareForApproval?.({ operations: [
+      validPatchFile({ path: 'config.json', expectedSha256: hash, oldText: 'true', newText: '' }),
+      validCreateFile(),
+    ] }, context)
+    expect(prepared).toMatchObject({
+      input: { operations: [
+        { type: 'patch-file', expectedSha256: hash, newText: 'false' },
+        { type: 'create-file' },
+      ] },
+      details: { syntaxAutoRepairs: [{ path: 'config.json' }] },
     })
   })
 })

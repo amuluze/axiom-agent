@@ -21,11 +21,16 @@ import { parseEnvironmentRecipeJson } from './environmentFile'
 import type { ApiStepSpec } from '../spec/types'
 
 export interface ReadinessEnvironmentInput {
-  /** 环境记录里的 API Base URL；缺失即无法探测。 */
+  /** 环境记录里的 API Base URL；缺失即无法探测（自定义变量探针除外）。 */
   apiBaseUrl: string | null
+  /**
+   * v2：环境档的自定义变量（多服务端点的地址）。探针 `var` 指向这里；
+   * `API_BASE_URL` 仍可由 `apiBaseUrl` 提供（运行期投影会合并两者）。
+   */
+  vars?: Readonly<Record<string, string>>
   /** 环境记录里的配方 JSON；`null` 表示没有配方（用缺省探针）。 */
   recipeJson: string | null
-  /** 探针步骤 ID：审批 actor 与租约都按它绑定（调用方拼 `env-probe:<envId>`）。 */
+  /** 探针步骤 ID 前缀：审批 actor 与租约都按它绑定（调用方拼 `env-probe:<envId>`）。 */
   stepId: string
 }
 
@@ -36,6 +41,8 @@ export interface EnvironmentProbePlan {
    */
   step: ApiStepSpec
   expectStatus: readonly number[]
+  /** 目标服务变量名（多服务探针用于失败定位与报告事实；单探针为 API_BASE_URL）。 */
+  var?: string
 }
 
 export type EnvironmentReadinessVerdict =
@@ -65,48 +72,88 @@ export type ReadinessProbePlanResult =
   | { ok: true; plan: EnvironmentProbePlan }
   | { ok: false; reason: string }
 
+export type ReadinessProbePlansResult =
+  | { ok: true; plans: readonly EnvironmentProbePlan[] }
+  | { ok: false; reason: string }
+
 /**
  * 由环境构造探针计划。任何「没法探测」的情形都给出**可执行**的原因（用户知道去改哪里），
  * 而不是抛错或静默跳过探测——静默跳过等于把「没验证」伪装成「已验证」。
  */
-export const readinessProbePlan = (environment: ReadinessEnvironmentInput): ReadinessProbePlanResult => {
-  const baseUrl = environment.apiBaseUrl?.trim() ?? ''
-  if (baseUrl === '') {
-    return {
-      ok: false,
-      reason: '运行环境没有 API Base URL：无法探测环境是否就绪（在环境档的 vars.API_BASE_URL 里填写真实接口地址）',
-    }
-  }
+/** 探针目标地址的解析基址：保留名 API_BASE_URL 允许用环境记录的列兜底。 */
+const probeBaseFor = (
+  environment: ReadinessEnvironmentInput,
+  varName: string,
+): string | null => {
+  const fromVars = environment.vars?.[varName]?.trim()
+  if (fromVars !== undefined && fromVars !== '') return fromVars
+  const fallback = varName === 'API_BASE_URL' ? environment.apiBaseUrl?.trim() : undefined
+  return fallback !== undefined && fallback !== '' ? fallback : null
+}
+
+/**
+ * 由环境构造**就绪探针清单**。多服务拓扑下「就绪」是每个服务都就绪：
+ * v2 档的 `probes[]` 逐个解析，v1 形态（或未声明）退化为单个 `API_BASE_URL` 探针。
+ * 任何「没法探测」的情形都给出**可执行**的原因（用户知道去改哪里），而不是抛错或静默跳过。
+ */
+export const readinessProbePlans = (environment: ReadinessEnvironmentInput): ReadinessProbePlansResult => {
   const recipe = environment.recipeJson === null
     ? undefined
     : parseEnvironmentRecipeJson(environment.recipeJson)
   if (recipe !== undefined && !recipe.ok) return { ok: false, reason: recipe.reason }
+  const recipeBody = recipe?.ok === true ? recipe.recipe : undefined
+  const declared = recipeBody?.probes?.map((probe) => ({
+    var: probe.var,
+    method: probe.method,
+    path: probe.path,
+    expectStatus: probe.expectStatus,
+  })) ?? (recipeBody?.probe !== undefined
+    ? [{ var: 'API_BASE_URL', ...recipeBody.probe }]
+    : [{ var: 'API_BASE_URL', method: DEFAULT_PROBE_METHOD, path: DEFAULT_PROBE_PATH, expectStatus: DEFAULT_PROBE_EXPECT_STATUS }])
 
-  const probe = recipe?.ok === true ? recipe.recipe.probe : undefined
-  const method = probe?.method ?? DEFAULT_PROBE_METHOD
-  const probePath = probe?.path ?? DEFAULT_PROBE_PATH
-  const expectStatus = probe?.expectStatus ?? DEFAULT_PROBE_EXPECT_STATUS
-  let url: string
-  try {
-    url = new URL(probePath, baseUrl).toString()
-  } catch {
-    return { ok: false, reason: `无法用 API Base URL「${baseUrl}」拼接探针地址：请检查环境档里的地址` }
-  }
-  return {
-    ok: true,
-    plan: {
+  const plans: EnvironmentProbePlan[] = []
+  for (const probe of declared) {
+    const baseUrl = probeBaseFor(environment, probe.var)
+    if (baseUrl === null) {
+      return {
+        ok: false,
+        reason: probe.var === 'API_BASE_URL'
+          ? '运行环境没有 API Base URL：无法探测环境是否就绪（在环境档的 vars.API_BASE_URL 里填写真实接口地址）'
+          : `运行环境缺少服务变量「${probe.var}」：无法探测该服务是否就绪（在环境档的 vars 里声明）`,
+      }
+    }
+    let url: string
+    try {
+      url = new URL(probe.path, baseUrl).toString()
+    } catch {
+      return { ok: false, reason: `无法用「${probe.var}=${baseUrl}」拼接探针地址：请检查环境档里的地址` }
+    }
+    plans.push({
       step: {
-        id: environment.stepId,
+        // 多探针各自独立的步骤 ID：审批 actor 与租约按步骤绑定，互不覆盖。
+        id: probe.var === 'API_BASE_URL' ? environment.stepId : `${environment.stepId}:${probe.var}`,
         action: 'api.request',
-        method,
+        method: probe.method,
         url,
         redirect: 'manual',
         // 探针的预算取环境自己的启动预算：服务刚启动时给它足够时间回答第一次请求。
-        ...(recipe?.ok === true ? { timeoutMs: recipe.recipe.timeoutMs } : {}),
+        ...(recipeBody !== undefined ? { timeoutMs: recipeBody.timeoutMs } : {}),
       },
-      expectStatus,
-    },
+      expectStatus: probe.expectStatus,
+      var: probe.var,
+    })
   }
+  return { ok: true, plans }
+}
+
+/** 单探针兼容入口：返回第一项（旧调用方与测试语义不变）。 */
+export const readinessProbePlan = (environment: ReadinessEnvironmentInput): ReadinessProbePlanResult => {
+  const plans = readinessProbePlans(environment)
+  if (!plans.ok) return plans
+  const plan = plans.plans[0]
+  return plan === undefined
+    ? { ok: false, reason: '环境探针清单为空' }
+    : { ok: true, plan }
 }
 
 /** 宿主探针结果的**结构**投影（`ApiTestStepResult` 的判定相关子集，避免纯模块依赖 platform）。 */

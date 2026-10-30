@@ -16,6 +16,8 @@ import {
   buildBudgetNotices,
   buildTurnSavePoint,
   buildTurnSnapshot,
+  classifyStopCorrection,
+  stopCorrectionNotice,
 } from './turnHelpers'
 import { errorText } from './abort'
 import { impliesMessageNotPersisted } from './persistenceBarrier'
@@ -26,8 +28,15 @@ import {
   validatedMessages,
 } from './messageValidation'
 import { streamAssistantMessage } from './streamAssistantMessage'
-import { createAssistantContinueMessage } from './messages'
+import {
+  stablePrefixInputsEqual,
+  type ModelRequestStablePrefixCache,
+} from './stablePrefix'
+import { STEERING_INTERRUPT_DIAGNOSTIC, type BindModelStreamInterrupt } from './streamInterruption'
+import { splitSystemPromptLayout } from './systemPromptLayout'
+import { createAssistantContinueMessage, createAssistantRecoveryMessage } from './messages'
 import { executeToolCalls, failToolCalls, type ToolBatchResult } from './toolExecution'
+import type { SyntaxRepairRuntime } from './syntaxRepairModel'
 import type {
   AgentContext,
   AgentDelegationRequest,
@@ -108,6 +117,7 @@ export interface RunAgentLoopOptions {
   limits?: Partial<AgentLimits>
   toolExecution?: ToolExecutionMode
   getInitialMessages?: (runId: string) => Promise<AgentMessage[]>
+  getTurnBoundaryMessages?: (runId: string) => Promise<AgentMessage[]>
   getSteeringMessages?: (runId: string) => Promise<AgentMessage[]>
   getFollowUpMessages?: (runId: string) => Promise<AgentMessage[]>
   onUnconsumedMessages?: (messages: AgentMessage[]) => void | Promise<void>
@@ -124,6 +134,9 @@ export interface RunAgentLoopOptions {
     signal: AbortSignal,
   ) => void | Promise<void>
   providerLifecycle?: ModelTransportLifecycle
+  resolveSyntaxRepairRuntime?: () => SyntaxRepairRuntime | undefined
+  stablePrefixCache?: ModelRequestStablePrefixCache
+  bindModelStreamInterrupt?: BindModelStreamInterrupt
   beforeAgentStart?: BeforeAgentStart
   prepareNextTurn?: (
     snapshot: AgentTurnSnapshot,
@@ -249,6 +262,8 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
   let pendingTurnSavePoint: AgentTurnSavePoint | undefined
   let turnOpen = false
   let pendingMutationFlushFailed = false
+  let pendingStopCorrectionNotices: string[] = []
+  let stopRecoveryAttempts = 0
 
   const appendMessage = async (message: AgentMessage): Promise<void> => {
     const appended = snapshotAgentMessage(message)
@@ -276,6 +291,9 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
     journalEntryIds?: string[],
     targetTurn = turns,
   ): Promise<string | undefined> => {
+    const previousContext = context
+    const previousTransport = transport
+    const previousTemporarySystemPrompt = temporarySystemPrompt
     let candidateContext = snapshotContext(context)
     let candidateTransport = transport
     let candidateTemporarySystemPrompt = temporarySystemPrompt
@@ -411,9 +429,19 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
       throw new Error('Runtime mutation receipt 与提交 batch ownership 不一致')
     }
 
+    const stablePrefixChanged = !stablePrefixInputsEqual(
+      previousContext,
+      candidateContext,
+      previousTransport,
+      candidateTransport,
+    ) || splitSystemPromptLayout(previousTemporarySystemPrompt ?? previousContext.systemPrompt).stablePrefix
+      !== splitSystemPromptLayout(
+        candidateTemporarySystemPrompt ?? candidateContext.systemPrompt,
+      ).stablePrefix
     context = candidateContext
     transport = candidateTransport
     temporarySystemPrompt = candidateTemporarySystemPrompt
+    if (stablePrefixChanged) options.stablePrefixCache?.invalidate()
     newMessages.push(...snapshotAgentMessages(appendedMessages))
     await onCommitted?.()
     for (const event of mutationEvents) await emit(event)
@@ -524,8 +552,9 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
       const budgetNotices = buildBudgetNotices(turns, toolCalls, limits, budgetThresholds, tokenUsage)
       const budgetAwareSystemPrompt = appendBudgetNoticesToSystemPrompt(
         temporarySystemPrompt ?? context.systemPrompt,
-        budgetNotices,
+        [...budgetNotices, ...pendingStopCorrectionNotices],
       )
+      pendingStopCorrectionNotices = []
       const assistant = await streamAssistantMessage(
         context,
         runId,
@@ -541,6 +570,9 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
         options.onModelResponse,
         options.providerLifecycle,
         budgetAwareSystemPrompt,
+        options.stablePrefixCache,
+        temporarySystemPrompt ?? context.systemPrompt,
+        options.bindModelStreamInterrupt,
       )
       if (assistant.usage) {
         tokenUsage.inputTokens += assistant.usage.inputTokens
@@ -555,6 +587,11 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
       let toolResults: ToolResultMessage[] = []
       let allToolsTerminate = false
       const calls = assistant.toolCalls
+      const stopCorrection = classifyStopCorrection(
+        assistant,
+        activeToolsForContext(context).map((tool) => tool.name),
+      )
+      if (stopCorrection) pendingStopCorrectionNotices = [stopCorrectionNotice(stopCorrection)]
 
       if (assistant.stopReason !== 'error' && assistant.stopReason !== 'aborted' && calls.length > 0) {
         let batch: ToolBatchResult
@@ -584,6 +621,7 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
           toolCalls += calls.length
         } else {
           toolCalls += calls.length
+          const syntaxRepairRuntime = options.resolveSyntaxRepairRuntime?.()
           batch = await executeToolCalls(
             assistant,
             context,
@@ -599,6 +637,18 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
             // 不会无限挂起 run/abort/dispose（超时不置 controller.aborted，不误报 time_limit）。
             Math.max(0, limits.maxDurationMs - (Date.now() - runStartedAt)),
             options.runDelegate,
+            {
+              transport,
+              ...(options.providerLifecycle ? { lifecycle: options.providerLifecycle } : {}),
+              ...(syntaxRepairRuntime
+                ? {
+                    syntaxRepair: {
+                      ...syntaxRepairRuntime,
+                      lifecycle: syntaxRepairRuntime.lifecycle ?? options.providerLifecycle,
+                    },
+                  }
+                : {}),
+            },
           )
         }
         toolResults = batch.messages
@@ -668,10 +718,23 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
         break
       }
 
-      pendingMessages = snapshotAgentMessages((await options.getSteeringMessages?.(runId)) ?? [])
+      pendingMessages = snapshotAgentMessages(
+        (await options.getTurnBoundaryMessages?.(runId))
+        ?? (await options.getSteeringMessages?.(runId))
+        ?? [],
+      )
+      const steeringInterrupted = assistant.diagnostics?.some(
+        (diagnostic) => diagnostic.type === STEERING_INTERRUPT_DIAGNOSTIC,
+      ) === true
+      if (steeringInterrupted && pendingMessages.length === 0) {
+        pendingMessages = [createAssistantRecoveryMessage('steering_removed', assistant.id)]
+      }
+      if (pendingMessages.length > 0 && assistant.excludeFromModelContext === true) {
+        context.messages = context.messages.filter((message) => message.id !== assistant.id)
+      }
       // max_tokens 截断且本轮无工具调用：模型输出被 Provider 硬截断（长任务中常见），
       // 不能静默结束——需自动追加续写消息推进下一轮，避免用户手动输入"继续"。
-      // 用户主动排队的 steering/follow-up 始终优先于自动续写。
+      // 用户主动排队的 steering/aside/follow-up 始终优先于自动续写。
       const truncatedWithoutTools = assistant.stopReason === 'length' && calls.length === 0
       let shouldContinue = (calls.length > 0 && !allToolsTerminate) || pendingMessages.length > 0
 
@@ -689,6 +752,30 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
           context.messages = context.messages.filter((message) => message.id !== assistant.id)
         }
         pendingMessages = [createAssistantContinueMessage(assistant.id)]
+        shouldContinue = true
+      }
+      if (
+        !shouldContinue
+        && (
+          stopCorrection === 'empty_stop'
+          || stopCorrection === 'textual_tool_call'
+          || stopCorrection === 'planning_loop'
+        )
+      ) {
+        if (stopRecoveryAttempts >= 1) {
+          reason = 'error'
+          errorMessage = stopCorrection === 'empty_stop'
+            ? '模型连续返回空响应，已停止自动重试'
+            : stopCorrection === 'planning_loop'
+              ? '模型连续停留在重复规划阶段且未调用工具，已停止自动重试'
+              : '模型连续把工具调用输出为普通文本，已停止自动重试'
+          break
+        }
+        if (assistant.excludeFromModelContext === true) {
+          context.messages = context.messages.filter((message) => message.id !== assistant.id)
+        }
+        pendingMessages = [createAssistantRecoveryMessage(stopCorrection, assistant.id)]
+        stopRecoveryAttempts += 1
         shouldContinue = true
       }
       if (!shouldContinue) break

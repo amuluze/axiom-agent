@@ -35,10 +35,18 @@ export const TestStepApprovalList = ({ items, onRespond }: TestStepApprovalListP
               </div>
             </dl>
             <div className="testing-approval-actions">
-              <button type="button" onClick={() => onRespond(item.key, false)}>
+              <button
+                type="button"
+                className="testing-view__secondary"
+                onClick={() => onRespond(item.key, false)}
+              >
                 {t('testing.approval.deny')}
               </button>
-              <button type="button" onClick={() => onRespond(item.key, true)}>
+              <button
+                type="button"
+                className="testing-view__primary"
+                onClick={() => onRespond(item.key, true)}
+              >
                 {t('testing.approval.approve')}
               </button>
             </div>

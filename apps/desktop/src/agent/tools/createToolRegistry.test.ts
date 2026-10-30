@@ -49,9 +49,9 @@ describe('tool registry', () => {
     }
     // 契约版本各自独立（与 runtime-semantic-versions.json / toolNameMigrations 对齐）。
     const byName = new Map(reviewers.map((tool) => [tool.name, tool.runtimeVersion]))
-    expect(byName.get('inspect_subagent')).toBe('11')
-    expect(byName.get('examine_subagent')).toBe('11')
-    expect(byName.get('review_subagent')).toBe('13')
+    expect(byName.get('inspect_subagent')).toBe('17')
+    expect(byName.get('examine_subagent')).toBe('17')
+    expect(byName.get('review_subagent')).toBe('19')
   })
 
   it('explore_subagent 不要求审批、sequential、recoveryPolicy never，且不在默认激活集', () => {
@@ -60,7 +60,7 @@ describe('tool registry', () => {
     expect(explore.recoveryPolicy).toBe('never')
     expect(explore.requiresApproval).toBe(false)
     expect(explore.executionMode).toBe('sequential')
-    expect(explore.runtimeVersion).toBe('16')
+    expect(explore.runtimeVersion).toBe('22')
     // 首版 discover-gated：不加入 productToolRuntime 的 ALWAYS_ACTIVE_READ_TOOLS
     expect(createProductToolRuntime(['workspace:read', 'subagent:explore'], undefined).activeToolNames)
       .not.toContain('explore_subagent')
@@ -70,7 +70,7 @@ describe('tool registry', () => {
     const tools = createToolRegistry({ capabilities: ['workspace:read'] })
     const loadSkill = tools.find((tool) => tool.name === 'load_skill')!
     expect(loadSkill.recoveryPolicy).toBe('idempotent')
-    expect(loadSkill.runtimeVersion).toBe('6')
+    expect(loadSkill.runtimeVersion).toBe('12')
     expect(loadSkill.executionMode).not.toBe('sequential')
   })
 
@@ -87,7 +87,7 @@ describe('tool registry', () => {
       'design_import',
     ])
     expect(tools.every((tool) => tool.requiresApproval && tool.executionMode === 'sequential')).toBe(true)
-    expect(tools.map((tool) => tool.runtimeVersion)).toEqual(['12', '12', '10', '7', '9'])
+    expect(tools.map((tool) => tool.runtimeVersion)).toEqual(['12', '14', '12', '7', '9'])
   })
 
   it('registers command execution separately and always requires serial one-time approval', () => {
@@ -180,7 +180,7 @@ describe('tool registry', () => {
       expect(tool).toBeDefined()
       expect(tool?.requiresApproval).toBe(true)
       expect(tool?.executionMode).toBe('sequential')
-      expect(tool?.runtimeVersion).toBe('5')
+      expect(tool?.runtimeVersion).toBe('6')
       expect(typeof tool?.approvalPresentation).toBe('function')
       // 工具覆盖 GET…DELETE：POST/PUT/PATCH/DELETE 不允许自动重放（设计 §9.3），
       // 故整体取 never——never 工具不得声明幂等键（deferredTools 会直接拒绝）。

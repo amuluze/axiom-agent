@@ -5,7 +5,10 @@ import {
   appendBudgetNoticesToSystemPrompt,
   buildBudgetNotices,
   buildTurnSavePoint,
+  classifyStopCorrection,
+  stopCorrectionNotice,
 } from './turnHelpers'
+import { PLANNING_GUARD_DIAGNOSTIC } from './planningGuard'
 
 const limits: AgentLimits = DEFAULT_AGENT_LIMITS
 const thresholds = computeBudgetThresholds(limits)
@@ -99,6 +102,50 @@ describe('appendBudgetNoticesToSystemPrompt', () => {
 
   it('returns the prompt unchanged when there are no notices', () => {
     expect(appendBudgetNoticesToSystemPrompt('base', [])).toBe('base')
+  })
+})
+
+describe('stop correction', () => {
+  const assistant = (content: string, stopReason: 'stop' | 'length' = 'stop') => ({
+    id: 'a1',
+    role: 'assistant' as const,
+    content,
+    toolCalls: [],
+    stopReason,
+    createdAt: 1,
+  })
+
+  it('classifies empty and length-truncated responses', () => {
+    expect(classifyStopCorrection(assistant(''), [])).toBe('empty_stop')
+    expect(classifyStopCorrection(assistant('partial', 'length'), [])).toBe('length_without_tools')
+  })
+
+  it('only classifies textual calls for an active tool with an explicit wrapper', () => {
+    expect(classifyStopCorrection(
+      assistant('<tool_call>{"name":"echo","arguments":{"value":"x"}}</tool_call>'),
+      ['echo'],
+    )).toBe('textual_tool_call')
+    expect(classifyStopCorrection(
+      assistant('示例：{"name":"echo","arguments":{}}'),
+      ['echo'],
+    )).toBeUndefined()
+    expect(classifyStopCorrection(
+      assistant('<tool_call>{"name":"unknown","arguments":{}}</tool_call>'),
+      ['echo'],
+    )).toBeUndefined()
+  })
+
+  it('provides a targeted notice for each correction kind', () => {
+    expect(stopCorrectionNotice('length_with_tools')).toContain('参数可能不完整')
+    expect(stopCorrectionNotice('textual_tool_call')).toContain('原生调用协议')
+    expect(stopCorrectionNotice('planning_loop')).toContain('重复规划')
+  })
+
+  it('classifies a planning guard interruption from its durable diagnostic', () => {
+    expect(classifyStopCorrection({
+      ...assistant('partial planning'),
+      diagnostics: [{ type: PLANNING_GUARD_DIAGNOSTIC, timestamp: 1 }],
+    }, ['read'])).toBe('planning_loop')
   })
 })
 

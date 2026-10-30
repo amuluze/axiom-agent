@@ -15,7 +15,14 @@ import type {
 
 export const BRANCH_SUMMARY_CUSTOM_TYPE = 'branch-summary'
 export const ASSISTANT_CONTINUE_CUSTOM_TYPE = 'assistant-continue'
+export const ASSISTANT_RECOVERY_CUSTOM_TYPE = 'assistant-recovery'
 export const TURN_ABORTED_CUSTOM_TYPE = 'turn-aborted'
+
+export type AssistantRecoveryReason =
+  | 'empty_stop'
+  | 'textual_tool_call'
+  | 'planning_loop'
+  | 'steering_removed'
 
 const textProjection = (blocks: Array<TextContentBlock | { type: string }>): string =>
   blocks.flatMap((block) => block.type === 'text' ? [(block as TextContentBlock).text] : []).join('')
@@ -164,7 +171,10 @@ export const convertBuiltInCustomMessage = (
       createdAt: message.createdAt,
     }
   }
-  if (message.customType === ASSISTANT_CONTINUE_CUSTOM_TYPE) {
+  if (
+    message.customType === ASSISTANT_CONTINUE_CUSTOM_TYPE
+    || message.customType === ASSISTANT_RECOVERY_CUSTOM_TYPE
+  ) {
     return {
       id: message.id,
       role: 'user',
@@ -198,6 +208,25 @@ export const createAssistantContinueMessage = (
   customType: ASSISTANT_CONTINUE_CUSTOM_TYPE,
   content: '你的上一次回复因输出长度达到上限而被截断。请从未完成处继续输出剩余内容；若上次回复已逻辑完整，请直接说明任务已完成。',
   ...(truncatedMessageId ? { data: { truncatedMessageId } } : {}),
+  createdAt: now,
+})
+
+export const createAssistantRecoveryMessage = (
+  reason: AssistantRecoveryReason,
+  priorMessageId?: string,
+  now = Date.now(),
+): Extract<AgentMessage, { role: 'custom' }> => ({
+  id: createId('message'),
+  role: 'custom',
+  customType: ASSISTANT_RECOVERY_CUSTOM_TYPE,
+  content: reason === 'empty_stop'
+    ? '你刚才在没有给出任何可见内容或工具调用的情况下结束了响应。请重新完成当前任务；需要工具时必须使用原生工具调用，否则直接给出完整答复。'
+    : reason === 'planning_loop'
+      ? '你刚才长时间重复规划但没有执行工具，运行时已提前中止该响应。不要复述计划：需要证据时立即发出原生工具调用；已有信息足够时直接给出结论。'
+      : reason === 'steering_removed'
+        ? '上一轮模型流因收到引导消息而提前中止，但该引导消息随后被移除。请继续完成原任务，不要假设上一轮未完成的输出已经生效。'
+        : '你刚才把工具调用写进了普通文本，但它没有被执行。请重新处理当前任务：需要工具时使用已注册工具的原生调用协议，不要输出伪造的工具调用文本。',
+  ...(priorMessageId ? { data: { priorMessageId, reason } } : { data: { reason } }),
   createdAt: now,
 })
 

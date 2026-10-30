@@ -225,10 +225,10 @@ describe('startUiTestRun', () => {
         environmentNames: [],
         cases: [{
           id: 'orders',
-          name: '读取订单',
+          name: '等待订单入账',
           steps: [{
-            id: 'load-orders',
-            action: 'api.request',
+            id: 'poll-orders',
+            action: 'api.poll',
             method: 'GET',
             url: 'https://api.example.test/orders',
             expect: [{ status: 200 }],
@@ -240,7 +240,7 @@ describe('startUiTestRun', () => {
       environmentId: 'staging',
     })
     await vi.waitFor(() => expect(approver.list()).toHaveLength(1))
-    approver.respond('run-api-1:load-orders', true)
+    approver.respond('run-api-1:poll-orders', true)
     await expect(pending).resolves.toMatchObject({ status: 'passed' })
     expect(mocks.calls.some((call) => call.command === 'issue_test_target_grant')).toBe(false)
     expect(mocks.calls.some((call) => call.command === 'revoke_test_target_grant')).toBe(false)

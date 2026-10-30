@@ -77,12 +77,14 @@ export const SpecCaseTableRow = ({ row, status }: { row: SpecCaseRow; status: Te
             : t('testing.cases.stepCount', { count: row.stepCount })}
         </span>
       </span>
+      {/* 表头右侧是「判定」：状态胶囊必须落在最右列，类型标签前移——
+          旧顺序（胶囊 → 类型）让「判定」标题压在「API」上。 */}
+      <span className="testing-view__row-type">
+        {t(`testing.cases.caseType.${row.type}`)}
+      </span>
       {status
         ? <StatusPill status={status} />
         : <span className="testing-view__pill testing-view__pill--idle">{t('testing.cases.notRun')}</span>}
-      <span className="testing-view__row-duration">
-        {t(`testing.cases.caseType.${row.type}`)}
-      </span>
     </li>
   )
 }

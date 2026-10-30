@@ -4,12 +4,15 @@ import type {
   AgentEvent,
   AgentEventSink,
   AgentMessage,
+  AgentTool,
   ModelRequest,
   ModelStreamEvent,
   ModelTransport,
 } from './types'
 import { streamAssistantMessage } from './streamAssistantMessage'
 import { UNSUPPORTED_IMAGE_NOTE } from './stripUnsupportedImages'
+import { PLANNING_GUARD_DIAGNOSTIC } from './planningGuard'
+import { STEERING_INTERRUPT_DIAGNOSTIC } from './streamInterruption'
 
 class ScriptedTransport implements ModelTransport {
   readonly requests: ModelRequest[] = []
@@ -34,6 +37,16 @@ const makeContext = (): AgentContext => ({
   messages: [],
   tools: [],
 })
+
+const planningTool: AgentTool = {
+  name: 'read',
+  label: 'Read',
+  description: 'Read a file',
+  runtimeVersion: '1',
+  inputSchema: { type: 'object' },
+  validate: (input) => ({ ok: true, value: input }),
+  execute: async () => ({ content: 'unused' }),
+}
 
 const sink = (): { emit: AgentEventSink; events: AgentEvent[] } => {
   const events: AgentEvent[] = []
@@ -111,6 +124,29 @@ describe('streamAssistantMessage', () => {
     expect(message.stopReason).toBe('tool_use')
   })
 
+  it('reissues missing and duplicate provider tool call ids', async () => {
+    const transport = new ScriptedTransport([[
+      { type: 'tool_call_start', index: 0, id: 'duplicate', name: 'echo' },
+      { type: 'tool_call_delta', index: 0, argumentsDelta: '{}' },
+      { type: 'tool_call_end', index: 0 },
+      { type: 'tool_call_start', index: 1, id: 'duplicate', name: 'echo' },
+      { type: 'tool_call_delta', index: 1, argumentsDelta: '{}' },
+      { type: 'tool_call_end', index: 1 },
+      { type: 'tool_call_start', index: 2, id: '', name: 'echo' },
+      { type: 'tool_call_delta', index: 2, argumentsDelta: '{}' },
+      { type: 'tool_call_end', index: 2 },
+      { type: 'done', stopReason: 'tool_use' },
+    ]])
+    const { events } = sink()
+
+    const message = await run(transport, events)
+    const ids = message.toolCalls.map((call) => call.id)
+
+    expect(ids[0]).toBe('duplicate')
+    expect(new Set(ids).size).toBe(3)
+    expect(ids.every((id) => id.length > 0)).toBe(true)
+  })
+
   it('promotes content truncation to the length stopReason', async () => {
     const longContent = 'a'.repeat(100)
     const transport = new ScriptedTransport([textScript(longContent)])
@@ -159,6 +195,108 @@ describe('streamAssistantMessage', () => {
 
     expect(message.content).toBe('')
     expect(message.excludeFromModelContext).toBe(true)
+  })
+
+  it('interrupts repeated planning before the provider finishes the stream', async () => {
+    const repeated = '我需要先检查相关文件，然后再决定下一步。'.repeat(4)
+    const script: ModelStreamEvent[] = [
+      { type: 'start' },
+      ...Array.from({ length: 100 }, () => ({
+        type: 'thinking_delta' as const,
+        contentIndex: 0,
+        delta: repeated,
+      })),
+      { type: 'text_delta', contentIndex: 1, delta: '不应到达' },
+      { type: 'done', stopReason: 'stop' },
+    ]
+    const transport = new ScriptedTransport([script])
+    const { events } = sink()
+    const message = await streamAssistantMessage(
+      { ...makeContext(), tools: [planningTool] },
+      'r',
+      transport,
+      new AbortController().signal,
+      (event) => { events.push(event) },
+      64 * 1024,
+    )
+
+    expect(message.excludeFromModelContext).toBe(true)
+    expect(message.content).not.toContain('不应到达')
+    expect(message.diagnostics).toContainEqual(expect.objectContaining({
+      type: PLANNING_GUARD_DIAGNOSTIC,
+    }))
+  })
+
+  it('discards an incomplete tool call when steering interrupts its argument stream', async () => {
+    let notifyToolCallStarted!: () => void
+    const toolCallStarted = new Promise<void>((resolve) => { notifyToolCallStarted = resolve })
+    let interrupt!: () => void
+    class InterruptibleToolCallTransport implements ModelTransport {
+      async *stream(_request: ModelRequest, signal: AbortSignal): AsyncIterable<ModelStreamEvent> {
+        yield { type: 'start' }
+        yield { type: 'tool_call_start', index: 0, id: 'partial-call', name: 'read' }
+        yield { type: 'tool_call_delta', index: 0, argumentsDelta: '{"path":' }
+        notifyToolCallStarted()
+        await new Promise<never>((_resolve, reject) => {
+          const abort = (): void => reject(new DOMException('Aborted', 'AbortError'))
+          signal.addEventListener('abort', abort, { once: true })
+          if (signal.aborted) abort()
+        })
+      }
+    }
+    const messagePromise = streamAssistantMessage(
+      { ...makeContext(), tools: [planningTool] },
+      'r',
+      new InterruptibleToolCallTransport(),
+      new AbortController().signal,
+      () => {},
+      64 * 1024,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      (candidate) => { interrupt = candidate },
+    )
+    await toolCallStarted
+    interrupt()
+    const message = await messagePromise
+
+    expect(message.stopReason).toBe('stop')
+    expect(message.excludeFromModelContext).toBe(true)
+    expect(message.toolCalls).toEqual([])
+    expect(message.contentBlocks?.some((block) => block.type === 'tool_call')).toBe(false)
+    expect(message.diagnostics).toContainEqual(expect.objectContaining({
+      type: STEERING_INTERRUPT_DIAGNOSTIC,
+    }))
+  })
+
+  it('does not classify planning text after a native tool call as a no-tool planning loop', async () => {
+    const transport = new ScriptedTransport([[
+      { type: 'tool_call_start', index: 0, id: 'call-1', name: 'read' },
+      { type: 'tool_call_delta', index: 0, argumentsDelta: '{"path":"README.md"}' },
+      { type: 'tool_call_end', index: 0 },
+      { type: 'text_delta', delta: '我需要先检查相关文件，然后再决定下一步。'.repeat(1_000) },
+      { type: 'done', stopReason: 'tool_use' },
+    ]])
+    const message = await streamAssistantMessage(
+      { ...makeContext(), tools: [planningTool] },
+      'r',
+      transport,
+      new AbortController().signal,
+      () => {},
+      64 * 1024,
+    )
+
+    expect(message.toolCalls).toHaveLength(1)
+    expect(message.diagnostics?.some((diagnostic) => (
+      diagnostic.type === PLANNING_GUARD_DIAGNOSTIC
+    )) ?? false).toBe(false)
   })
 
   it('forwards thinking deltas and signature out of the visible content budget', async () => {

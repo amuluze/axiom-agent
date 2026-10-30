@@ -63,6 +63,7 @@ class LifecycleTransport implements ModelTransport {
     })
     await lifecycle?.afterResponse?.({ ...identity, status: 200 })
     yield { type: 'start' }
+    yield { type: 'text_delta', delta: 'done' }
     yield { type: 'done', stopReason: 'stop' }
   }
 }
@@ -73,6 +74,7 @@ class RecordingTransport implements ModelTransport {
   async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
     this.requests.push(structuredClone(request))
     yield { type: 'start' }
+    yield { type: 'text_delta', delta: 'done' }
     yield { type: 'done', stopReason: 'stop' }
   }
 }

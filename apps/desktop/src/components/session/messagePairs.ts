@@ -1,4 +1,5 @@
 import type { AgentMessage, AssistantMessage, ToolResultMessage } from '@/agent/core/types'
+import type { ContextCheckpoint } from '@/agent/context/types'
 import { assistantContentBlocks, assistantToolCalls, ASSISTANT_CONTINUE_CUSTOM_TYPE } from '@/agent/core/messages'
 
 export type SessionBlock =
@@ -7,6 +8,7 @@ export type SessionBlock =
   | { type: 'tool'; key: string; toolCallId: string; toolName: string; call?: AssistantMessage; result?: ToolResultMessage }
   | { type: 'result-chip'; key: string; message: AssistantMessage }
   | { type: 'error-card'; key: string; message: AssistantMessage; error: string }
+  | { type: 'compaction-divider'; key: string; checkpoint: ContextCheckpoint }
 
 const toolCallIdsOfAssistant = (message: AssistantMessage): string[] => {
   const ids: string[] = []
@@ -39,21 +41,34 @@ const mergeContinuedAssistant = (
   ],
 })
 
-export const buildSessionBlocks = (messages: AgentMessage[]): SessionBlock[] => {
+export const buildSessionBlocks = (
+  messages: AgentMessage[],
+  checkpoint?: ContextCheckpoint | null,
+): SessionBlock[] => {
   const blocks: SessionBlock[] = []
   const toolBlocks = new Map<string, Extract<SessionBlock, { type: 'tool' }>>()
   // 自动续写连接符：assistant-continue custom 消息后的有文本 assistant 与前一
   // assistant-text 块合并，避免截断段与续写段在界面上割裂为两条。
   let continuePending = false
+  const appendCompactionDivider = (message: AgentMessage): void => {
+    if (checkpoint?.throughMessageId !== message.id) return
+    blocks.push({
+      type: 'compaction-divider',
+      key: `compaction-${checkpoint.id}`,
+      checkpoint,
+    })
+  }
   for (const message of messages) {
     if (message.role === 'custom') {
       if (message.customType === ASSISTANT_CONTINUE_CUSTOM_TYPE) continuePending = true
+      appendCompactionDivider(message)
       continue
     }
     if (message.role === 'user') {
       // 用户消息是硬边界：续写连接符不跨用户消息生效
       continuePending = false
       blocks.push({ type: 'user', key: `user-${message.id}`, message })
+      appendCompactionDivider(message)
       continue
     }
     if (message.role === 'assistant') {
@@ -96,6 +111,7 @@ export const buildSessionBlocks = (messages: AgentMessage[]): SessionBlock[] => 
           error: message.errorMessage ?? '运行失败',
         })
       }
+      appendCompactionDivider(message)
       continue
     }
     if (message.role === 'tool') {
@@ -115,6 +131,7 @@ export const buildSessionBlocks = (messages: AgentMessage[]): SessionBlock[] => 
         toolBlocks.set(id, block)
         blocks.push(block)
       }
+      appendCompactionDivider(message)
     }
   }
   return blocks

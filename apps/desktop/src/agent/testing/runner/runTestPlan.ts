@@ -1,5 +1,14 @@
 import { materializeTestStepVariables, type CompiledTestPlan } from '../spec/compileTestPlan'
-import type { ApiStepSpec, ExtractedTestValue, TestPointSpec, TestStepSpec, TestValue, UiStepSpec } from '../spec/types'
+import type {
+  ApiDelayStepSpec,
+  ApiDriverStep,
+  ExtractedTestValue,
+  TestPointSpec,
+  TestStepSpec,
+  TestValue,
+  UiStepSpec,
+} from '../spec/types'
+import { isApiDriverStep } from '../spec/stepActions'
 import {
   aggregateStatus,
   failureOriginForOutcome,
@@ -27,6 +36,11 @@ export interface StepExecutionContext {
   signal: AbortSignal
   /** 前序敏感提取值：API 驱动将它们用于证据脱敏；UI 驱动忽略。 */
   sensitiveValues?: readonly string[]
+  /**
+   * v6：本步骤敏感头引用的运行时凭据取值（变量名 → 字符串值）。只有被步骤显式引用
+   * （`{ variable }`）的敏感变量才会出现在这里，避免把整张变量表送进宿主请求。
+   */
+  credentialVariables?: Readonly<Record<string, string>>
   markWaitingApproval: () => void
   markRunning: () => void
 }
@@ -36,7 +50,31 @@ export interface UiTestDriver {
 }
 
 export interface ApiTestDriver {
-  runStep: (step: ApiStepSpec, context: StepExecutionContext) => Promise<StepOutcome>
+  /** `api.request` 与 `api.poll` 都由宿主执行（poll 的轮询循环在 Rust 命令内部）。 */
+  runStep: (step: ApiDriverStep, context: StepExecutionContext) => Promise<StepOutcome>
+}
+
+/**
+ * `api.delay`：Runner 本地等待——无网络副作用、不消耗审批，可被停止打断。
+ * 时序类用例（如同秒签发与撤销的令牌窗口）需要它跨过秒边界，固定 sleep 写进用例
+ * 比藏在执行器里更诚实。
+ */
+const runDelayStep = async (step: ApiDelayStepSpec, signal: AbortSignal): Promise<StepOutcome> => {
+  if (signal.aborted) return { verdict: 'canceled', message: '运行已停止' }
+  await new Promise<void>((resolve) => {
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      resolve()
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, step.durationMs)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+  return signal.aborted
+    ? { verdict: 'canceled', message: '运行已停止' }
+    : { verdict: 'passed', message: `等待 ${step.durationMs} ms` }
 }
 
 export interface StepReport {
@@ -75,6 +113,8 @@ export interface TestPlanExecution {
   name: string
   scope: TestExecutionScope
   steps: readonly TestStepSpec[]
+  /** v5：数据驱动 case 的输入行（case 变量表在开始时预置；beforeEach/afterEach 同见）。 */
+  seeds?: Readonly<Record<string, TestValue>>
 }
 
 export interface TestRunReport {
@@ -107,6 +147,27 @@ export interface RunTestPlanOptions {
   onStepStatusChange?: (change: StepStatusChange) => void
 }
 
+const stringifyCredential = (value: TestValue | undefined): string =>
+  value === null || value === undefined ? String(value) : String(value)
+
+/** v6：把步骤里 `{ variable }` 引用的敏感变量解析成宿主注入用的值表（仅这些变量）。 */
+const credentialVariablesFor = (
+  step: TestStepSpec,
+  variables: Readonly<Record<string, TestValue>>,
+): Record<string, string> | undefined => {
+  if (!isApiDriverStep(step)) return undefined
+  const resolved: Record<string, string> = {}
+  for (const value of Object.values(step.headers ?? {})) {
+    if (typeof value === 'object' && 'variable' in value) {
+      if (!Object.hasOwn(variables, value.variable)) {
+        throw new Error(`运行时凭据变量「${value.variable}」未产出`)
+      }
+      resolved[value.variable] = stringifyCredential(variables[value.variable])
+    }
+  }
+  return Object.keys(resolved).length > 0 ? resolved : undefined
+}
+
 const UNEXPECTED_DRIVER_MESSAGE = '驱动执行异常，详情已省略以避免泄漏敏感信息'
 const INVALID_EXTRACTION_MESSAGE = '驱动返回的变量提取结果与测试计划不一致'
 
@@ -124,7 +185,13 @@ export const testPlanExecutions = (plan: CompiledTestPlan): TestPlanExecution[] 
         steps: plan.hooks.beforeEach,
       })
     }
-    executions.push({ id: testCase.id, name: testCase.name, scope: { kind: 'case' }, steps: testCase.steps })
+    executions.push({
+      id: testCase.id,
+      name: testCase.name,
+      scope: { kind: 'case' },
+      steps: testCase.steps,
+      ...(testCase.seeds ? { seeds: testCase.seeds } : {}),
+    })
     if (plan.hooks?.afterEach) {
       executions.push({
         id: `$afterEach:${testCase.id}`,
@@ -234,14 +301,25 @@ export const runTestPlan = async (options: RunTestPlanOptions): Promise<TestRunR
         continue
       }
 
+      // v7 条件执行：守卫变量不存在（资源从未创建）时整步跳过，不产生失败。
+      const guard = 'whenProduced' in sourceStep ? sourceStep.whenProduced : undefined
+      if (guard !== undefined && !Object.hasOwn(variables, guard)) {
+        setStepStatus(caseIndex, stepIndex, 'skipped', `条件未满足：变量「${guard}」未产出`)
+        continue
+      }
       setStepStatus(caseIndex, stepIndex, 'running')
-      const stepContext = context(caseIndex, stepIndex)
       let outcome: StepOutcome
       try {
         const step = materializeTestStepVariables(sourceStep, variables, plan.target)
-        outcome = step.action === 'api.request'
+        const credentialVariables = credentialVariablesFor(step, variables)
+        const stepContext = credentialVariables
+          ? { ...context(caseIndex, stepIndex), credentialVariables }
+          : context(caseIndex, stepIndex)
+        outcome = isApiDriverStep(step)
           ? await api.runStep(step, stepContext)
-          : await ui.runStep(step, stepContext)
+          : step.action === 'api.delay'
+            ? await runDelayStep(step, signal)
+            : await ui.runStep(step, stepContext)
       } catch {
         outcome = signal.aborted
           ? { verdict: 'canceled', message: '运行已停止' }
@@ -303,6 +381,9 @@ export const runTestPlan = async (options: RunTestPlanOptions): Promise<TestRunR
     return result
   }
 
+  const caseSeeds = new Map(
+    plan.cases.flatMap((testCase) => (testCase.seeds ? [[testCase.id, testCase.seeds] as const] : [])),
+  )
   const suiteVariables: Record<string, TestValue> = {}
   let stopped = false
   let canceled = signal.aborted
@@ -323,7 +404,10 @@ export const runTestPlan = async (options: RunTestPlanOptions): Promise<TestRunR
       continue
     }
 
-    const caseVariables = { ...suiteVariables }
+    const caseVariables: Record<string, TestValue> = {
+      ...suiteVariables,
+      ...(caseSeeds.get(testCase.id) ?? {}),
+    }
     let caseResult: 'passed' | 'failure' | 'canceled' = 'passed'
     if (plan.hooks?.beforeEach) caseResult = await execute(beforeEachId, caseVariables)
     if (caseResult === 'passed') caseResult = await execute(testCase.id, caseVariables)

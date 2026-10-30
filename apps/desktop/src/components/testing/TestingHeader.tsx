@@ -1,4 +1,4 @@
-import { AlertCircle, RefreshCw } from 'lucide-react'
+import { AlertCircle, AppWindow, ChevronDown, RefreshCw } from 'lucide-react'
 import type { BrowserTabInfo } from '@/platform/browserSession'
 import type { TestEnvironmentRecord } from '@/platform/testEnvironments'
 import type { TestSpecIndexEntry } from '@/stores/services/testSpecIndex'
@@ -148,9 +148,15 @@ export const TestingEnvironmentBar = ({
         onClick={onToggleEnvPanel}
       >
         {t('testing.environment.title')} · {selectedEnvironment?.name ?? t('testing.environment.none')}
+        <ChevronDown
+          size={12}
+          aria-hidden="true"
+          className={`testing-view__envbar-chevron${envPanelOpen ? ' is-open' : ''}`}
+        />
       </button>
-      <label className="testing-view__envbar-item">
+      <label className="testing-view__envbar-item testing-view__envbar-control">
         <span className="testing-view__visually-hidden">{t('testing.run.tab')}</span>
+        <AppWindow size={12} aria-hidden="true" className="testing-view__envbar-control-icon" />
         <select
           aria-label={t('testing.run.tab')}
           value={selectedTabId ?? ''}

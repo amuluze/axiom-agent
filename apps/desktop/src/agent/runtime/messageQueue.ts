@@ -5,7 +5,7 @@ const clampIndex = (index: number, length: number): number =>
   Math.max(0, Math.min(Number.isFinite(index) ? Math.trunc(index) : 0, length))
 
 /**
- * 会话运行期的消息队列：steering / follow-up 按队列模式逐条或全量出队，
+ * 会话运行期的消息队列：steering / aside / follow-up 按队列模式逐条或全量出队，
  * next-turn 队列始终整批消费。从 AgentSession 抽出以隔离队列语义。
  */
 export class MessageQueue {

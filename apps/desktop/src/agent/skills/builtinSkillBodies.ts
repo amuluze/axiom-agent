@@ -62,7 +62,7 @@ import type { BuiltinSkillOverrideEntry } from '@/config/builtinPromptOverrides'
  * 并明确 pattern 目录属于 Axiom 应用源码、在用户项目里不可读属正常——否则完整度清单的
  * 「重复结构优先用 pattern」在最需要它的地方（新项目）无路可走。
  */
-export const BUILTIN_SKILL_BODIES_VERSION = 34
+export const BUILTIN_SKILL_BODIES_VERSION = 40
 
 export type BuiltinPromptLanguage = ResolvedLanguage
 
@@ -751,16 +751,22 @@ The canvas render matches the user's intent with no new parse diagnostics; all m
 
 完整字段与拒绝面见 docs/ui-api-automation-usage.md（位于 Axiom 项目内）；新项目读不到它时以本节字段集 + 解析器报错（JSON path + 原因）为准，不要凭印象写字段。
 
-- 顶层：kind:"axiom.test"、version:3、id、name、target{}、testPoints[]（必填、至少一个）、cases[]、可选 hooks{beforeAll,beforeEach,afterEach,afterAll}（每条都是普通步骤）。
+- 顶层：kind:"axiom.test"、version:9、id、name、target{}、testPoints[]（必填、至少一个）、cases[]、可选 hooks{beforeAll,beforeEach,afterEach,afterAll}（每条都是普通步骤）。
 - target：webBaseUrl / apiBaseUrl（\${env.WEB_BASE_URL} / \${env.API_BASE_URL}，也接受 / 开头站内相对路径）、viewport{width,height}。
 - testPoints[]：id / kind（new_feature | regression）/ title / acceptance。
-- cases[]：id / name / verifies[]（指本文件 testPoints 的 id）/ steps[]。
+- cases[]：id / name / verifies[]（指本文件 testPoints 的 id）/ steps[] / 可选 inputs[]（v5 数据行）。
+- 数据行（v5）：cases[].inputs 是标量对象数组；同一用例按行展开（id 追加 -v1/-v2，name 追加行号），步骤里用 \${vars.行键} 引用行值；所有行必须共享同一组键，行值内只允许 \${env.*} / \${run.*}。
+- 运行时凭据（v6）：敏感头的 {variable:"token", prefix:"Bearer "} 只接受同 case（或 beforeAll）内 extract 的 sensitive:true 变量；值不写进文件，宿主注入并按凭据脱敏，目标仍受环境同源/secretOrigins 边界约束。
+- fixture 文件（v9）：JSON 请求体里的 {"file":"tests/fixtures/x.pem"} 由宿主在运行准备期读取工作区文件并替换为内容（只允许 tests/fixtures/ 相对路径；证书/密钥等文本夹具用，单次运行 ≤16 个 / ≤128 KiB）。
+- 条件清理（v7）：步骤可加 whenProduced:"变量名"——运行时该变量未产出则整步记 skipped（共享 afterEach 引用只有部分 case 产出的变量时用）；清理删除配 expect:[{statusIn:[200,404]}] 容忍已删除。
 - UI 动作：ui.navigate(url) / ui.click(locator) / ui.input(locator,value) / ui.select(locator,value) / ui.press(key) / ui.wait(expect,可选 locator/timeoutMs/extract) / ui.assert(expect,可选 locator/extract) / ui.screenshot(可选 name)。
 - locator：{testId} 优先，其次 {role,name,exact?}。
 - UiExpectation：exists / visible / enabled / textEquals / textContains / valueEquals / urlEquals / urlContains / count。
-- API 步骤 api.request：method / url / query / headers（值可为 {secretId:"apitest.xxx"}；authorization / cookie / x-api-key 等敏感头必须用引用）/ body + bodyMode(json|text|form，仅 POST/PUT/PATCH/DELETE) / redirect(manual|same-origin) / expect[] / extract。
-- ApiExpectation：status / headerEquals / headerContains / bodyContains / jsonPointerExists / jsonPointerEquals / maxElapsedMs。
-- 占位符：\${env.NAME}（仅 WEB_BASE_URL / API_BASE_URL）、\${vars.name}（前序 extract 产生）、\${run.id} / \${run.slug}（唯一测试数据标记）。
+- API 步骤 api.request：method / url / query / headers（值可为 {secretId:"apitest.xxx"}，或 v6 的 {variable:"token", prefix:"Bearer "} 引用同 case 内 sensitive 抽取——登录令牌直接用于敏感头；authorization / cookie / x-api-key 等敏感头只能用这两种引用）/ body + bodyMode(json|text|form，仅 POST/PUT/PATCH/DELETE) / redirect(manual|same-origin) / virtualHost(host[:port]，按 Host 路由的反代目标；不改网络目的地) / expect[] / extract。
+- 轮询 api.poll：method(GET|HEAD) / url / query / headers / virtualHost / redirect / expect[]（必填）/ intervalMs(500–30000) / timeoutMs(≤120000，整体窗口) / extract（仅在通过的那次尝试上提取）——等待配置下发、路由重建等最终一致窗口，别用固定 sleep 猜。
+- 小睡 api.delay：durationMs(1–30000)；无副作用、不消耗审批，用于跨秒级时序边界。
+- ApiExpectation：status / statusIn（多状态任一命中，v7）/ headerEquals / headerContains / headerExists / headerAbsent / bodyContains / bodyNotContains（正文不得包含，v8）/ jsonPointerExists / jsonPointerEquals / jsonPointerLengthEquals（数组长度）/ jsonPointerNumberAtLeast / jsonPointerNumberAtMost / maxElapsedMs。
+- 占位符：\${env.NAME}（WEB_BASE_URL / API_BASE_URL，以及环境档声明的自定义大写变量）、\${vars.name}（前序 extract 产生）、\${run.id} / \${run.slug}（唯一测试数据标记）。
 - 禁止字段：tabId、AX ref、截图像素、宿主绝对路径、Secret 明文、JS/shell 表达式、运行期 Artifact 路径——解析器 fail-closed 拒绝。
 
 # 执行步骤
@@ -827,15 +833,17 @@ When the user asks, in the testing page session, to write or extend cases for a 
 
 The full protocol lives in docs/ui-api-automation-usage.md (inside the Axiom repo). When a new project lacks it, rely on the field set below plus the parser's needs-repair reasons (JSON path + cause) — never invent field names.
 
-- Top level: kind:"axiom.test", version:3, id, name, target{}, testPoints[] (required, at least one), cases[], optional hooks{beforeAll,beforeEach,afterEach,afterAll} (each entry is an ordinary step).
+- Top level: kind:"axiom.test", version:9, id, name, target{}, testPoints[] (required, at least one), cases[], optional hooks{beforeAll,beforeEach,afterEach,afterAll} (each entry is an ordinary step).
 - target: webBaseUrl / apiBaseUrl (\${env.WEB_BASE_URL} / \${env.API_BASE_URL}, also site-relative paths starting with /), viewport{width,height}.
 - testPoints[]: id / kind (new_feature | regression) / title / acceptance.
 - cases[]: id / name / verifies[] (ids from this file's testPoints) / steps[].
 - UI actions: ui.navigate(url) / ui.click(locator) / ui.input(locator,value) / ui.select(locator,value) / ui.press(key) / ui.wait(expect, optional locator/timeoutMs/extract) / ui.assert(expect, optional locator/extract) / ui.screenshot(optional name).
 - locator: {testId} first, then {role,name,exact?}.
 - UiExpectation: exists / visible / enabled / textEquals / textContains / valueEquals / urlEquals / urlContains / count.
-- API step api.request: method / url / query / headers (values may be {secretId:"apitest.xxx"}; sensitive headers such as authorization / cookie / x-api-key must use a reference) / body + bodyMode (json|text|form, POST/PUT/PATCH/DELETE only) / redirect (manual|same-origin) / expect[] / extract.
-- ApiExpectation: status / headerEquals / headerContains / bodyContains / jsonPointerExists / jsonPointerEquals / maxElapsedMs.
+- API step api.request: method / url / query / headers (values may be {secretId:"apitest.xxx"}, or v6 {variable:"token", prefix:"Bearer "} referencing a sensitive extraction in the same case — login tokens go straight into sensitive headers; sensitive headers such as authorization / cookie / x-api-key accept only these references) / body + bodyMode (json|text|form, POST/PUT/PATCH/DELETE only) / redirect (manual|same-origin) / virtualHost (host[:port] for Host-routed reverse proxies; the network destination is unchanged) / expect[] / extract.
+- Poll step api.poll: method (GET|HEAD) / url / query / headers / virtualHost / redirect / expect[] (required) / intervalMs (500–30000) / timeoutMs (<=120000 overall window) / extract (only on the attempt that passes) — wait for eventual consistency (config push, route rebuild) instead of guessing with fixed sleeps.
+- Delay step api.delay: durationMs (1–30000); no side effects, no approval, for crossing second-level timing boundaries.
+- ApiExpectation: status / statusIn (any listed code matches, v7) / headerEquals / headerContains / headerExists / headerAbsent / bodyContains / bodyNotContains (text must be absent, v8) / jsonPointerExists / jsonPointerEquals / jsonPointerLengthEquals (array length) / jsonPointerNumberAtLeast / jsonPointerNumberAtMost / maxElapsedMs.
 - Placeholders: \${env.NAME} (WEB_BASE_URL / API_BASE_URL only), \${vars.name} (from an earlier extract), \${run.id} / \${run.slug} (unique test-data markers).
 - Forbidden fields: tabId, AX ref, screenshot pixels, host absolute paths, plaintext secrets, JS/shell expressions, runtime Artifact paths — the parser rejects them fail-closed.
 

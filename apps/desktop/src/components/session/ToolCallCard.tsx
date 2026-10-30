@@ -145,6 +145,11 @@ const readNumbers = (details: unknown): DetailNumbers => {
   return details as DetailNumbers
 }
 
+const isSyntheticResult = (details: unknown): boolean => {
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return false
+  return (details as Record<string, unknown>).__synthetic === true
+}
+
 /** 结果 details 里的 diff 预览文本（写工具成功时由工具层注入，空串视为缺失）。 */
 const readDiffPreview = (details: unknown): string | undefined => {
   if (!details || typeof details !== 'object' || Array.isArray(details)) return undefined
@@ -219,8 +224,9 @@ export const ToolCallCard = ({ toolCallId, toolName, call, result }: ToolCallCar
     () => resolveTitle(toolName, toolCallId, call, result),
     [toolName, toolCallId, call, result],
   )
-  const completed = result !== undefined && !result.isError
-  const errored = result?.isError === true
+  const synthetic = isSyntheticResult(result?.details)
+  const completed = result !== undefined && !result.isError && !synthetic
+  const errored = result?.isError === true && !synthetic
   const numbers = readNumbers(result?.details)
   const added = numbers.diffAdded ?? 0
   const removed = numbers.diffRemoved ?? 0
@@ -245,7 +251,7 @@ export const ToolCallCard = ({ toolCallId, toolName, call, result }: ToolCallCar
   const resultImages = (result?.contentBlocks ?? [])
     .filter((block): block is ImageContentBlock => block.type === 'image')
 
-  const cardClassName = `tool-card${running ? ' tool-card--running' : ''}`
+  const cardClassName = `tool-card${running ? ' tool-card--running' : ''}${synthetic ? ' tool-card--synthetic' : ''}`
   const ariaLabel = `Tool call ${toolName}`
 
   const headerChildren = (
@@ -288,6 +294,7 @@ export const ToolCallCard = ({ toolCallId, toolName, call, result }: ToolCallCar
             {!added && !removed && sizeBytes > 0 && <span>{formatSize(sizeBytes)}</span>}
           </>
         )}
+        {synthetic && <span className="tool-card__meta-synthetic">未执行</span>}
       </span>
       {running && <Loader2 size={14} className="tool-card__spinner" aria-hidden />}
       {completed && <Check size={14} className="tool-card__done" aria-hidden />}

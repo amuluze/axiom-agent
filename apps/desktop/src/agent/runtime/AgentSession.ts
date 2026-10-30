@@ -28,6 +28,10 @@ import { StreamingDraftState } from './streamingDraftState'
 import { impliesMessageNotPersisted } from '@/agent/core/persistenceBarrier'
 import { runtimeToolsSnapshot, sameRuntimeValue } from '@/agent/core/messageValidation'
 import { ContextWindowManager } from '@/agent/context/ContextWindowManager'
+import {
+  ModelRequestStablePrefixCache,
+  stablePrefixInputsEqual,
+} from '@/agent/core/stablePrefix'
 import { createContextPolicy } from '@/agent/context/types'
 import type { ContextBudgetUsage, ContextCheckpoint, ContextPolicy } from '@/agent/context/types'
 import type { SummaryInstructionOptions } from '@/agent/context/summaryInstructions'
@@ -46,6 +50,7 @@ import { assembleMutationBatch, type AssembledMutationBatch } from './sessionMut
 import { QueueOrderState } from './sessionQueueOrdering'
 export type { AgentRuntimeUpdate } from './sessionRuntimeUpdates'
 import type { AgentAutoRetryOptions, ResolvedAutoRetryOptions } from './autoRetry'
+import type { SyntaxRepairRuntime } from '@/agent/core/syntaxRepairModel'
 export type { AgentAutoRetryOptions } from './autoRetry'
 import type { QueueDeliveryMode } from './queueSettings'
 import {
@@ -144,6 +149,7 @@ export interface AgentSessionOptions {
   limits?: Partial<AgentLimits>
   toolExecution?: ToolExecutionMode
   steeringMode?: QueueDeliveryMode
+  asideMode?: QueueDeliveryMode
   followUpMode?: QueueDeliveryMode
   /** 队列自动出队开关（默认 true）：false 时 turn 边界不自动消费，仅手动放行。 */
   autoDrain?: boolean
@@ -162,6 +168,7 @@ export interface AgentSessionOptions {
     signal: AbortSignal,
   ) => void | Promise<void>
   providerLifecycle?: ModelTransportLifecycle
+  resolveSyntaxRepairRuntime?: () => SyntaxRepairRuntime | undefined
   beforeAgentStart?: BeforeAgentStart
   prepareNextTurn?: (
     snapshot: AgentTurnSnapshot,
@@ -241,12 +248,13 @@ const queuedMessageImages = (message: AgentMessage): ImageContentBlock[] =>
     ? message.contentBlocks.filter((block): block is ImageContentBlock => block.type === 'image')
     : []
 
-const QUEUE_KINDS: readonly QueuedMessageKind[] = ['steering', 'follow-up', 'next-turn']
+const QUEUE_KINDS: readonly QueuedMessageKind[] = ['steering', 'aside', 'follow-up', 'next-turn']
 
 export class AgentSession {
   readonly id: string
   private readonly listeners = new Set<AgentEventListener>()
   private readonly steeringQueue: MessageQueue
+  private readonly asideQueue: MessageQueue
   private readonly followUpQueue: MessageQueue
   private readonly nextTurnQueue: MessageQueue
   private transport: ModelTransport
@@ -260,6 +268,7 @@ export class AgentSession {
   private readonly onModelRequest?: AgentSessionOptions['onModelRequest']
   private readonly onModelResponse?: AgentSessionOptions['onModelResponse']
   private readonly providerLifecycle?: ModelTransportLifecycle
+  private readonly resolveSyntaxRepairRuntime?: AgentSessionOptions['resolveSyntaxRepairRuntime']
   private readonly subAgentRuntime?: SubAgentRuntime
   private readonly subAgentEnvironment?: AgentEnvironment
   /** 父授权工作区根目录绝对路径（相对路径解析根）；注入子 prompt 与 scope 快速校验。 */
@@ -275,6 +284,7 @@ export class AgentSession {
   private readonly onRuntimeCheckpoint?: AgentSessionOptions['onRuntimeCheckpoint']
   private readonly contextWindow: number
   private readonly contextWindowManager: ContextWindowManager
+  private readonly stablePrefixCache = new ModelRequestStablePrefixCache()
   private historyMessages: AgentMessage[]
   private context: AgentContext
   private baseActiveToolNames: string[]
@@ -305,6 +315,20 @@ export class AgentSession {
   private autoDrainEnabled = true
   /** 手动放行待注入的队列项 id：命中 steering 队首时放行一次，消费/换条后失效。 */
   private immediateDispatchId?: string
+  private modelStreamInterrupt?: () => void
+
+  private readonly bindModelStreamInterrupt = (interrupt: () => void): (() => void) => {
+    this.modelStreamInterrupt = interrupt
+    if (
+      (this.autoDrainEnabled && this.steeringQueue.size > 0)
+      || this.immediateDispatchId !== undefined
+    ) {
+      interrupt()
+    }
+    return () => {
+      if (this.modelStreamInterrupt === interrupt) this.modelStreamInterrupt = undefined
+    }
+  }
 
   constructor(options: AgentSessionOptions) {
     this.id = options.sessionId ?? createId('session')
@@ -334,6 +358,7 @@ export class AgentSession {
     this.onModelRequest = options.onModelRequest
     this.onModelResponse = options.onModelResponse
     this.providerLifecycle = options.providerLifecycle
+    this.resolveSyntaxRepairRuntime = options.resolveSyntaxRepairRuntime
     this.subAgentRuntime = options.subAgentRuntime
     this.subAgentEnvironment = options.subAgentEnvironment
     this.subAgentWorkspacePath = options.subAgentWorkspacePath
@@ -363,6 +388,7 @@ export class AgentSession {
     })
     this.context.messages = this.contextWindowManager.buildProjection(this.historyMessages)
     this.steeringQueue = new MessageQueue(options.steeringMode ?? 'one-at-a-time')
+    this.asideQueue = new MessageQueue(options.asideMode ?? 'one-at-a-time')
     this.followUpQueue = new MessageQueue(options.followUpMode ?? 'one-at-a-time')
     this.nextTurnQueue = new MessageQueue('all')
     this.autoDrainEnabled = options.autoDrain ?? true
@@ -385,10 +411,16 @@ export class AgentSession {
     return this.immediateDispatchId
   }
 
-  /** 当前队列模式（steering/follow-up 投递档 + autoDrain）：宿主在缓存激活等边界对齐全局设置用。 */
-  get queueModes(): { steering: QueueDeliveryMode; followUp: QueueDeliveryMode; autoDrain: boolean } {
+  /** 当前队列模式（turn 边界/结束边界投递档 + autoDrain）：宿主在缓存激活等边界对齐全局设置用。 */
+  get queueModes(): {
+    steering: QueueDeliveryMode
+    aside: QueueDeliveryMode
+    followUp: QueueDeliveryMode
+    autoDrain: boolean
+  } {
     return {
       steering: this.steeringQueue.deliveryMode,
+      aside: this.asideQueue.deliveryMode,
       followUp: this.followUpQueue.deliveryMode,
       autoDrain: this.autoDrainEnabled,
     }
@@ -422,6 +454,10 @@ export class AgentSession {
     return this.steeringQueue.size
   }
 
+  get pendingAsideCount(): number {
+    return this.asideQueue.size
+  }
+
   get pendingFollowUpCount(): number {
     return this.followUpQueue.size
   }
@@ -431,12 +467,13 @@ export class AgentSession {
   }
 
   hasQueuedMessages(): boolean {
-    return this.steeringQueue.size > 0 || this.followUpQueue.size > 0
+    return this.steeringQueue.size > 0 || this.asideQueue.size > 0 || this.followUpQueue.size > 0
   }
 
   get queuedMessages(): QueuedMessageSnapshot[] {
     return this.queueOrder.sort([
       ...this.steeringQueue.snapshot().map((message) => this.queueSnapshot(message, 'steering')),
+      ...this.asideQueue.snapshot().map((message) => this.queueSnapshot(message, 'aside')),
       ...this.followUpQueue.snapshot().map((message) => this.queueSnapshot(message, 'follow-up')),
       ...this.nextTurnQueue.snapshot().map((message) => this.queueSnapshot(message, 'next-turn')),
     ])
@@ -491,9 +528,13 @@ export class AgentSession {
     const { context, activeToolNames } = resolveRuntimeUpdate(previous, update)
     const events = this.createRuntimeMutationEvents(previous, context, source)
     const apply = async (): Promise<void> => {
+      const previousTransport = this.transport
       this.baseActiveToolNames = activeToolNames
       this.context = { ...context, messages: this.context.messages.slice() }
       this.transport = update.transport ?? this.transport
+      if (!stablePrefixInputsEqual(previous, this.context, previousTransport, this.transport)) {
+        this.stablePrefixCache.invalidate()
+      }
       await this.emitExternalEvents(events)
     }
     return this.commitThenApply(this.createMutationBatch(events), apply)
@@ -519,11 +560,16 @@ export class AgentSession {
       invalidateCheckpoint: true,
     }
     const apply = async (): Promise<void> => {
-      this.baseActiveToolNames = input.current.activeToolNames.slice()
-      this.context = {
+      const previous = this.context
+      const next = {
         ...this.context,
         systemPrompt: input.current.systemPrompt,
         activeToolNames: input.current.activeToolNames.slice(),
+      }
+      this.baseActiveToolNames = input.current.activeToolNames.slice()
+      this.context = next
+      if (!stablePrefixInputsEqual(previous, next, this.transport, this.transport)) {
+        this.stablePrefixCache.invalidate()
       }
       this.contextWindowManager.reset()
       this.context.messages = this.contextWindowManager.buildProjection(this.historyMessages)
@@ -730,18 +776,10 @@ export class AgentSession {
     return promise
   }
 
-  /**
-   * post-turn 空闲压缩触发点（P0-3a）。仅正常收口的 run 触发：aborted/time_limit
-   * 的上下文马上可能被用户继续（且中断标记紧跟其后），error 的历史可能有毒，
-   * 都交给下一个请求 prepareModelRequest 的硬阈值兜底。若本次 prompt 期间已经
-   * 压缩过（checkpoint 创建于本次 prompt 内），跳过——压缩刚做过，立即按更低的
-   * 软水位重复压缩只会多花一次摘要调用。失败静默：空闲压缩是优化而非正确性依赖。
-   */
-  private async runIdleCompactionIfDue(
+  private scheduleSpeculativeCompactionIfDue(
     result: AgentLoopResult,
-    signal: AbortSignal,
     promptStartedAt: number,
-  ): Promise<void> {
+  ): void {
     if (
       result.reason !== 'completed'
       && result.reason !== 'tool_limit'
@@ -752,12 +790,8 @@ export class AgentSession {
     }
     const checkpoint = this.contextWindowManager.currentCheckpoint
     if (checkpoint && checkpoint.createdAt >= promptStartedAt) return
-    try {
-      const request = this.createModelRequest('context-usage', this.context)
-      await this.contextWindowManager.compactIfIdleDue(request, signal, this.transport)
-    } catch {
-      // best-effort：空闲压缩失败不毒化已结算的 run
-    }
+    const request = this.createModelRequest('context-usage', this.context)
+    void this.contextWindowManager.speculateIfIdleDue(request, this.transport)
   }
 
   /**
@@ -807,7 +841,22 @@ export class AgentSession {
     if (!message) return rejectedQueueMessage('empty-input')
     const acceptedRun = this.acceptingQueuedMessages ? this.activeRun : undefined
     if (!acceptedRun) return rejectedQueueMessage('runtime-not-accepting')
-    return this.enqueueQueuedMessage(this.steeringQueue, 'steering', message, acceptedRun)
+    const acceptance = await this.enqueueQueuedMessage(this.steeringQueue, 'steering', message, acceptedRun)
+    if (acceptance.accepted && this.autoDrainEnabled) this.modelStreamInterrupt?.()
+    return acceptance
+  }
+
+  aside(message: AgentMessage): Promise<QueueAcceptance>
+  aside(content: string, images?: ImageContentBlock[]): Promise<QueueAcceptance>
+  async aside(
+    input: string | AgentMessage,
+    images?: ImageContentBlock[],
+  ): Promise<QueueAcceptance> {
+    const message = this.createQueuedMessage(input, images)
+    if (!message) return rejectedQueueMessage('empty-input')
+    const acceptedRun = this.acceptingQueuedMessages ? this.activeRun : undefined
+    if (!acceptedRun) return rejectedQueueMessage('runtime-not-accepting')
+    return this.enqueueQueuedMessage(this.asideQueue, 'aside', message, acceptedRun)
   }
 
   followUp(message: AgentMessage): Promise<QueueAcceptance>
@@ -838,6 +887,7 @@ export class AgentSession {
   async clearQueuedMessages(): Promise<void> {
     await this.clearQueues([
       this.steeringQueue,
+      this.asideQueue,
       this.followUpQueue,
       this.nextTurnQueue,
     ])
@@ -845,6 +895,10 @@ export class AgentSession {
 
   async clearSteeringQueue(): Promise<void> {
     await this.clearQueues([this.steeringQueue])
+  }
+
+  async clearAsideQueue(): Promise<void> {
+    await this.clearQueues([this.asideQueue])
   }
 
   async clearFollowUpQueue(): Promise<void> {
@@ -855,8 +909,13 @@ export class AgentSession {
     await this.clearQueues([this.nextTurnQueue])
   }
 
-  setQueueModes(steering: QueueDeliveryMode, followUp: QueueDeliveryMode): void {
+  setQueueModes(
+    steering: QueueDeliveryMode,
+    aside: QueueDeliveryMode,
+    followUp: QueueDeliveryMode,
+  ): void {
     this.steeringQueue.setMode(steering)
+    this.asideQueue.setMode(aside)
     this.followUpQueue.setMode(followUp)
   }
 
@@ -883,6 +942,7 @@ export class AgentSession {
     })
     if (!moved.updated) return rejectedQueueMessage(moved.reason)
     this.immediateDispatchId = target
+    this.modelStreamInterrupt?.()
     return acceptedQueueMessage(target)
   }
 
@@ -1026,6 +1086,13 @@ export class AgentSession {
       this.steeringQueue.remove(messageId)
       return snapshot
     }
+    const aside = this.asideQueue.snapshot().find((message) => message.id === messageId)
+    if (aside) {
+      const snapshot = this.queueSnapshot(aside, 'aside')
+      await this.discardQueuedMessage(messageId)
+      this.asideQueue.remove(messageId)
+      return snapshot
+    }
     const followUp = this.followUpQueue.snapshot().find((message) => message.id === messageId)
     if (followUp) {
       const snapshot = this.queueSnapshot(followUp, 'follow-up')
@@ -1073,6 +1140,7 @@ export class AgentSession {
     }
     const messages = this.queueOrder.sort([
       ...this.steeringQueue.snapshot().map((message) => this.queueSnapshot(message, 'steering')),
+      ...this.asideQueue.snapshot().map((message) => this.queueSnapshot(message, 'aside')),
       ...this.followUpQueue.snapshot().map((message) => this.queueSnapshot(message, 'follow-up')),
     ])
     if (messages.length === 0) return []
@@ -1087,6 +1155,7 @@ export class AgentSession {
       }
       const recoveredIds = new Set(messages.map((message) => message.id))
       this.steeringQueue.takeAll()
+      this.asideQueue.takeAll()
       this.followUpQueue.takeAll()
       for (const messageId of recoveredIds) this.drainedQueueKinds.delete(messageId)
       const existingIds = new Set(this.recoveredQueuedMessages.map((message) => message.id))
@@ -1136,6 +1205,10 @@ export class AgentSession {
     await this.activeRun?.promise
   }
 
+  cancelBackgroundWork(): Promise<void> {
+    return this.contextWindowManager.cancelSpeculativeCompaction()
+  }
+
   reset(): void {
     if (this.activeRun) throw new Error('Agent 运行期间不能重置会话')
     if (this.idleMutationCommitInFlight) throw new Error('空闲 Runtime mutation 提交期间不能重置会话')
@@ -1146,9 +1219,11 @@ export class AgentSession {
       activeToolNames: this.baseActiveToolNames,
     })
     this.streaming.reset()
+    this.stablePrefixCache.invalidate()
     this.lastErrorMessage = undefined
     this.contextWindowManager.reset()
     this.steeringQueue.clear()
+    this.asideQueue.clear()
     this.followUpQueue.clear()
     this.nextTurnQueue.clear()
     this.drainedQueueKinds.clear()
@@ -1269,6 +1344,9 @@ export class AgentSession {
         onModelRequest: this.onModelRequest,
         onModelResponse: this.onModelResponse,
         providerLifecycle: this.providerLifecycle,
+        resolveSyntaxRepairRuntime: this.resolveSyntaxRepairRuntime,
+        stablePrefixCache: this.stablePrefixCache,
+        bindModelStreamInterrupt: this.bindModelStreamInterrupt,
         beforeAgentStart: this.beforeAgentStart,
         prepareNextTurn: this.prepareNextTurn,
         peekPendingMutations: async () => this.peekPendingMutations(),
@@ -1295,7 +1373,7 @@ export class AgentSession {
           })
         },
         emit: (event) => this.emit(event),
-        getSteeringMessages: async (runId) => this.drainQueue(this.steeringQueue, 'steering', runId),
+        getTurnBoundaryMessages: async (runId) => this.drainTurnBoundaryQueues(runId),
         getFollowUpMessages: async (runId) => this.drainQueue(this.followUpQueue, 'follow-up', runId),
         onUnconsumedMessages: async (messages) => this.restoreUnconsumedMessages(messages),
         runDelegate: (request, ctx) => this.executeDelegate(request, ctx, runLedger),
@@ -1389,9 +1467,7 @@ export class AgentSession {
     // savePoint/agent_settled 之前直接提交——标记计入 savePoint 边界，终态事件
     // 发出前已落库（先落库后终态）；空闲压缩也基于含标记的上下文评估。
     await this.appendTurnAbortedMarkerIfInterrupted(finalResult)
-    // post-turn 空闲压缩：正常收口的 run 在回合间隙按软水位提前压缩，避免下一个
-    // 请求为上一轮历史膨胀同步买单（对齐 codex 的 post-turn compaction slot）。
-    await this.runIdleCompactionIfDue(finalResult, signal, promptStartedAt)
+    this.scheduleSpeculativeCompactionIfDue(finalResult, promptStartedAt)
     await this.onRuntimeCheckpoint?.('agent_end_before_settled')
     const lastMessage = this.historyMessages[this.historyMessages.length - 1]
     this.lastSavePoint = {
@@ -1756,6 +1832,7 @@ export class AgentSession {
 
   private queueForKind(kind: QueuedMessageKind): MessageQueue {
     if (kind === 'steering') return this.steeringQueue
+    if (kind === 'aside') return this.asideQueue
     if (kind === 'follow-up') return this.followUpQueue
     return this.nextTurnQueue
   }
@@ -1860,6 +1937,12 @@ export class AgentSession {
     this.queueOrder.record(message.id, order)
   }
 
+  private async drainTurnBoundaryQueues(runId: string): Promise<AgentMessage[]> {
+    const steering = await this.drainQueue(this.steeringQueue, 'steering', runId)
+    const aside = await this.drainQueue(this.asideQueue, 'aside', runId)
+    return this.queueOrder.sort([...steering, ...aside])
+  }
+
   private async drainQueue(
     queue: MessageQueue,
     kind: QueuedMessageKind,
@@ -1897,6 +1980,7 @@ export class AgentSession {
 
   private async restoreDrainedMessages(messages: AgentMessage[]): Promise<void> {
     const steering: AgentMessage[] = []
+    const aside: AgentMessage[] = []
     const followUp: AgentMessage[] = []
     const nextTurn: AgentMessage[] = []
     await this.sessionJournal.write(async () => {
@@ -1910,10 +1994,12 @@ export class AgentSession {
         const kind = this.drainedQueueKinds.get(message.id)
         this.drainedQueueKinds.delete(message.id)
         if (kind === 'steering') steering.push(message)
+        if (kind === 'aside') aside.push(message)
         if (kind === 'follow-up') followUp.push(message)
         if (kind === 'next-turn') nextTurn.push(message)
       }
       this.steeringQueue.prepend(steering)
+      this.asideQueue.prepend(aside)
       this.followUpQueue.prepend(followUp)
       this.nextTurnQueue.prepend(nextTurn)
     })
@@ -2002,7 +2088,9 @@ export class AgentSession {
         }
         const queue = entry.queueKind === 'steering'
           ? this.steeringQueue
-          : entry.queueKind === 'follow-up' ? this.followUpQueue : this.nextTurnQueue
+          : entry.queueKind === 'aside'
+            ? this.asideQueue
+            : entry.queueKind === 'follow-up' ? this.followUpQueue : this.nextTurnQueue
         queue.enqueue(message)
         continue
       }

@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   domRectToViewportFrame,
-  fitsViewport,
+  fitScaleFor,
   fullyInsideViewport,
+  overlappingPageIds,
   panTargetFor,
   rasterOrderOf,
   rectsIntersect,
-  stagingPageIds,
   runPool,
   type ScreenRect,
 } from './canvasScanSweep'
@@ -15,24 +15,48 @@ const rect = (x: number, y: number, width = 200, height = 120): ScreenRect => ({
 const VP = { width: 1024, height: 768 }
 
 describe('canvasScanSweep（画布原位扫描几何）', () => {
-  it('staging 回退集合：巨页与相交页入列，独立页留在原位采集', () => {
+  it('取景倍率：该页完整装进视口的最大倍率（巨页据此原地取景，不走全屏遮罩）', () => {
     const place = (id: string, x: number, y: number, width: number, height: number) => ({ id, x, y, width, height })
-    // scale=1 便于对照；巨页尺寸超过视口，两页相交，另两页各不相交。
-    const placements = [
-      place('giant', 5000, 0, 4000, 3000),
+    // 与视口同尺寸的页：宽高都受限，取二者较小值（高方向更紧）。
+    expect(fitScaleFor(place('a', 0, 0, 1024, 768), VP, 8)).toBeCloseTo((VP.height - 16) / 768, 5)
+    // 宽度受限：宽页按宽度定倍率。
+    expect(fitScaleFor(place('wide', 0, 0, 4000, 300), VP, 8)).toBeCloseTo((VP.width - 16) / 4000, 5)
+    // 高度受限：高页按高度定倍率（两者取小）。
+    expect(fitScaleFor(place('tall', 0, 0, 200, 3000), VP, 8)).toBeCloseTo((VP.height - 16) / 3000, 5)
+    // 极巨页需要低于 0.01 的倍率：不得用任意下限把页重新放大到视口外。
+    const extreme = place('extreme', 0, 0, 200000, 100)
+    const extremeScale = fitScaleFor(extreme, VP, 8)
+    expect(extremeScale).toBeCloseTo((VP.width - 16) / 200000, 8)
+    const extremeTarget = panTargetFor(extreme, extremeScale, VP)
+    expect(fullyInsideViewport({
+      x: extreme.x * extremeScale + extremeTarget.x,
+      y: extreme.y * extremeScale + extremeTarget.y,
+      width: extreme.width * extremeScale,
+      height: extreme.height * extremeScale,
+    }, VP)).toBe(true)
+    // 不变量：按取景倍率居中后，该页必然「完全可见」——否则平移循环会空转。
+    const page = place('a', 40, 400, 1020, 764)
+    const scale = fitScaleFor(page, VP, 8)
+    const target = panTargetFor(page, scale, VP)
+    const onScreen = { x: page.x * scale + target.x, y: page.y * scale + target.y, width: page.width * scale, height: page.height * scale }
+    expect(fullyInsideViewport(onScreen, VP)).toBe(true)
+  })
+
+  it('重叠页判定：相交的双方互为重叠（采集时需隔离，否则拍到邻页像素）', () => {
+    const place = (id: string, x: number, y: number, width: number, height: number) => ({ id, x, y, width, height })
+    const overlapping = overlappingPageIds([
       place('overlap-a', 0, 0, 200, 120),
       place('overlap-b', 150, 60, 200, 120),
-      place('solo-left', 600, 0, 200, 120),
-      place('solo-right', 0, 600, 200, 120),
-    ]
-    expect([...stagingPageIds(placements, 1, VP)].sort()).toEqual(['giant', 'overlap-a', 'overlap-b'])
-    // 相交的**双方**都要入列：漏掉任一方都会让它留在原位截图，拍到覆盖它的内容。
-    expect(stagingPageIds([place('a', 0, 0, 200, 120), place('b', 100, 100, 200, 120)], 1, VP).size).toBe(2)
+      place('solo', 600, 0, 200, 120),
+    ])
+    // 相交的**双方**都要记录：漏掉任一方都会让它留在原位截图，拍到覆盖它的内容。
+    expect([...overlapping.get('overlap-a')!].sort()).toEqual(['overlap-b'])
+    expect([...overlapping.get('overlap-b')!].sort()).toEqual(['overlap-a'])
+    // 独立页不出现在重叠表里。
+    expect(overlapping.has('solo')).toBe(false)
     // 恰好相邻不算相交（边界相接不重叠）。
-    expect(stagingPageIds([place('a', 0, 0, 200, 120), place('b', 200, 0, 200, 120)], 1, VP).size).toBe(0)
-    // 画布坐标 × scale 的判定与屏幕坐标等价：整体放大到装不下时也会转 staging。
-    expect([...stagingPageIds([place('a', 0, 0, 200, 120)], 10, VP)]).toEqual(['a'])
-    expect([...stagingPageIds([place('a', 0, 0, 200, 120)], 0.1, VP)]).toEqual([])
+    const adjacent = overlappingPageIds([place('a', 0, 0, 200, 120), place('b', 200, 0, 200, 120)])
+    expect(adjacent.size).toBe(0)
   })
 
   it('光栅序：按行分桶（行内 x 升序），相机左→右、上→下推进', () => {
@@ -51,19 +75,6 @@ describe('canvasScanSweep（画布原位扫描几何）', () => {
     expect(fullyInsideViewport(rect(10, 10, 1020, 600), VP)).toBe(false)
   })
 
-  it('装得下判定：与完全可见同 inset 口径——居中后必完全可见（平移不死循环）', () => {
-    // 视口同尺寸的页「装得下」但居中后贴边（y=0 < inset），必须路由 staging。
-    expect(fitsViewport(rect(0, 0, 1024, 768), VP)).toBe(false)
-    expect(fitsViewport(rect(0, 0, 2000, 300), VP)).toBe(false)
-    // 恰好装进视口减两侧 inset（1020×764）：居中后 y=2，判定完全可见。
-    expect(fitsViewport(rect(0, 0, 1020, 764), VP)).toBe(true)
-    // 不变量：任何「装得下」的页，按平移目标居中后必满足完全可见。
-    const candidate = rect(40, 400, 1020, 764)
-    expect(fitsViewport(candidate, VP)).toBe(true)
-    const target = panTargetFor(candidate, 1, VP)
-    expect(fullyInsideViewport({ ...candidate, x: candidate.x + target.x, y: candidate.y + target.y }, VP)).toBe(true)
-  })
-
   it('平移目标：页中心对到视口中心（画布坐标 × scale）', () => {
     // 页画布中心 (200, 100)，scale 0.5 → 屏幕偏移 100/50；目标 = 视口中心 - 中心×scale。
     const target = panTargetFor(rect(100, 40, 200, 120), 0.5, VP)
@@ -71,7 +82,7 @@ describe('canvasScanSweep（画布原位扫描几何）', () => {
     expect(target.y).toBe(384 - 100 * 0.5)
   })
 
-  it('相交判定：重叠页双方都路由 staging（截图会串内容）', () => {
+  it('相交判定：矩形重叠即为相交（截图会串内容，需隔离采集）', () => {
     expect(rectsIntersect(rect(0, 0), rect(100, 50))).toBe(true)
     expect(rectsIntersect(rect(0, 0), rect(300, 0))).toBe(false)
   })

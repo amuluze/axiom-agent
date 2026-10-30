@@ -463,6 +463,61 @@ async fn migrates_the_native_session_schema_to_the_current_version() {
 }
 
 #[tokio::test]
+async fn migration_v22_preserves_journal_rows_and_allows_aside_queue_entries() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("aside-migration.db");
+    let mut connection = SqliteConnection::connect_with(&create_options(&path))
+        .await
+        .unwrap();
+    migrate_to(&mut connection, 21).await.unwrap();
+    connection
+        .execute(
+            "INSERT INTO agent_sessions
+             (id, title, system_prompt, model_provider, model_id, status, created_at, updated_at)
+             VALUES ('aside-session', 'Aside', 'system', 'test', 'model', 'idle', 1, 1)",
+        )
+        .await
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO agent_session_journal
+             (id, session_id, sequence, kind, queue_kind, payload_json, status, created_at)
+             VALUES ('legacy-steering', 'aside-session', 0, 'queue', 'steering', '{}', 'pending', 1)",
+        )
+        .await
+        .unwrap();
+
+    migrate(&mut connection).await.unwrap();
+
+    let preserved: String = sqlx::query_scalar(
+        "SELECT queue_kind FROM agent_session_journal WHERE id = 'legacy-steering'",
+    )
+    .fetch_one(&mut connection)
+    .await
+    .unwrap();
+    assert_eq!(preserved, "steering");
+    connection
+        .execute(
+            "INSERT INTO agent_session_journal
+             (id, session_id, sequence, kind, queue_kind, payload_json, status, created_at)
+             VALUES ('aside-entry', 'aside-session', 1, 'queue', 'aside', '{}', 'pending', 2)",
+        )
+        .await
+        .unwrap();
+    let indexes: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type = 'index' AND name IN (
+           'idx_agent_session_journal_pending',
+           'idx_agent_session_journal_status_sequence'
+         )",
+    )
+    .fetch_one(&mut connection)
+    .await
+    .unwrap();
+    assert_eq!(indexes, 2);
+}
+
+#[tokio::test]
 async fn resets_full_access_during_repository_initialization() {
     let (_directory, mut connection) = migrated_database().await;
     connection
@@ -3450,7 +3505,7 @@ async fn pool_reads_proceed_while_a_write_transaction_is_open() {
 
 #[tokio::test]
 async fn concurrent_same_id_journal_appends_converge_idempotently() {
-    // journal 幂等契约（docs/invariants.md #1）在池化下的回归：两个连接并发
+    // journal 幂等契约（.docs/invariants.md #1）在池化下的回归：两个连接并发
     // append 同一 ID——BEGIN IMMEDIATE 串行化写者，后到者经 SELECT 去重路径
     // 返回 Ok，不出现「双双通过存在性检查后一方 UNIQUE 失败」的竞态。
     let directory = tempfile::tempdir().unwrap();

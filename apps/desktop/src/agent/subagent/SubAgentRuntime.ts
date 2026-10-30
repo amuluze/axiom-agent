@@ -1,6 +1,7 @@
 import { createId } from '@/agent/core/id'
 import { isAbortError } from '@/agent/core/abort'
 import { runAgentLoop } from '@/agent/core/runAgentLoop'
+import { ModelRequestStablePrefixCache } from '@/agent/core/stablePrefix'
 import { createUserMessage } from '@/agent/core/messages'
 import type {
   AgentContext,
@@ -192,6 +193,7 @@ export const createSubAgentRuntime = (options: SubAgentRuntimeOptions = {}): Sub
       const childContext = buildChildContext(
         request, binding, childSessionId, budget, effectiveMaxMessageBytes, scopedEnvironment,
       )
+      const stablePrefixCache = new ModelRequestStablePrefixCache()
       const loopResult = runAgentLoop({
         context: childContext,
         prompts: [createUserMessage(request.task)],
@@ -210,6 +212,7 @@ export const createSubAgentRuntime = (options: SubAgentRuntimeOptions = {}): Sub
         },
         toolExecution: 'sequential',
         providerLifecycle: binding.providerLifecycle,
+        stablePrefixCache,
         resolveModelAuth: binding.resolveModelAuth,
         prepareModelRequest: async (request) => {
           if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')

@@ -11,7 +11,9 @@ import {
   canRenderDesignPage,
   canRenderDesignScanPage,
   decodePngToRgba,
+  designScanBatchRenderer,
   designScanRenderConcurrency,
+  designScanRequiresViewportCapture,
   renderDesignPage,
   renderDesignScanPage,
 } from '@/agent/design/designRenderHost'
@@ -23,7 +25,7 @@ import {
   compareVerdictOf,
   scaleRgba,
 } from '@/agent/design/visualCompare'
-import { extractScanPages, scanDesignPages, type DesignScanRenderPage } from '@/agent/design/designScan'
+import { extractScanPages, scanDesignPages, scanDesignPagesBatch, type DesignScanRenderPage } from '@/agent/design/designScan'
 import { designBrowserCommand } from '@/agent/design/designBrowserHost'
 import {
   axComponentsUsed,
@@ -60,6 +62,12 @@ const MAX_SCAN_THUMBNAILS = 4
  * 模型据此能区分「我看不到图」与「图里没有内容」），且不泄漏内部字段名。
  */
 const IMAGE_UNSUPPORTED_NOTE = `${UNSUPPORTED_IMAGE_NOTE}。这是模型能力所限（当前模型不接受图片输入），不是环境没有渲染能力；需要视觉自查请切换到视觉模型。`
+
+/**
+ * 原生截图只能截当前视口：设计画布未打开时没有原位扫掠可用，退回 capture
+ * staging 会把某页铺满用户窗口。宁可不渲染像素，也不能为了自检破坏用户界面。
+ */
+const SCAN_CANVAS_REQUIRED_NOTE = '设计画布未打开：原生截图只能在画布内原位完成，本次未做逐页渲染（结构检查照常执行）。请打开设计视图后重试，或在设计画布底部点「扫描验证」。'
 
 /** scan 模式的缩略图缓存条目（渲染成功时随像素统计一起拿到）。 */
 interface ScanThumbnail {
@@ -128,6 +136,7 @@ export const executeScan = async (
   doc.workspacePath = input.workspacePath
   doc.projectComponents = options.projectComponents
   doc.projectPreview = options.projectPreview
+  doc.sha256 = sha256
   const { pages, documentIssues } = extractScanPages(doc)
 
   // 可选单页扫描：页名 / 页 id / 1 起始序号。
@@ -147,15 +156,22 @@ export const executeScan = async (
     }
   }
 
-  // 无渲染能力（Node 测试 / 接缝未注入）时渲染检查整体 skipped——报告只含结构检查。
+  // 当前设计画布已打开同一 SHA 的稿时，会话与底部按钮共用原位批量扫掠；
+  // 无匹配画布才走单页 staging。缩略图仍按既有 warn 页契约回传。
   const thumbnails = new Map<string, ScanThumbnail>()
+  const thumbnailMaxBytes = typeof input.imageMaxBytes === 'number' ? input.imageMaxBytes : DEFAULT_SCAN_THUMBNAIL_BYTES
+  const batchRender = designScanBatchRenderer(doc, {
+    thumbnailMaxBytes: input.modelAcceptsImage === false ? undefined : thumbnailMaxBytes,
+  })
+  // 无画布可复用且宿主确认原生截图需要可见视口 → 不进入单页 capture staging。
+  const fallbackRequiresCanvas = !batchRender && await designScanRequiresViewportCapture()
   const renderPage: DesignScanRenderPage | undefined = canRenderDesignScanPage()
     ? async (page) => {
       const result = await renderDesignScanPage({
         doc,
         projectBrowserCommand: options.projectBrowserCommand,
         pageIdOrIndex: page.id,
-        maxBytes: typeof input.imageMaxBytes === 'number' ? input.imageMaxBytes : DEFAULT_SCAN_THUMBNAIL_BYTES,
+        maxBytes: thumbnailMaxBytes,
       })
       if (!result) return null
       if (!result.ok) return { ok: false, reason: result.reason }
@@ -174,13 +190,25 @@ export const executeScan = async (
     }
     : undefined
 
-  const report = await scanDesignPages(targets, documentIssues, renderPage, {
-    // `.ax` 的页面按格式必须声明尺寸；`.pen` 的无高度顶层 frame 是组织性带（正常形态）。
-    requireSize: isAx,
-    // 渲染并发度由宿主按光栅化路径注入（native capture 挂载铺满视口必须串行=1，
-    // offscreen 独立容器并行安全）——引擎保证判定与进度始终按页序，消费方无感。
-    renderConcurrency: designScanRenderConcurrency(),
-  })
+  const requireSize = isAx
+  const report = batchRender
+    ? await scanDesignPagesBatch(targets, documentIssues, async (batchPages, onPageDone, onActive) => {
+      const pageNames = new Map(batchPages.map((page) => [page.id, page.name]))
+      await batchRender(batchPages, (pageId, outcome) => {
+        if (outcome.base64 && input.modelAcceptsImage !== false) {
+          thumbnails.set(pageId, { base64: outcome.base64, pageName: pageNames.get(pageId) ?? pageId })
+        }
+        onPageDone(pageId, outcome)
+      }, onActive)
+    }, { requireSize, pageMetadata: doc.pageMetadata })
+    : await scanDesignPages(targets, documentIssues, fallbackRequiresCanvas ? undefined : renderPage, {
+      // `.ax` 的页面按格式必须声明尺寸；`.pen` 的无高度顶层 frame 是组织性带（正常形态）。
+      requireSize,
+      pageMetadata: doc.pageMetadata,
+      // 渲染并发度由宿主按光栅化路径注入（native capture 挂载铺满视口必须串行=1，
+      // offscreen 独立容器并行安全）——引擎保证判定与进度始终按页序，消费方无感。
+      renderConcurrency: designScanRenderConcurrency(),
+    })
 
   // token ↔ 实现样式表一致性（仅 .ax；建议性报告，不产生页级判定）。
   const tokenParity: JsonValue | undefined = (() => {
@@ -210,6 +238,7 @@ export const executeScan = async (
     ...(report.documentIssues.length > 0 ? { documentIssues: report.documentIssues } : {}),
     ...(tokenParity !== undefined ? { tokenParity } : {}),
     ...(input.modelAcceptsImage === false ? { imageNote: IMAGE_UNSUPPORTED_NOTE } : {}),
+    ...(fallbackRequiresCanvas ? { renderNote: SCAN_CANVAS_REQUIRED_NOTE } : {}),
   }
   const maxBytes = typeof input.maxBytes === 'number' ? input.maxBytes : 16384
   const { content, truncated } = truncateToByteBudget(JSON.stringify(payload, null, 2), maxBytes)

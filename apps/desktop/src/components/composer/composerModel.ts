@@ -136,6 +136,7 @@ export const mentionKey = (mention: ActiveMention | null): string | null => ment
 
 export const queueKindKey = (kind: string): string => {
   if (kind === 'steering') return 'app.composer.queueKind.steering'
+  if (kind === 'aside') return 'app.composer.queueKind.aside'
   if (kind === 'follow-up') return 'app.composer.queueKind.followUp'
   return 'app.composer.queueKind.nextTurn'
 }

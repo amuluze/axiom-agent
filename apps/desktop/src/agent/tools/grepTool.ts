@@ -14,7 +14,7 @@ export const createGrepTool = (environment: AgentEnvironment): AgentTool => ({
     '传 context 可显示周边行（匹配行用 路径:N: 分隔，上下文行用 路径-N- 分隔），与 ripgrep 输出一致。',
     '结果被截断时用 glob 收窄；超过 500 字符的匹配会被裁成单行。',
   ],
-  runtimeVersion: '6',
+  runtimeVersion: '7',
   recoveryPolicy: 'idempotent',
   idempotencyKey: (input) => {
     if (!isJsonObject(input)) return 'grep:invalid'
@@ -143,6 +143,7 @@ export const createGrepTool = (environment: AgentEnvironment): AgentTool => ({
         return entry
       }),
       truncated: result.truncated,
+      ...(result.matches.length === 0 ? { contextRetention: 'discardable' } : {}),
     }
     return {
       content: `${grouped}${footer}`,

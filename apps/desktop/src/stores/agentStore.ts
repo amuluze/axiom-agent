@@ -1160,8 +1160,21 @@ const createRuntimeSession = (
       maxTotalTokens: agentLimitsSettings.maxTotalTokens,
     },
     steeringMode: activeQueueModeSettings.steering,
+    asideMode: activeQueueModeSettings.aside,
     followUpMode: activeQueueModeSettings.followUp,
     autoDrain: activeQueueModeSettings.autoDrain,
+    resolveSyntaxRepairRuntime: () => {
+      const state = useAgentStore.getState()
+      const profileId = state.syntaxRepairSettings.profileId
+      if (!profileId) return undefined
+      const profile = state.providerProfiles.find((candidate) => candidate.profileId === profileId)
+      if (!profile) return undefined
+      try {
+        return createProviderTransport(profile, true)
+      } catch {
+        return undefined
+      }
+    },
     checkpoint,
     externalizeToolResult: isTauriRuntime()
       ? desktopAgentEnvironment.artifacts.writeToolResult
@@ -1617,8 +1630,13 @@ const activateCachedRuntimeSession = async (
   // 不得丢失「已放行待注入」的即时反馈。
   const cachedModes = options.runtime.queueModes
   if (cachedModes.steering !== activeQueueModeSettings.steering
+    || cachedModes.aside !== activeQueueModeSettings.aside
     || cachedModes.followUp !== activeQueueModeSettings.followUp) {
-    options.runtime.setQueueModes(activeQueueModeSettings.steering, activeQueueModeSettings.followUp)
+    options.runtime.setQueueModes(
+      activeQueueModeSettings.steering,
+      activeQueueModeSettings.aside,
+      activeQueueModeSettings.followUp,
+    )
   }
   if (cachedModes.autoDrain !== activeQueueModeSettings.autoDrain) {
     options.runtime.setAutoDrain(activeQueueModeSettings.autoDrain)

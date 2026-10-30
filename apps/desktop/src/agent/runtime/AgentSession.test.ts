@@ -186,6 +186,52 @@ class QueuedMessageTransport implements ModelTransport {
   }
 }
 
+class InterruptibleSteeringTransport implements ModelTransport {
+  readonly requests: ModelRequest[] = []
+  readonly firstRequestStarted: Promise<void>
+  private markFirstRequestStarted!: () => void
+
+  constructor() {
+    this.firstRequestStarted = new Promise((resolve) => {
+      this.markFirstRequestStarted = resolve
+    })
+  }
+
+  async *stream(request: ModelRequest, signal: AbortSignal): AsyncIterable<ModelStreamEvent> {
+    const requestIndex = this.requests.push(request) - 1
+    yield { type: 'start' }
+    if (requestIndex === 0) {
+      yield { type: 'text_delta', delta: 'partial original answer' }
+      this.markFirstRequestStarted()
+      await new Promise<never>((_resolve, reject) => {
+        const abort = (): void => reject(new DOMException('Aborted', 'AbortError'))
+        signal.addEventListener('abort', abort, { once: true })
+        if (signal.aborted) abort()
+      })
+    }
+    yield { type: 'text_delta', delta: 'steered answer' }
+    yield { type: 'done', stopReason: 'stop' }
+  }
+}
+
+class ToolThenAnswerTransport implements ModelTransport {
+  readonly requests: ModelRequest[] = []
+
+  async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+    const requestIndex = this.requests.push(request) - 1
+    yield { type: 'start' }
+    if (requestIndex === 0) {
+      yield { type: 'tool_call_start', index: 0, id: 'side-effect-call', name: 'side_effect' }
+      yield { type: 'tool_call_delta', index: 0, argumentsDelta: '{}' }
+      yield { type: 'tool_call_end', index: 0 }
+      yield { type: 'done', stopReason: 'tool_use' }
+      return
+    }
+    yield { type: 'text_delta', delta: 'done after steering' }
+    yield { type: 'done', stopReason: 'stop' }
+  }
+}
+
 class RecordingMutationJournal implements AgentMutationJournal {
   readonly entries = new Map<string, AgentSessionJournalEntry>()
   readonly operations: string[] = []
@@ -260,6 +306,7 @@ const createQueuedMessageSession = (
   transport: ModelTransport,
   modes: {
     steeringMode?: 'one-at-a-time' | 'all'
+    asideMode?: 'one-at-a-time' | 'all'
     followUpMode?: 'one-at-a-time' | 'all'
     autoDrain?: boolean
   } = {},
@@ -694,6 +741,49 @@ describe('AgentSession rich runtime input', () => {
 })
 
 describe('AgentSession runtime updates', () => {
+  it('reuses a stable prefix across runs and invalidates it after an idle runtime update', async () => {
+    const transport = new ResumeTransport()
+    const session = new AgentSession({
+      sessionId: 'stable-prefix-session',
+      systemPrompt: 'stable system',
+      model: { provider: 'test', model: 'model' },
+      transport,
+    })
+
+    await session.prompt('first')
+    await session.prompt('second')
+    await session.updateRuntime({ systemPrompt: 'updated system' })
+    await session.prompt('third')
+
+    const prefixes = transport.requests.map((request) => request.stablePrefix)
+    expect(prefixes.every(Boolean)).toBe(true)
+    expect(prefixes[1]?.fingerprint).toBe(prefixes[0]?.fingerprint)
+    expect(prefixes[1]?.revision).toBe(prefixes[0]?.revision)
+    expect(prefixes[2]?.fingerprint).not.toBe(prefixes[1]?.fingerprint)
+    expect(prefixes[2]?.revision).toBeGreaterThan(prefixes[1]?.revision ?? 0)
+  })
+
+  it('retains the stable prefix when only the project-context tail changes', async () => {
+    const transport = new ResumeTransport()
+    const session = new AgentSession({
+      sessionId: 'stable-project-tail',
+      systemPrompt: 'stable system\n\n# 项目上下文\nproject one',
+      model: { provider: 'test', model: 'model' },
+      transport,
+    })
+
+    await session.prompt('first')
+    await session.updateRuntime({
+      systemPrompt: 'stable system\n\n# 项目上下文\nproject two changed',
+    })
+    await session.prompt('second')
+
+    expect(transport.requests[1]?.stablePrefix?.fingerprint)
+      .toBe(transport.requests[0]?.stablePrefix?.fingerprint)
+    expect(transport.requests[1]?.stablePrefix?.revision)
+      .toBe(transport.requests[0]?.stablePrefix?.revision)
+  })
+
   it('rejects Assistant and ToolResult messages from appendMessage mutations', async () => {
     const session = new AgentSession({
       sessionId: 'append-role-boundary',
@@ -736,6 +826,7 @@ describe('AgentSession runtime updates', () => {
           yield { type: 'done', stopReason: 'tool_use' }
           return
         }
+        yield { type: 'text_delta', delta: 'done' }
         yield { type: 'done', stopReason: 'stop' }
       }
     }
@@ -814,6 +905,7 @@ describe('AgentSession runtime updates', () => {
           yield { type: 'done', stopReason: 'tool_use' }
           return
         }
+        yield { type: 'text_delta', delta: 'done' }
         yield { type: 'done', stopReason: 'stop' }
       }
     }
@@ -1593,6 +1685,7 @@ describe('AgentSession durable mutation journal', () => {
           yield { type: 'done', stopReason: 'tool_use' }
           return
         }
+        yield { type: 'text_delta', delta: 'done' }
         yield { type: 'done', stopReason: 'stop' }
       }
     }
@@ -1674,6 +1767,143 @@ describe('AgentSession queued messages', () => {
     expect(session.canQueueMessages).toBe(false)
   })
 
+  it('interrupts an active model stream as soon as steering is durably queued', async () => {
+    const transport = new InterruptibleSteeringTransport()
+    const session = createQueuedMessageSession(transport)
+    const run = session.prompt('start')
+    await transport.firstRequestStarted
+
+    expect((await session.steer('change direction now')).accepted).toBe(true)
+    const result = await run
+
+    expect(result.reason).toBe('completed')
+    expect(transport.requests).toHaveLength(2)
+    expect(transport.requests[1]?.messages.at(-1)).toMatchObject({
+      role: 'user',
+      content: 'change direction now',
+    })
+    expect(transport.requests[1]?.messages.some((message) => (
+      message.role === 'assistant' && message.content.includes('partial original')
+    ))).toBe(false)
+  })
+
+  it('queues aside for the next turn without interrupting the active model stream', async () => {
+    const transport = new QueuedMessageTransport()
+    const session = createQueuedMessageSession(transport)
+    const run = session.prompt('start')
+    await transport.firstRequestStarted
+
+    expect((await session.aside('consider this next')).accepted).toBe(true)
+    expect(session.pendingAsideCount).toBe(1)
+    transport.release()
+    const result = await run
+
+    expect(result.reason).toBe('completed')
+    expect(transport.requests).toHaveLength(2)
+    expect(transport.requests[1]?.messages.slice(-2).map((message) => message.content)).toEqual([
+      'answer-1',
+      'consider this next',
+    ])
+    expect(session.pendingAsideCount).toBe(0)
+  })
+
+  it('preserves global queue order when aside and steering share the next boundary', async () => {
+    const transport = new InterruptibleSteeringTransport()
+    const session = createQueuedMessageSession(transport)
+    const run = session.prompt('start')
+    await transport.firstRequestStarted
+
+    expect((await session.aside('aside first')).accepted).toBe(true)
+    expect((await session.steer('steering second')).accepted).toBe(true)
+    await run
+
+    expect(transport.requests).toHaveLength(2)
+    expect(transport.requests[1]?.messages.slice(-2).map((message) => message.content)).toEqual([
+      'aside first',
+      'steering second',
+    ])
+  })
+
+  it('interrupts immediately when steering arrives before the provider stream is bound', async () => {
+    let notifyRequestPreparing!: () => void
+    let releaseRequestPreparation!: () => void
+    const requestPreparing = new Promise<void>((resolve) => { notifyRequestPreparing = resolve })
+    const requestPreparationReleased = new Promise<void>((resolve) => { releaseRequestPreparation = resolve })
+    let requestCount = 0
+    const transport = new InterruptibleSteeringTransport()
+    const session = new AgentSession({
+      sessionId: 'pre-stream-steering',
+      systemPrompt: 'system',
+      model: { provider: 'test', model: 'model' },
+      transport,
+      onModelRequest: async () => {
+        requestCount += 1
+        if (requestCount !== 1) return
+        notifyRequestPreparing()
+        await requestPreparationReleased
+      },
+    })
+    const run = session.prompt('start')
+    await requestPreparing
+
+    expect((await session.steer('queued before stream')).accepted).toBe(true)
+    releaseRequestPreparation()
+    const result = await run
+
+    expect(result.reason).toBe('completed')
+    expect(transport.requests).toHaveLength(2)
+    expect(transport.requests[1]?.messages.at(-1)).toMatchObject({
+      role: 'user',
+      content: 'queued before stream',
+    })
+  })
+
+  it('queues steering without aborting an in-flight side-effect tool', async () => {
+    let notifyToolStarted!: () => void
+    let releaseTool!: () => void
+    const toolStarted = new Promise<void>((resolve) => { notifyToolStarted = resolve })
+    const toolReleased = new Promise<void>((resolve) => { releaseTool = resolve })
+    const tool: AgentTool = {
+      name: 'side_effect',
+      label: 'Side effect',
+      description: 'Mutates state',
+      runtimeVersion: '1',
+      inputSchema: { type: 'object' },
+      validate: (input) => ({ ok: true, value: input }),
+      execute: async () => {
+        notifyToolStarted()
+        await toolReleased
+        return { content: 'side effect completed' }
+      },
+    }
+    const transport = new ToolThenAnswerTransport()
+    const session = new AgentSession({
+      sessionId: 'side-effect-steering',
+      systemPrompt: 'system',
+      model: { provider: 'test', model: 'model' },
+      transport,
+      tools: [tool],
+    })
+    const run = session.prompt('start')
+    await toolStarted
+
+    expect((await session.steer('adjust after the write')).accepted).toBe(true)
+    releaseTool()
+    const result = await run
+
+    expect(result.reason).toBe('completed')
+    expect(result.newMessages).toContainEqual(expect.objectContaining({
+      role: 'tool',
+      toolCallId: 'side-effect-call',
+      content: 'side effect completed',
+      isError: false,
+    }))
+    expect(transport.requests[1]?.messages.at(-1)).toMatchObject({
+      role: 'user',
+      content: 'adjust after the write',
+    })
+  })
+
   it('delivers follow-up only after the active task would otherwise finish', async () => {
     const transport = new QueuedMessageTransport()
     const session = createQueuedMessageSession(transport)
@@ -1710,7 +1940,7 @@ describe('AgentSession queued messages', () => {
     transport.release()
     await run
 
-    expect(transport.requests).toHaveLength(1)
+    expect(transport.requests).toHaveLength(2)
     expect(session.messages.some((message) => message.role === 'user' && message.content.includes('queued'))).toBe(false)
   })
 
@@ -1875,13 +2105,15 @@ describe('AgentSession queued messages', () => {
     })
     expect(session.queueModes).toEqual({
       steering: 'all',
+      aside: 'one-at-a-time',
       followUp: 'one-at-a-time',
       autoDrain: false,
     })
-    session.setQueueModes('one-at-a-time', 'all')
+    session.setQueueModes('one-at-a-time', 'all', 'all')
     session.setAutoDrain(true)
     expect(session.queueModes).toEqual({
       steering: 'one-at-a-time',
+      aside: 'all',
       followUp: 'all',
       autoDrain: true,
     })
@@ -1945,7 +2177,6 @@ describe('AgentSession queued messages', () => {
     expect(transport.requests).toHaveLength(2)
     expect(transport.requests[1]?.messages.map((message) => message.content)).toEqual([
       'start',
-      'answer-1',
       'first',
     ])
     expect(session.queuedMessages.map((message) => message.content)).toEqual(['second'])
@@ -2483,7 +2714,6 @@ describe('AgentSession queued messages', () => {
     expect(transport.requests).toHaveLength(2)
     expect(transport.requests[1]?.messages.map((message) => message.content)).toEqual([
       'start',
-      'answer-1',
       'already drained',
     ])
     expect(session.messages.some((message) => message.role === 'user' && message.content === 'already drained')).toBe(true)
@@ -2808,7 +3038,7 @@ describe('AgentSession turn aborted marker', () => {
   })
 })
 
-describe('AgentSession post-turn idle compaction', () => {
+describe('AgentSession speculative compaction', () => {
   /** 构造落在「软水位之上、硬阈值之下」字节数的会话：seed 一条大消息，使请求
    * 字节 > requestByteThreshold × 0.9（软线）但 < requestByteThreshold（硬线）——
    * 运行中不压缩，run 正常收口后空闲压缩应当自动触发。 */
@@ -2820,8 +3050,32 @@ describe('AgentSession post-turn idle compaction', () => {
     hardRequestByteLimit: 2 * 1024 * 1024,
   }
 
-  it('compacts in the idle gap after a completed run at the soft watermark', async () => {
-    const transport = new ResumeTransport()
+  it('prepares in the background and commits the candidate on a later threshold crossing', async () => {
+    let startSummary = (): void => undefined
+    let releaseSummary = (): void => undefined
+    let finishSummary = (): void => undefined
+    const summaryStarted = new Promise<void>((resolve) => { startSummary = resolve })
+    const summaryReleased = new Promise<void>((resolve) => { releaseSummary = resolve })
+    const summaryFinished = new Promise<void>((resolve) => { finishSummary = resolve })
+    class SpeculativeTransport implements ModelTransport {
+      readonly requests: ModelRequest[] = []
+
+      async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+        this.requests.push(structuredClone(request))
+        yield { type: 'start' }
+        if (request.systemPrompt.includes('上下文压缩器')) {
+          startSummary()
+          await summaryReleased
+          yield { type: 'text_delta', delta: '## 目标\n保留大段历史\n\n## 后续步骤\n1. 继续' }
+          yield { type: 'done', stopReason: 'stop' }
+          finishSummary()
+          return
+        }
+        yield { type: 'text_delta', delta: 'regenerated answer' }
+        yield { type: 'done', stopReason: 'stop' }
+      }
+    }
+    const transport = new SpeculativeTransport()
     const session = new AgentSession({
       sessionId: 'idle-compaction',
       systemPrompt: 'system',
@@ -2837,13 +3091,20 @@ describe('AgentSession post-turn idle compaction', () => {
     const result = await session.prompt('final check')
 
     expect(result.reason).toBe('completed')
-    // 运行中没有触发压缩（请求未超硬线）：首个请求就是普通对话请求
+    await summaryStarted
+    expect(session.checkpoint).toBeNull()
     expect(transport.requests).toHaveLength(2)
+    releaseSummary()
+    await summaryFinished
+
+    const crossing = await session.prompt('y'.repeat(40_000))
+
+    expect(crossing.reason).toBe('completed')
+    expect(transport.requests).toHaveLength(3)
     expect(transport.requests[0]?.messages.some((message) => message.id.startsWith('context-summary:'))).toBe(false)
-    // run 结算后的空隙里按软水位完成压缩（第二个请求是摘要请求）
     expect(transport.requests[1]?.systemPrompt.includes('上下文压缩器')).toBe(true)
+    expect(transport.requests[2]?.messages.some((message) => message.id.startsWith('context-summary:'))).toBe(true)
     expect(session.checkpoint?.reason).toBe('byte_threshold')
-    // 500KB 的大消息超出 keepRecent 尾窗，成为被摘要的压缩边界
     expect(session.checkpoint?.throughMessageId).toBe('big-u1')
   })
 

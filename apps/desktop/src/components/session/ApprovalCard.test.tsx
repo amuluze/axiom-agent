@@ -82,7 +82,7 @@ describe('ApprovalCard', () => {
     expect(html).toContain('仅对本次命令有效')
   })
 
-  it('renders both 拒绝 and 允许一次 buttons', () => {
+  it('renders 拒绝, 允许一次 and 完全访问 buttons', () => {
     mocks.pendingApproval = {
       toolCallId: 'tc-1',
       toolName: 'write',
@@ -91,7 +91,9 @@ describe('ApprovalCard', () => {
     const html = renderToStaticMarkup(createElement(ApprovalCard))
     expect(html).toContain('拒绝')
     expect(html).toContain('允许一次')
+    expect(html).toContain('完全访问')
     expect(html).toContain('approval-card__button--primary')
+    expect(html).toContain('approval-card__button--full-access')
     expect(html).toContain('role="alert"')
   })
 

@@ -494,3 +494,368 @@ describe('compileTestSpec v2 计划与运行占位符', () => {
     })
   })
 })
+
+describe('compileTestPlan v4（poll/delay 与多服务环境变量）', () => {
+  const points = [{ id: 'tp-probe', kind: 'new_feature' as const, title: '探测', acceptance: '可客观判定的预期' }]
+  const v4Spec = (steps: unknown[], extra: Record<string, unknown> = {}) => ({
+    ...specWith(steps),
+    version: 4,
+    testPoints: points,
+    cases: [{ id: 'probe', name: '探测用例', verifies: ['tp-probe'], steps }],
+    ...extra,
+  })
+  const multiServiceDeclared = new Set(['WEB_BASE_URL', 'API_BASE_URL', 'DETECTOR_MGMT_URL', 'DATA_PLANE_URL'])
+
+  it(`collects custom service env names so \${env.DATA_PLANE_URL} compiles against a multi-service topology`, async () => {
+    const plan = await compileOk(v4Spec([{
+      id: 's',
+      action: 'api.poll',
+      method: 'GET',
+      url: `\${env.DATA_PLANE_URL}/`,
+      virtualHost: `site-\${run.slug}.example.test`,
+      expect: [{ status: 200 }],
+    }]), multiServiceDeclared)
+    expect(plan.environmentNames).toContain('DATA_PLANE_URL')
+    const materialized = materializeTestPlan(plan, {
+      WEB_BASE_URL: 'http://127.0.0.1:5173',
+      API_BASE_URL: 'http://127.0.0.1:8090',
+      DETECTOR_MGMT_URL: 'http://127.0.0.1:18081',
+      DATA_PLANE_URL: 'http://127.0.0.1:8081',
+    }, { run: deriveRunPlaceholders('run-abc') })
+    expect(materialized.ok).toBe(true)
+  })
+
+  it('fails closed when a custom service variable is not declared by the environment', async () => {
+    const result = await compileWith(v4Spec([{
+      id: 's',
+      action: 'api.request',
+      method: 'GET',
+      url: `\${env.DETECTOR_MGMT_URL}/healthz`,
+      expect: [{ status: 200 }],
+    }]), multiServiceDeclared)
+    expect(result.ok).toBe(true)
+    const narrow = await compileWith(v4Spec([{
+      id: 's',
+      action: 'api.request',
+      method: 'GET',
+      url: `\${env.DETECTOR_MGMT_URL}/healthz`,
+      expect: [{ status: 200 }],
+    }]), declared)
+    expect(narrow.ok).toBe(false)
+    if (narrow.ok) return
+    expect(narrow.issues[0]?.message).toContain('未声明的环境变量「DETECTOR_MGMT_URL」')
+  })
+
+  it('resolves relative poll urls against target.apiBaseUrl and materializes poll variables', async () => {
+    const plan = await compileOk(v4Spec([{
+      id: 's',
+      action: 'api.poll',
+      method: 'GET',
+      url: `\${env.API_BASE_URL}/ready`,
+      headers: { 'X-Quoin-Secret': { secretId: 'apitest.detector' } },
+      expect: [{ status: 200 }],
+      extract: { version: { jsonPointer: '/data/version' } },
+    }]), multiServiceDeclared)
+    const materialized = materializeTestPlan(plan, {
+      WEB_BASE_URL: 'http://127.0.0.1:5173',
+      API_BASE_URL: 'http://127.0.0.1:8090',
+    }, { run: deriveRunPlaceholders('run-abc') })
+    expect(materialized.ok).toBe(true)
+    if (!materialized.ok) return
+    const step = materialized.plan.cases[0]?.steps[0]
+    expect(step).toMatchObject({ action: 'api.poll', url: 'http://127.0.0.1:8090/ready' })
+
+    const runtimeStep = materializeTestStepVariables(step!, { version: 3 }, materialized.plan.target)
+    expect(runtimeStep).toMatchObject({
+      action: 'api.poll',
+      url: 'http://127.0.0.1:8090/ready',
+      expect: [{ status: 200 }],
+    })
+  })
+
+  it('requires apiBaseUrl for relative poll urls and leaves delay steps untouched', async () => {
+    const noBase = await compileTestSpec(parseOrThrow({
+      ...v4Spec([{ id: 's', action: 'api.poll', method: 'GET', url: '/ready', expect: [{ status: 200 }] }]),
+      target: {},
+    }), { declaredEnvironmentNames: declared })
+    expect(noBase.ok).toBe(false)
+    if (noBase.ok) return
+    expect(noBase.issues[0]?.message).toContain('target.apiBaseUrl')
+
+    const plan = await compileOk(v4Spec([
+      { id: 'd', action: 'api.delay', durationMs: 1500 },
+      { id: 's', action: 'api.request', method: 'GET', url: `\${env.API_BASE_URL}/x`, expect: [{ status: 200 }] },
+    ]))
+    const materialized = materializeTestPlan(plan, {
+      WEB_BASE_URL: 'http://127.0.0.1:5173',
+      API_BASE_URL: 'http://127.0.0.1:8090',
+    }, { run: deriveRunPlaceholders('run-abc') })
+    expect(materialized.ok).toBe(true)
+    if (!materialized.ok) return
+    expect(materialized.plan.cases[0]?.steps[0]).toMatchObject({ action: 'api.delay', durationMs: 1500 })
+  })
+})
+
+describe('compileTestPlan v5（数据驱动 case 展开）', () => {
+  const points = [{ id: 'tp-probe', kind: 'new_feature' as const, title: '探测', acceptance: '可客观判定的预期' }]
+  const v5Spec = (cases: unknown[], extra: Record<string, unknown> = {}) => ({
+    ...specWith([]),
+    version: 5,
+    testPoints: points,
+    cases,
+    ...extra,
+  })
+  const rowStep = () => ({
+    id: 's',
+    action: 'api.request',
+    method: 'POST',
+    url: `\${env.API_BASE_URL}/x`,
+    headers: { 'X-Code': `\${vars.code}` },
+    body: { code: `\${vars.code}` },
+    expect: [{ status: 200 }],
+  })
+  const dataCase = (id = 'probe') => ({
+    id,
+    name: '探测用例',
+    verifies: ['tp-probe'],
+    steps: [rowStep()],
+    inputs: [{ code: 'A1' }, { code: 'B2' }],
+  })
+
+  it('expands rows into independent cases with -vN ids, copied verifies and seeds', async () => {
+    const plan = await compileOk(v5Spec([dataCase()]))
+    expect(plan.cases.map((testCase) => testCase.id)).toEqual(['probe-v1', 'probe-v2'])
+    expect(plan.cases.map((testCase) => testCase.seeds)).toEqual([{ code: 'A1' }, { code: 'B2' }])
+    expect(plan.cases[0]?.verifies).toEqual(['tp-probe'])
+    expect(plan.cases[0]?.name).toBe('探测用例 · 1/2')
+    expect(plan.cases[0]).not.toHaveProperty('inputs')
+    // 计划哈希仍取源文件（改输入行会改变哈希，展开只是编译产物）。
+    expect(plan.specHash).toHaveLength(64)
+  })
+
+  it('keeps the declared id for a single-row case', async () => {
+    const plan = await compileOk(v5Spec([{ ...dataCase(), inputs: [{ code: 'A1' }], name: '探测用例' }]))
+    expect(plan.cases.map((testCase) => testCase.id)).toEqual(['probe'])
+    expect(plan.cases[0]?.seeds).toEqual({ code: 'A1' })
+  })
+
+  it('rejects extraction that collides with a seed key in the same case', async () => {
+    const clashing = {
+      ...dataCase(),
+      steps: [
+        { ...rowStep(), extract: { code: { jsonPointer: '/code' } } },
+      ],
+    }
+    const result = await compileWith(v5Spec([clashing]))
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.issues).toContainEqual({
+      path: '$.cases[0].steps[0].extract.code',
+      message: '变量「code」已由当前作用域的前序步骤生产',
+    })
+  })
+
+  it('rejects expanded id collisions with hand-written cases', async () => {
+    const result = await compileWith(v5Spec([
+      dataCase('probe'),
+      {
+        id: 'probe-v2',
+        name: '手写用例',
+        verifies: ['tp-probe'],
+        steps: [{
+          id: 's',
+          action: 'api.request',
+          method: 'GET',
+          url: `\${env.API_BASE_URL}/y`,
+          expect: [{ status: 200 }],
+        }],
+      },
+    ]))
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.issues).toContainEqual({
+      path: '$.cases[1].id',
+      message: '展开后的用例 ID「probe-v2」重复',
+    })
+  })
+
+  it('materializes env and run placeholders inside seed values', async () => {
+    const plan = await compileOk(v5Spec([{
+      ...dataCase(),
+      inputs: [{ code: `\${run.slug}`, host: `\${env.API_BASE_URL}` }],
+    }]))
+    const materialized = materializeTestPlan(plan, {
+      WEB_BASE_URL: 'http://127.0.0.1:5173',
+      API_BASE_URL: 'http://127.0.0.1:8090',
+    }, { run: deriveRunPlaceholders('run-abc') })
+    expect(materialized.ok).toBe(true)
+    if (!materialized.ok) return
+    expect(materialized.plan.cases[0]?.seeds).toEqual({
+      code: expect.stringMatching(/^axiomrun-/),
+      host: 'http://127.0.0.1:8090',
+    })
+  })
+})
+
+describe('compileTestPlan v6（运行时凭据来源）', () => {
+  const points = [{ id: 'tp-probe', kind: 'new_feature' as const, title: '探测', acceptance: '可客观判定的预期' }]
+  const loginStep = (sensitive: boolean | undefined) => ({
+    id: 'login',
+    action: 'api.request',
+    method: 'POST',
+    url: `\${env.API_BASE_URL}/login`,
+    expect: [{ status: 200 }],
+    extract: { token: { jsonPointer: '/data/access_token', ...(sensitive === undefined ? {} : { sensitive }) } },
+  })
+  const callStep = {
+    id: 'call',
+    action: 'api.request',
+    method: 'GET',
+    url: `\${env.API_BASE_URL}/me`,
+    headers: { Authorization: { variable: 'token', prefix: 'Bearer ' } },
+    expect: [{ status: 200 }],
+  }
+  const v6Spec = (steps: unknown[], hooks: Record<string, unknown> = {}) => ({
+    ...specWith([]),
+    version: 6,
+    testPoints: points,
+    ...(Object.keys(hooks).length > 0 ? { hooks } : {}),
+    cases: [{ id: 'probe', name: '登录后调用', verifies: ['tp-probe'], steps }],
+  })
+
+  it('accepts variable headers backed by a sensitive extraction in the same case', async () => {
+    const plan = await compileOk(v6Spec([loginStep(true), callStep]))
+    expect(plan.cases[0]?.steps[1]).toMatchObject({
+      headers: { Authorization: { variable: 'token', prefix: 'Bearer ' } },
+    })
+  })
+
+  it('accepts a sensitive extraction produced by beforeAll', async () => {
+    const plan = await compileOk(v6Spec([callStep], { beforeAll: [loginStep(true)] }))
+    expect(plan.cases[0]?.steps[0]).toMatchObject({ id: 'call' })
+  })
+
+  it('rejects variable headers backed by non-sensitive or unknown extractions', async () => {
+    const nonSensitive = await compileWith(v6Spec([loginStep(false), callStep]))
+    expect(nonSensitive.ok).toBe(false)
+    if (nonSensitive.ok) return
+    expect(nonSensitive.issues).toContainEqual({
+      path: '$.cases[0].steps[1]',
+      message: '请求头变量「token」必须来自 sensitive 抽取（extract.token.sensitive = true）',
+    })
+
+    const unknown = await compileWith(v6Spec([callStep]))
+    expect(unknown.ok).toBe(false)
+    if (unknown.ok) return
+    expect(unknown.issues).toContainEqual({
+      path: '$.cases[0].steps[0]',
+      message: '请求头变量「token」必须来自 sensitive 抽取（extract.token.sensitive = true）',
+    })
+  })
+})
+
+describe('compileTestPlan v7（条件清理）', () => {
+  const points = [{ id: 'tp-probe', kind: 'new_feature' as const, title: '探测', acceptance: '可客观判定的预期' }]
+  const createStep = {
+    id: 'create',
+    action: 'api.request',
+    method: 'POST',
+    url: `\${env.API_BASE_URL}/x`,
+    expect: [{ status: 200 }],
+    extract: { siteId: { jsonPointer: '/id' } },
+  }
+  const cleanupStep = {
+    id: 'cleanup',
+    action: 'api.request',
+    method: 'DELETE',
+    url: `\${env.API_BASE_URL}/x/\${vars.siteId}`,
+    whenProduced: 'siteId',
+    expect: [{ statusIn: [200, 404] }],
+  }
+  const v7Spec = (cases: unknown[], extra: Record<string, unknown> = {}) => ({
+    ...specWith([]),
+    version: 7,
+    testPoints: points,
+    ...extra,
+    cases,
+  })
+
+  it('lets a shared cleanup hook guard a variable produced by only some cases', async () => {
+    const plan = await compileOk(v7Spec([
+      { id: 'with-create', name: '创建后清理', verifies: ['tp-probe'], steps: [createStep] },
+      { id: 'without-create', name: '无资源', verifies: ['tp-probe'], steps: [{
+        id: 'noop',
+        action: 'api.request',
+        method: 'GET',
+        url: `\${env.API_BASE_URL}/ping`,
+        expect: [{ status: 200 }],
+      }] },
+    ], { hooks: { afterEach: [cleanupStep] } }))
+    expect(plan.hooks?.afterEach?.[0]).toMatchObject({
+      whenProduced: 'siteId',
+      expect: [{ statusIn: [200, 404] }],
+    })
+  })
+
+  it('rejects guards for variables the file never produces', async () => {
+    const result = await compileWith(v7Spec([
+      { id: 'case-1', name: '无产出', verifies: ['tp-probe'], steps: [{
+        id: 's',
+        action: 'api.request',
+        method: 'GET',
+        url: `\${env.API_BASE_URL}/ping`,
+        whenProduced: 'ghost',
+        expect: [{ status: 200 }],
+      }] },
+    ]))
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.issues).toContainEqual({
+      path: '$.cases[0].steps[0]',
+      message: 'whenProduced 变量「ghost」在本文件中没有任何步骤生产（条件永远不成立）',
+    })
+  })
+
+  it('keeps unguarded references strict', async () => {
+    const result = await compileWith(v7Spec([
+      { id: 'case-1', name: '无产出', verifies: ['tp-probe'], steps: [{
+        id: 's',
+        action: 'api.request',
+        method: 'GET',
+        url: `\${env.API_BASE_URL}/x/\${vars.siteId}`,
+        expect: [{ status: 200 }],
+      }] },
+    ]))
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.issues).toContainEqual({
+      path: '$.cases[0].steps[0]',
+      message: '变量「siteId」必须由当前作用域中的前序步骤生产',
+    })
+  })
+
+  it('requires a matching guard for consumers of conditional products', async () => {
+    const conditionalCreate = { ...createStep, whenProduced: 'siteId' }
+    const guarded = await compileOk(v7Spec([
+      { id: 'case-1', name: '条件创建', verifies: ['tp-probe'], steps: [conditionalCreate, cleanupStep] },
+    ]))
+    expect(guarded.cases[0]?.steps[1]).toMatchObject({ whenProduced: 'siteId' })
+
+    const unguardedConsumer = {
+      id: 'consume',
+      action: 'api.request',
+      method: 'GET',
+      url: `\${env.API_BASE_URL}/x/\${vars.siteId}`,
+      expect: [{ status: 200 }],
+    }
+    const result = await compileWith(v7Spec([
+      { id: 'case-1', name: '条件创建', verifies: ['tp-probe'], steps: [conditionalCreate, unguardedConsumer] },
+    ]))
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.issues).toContainEqual({
+      path: '$.cases[0].steps[1]',
+      message: '变量「siteId」由条件步骤生产；引用它的步骤必须声明 whenProduced: "siteId"',
+    })
+  })
+})

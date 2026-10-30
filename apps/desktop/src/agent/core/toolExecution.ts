@@ -29,8 +29,12 @@ import type {
   ToolResultExternalizer,
   ToolResultMessage,
   ToolApprovalPresentation,
+  ModelTransport,
+  ModelTransportLifecycle,
 } from './types'
 import type { AssistantMessage } from './types'
+import { generateSyntaxRepair } from './syntaxRepairModel'
+import type { SyntaxRepairRuntime } from './syntaxRepairModel'
 
 /** SubAgent 委派端口：由 runAgentLoop 透传，executePreparedToolCall 在每个工具调用现场注入身份。 */
 export type RunDelegatePort = (
@@ -62,6 +66,15 @@ export class ToolExecutionTimeoutError extends Error {
   }
 }
 
+const suggestedToolName = (requestedName: string, tools: AgentTool[]): string | undefined => {
+  const requested = requestedName.trim().toLocaleLowerCase('en-US')
+  if (!requested) return undefined
+  const segments = requested.split(/__|[./:]/u).filter(Boolean)
+  const tail = segments[segments.length - 1]
+  if (!tail || tail === requested) return undefined
+  return tools.find((tool) => tool.name.toLocaleLowerCase('en-US') === tail)?.name
+}
+
 /** 给 Promise 加硬超时：先到者胜，超时 reject 专属错误；胜者清理 timer 防泄漏。 */
 const withHardTimeout = <T>(
   promise: Promise<T>,
@@ -83,6 +96,13 @@ export interface PreparedToolCall {
   approvalState: 'approved' | 'not_required'
   approvalLease?: string
   approvalSource?: 'not_required' | 'interactive' | 'automatic'
+  preparationDetails?: JsonValue
+}
+
+export interface ToolPreparationRuntime {
+  transport: ModelTransport
+  lifecycle?: ModelTransportLifecycle
+  syntaxRepair?: SyntaxRepairRuntime
 }
 
 /**
@@ -90,7 +110,7 @@ export interface PreparedToolCall {
  * 审批等待期间响应 abort：把 signal 转成 reject，避免无限挂起。
  */
 export const waitForApproval = async (
-  prepared: Pick<PreparedToolCall, 'call' | 'tool' | 'input'>,
+  prepared: Pick<PreparedToolCall, 'call' | 'tool' | 'input' | 'preparationDetails'>,
   assistantMessage: AssistantMessage,
   context: AgentContext,
   runId: string,
@@ -106,7 +126,12 @@ export const waitForApproval = async (
 
   let presentation: ToolApprovalPresentation | undefined
   try {
-    presentation = prepared.tool.approvalPresentation?.(cloneJsonValue(prepared.input)) ?? {
+    presentation = prepared.tool.approvalPresentation?.(
+      cloneJsonValue(prepared.input),
+      prepared.preparationDetails === undefined
+        ? undefined
+        : cloneJsonValue(prepared.preparationDetails),
+    ) ?? {
       title: `允许工具 ${prepared.tool.label} 执行？`,
       description: '此工具需要逐次用户审批。',
     }
@@ -269,6 +294,9 @@ export const executePreparedToolCall = async (
       modelAcceptsImage: context.model.input?.includes('image') ?? false,
       ...(deadlineMs !== undefined ? { deadlineMs } : {}),
       reportProgress,
+      ...(prepared.preparationDetails === undefined
+        ? {}
+        : { preparationDetails: cloneJsonValue(prepared.preparationDetails) }),
       ...(runDelegate
         ? {
             delegateAgent: (request: AgentDelegationRequest) =>
@@ -361,23 +389,66 @@ export const prepareToolCall = async (
   signal: AbortSignal,
   emit: AgentEventSink,
   beforeToolCall: BeforeToolCall | undefined,
+  preparationRuntime?: ToolPreparationRuntime,
 ): Promise<PreparedToolCall | ToolCallOutcome> => {
   const tool = activeToolsForContext(context).find((candidate) => candidate.name === call.name)
   let errorMessage: string | undefined
   let validatedInput: JsonValue = call.arguments
+  let preparationDetails: JsonValue | undefined
 
   if (call.argumentError) {
     errorMessage = `工具参数不是有效 JSON：${call.argumentError}`
   } else if (!tool) {
+    const suggestion = suggestedToolName(call.name, context.tools)
     errorMessage = context.tools.some((candidate) => candidate.name === call.name)
       ? `工具尚未激活：${call.name}`
-      : `未注册工具：${call.name}`
+      : `未注册工具：${call.name}${suggestion ? `；你是否想使用 ${suggestion}？` : ''}`
   } else {
     try {
       const preparedInput = tool.prepareArguments?.(call.arguments) ?? call.arguments
-      const validation = tool.validate(preparedInput)
+      let validation = tool.validate(preparedInput)
       if (validation.ok) {
         validatedInput = validation.value
+        if (tool.prepareForApproval) {
+          const syntaxRepairRuntime = preparationRuntime?.syntaxRepair ?? (preparationRuntime
+            ? {
+                model: context.model,
+                transport: preparationRuntime.transport,
+                ...(preparationRuntime.lifecycle
+                  ? { lifecycle: preparationRuntime.lifecycle }
+                  : {}),
+              }
+            : undefined)
+          const preparation = await tool.prepareForApproval(cloneJsonValue(validatedInput), {
+            sessionId: context.sessionId,
+            runId,
+            toolCallId: call.id,
+            signal,
+            ...(syntaxRepairRuntime
+              ? {
+                  repairSyntax: (request) => generateSyntaxRepair({
+                    sessionId: context.sessionId,
+                    model: syntaxRepairRuntime.model,
+                    transport: syntaxRepairRuntime.transport,
+                    request,
+                    signal,
+                    ...(syntaxRepairRuntime.lifecycle
+                      ? { lifecycle: syntaxRepairRuntime.lifecycle }
+                      : {}),
+                  }),
+                }
+              : {}),
+          })
+          validation = tool.validate(preparation.input)
+          if (validation.ok) {
+            validatedInput = validation.value
+            if (preparation.details !== undefined) {
+              preparationDetails = cloneJsonValue(preparation.details)
+            }
+          } else {
+            errorMessage = `工具审批前处理返回了无效参数：${validation.error}`
+          }
+        }
       } else {
         errorMessage = `工具参数校验失败：${validation.error}`
       }
@@ -412,7 +483,10 @@ export const prepareToolCall = async (
   let auditArguments = validatedInput
   if (tool.auditArguments) {
     try {
-      auditArguments = tool.auditArguments(cloneJsonValue(validatedInput))
+      auditArguments = tool.auditArguments(
+        cloneJsonValue(validatedInput),
+        preparationDetails === undefined ? undefined : cloneJsonValue(preparationDetails),
+      )
     } catch {
       auditArguments = { redacted: true }
     }
@@ -464,7 +538,12 @@ export const prepareToolCall = async (
     recoveryPolicy,
     ...(idempotencyKey ? { idempotencyKey } : {}),
   })
-  const prepared = { call, tool, input: validatedInput } satisfies Omit<PreparedToolCall, 'approvalState' | 'approvalSource'>
+  const prepared = {
+    call,
+    tool,
+    input: validatedInput,
+    ...(preparationDetails === undefined ? {} : { preparationDetails }),
+  } satisfies Omit<PreparedToolCall, 'approvalState' | 'approvalSource'>
   const approval = await waitForApproval(
     prepared,
     assistantMessage,
@@ -519,6 +598,7 @@ export const executeToolCalls = async (
   externalizeToolResult?: ToolResultExternalizer,
   timeoutMs?: number,
   runDelegate?: RunDelegatePort,
+  preparationRuntime?: ToolPreparationRuntime,
 ): Promise<ToolBatchResult> => {
   const calls = assistantMessage.toolCalls
   const activeTools = activeToolsForContext(context)
@@ -546,6 +626,7 @@ export const executeToolCalls = async (
         signal,
         emit,
         beforeToolCall,
+        preparationRuntime,
       )
       if (!('tool' in prepared)) {
         resultSlots.set(call.id, prepared)
@@ -577,6 +658,7 @@ export const executeToolCalls = async (
         signal,
         emit,
         beforeToolCall,
+        preparationRuntime,
       )
       if ('tool' in prepared) preparedCalls.push(prepared)
       else resultSlots.set(call.id, prepared)

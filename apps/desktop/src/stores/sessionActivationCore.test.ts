@@ -75,6 +75,7 @@ const baseProjection = (): AgentCoreProjection => ({
   contextCheckpoint: null,
   contextUsage: baseUsage(),
   pendingSteeringCount: 0,
+  pendingAsideCount: 0,
   pendingFollowUpCount: 0,
   pendingNextTurnCount: 0,
   queuedMessages: [],

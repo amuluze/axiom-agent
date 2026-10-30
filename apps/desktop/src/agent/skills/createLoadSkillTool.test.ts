@@ -71,7 +71,7 @@ describe('createLoadSkillTool', () => {
 
   it('运行时版本与恢复策略正确', () => {
     expect(tool.name).toBe('load_skill')
-    expect(tool.runtimeVersion).toBe('6')
+    expect(tool.runtimeVersion).toBe('12')
     expect(tool.recoveryPolicy).toBe('idempotent')
   })
 

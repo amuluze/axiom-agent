@@ -139,6 +139,14 @@ pub(crate) struct SaveTestEnvironment {
     pub(crate) allow_private_network: bool,
     pub(crate) headers_json: String,
     pub(crate) secret_ids_json: String,
+    /// v21（协议 v4 多服务拓扑）：自定义大写变量（如 `DETECTOR_MGMT_URL`）的 JSON 对象；
+    /// 缺省空对象保持旧记录语义。
+    #[serde(default)]
+    pub(crate) extra_vars_json: Option<String>,
+    /// v21：Secret 允许发往的额外 origin 白名单（`scheme://host[:port]`）的 JSON 数组；
+    /// 缺省空数组保持「Secret 只能发往 API Base URL 同源」的旧边界。
+    #[serde(default)]
+    pub(crate) secret_origins_json: Option<String>,
     pub(crate) updated_at: i64,
 }
 
@@ -158,6 +166,10 @@ pub(crate) struct TestEnvironment {
     pub(crate) allow_private_network: bool,
     pub(crate) headers_json: String,
     pub(crate) secret_ids_json: String,
+    /// v21：自定义大写变量（多服务端点）与 Secret 额外 origin 白名单（JSON 文本，
+    /// 语义校验在环境档解析器/保存校验侧）。
+    pub(crate) extra_vars_json: String,
+    pub(crate) secret_origins_json: String,
     #[specta(type = specta_typescript::Number)]
     pub(crate) created_at: i64,
     #[specta(type = specta_typescript::Number)]
@@ -172,6 +184,9 @@ pub(crate) struct TestEnvironmentAccess {
     /// Secret 注入的同源边界（见 `api_test::prepare_request`）：环境未配置 API Base URL
     /// 时，使用 Secret 引用的请求一律拒绝，避免把凭据发往任意公网地址。
     pub(crate) api_base_url: Option<String>,
+    /// v21：多服务拓扑下 Secret 允许发往的额外 origin（`scheme://host[:port]`）；
+    /// 空集保持「只能发往 API Base URL 同源」的旧边界。
+    pub(crate) secret_origins: BTreeSet<String>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, specta::Type)]
@@ -382,7 +397,60 @@ fn validate_test_environment(environment: &SaveTestEnvironment) -> Result<(), St
     if !valid_secret_ids || environment.secret_ids_json.len() > 16 * 1024 {
         return Err("测试环境 Secret 引用必须是大小受限的字符串数组".to_string());
     }
+    let extra_vars_source = environment.extra_vars_json.as_deref().unwrap_or("{}");
+    let extra_vars: serde_json::Value = serde_json::from_str(extra_vars_source)
+        .map_err(|_| "测试环境自定义变量不是合法 JSON".to_string())?;
+    let valid_extra_vars = extra_vars.as_object().is_some_and(|vars| {
+        vars.len() <= 64
+            && vars.iter().all(|(name, value)| {
+                valid_environment_var_name(name)
+                    && value.as_str().is_some_and(|value| {
+                        value.len() <= 4096 && !contains_plaintext_credential(value)
+                    })
+            })
+    });
+    if !valid_extra_vars || extra_vars_source.len() > 16 * 1024 {
+        return Err(
+            "测试环境自定义变量必须是名字为大写标识符、值为非凭据字符串的 JSON 对象".to_string(),
+        );
+    }
+    let secret_origins_source = environment.secret_origins_json.as_deref().unwrap_or("[]");
+    let secret_origins: serde_json::Value = serde_json::from_str(secret_origins_source)
+        .map_err(|_| "测试环境 Secret 目标白名单不是合法 JSON".to_string())?;
+    let valid_secret_origins = secret_origins.as_array().is_some_and(|origins| {
+        origins.len() <= 16
+            && origins
+                .iter()
+                .all(|origin| origin.as_str().is_some_and(valid_secret_origin))
+    });
+    if !valid_secret_origins || secret_origins_source.len() > 16 * 1024 {
+        return Err(
+            "测试环境 Secret 目标白名单必须是 origin（http(s)://host[:port]）数组".to_string(),
+        );
+    }
     Ok(())
+}
+
+/// 环境档 v2 的自定义变量名：与 TS `${env.NAME}` 占位符的 `NAME` 形状一致（大写开头）。
+fn valid_environment_var_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    characters.next().is_some_and(|c| c.is_ascii_uppercase())
+        && name.len() <= 64
+        && characters.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Secret 目标白名单条目必须是严格的 origin 形状：http(s) + host(+port)，无路径/查询/凭据。
+fn valid_secret_origin(value: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(value) else {
+        return false;
+    };
+    matches!(parsed.scheme(), "http" | "https")
+        && parsed.host_str().is_some()
+        && parsed.path() == "/"
+        && parsed.query().is_none()
+        && parsed.fragment().is_none()
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
 }
 
 pub(crate) async fn save_test_environment(
@@ -412,15 +480,16 @@ pub(crate) async fn save_test_environment(
         sqlx::query(
             "INSERT INTO test_environments (
                id, logical_id, workspace_path, name, kind, recipe_json, web_base_url, api_base_url, viewport_width, viewport_height,
-               allow_private_network, headers_json, secret_ids_json, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               allow_private_network, headers_json, secret_ids_json, extra_vars_json, secret_origins_json, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                name = excluded.name, kind = excluded.kind, recipe_json = excluded.recipe_json,
                web_base_url = excluded.web_base_url,
                api_base_url = excluded.api_base_url, viewport_width = excluded.viewport_width,
                viewport_height = excluded.viewport_height,
                allow_private_network = excluded.allow_private_network, headers_json = excluded.headers_json,
-               secret_ids_json = excluded.secret_ids_json, updated_at = excluded.updated_at",
+               secret_ids_json = excluded.secret_ids_json, extra_vars_json = excluded.extra_vars_json,
+               secret_origins_json = excluded.secret_origins_json, updated_at = excluded.updated_at",
         )
         .bind(storage_id)
         .bind(&environment.id)
@@ -435,6 +504,8 @@ pub(crate) async fn save_test_environment(
         .bind(environment.allow_private_network)
         .bind(&environment.headers_json)
         .bind(&environment.secret_ids_json)
+        .bind(environment.extra_vars_json.as_deref().unwrap_or("{}"))
+        .bind(environment.secret_origins_json.as_deref().unwrap_or("[]"))
         .bind(environment.updated_at)
         .bind(environment.updated_at)
         .execute(&mut *connection)
@@ -452,7 +523,7 @@ pub(crate) async fn list_test_environments(
 ) -> Result<Vec<TestEnvironment>, String> {
     let rows = sqlx::query(
         "SELECT logical_id AS id, name, kind, recipe_json, web_base_url, api_base_url, viewport_width, viewport_height,
-         allow_private_network, headers_json, secret_ids_json, created_at, updated_at FROM test_environments
+         allow_private_network, headers_json, secret_ids_json, extra_vars_json, secret_origins_json, created_at, updated_at FROM test_environments
          WHERE workspace_path = ? ORDER BY updated_at DESC, logical_id DESC",
     )
     .bind(workspace_path)
@@ -489,6 +560,12 @@ pub(crate) async fn list_test_environments(
                 secret_ids_json: row
                     .try_get("secret_ids_json")
                     .map_err(|error| error.to_string())?,
+                extra_vars_json: row
+                    .try_get("extra_vars_json")
+                    .map_err(|error| error.to_string())?,
+                secret_origins_json: row
+                    .try_get("secret_origins_json")
+                    .map_err(|error| error.to_string())?,
                 created_at: row
                     .try_get("created_at")
                     .map_err(|error| error.to_string())?,
@@ -511,10 +588,11 @@ pub(crate) async fn load_test_environment_access(
             headers: BTreeMap::new(),
             secret_ids: BTreeSet::new(),
             api_base_url: None,
+            secret_origins: BTreeSet::new(),
         });
     };
     let row = sqlx::query(
-        "SELECT allow_private_network, headers_json, secret_ids_json, api_base_url FROM test_environments
+        "SELECT allow_private_network, headers_json, secret_ids_json, api_base_url, secret_origins_json FROM test_environments
          WHERE logical_id = ? AND workspace_path = ?",
     )
     .bind(environment_id)
@@ -532,10 +610,17 @@ pub(crate) async fn load_test_environment_access(
     let api_base_url: Option<String> = row
         .try_get("api_base_url")
         .map_err(|error| error.to_string())?;
+    let secret_origins_json: String = row
+        .try_get("secret_origins_json")
+        .map_err(|error| error.to_string())?;
     let headers = serde_json::from_str(&headers_json)
         .map_err(|_| "API 测试环境 Headers 已损坏".to_string())?;
     let secret_ids = serde_json::from_str::<Vec<String>>(&secret_ids_json)
         .map_err(|_| "API 测试环境 Secret 引用已损坏".to_string())?
+        .into_iter()
+        .collect();
+    let secret_origins = serde_json::from_str::<Vec<String>>(&secret_origins_json)
+        .map_err(|_| "API 测试环境 Secret 目标白名单已损坏".to_string())?
         .into_iter()
         .collect();
     Ok(TestEnvironmentAccess {
@@ -545,6 +630,7 @@ pub(crate) async fn load_test_environment_access(
         headers,
         secret_ids,
         api_base_url,
+        secret_origins,
     })
 }
 
@@ -557,6 +643,9 @@ struct EnvironmentFields {
     secret_ids: BTreeSet<String>,
     allow_private_network: bool,
     headers: serde_json::Value,
+    /// v21：Secret 目标白名单与自定义变量也是运行边界——改变它们同样需要内容级确认。
+    secret_origins: BTreeSet<String>,
+    extra_vars: serde_json::Value,
 }
 
 async fn load_environment_fields(
@@ -565,7 +654,7 @@ async fn load_environment_fields(
     environment_id: &str,
 ) -> Result<Option<EnvironmentFields>, String> {
     let row = sqlx::query(
-        "SELECT api_base_url, web_base_url, secret_ids_json, allow_private_network, headers_json \
+        "SELECT api_base_url, web_base_url, secret_ids_json, allow_private_network, headers_json, secret_origins_json, extra_vars_json \
          FROM test_environments WHERE workspace_path = ? AND logical_id = ?",
     )
     .bind(workspace_path)
@@ -581,6 +670,12 @@ async fn load_environment_fields(
         .map_err(|error| error.to_string())?;
     let headers_json: String = row
         .try_get("headers_json")
+        .map_err(|error| error.to_string())?;
+    let secret_origins_json: String = row
+        .try_get("secret_origins_json")
+        .map_err(|error| error.to_string())?;
+    let extra_vars_json: String = row
+        .try_get("extra_vars_json")
         .map_err(|error| error.to_string())?;
     Ok(Some(EnvironmentFields {
         api_base_url: row
@@ -598,6 +693,12 @@ async fn load_environment_fields(
             .map_err(|error| error.to_string())?,
         headers: serde_json::from_str(&headers_json)
             .map_err(|_| "API 测试环境 Headers 已损坏".to_string())?,
+        secret_origins: serde_json::from_str::<Vec<String>>(&secret_origins_json)
+            .map_err(|_| "API 测试环境 Secret 目标白名单已损坏".to_string())?
+            .into_iter()
+            .collect(),
+        extra_vars: serde_json::from_str(&extra_vars_json)
+            .map_err(|_| "API 测试环境自定义变量已损坏".to_string())?,
     }))
 }
 
@@ -616,6 +717,15 @@ fn describe_environment_changes(
         .collect::<BTreeSet<_>>();
     let incoming_headers: serde_json::Value = serde_json::from_str(&incoming.headers_json)
         .map_err(|_| "测试环境 Headers 不是合法 JSON".to_string())?;
+    let incoming_secret_origins = serde_json::from_str::<Vec<String>>(
+        incoming.secret_origins_json.as_deref().unwrap_or("[]"),
+    )
+    .map_err(|_| "测试环境 Secret 目标白名单不是合法 JSON".to_string())?
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    let incoming_extra_vars: serde_json::Value =
+        serde_json::from_str(incoming.extra_vars_json.as_deref().unwrap_or("{}"))
+            .map_err(|_| "测试环境自定义变量不是合法 JSON".to_string())?;
     let mut changes = Vec::new();
     let Some(existing) = existing else {
         if incoming.api_base_url.is_some() {
@@ -642,6 +752,22 @@ fn describe_environment_changes(
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
+        }
+        if !incoming_secret_origins.is_empty() {
+            changes.push(format!(
+                "Secret 目标：新增 {}",
+                incoming_secret_origins
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if incoming_extra_vars
+            .as_object()
+            .is_some_and(|vars| !vars.is_empty())
+        {
+            changes.push("服务变量：新增".to_string());
         }
         if incoming_headers
             .as_object()
@@ -702,6 +828,28 @@ fn describe_environment_changes(
     }
     if existing.headers != incoming_headers {
         changes.push("非敏感 Headers 有变化".to_string());
+    }
+    let origins_added = incoming_secret_origins
+        .difference(&existing.secret_origins)
+        .cloned()
+        .collect::<Vec<_>>();
+    let origins_removed = existing
+        .secret_origins
+        .difference(&incoming_secret_origins)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !origins_added.is_empty() || !origins_removed.is_empty() {
+        let mut parts = Vec::new();
+        if !origins_added.is_empty() {
+            parts.push(format!("新增 {}", origins_added.join(", ")));
+        }
+        if !origins_removed.is_empty() {
+            parts.push(format!("移除 {}", origins_removed.join(", ")));
+        }
+        changes.push(format!("Secret 目标白名单：{}", parts.join("；")));
+    }
+    if existing.extra_vars != incoming_extra_vars {
+        changes.push("服务变量有变化".to_string());
     }
     Ok(changes)
 }
@@ -1604,6 +1752,8 @@ mod tests {
             allow_private_network: false,
             headers_json: "{}".to_string(),
             secret_ids_json: "[]".to_string(),
+            extra_vars_json: None,
+            secret_origins_json: None,
             updated_at: 10,
         }
     }
@@ -1640,6 +1790,8 @@ mod tests {
             secret_ids: BTreeSet::from(["apitest.old".to_string()]),
             allow_private_network: false,
             headers: serde_json::json!({"x-a": "1"}),
+            secret_origins: BTreeSet::new(),
+            extra_vars: serde_json::json!({}),
         };
         let mut incoming = sample_environment("env-1");
         incoming.api_base_url = Some("https://api.example.com".to_string());

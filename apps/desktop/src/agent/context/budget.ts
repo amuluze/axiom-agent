@@ -10,6 +10,7 @@ import { canBranchThrough } from '@/agent/session/branch'
 import { hasMeaningfulAssistantContent } from '@/agent/core/messages'
 import { createContextLedgerMessage, isContextLedgerMessage } from './ledger'
 import { createRecoveryPreambleMessage, isRecoveryPreambleMessage } from './recoveryPreamble'
+import { sanitizeContextMessages } from './sanitize'
 
 const encoder = new TextEncoder()
 const SUMMARY_MESSAGE_PREFIX = 'context-summary:'
@@ -52,7 +53,8 @@ export const estimateContextTokens = (
 export const modelRequestByteLength = (
   request: ModelRequest,
   transport: ModelTransport,
-): number => transport.requestByteLength?.(request) ?? utf8ByteLength(JSON.stringify(request))
+): number => transport.requestByteLength?.(request)
+  ?? utf8ByteLength(JSON.stringify(request, (key, value) => key === 'stablePrefix' ? undefined : value))
 
 export const evaluateContextBudget = (
   request: ModelRequest,
@@ -135,9 +137,9 @@ export const buildContextProjection = (
   // 执行落库——工具结果持久化失败（如超过 Rust 单条消息 2 MiB 上限）会让持久历史
   // 永久缺少对应 tool 消息，后续所有请求被 Provider 以 400 拒绝（重启恢复有
   // interruptedToolRecovery 兜底，会话内此前没有）。占位消息只存在于投影，不落库。
-  return repairToolCallPairing(
+  return repairToolCallPairing(sanitizeContextMessages(
     [preamble, summary, ledger, ...recent].filter((message): message is AgentMessage => Boolean(message)),
-  )
+  ))
 }
 
 const MISSING_TOOL_RESULT_ID_PREFIX = 'tool-result-repair:'
@@ -188,7 +190,7 @@ export const repairToolCallPairing = (messages: AgentMessage[]): AgentMessage[] 
         toolCallId: toolCall.id,
         toolName: toolCall.name,
         content: '此工具调用的持久化结果已丢失（大概率因结果体积超过单条消息上限而写入失败）。Axiom 注入本占位以保持上下文完整：请勿假设该工具的副作用未发生，需要结果时重新执行该工具或改用更窄的调用。',
-        details: { reason: 'tool_result_persist_missing' },
+        details: { reason: 'tool_result_persist_missing', __synthetic: true },
         isError: true,
         createdAt: message.createdAt,
       })), ...group.slice(insertAt))

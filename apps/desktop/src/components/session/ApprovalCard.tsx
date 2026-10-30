@@ -4,6 +4,9 @@ import { useAgentStore } from '@/stores/agentStore'
 import { useT } from '@/i18n'
 import { useDesignPreview } from '@/components/design/ax/previewContext'
 
+/** 预览 seam 的 no-op 动作：画布评审不得触发真实的访问模式切换。 */
+const previewSetAccessMode = async (): Promise<string | null> => null
+
 export const ApprovalCard = () => {
   const { t } = useT()
   // 预览 seam（docs/ax-format.md §4.2）：store hooks 必须**无条件**调用（hooks 规则），
@@ -11,15 +14,23 @@ export const ApprovalCard = () => {
   const storePendingApproval = useAgentStore((state) => state.pendingApproval)
   const storeApproveToolCall = useAgentStore((state) => state.approveToolCall)
   const storeDenyToolCall = useAgentStore((state) => state.denyToolCall)
+  const storeAccessMode = useAgentStore((state) => state.accessMode)
+  const storeSetAccessMode = useAgentStore((state) => state.setAccessMode)
+  const storeAccessModeChanging = useAgentStore((state) => state.accessModeChanging)
   const preview = useDesignPreview()
   const pendingApproval = preview ? preview.pendingApproval ?? null : storePendingApproval
   // 高危命令（danger 标记）要求用户显式勾选确认后才放行；切换到下一个审批时重置。
   const [dangerAcknowledged, setDangerAcknowledged] = useState(false)
+  const [accessModeError, setAccessModeError] = useState<string | null>(null)
   useEffect(() => {
     setDangerAcknowledged(false)
+    setAccessModeError(null)
   }, [pendingApproval?.toolCallId])
   const approveToolCall = preview?.approveToolCall ?? storeApproveToolCall
   const denyToolCall = preview?.denyToolCall ?? storeDenyToolCall
+  const accessMode = preview ? 'standard' : storeAccessMode
+  const setAccessMode = preview ? previewSetAccessMode : storeSetAccessMode
+  const accessModeChanging = preview ? false : storeAccessModeChanging
   if (!pendingApproval) return null
   const presentation = pendingApproval.presentation
   const isCommand = presentation.category === 'workspace-command'
@@ -83,6 +94,9 @@ export const ApprovalCard = () => {
           </label>
         </div>
       )}
+      {accessModeError && (
+        <p role="alert" className="approval-card__mode-error">{accessModeError}</p>
+      )}
       <div className="approval-card__actions">
         <button
           className="approval-card__button"
@@ -99,6 +113,22 @@ export const ApprovalCard = () => {
         >
           {t('app.approval.allow')}
         </button>
+        {accessMode !== 'no-approval' && (
+          <button
+            className="approval-card__button approval-card__button--full-access"
+            disabled={accessModeChanging}
+            title={t('app.approval.fullAccessHint')}
+            onClick={() => {
+              setAccessModeError(null)
+              void setAccessMode('no-approval').then((error) => {
+                if (error) setAccessModeError(error)
+              })
+            }}
+            type="button"
+          >
+            {t('app.approval.fullAccess')}
+          </button>
+        )}
       </div>
     </aside>
   )

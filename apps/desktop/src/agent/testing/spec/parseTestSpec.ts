@@ -5,10 +5,12 @@ import {
   TEST_SPEC_API_METHODS,
   TEST_SPEC_KIND,
   type ApiExtraction,
+  type ApiDelayStepSpec,
+  type ApiHeaderValue,
   type ApiExpectation,
   type ApiMethod,
+  type ApiPollStepSpec,
   type ApiStepSpec,
-  type SecretReference,
   type TestCaseSpec,
   type TestHooksSpec,
   type TestJsonValue,
@@ -46,6 +48,13 @@ export const TEST_SPEC_LIMITS = {
   maxExpectations: 32,
   maxTestPoints: 64,
   maxVerifiesPerCase: 16,
+  /** v5：案例输入表的行数上限（展开后的 case 上限另受 maxCases 约束，编译期拒绝超限）。 */
+  maxCaseInputs: 64,
+  /** api.delay 的单次小睡上限：覆盖「跨秒边界」量级即可，不做长睡眠。 */
+  maxDelayMs: 30_000,
+  /** api.poll 的轮询间隔上下界：下界防止打爆目标，上界与单次尝试超时对齐。 */
+  minPollIntervalMs: 500,
+  maxPollIntervalMs: 30_000,
 } as const
 
 const ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/
@@ -53,6 +62,8 @@ const VARIABLE_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/
 const TEMPLATE_REF_PATTERN = /\$\{(?:env\.[A-Z][A-Z0-9_]{0,63}|vars\.[A-Za-z][A-Za-z0-9_]{0,63}|run\.(?:id|slug))\}/g
 const TEMPLATE_PREFIX_PATTERN = /^\$\{(?:env\.[A-Z][A-Z0-9_]{0,63}|vars\.[A-Za-z][A-Za-z0-9_]{0,63}|run\.(?:id|slug))\}/
 const SECRET_ID_PATTERN = /^apitest\.[a-z0-9][a-z0-9._-]{0,127}$/
+/** v9：fixture 文件引用路径——只允许 `tests/fixtures/` 下的相对路径。 */
+const FIXTURE_PATH_PATTERN = /^tests\/fixtures\/[A-Za-z0-9._/-]+$/
 const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/
 const SENSITIVE_HEADER_NAMES = new Set(['authorization', 'proxy-authorization', 'cookie', 'set-cookie', 'x-api-key'])
 const JSON_POINTER_PATTERN = /^(\/([^~]|~[01])*)?$/
@@ -63,24 +74,38 @@ const UI_EXPECTATION_KEYS = [
   'valueEquals', 'urlEquals', 'urlContains', 'count',
 ] as const
 const API_EXPECTATION_KEYS = [
-  'status', 'headerEquals', 'headerContains', 'bodyContains',
-  'jsonPointerExists', 'jsonPointerEquals', 'maxElapsedMs',
+  'status', 'statusIn', 'headerEquals', 'headerContains', 'headerExists', 'headerAbsent', 'bodyContains', 'bodyNotContains',
+  'jsonPointerExists', 'jsonPointerEquals', 'jsonPointerLengthEquals',
+  'jsonPointerNumberAtLeast', 'jsonPointerNumberAtMost', 'maxElapsedMs',
 ] as const
+
+/** v4 新增的断言变体：出现在 v1–v3 文件里是版本错误而不是未知断言。 */
+const V4_API_EXPECTATION_KEYS: readonly string[] = [
+  'headerExists', 'headerAbsent', 'jsonPointerLengthEquals',
+  'jsonPointerNumberAtLeast', 'jsonPointerNumberAtMost',
+]
+
+/** v7 新增断言：出现在 v1–v6 文件里是版本错误。 */
+const V7_API_EXPECTATION_KEYS: readonly string[] = ['statusIn']
+/** v8 新增断言。 */
+const V8_API_EXPECTATION_KEYS: readonly string[] = ['bodyNotContains']
 
 /**
  * 步骤动作 → 该动作允许的字段集合。**导出**是为了让契约测试把「接受面」与版本号绑定：
  * 新增动作或给动作加字段都会改变这份声明，从而必须 bump `TEST_SPEC_VERSION`。
  */
 export const TEST_SPEC_STEP_KEYS: Record<string, readonly string[]> = {
-  'ui.navigate': ['id', 'action', 'url'],
-  'ui.click': ['id', 'action', 'locator'],
-  'ui.input': ['id', 'action', 'locator', 'value'],
-  'ui.select': ['id', 'action', 'locator', 'value'],
-  'ui.press': ['id', 'action', 'key'],
-  'ui.wait': ['id', 'action', 'locator', 'expect', 'timeoutMs', 'extract'],
-  'ui.assert': ['id', 'action', 'locator', 'expect', 'extract'],
-  'ui.screenshot': ['id', 'action', 'name'],
-  'api.request': ['id', 'action', 'method', 'url', 'query', 'headers', 'body', 'bodyMode', 'timeoutMs', 'redirect', 'expect', 'extract'],
+  'ui.navigate': ['id', 'action', 'url', 'whenProduced'],
+  'ui.click': ['id', 'action', 'locator', 'whenProduced'],
+  'ui.input': ['id', 'action', 'locator', 'value', 'whenProduced'],
+  'ui.select': ['id', 'action', 'locator', 'value', 'whenProduced'],
+  'ui.press': ['id', 'action', 'key', 'whenProduced'],
+  'ui.wait': ['id', 'action', 'locator', 'expect', 'timeoutMs', 'extract', 'whenProduced'],
+  'ui.assert': ['id', 'action', 'locator', 'expect', 'extract', 'whenProduced'],
+  'ui.screenshot': ['id', 'action', 'name', 'whenProduced'],
+  'api.request': ['id', 'action', 'method', 'url', 'query', 'headers', 'body', 'bodyMode', 'timeoutMs', 'redirect', 'virtualHost', 'expect', 'extract', 'whenProduced'],
+  'api.poll': ['id', 'action', 'method', 'url', 'query', 'headers', 'timeoutMs', 'intervalMs', 'redirect', 'virtualHost', 'expect', 'extract', 'whenProduced'],
+  'api.delay': ['id', 'action', 'durationMs', 'whenProduced'],
 }
 
 /**
@@ -217,6 +242,28 @@ const readInteger = (
 const readBoolean = (ctx: Ctx, value: unknown, path: string): boolean | undefined =>
   typeof value === 'boolean' ? value : issue(ctx, path, '必须是布尔值')
 
+/** v7：状态码集合（去重保序，1–max 项）。 */
+const readIntegerList = (
+  ctx: Ctx,
+  value: unknown,
+  path: string,
+  min: number,
+  max: number,
+  maxLength: number,
+): number[] | undefined => {
+  if (!Array.isArray(value)) return issue(ctx, path, '必须是数组')
+  if (value.length === 0) return issue(ctx, path, '至少需要一个状态码')
+  if (value.length > maxLength) return issue(ctx, path, `不能超过 ${maxLength} 个状态码`)
+  const codes: number[] = []
+  let valid = true
+  value.forEach((entry, index) => {
+    const code = readInteger(ctx, entry, `${path}[${index}]`, min, max)
+    if (code === undefined) valid = false
+    else if (!codes.includes(code)) codes.push(code)
+  })
+  return valid ? codes : undefined
+}
+
 const readTimeout = (ctx: Ctx, value: unknown, path: string): number | undefined =>
   readInteger(ctx, value, path, 1, TEST_SPEC_LIMITS.maxTimeoutMs)
 
@@ -352,11 +399,24 @@ const readApiExpectation: Reader<ApiExpectation> = (ctx, value, path) => {
   const keys = Object.keys(record)
   if (keys.length !== 1) return issue(ctx, path, '每个断言必须且只能包含一个断言字段')
   const [key] = keys
+  if (ctx.version < 4 && V4_API_EXPECTATION_KEYS.includes(key)) {
+    return issue(ctx, path, `断言「${key}」是 v4 增量；请把 version 升到 4`)
+  }
+  if (ctx.version < 7 && V7_API_EXPECTATION_KEYS.includes(key)) {
+    return issue(ctx, path, `断言「${key}」是 v7 增量；请把 version 升到 7`)
+  }
+  if (ctx.version < 8 && V8_API_EXPECTATION_KEYS.includes(key)) {
+    return issue(ctx, path, `断言「${key}」是 v8 增量；请把 version 升到 8`)
+  }
   const field = `${path}.${key}`
   switch (key) {
     case 'status': {
       const status = readInteger(ctx, record.status, field, 100, 599)
       return status === undefined ? undefined : { status }
+    }
+    case 'statusIn': {
+      const codes = readIntegerList(ctx, record.statusIn, field, 100, 599, 8)
+      return codes === undefined ? undefined : { statusIn: codes }
     }
     case 'headerEquals': {
       const assertion = readHeaderAssertion(ctx, record.headerEquals, field)
@@ -366,9 +426,26 @@ const readApiExpectation: Reader<ApiExpectation> = (ctx, value, path) => {
       const assertion = readHeaderAssertion(ctx, record.headerContains, field)
       return assertion === undefined ? undefined : { headerContains: assertion }
     }
+    case 'headerExists':
+    case 'headerAbsent': {
+      // 只判存在性，不比对值：敏感头名维持禁用（存在性本身也可能泄露部署事实）。
+      const presence = readRecord(ctx, record[key], field, ['name'])
+      if (!presence) return undefined
+      const name = readText(ctx, presence.name, `${field}.name`, 128)
+      if (name === undefined) return undefined
+      if (SENSITIVE_HEADER_NAMES.has(name.toLowerCase())) {
+        return issue(ctx, `${field}.name`, '敏感响应头不能用于断言（避免实际值进入证据）')
+      }
+      if (!HEADER_NAME_PATTERN.test(name)) return issue(ctx, `${field}.name`, '响应头名称格式无效')
+      return key === 'headerExists' ? { headerExists: { name } } : { headerAbsent: { name } }
+    }
     case 'bodyContains': {
       const text = readTemplate(ctx, record.bodyContains, field)
       return text === undefined ? undefined : { bodyContains: text }
+    }
+    case 'bodyNotContains': {
+      const text = readTemplate(ctx, record.bodyNotContains, field)
+      return text === undefined ? undefined : { bodyNotContains: text }
     }
     case 'jsonPointerExists': {
       const pointer = readJsonPointer(ctx, record.jsonPointerExists, field)
@@ -383,6 +460,26 @@ const readApiExpectation: Reader<ApiExpectation> = (ctx, value, path) => {
         ? undefined
         : { jsonPointerEquals: { pointer, value: expected } }
     }
+    case 'jsonPointerLengthEquals':
+    case 'jsonPointerNumberAtLeast':
+    case 'jsonPointerNumberAtMost': {
+      const pair = readRecord(ctx, record[key], field, ['pointer', 'value'])
+      if (!pair) return undefined
+      const pointer = readJsonPointer(ctx, pair.pointer, `${field}.pointer`)
+      if (pointer === undefined) return undefined
+      if (key === 'jsonPointerLengthEquals') {
+        const length = readInteger(ctx, pair.value, `${field}.value`, 0, 10_000_000)
+        return length === undefined ? undefined : { jsonPointerLengthEquals: { pointer, value: length } }
+      }
+      // 数值比较允许小数与负数（计数窗口、配额阈值），只要求有限。
+      const threshold = typeof pair.value === 'number' && Number.isFinite(pair.value)
+        ? pair.value
+        : issue(ctx, `${field}.value`, '必须是有限数字')
+      if (threshold === undefined) return undefined
+      return key === 'jsonPointerNumberAtLeast'
+        ? { jsonPointerNumberAtLeast: { pointer, value: threshold } }
+        : { jsonPointerNumberAtMost: { pointer, value: threshold } }
+    }
     case 'maxElapsedMs': {
       const elapsed = readTimeout(ctx, record.maxElapsedMs, field)
       return elapsed === undefined ? undefined : { maxElapsedMs: elapsed }
@@ -392,8 +489,8 @@ const readApiExpectation: Reader<ApiExpectation> = (ctx, value, path) => {
   }
 }
 
-const readVariableName = (ctx: Ctx, value: string, path: string): string | undefined =>
-  VARIABLE_NAME_PATTERN.test(value)
+const readVariableName = (ctx: Ctx, value: unknown, path: string): string | undefined =>
+  typeof value === 'string' && VARIABLE_NAME_PATTERN.test(value)
     ? value
     : issue(ctx, path, '变量名必须以字母开头，仅含字母、数字与下划线，长度 1–64')
 
@@ -457,15 +554,48 @@ const readUiExtraction: Reader<UiExtraction> = (ctx, value, path) => {
   return { source: record.source, ...(sensitive !== undefined ? { sensitive } : {}) }
 }
 
-/** Secret 引用只允许出现在请求头值中；body 与 query 里出现 secretId 视为越界。 */
-const readHeaderValue = (ctx: Ctx, value: unknown, path: string): string | SecretReference | undefined => {
+/**
+ * 请求头值三态：普通字符串 / `{ secretId }` / v6 的 `{ variable, prefix? }`。
+ * 敏感头只允许后两种；普通字符串（哪怕含 `${vars.*}`）在敏感头上依旧拒绝——凭据必须
+ * 有明确出处（宿主 Secret 或 sensitive 抽取）。
+ */
+const readHeaderValue = (ctx: Ctx, value: unknown, path: string): ApiHeaderValue | undefined => {
   if (!isRecord(value)) return readTemplate(ctx, value, path)
-  const record = readRecord(ctx, value, path, ['secretId'])
-  if (!record) return undefined
-  if (typeof record.secretId !== 'string' || !SECRET_ID_PATTERN.test(record.secretId)) {
-    return issue(ctx, `${path}.secretId`, 'Secret ID 必须以 apitest. 开头')
+  const hasSecret = 'secretId' in value
+  const hasVariable = 'variable' in value
+  if (hasSecret && hasVariable) {
+    return issue(ctx, path, '请求头值不能同时是 Secret 与运行时变量引用')
   }
-  return { secretId: record.secretId }
+  if (hasSecret) {
+    const record = readRecord(ctx, value, path, ['secretId'])
+    if (!record) return undefined
+    if (typeof record.secretId !== 'string' || !SECRET_ID_PATTERN.test(record.secretId)) {
+      return issue(ctx, `${path}.secretId`, 'Secret ID 必须以 apitest. 开头')
+    }
+    return { secretId: record.secretId }
+  }
+  if (!hasVariable) {
+    return issue(ctx, path, '请求头对象只允许 {secretId} 或 {variable, prefix?}')
+  }
+  if (ctx.version < 6) {
+    return issue(ctx, path, '运行时变量引用是 v6 增量；请把 version 升到 6')
+  }
+  const record = readRecord(ctx, value, path, ['variable', 'prefix'])
+  if (!record) return undefined
+  const variable = readVariableName(ctx, record.variable, `${path}.variable`)
+  let prefix: string | undefined
+  if (record.prefix !== undefined) {
+    const rawPrefix = readText(ctx, record.prefix, `${path}.prefix`, 33)
+    // 与 Rust `valid_credential_prefix` 同判据：认证 scheme + 单个尾随空格，不是凭据本体。
+    const scheme = rawPrefix?.endsWith(' ') === true ? rawPrefix.slice(0, -1) : null
+    if (rawPrefix === undefined) return undefined
+    if (scheme === null || scheme === '' || !/^[A-Za-z][A-Za-z0-9_-]{0,31}$/u.test(scheme)) {
+      return issue(ctx, `${path}.prefix`, '运行时凭据前缀必须是「Scheme 」形式（如 Bearer ）')
+    }
+    prefix = rawPrefix
+  }
+  if (variable === undefined || (record.prefix !== undefined && prefix === undefined)) return undefined
+  return { variable, ...(prefix === undefined ? {} : { prefix }) }
 }
 
 const readJsonValue = (ctx: Ctx, value: unknown, path: string, depth = 0): TestJsonValue | undefined => {
@@ -479,6 +609,22 @@ const readJsonValue = (ctx: Ctx, value: unknown, path: string, depth = 0): TestJ
   }
   if (!isRecord(value)) return issue(ctx, path, '不支持的 JSON 值')
   if ('secretId' in value) return issue(ctx, path, 'Secret 引用只能用于请求头')
+  if ('file' in value) {
+    if (ctx.version < 9) {
+      return issue(ctx, path, 'fixture 文件引用是 v9 增量；请把 version 升到 9')
+    }
+    if (Object.keys(value).length !== 1) {
+      return issue(ctx, path, '文件引用对象只能包含 file 字段')
+    }
+    const file = value.file
+    const segments = typeof file === 'string' ? file.split('/') : []
+    if (typeof file !== 'string' || file.length > 512 || !FIXTURE_PATH_PATTERN.test(file)
+      || segments.some((segment) => segment === '..' || segment === '.')) {
+      return issue(ctx, `${path}.file`,
+        '文件引用必须是 tests/fixtures/ 下的工作区相对路径（禁止绝对路径、. 与 ..）')
+    }
+    return { file }
+  }
   const entries = Object.entries(value)
   if (entries.length > TEST_SPEC_LIMITS.maxMapEntries) {
     return issue(ctx, path, `对象键数不能超过 ${TEST_SPEC_LIMITS.maxMapEntries}`)
@@ -501,6 +647,87 @@ const isBodyMethod = (method: ApiMethod): boolean => BODY_METHODS.includes(metho
 const readPlainMap = (ctx: Ctx, value: unknown, path: string): Record<string, unknown> | undefined =>
   isRecord(value) ? value : issue(ctx, path, '必须是对象')
 
+/** api.request / api.poll 共用的 query 读取（标量值、数量上限）。 */
+const readQueryMap = (
+  ctx: Ctx,
+  value: unknown,
+  path: string,
+): Record<string, TestValue> | undefined => {
+  const map = readPlainMap(ctx, value, path)
+  if (!map) return undefined
+  const entries = Object.entries(map)
+  if (entries.length > TEST_SPEC_LIMITS.maxMapEntries) issue(ctx, path, '查询参数过多')
+  const parsed: Record<string, TestValue> = {}
+  let valid = true
+  for (const [key, child] of entries) {
+    const scalar = readScalar(ctx, child, `${path}.${key}`)
+    if (scalar === undefined) valid = false
+    else parsed[key] = scalar
+  }
+  return valid ? parsed : undefined
+}
+
+/** api.request / api.poll 共用的请求头读取（敏感头必须走 Secret 引用）。 */
+const readHeaderMap = (
+  ctx: Ctx,
+  value: unknown,
+  path: string,
+): Record<string, ApiHeaderValue> | undefined => {
+  const map = readPlainMap(ctx, value, path)
+  if (!map) return undefined
+  const entries = Object.entries(map)
+  if (entries.length > TEST_SPEC_LIMITS.maxMapEntries) issue(ctx, path, '请求头过多')
+  const parsed: Record<string, ApiHeaderValue> = {}
+  let valid = true
+  for (const [key, child] of entries) {
+    if (!HEADER_NAME_PATTERN.test(key)) {
+      valid = false
+      issue(ctx, `${path}.${key}`, '请求头名称格式无效')
+      continue
+    }
+    if (SENSITIVE_HEADER_NAMES.has(key.toLowerCase()) && !isRecord(child)) {
+      valid = false
+      issue(ctx, `${path}.${key}`, '敏感请求头必须使用 apitest.* Secret 引用')
+      continue
+    }
+    const headerValue = readHeaderValue(ctx, child, `${path}.${key}`)
+    if (headerValue === undefined) valid = false
+    else if (typeof headerValue === 'string' && SENSITIVE_HEADER_NAMES.has(key.toLowerCase())) {
+      valid = false
+      issue(ctx, `${path}.${key}`, '敏感请求头必须使用 apitest.* Secret 引用')
+    } else parsed[key] = headerValue
+  }
+  return valid ? parsed : undefined
+}
+
+const HOST_LABEL_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/
+
+/**
+ * v4：Host 头覆盖（`host[:port]`）。允许 `${...}` 占位符（站点域名常由运行标记/变量
+ * 派生）；判定时把占位符替换成合法 host 片段再校验，拒绝 scheme、路径、userinfo
+ * 与端口越界。网络目的地仍由步骤 url 决定，这里只影响服务端路由。
+ */
+const readVirtualHost = (ctx: Ctx, value: unknown, path: string): string | undefined => {
+  if (ctx.version < 4) return issue(ctx, path, 'virtualHost 是 v4 增量；请把 version 升到 4')
+  const text = readTemplate(ctx, value, path)
+  if (text === undefined) return undefined
+  const comparable = text.replace(TEMPLATE_REF_PATTERN, 'placeholder')
+  const segments = comparable.split(':')
+  if (segments.length > 2) {
+    return issue(ctx, path, 'virtualHost 只允许 host[:port]，不能包含协议、路径或凭据')
+  }
+  const [host, port] = segments
+  const labels = host.split('.')
+  const validHost = host.length <= 253 && labels.length >= 1 && labels.every((label) => HOST_LABEL_PATTERN.test(label))
+  if (!validHost) {
+    return issue(ctx, path, 'virtualHost 必须是合法的 host[:port]，不能包含协议、路径或凭据')
+  }
+  if (port !== undefined && (!/^\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535)) {
+    return issue(ctx, path, 'virtualHost 端口必须在 1–65535 之间')
+  }
+  return text
+}
+
 const readApiStep = (ctx: Ctx, record: Record<string, unknown>, path: string, id: string): ApiStepSpec | undefined => {
   const method = isApiMethod(record.method)
     ? record.method
@@ -518,52 +745,12 @@ const readApiStep = (ctx: Ctx, record: Record<string, unknown>, path: string, id
       ? record.bodyMode
       : issue(ctx, `${path}.bodyMode`, '只允许 json、text 或 form')
 
-  let query: Record<string, TestValue> | undefined
-  if (record.query !== undefined) {
-    const map = readPlainMap(ctx, record.query, `${path}.query`)
-    if (map) {
-      const entries = Object.entries(map)
-      if (entries.length > TEST_SPEC_LIMITS.maxMapEntries) issue(ctx, `${path}.query`, '查询参数过多')
-      const parsed: Record<string, TestValue> = {}
-      let valid = true
-      for (const [key, child] of entries) {
-        const scalar = readScalar(ctx, child, `${path}.query.${key}`)
-        if (scalar === undefined) valid = false
-        else parsed[key] = scalar
-      }
-      if (valid) query = parsed
-    }
-  }
+  const query = record.query === undefined ? undefined : readQueryMap(ctx, record.query, `${path}.query`)
+  const headers = record.headers === undefined ? undefined : readHeaderMap(ctx, record.headers, `${path}.headers`)
+  const virtualHost = record.virtualHost === undefined
+    ? undefined
+    : readVirtualHost(ctx, record.virtualHost, `${path}.virtualHost`)
 
-  let headers: Record<string, string | SecretReference> | undefined
-  if (record.headers !== undefined) {
-    const map = readPlainMap(ctx, record.headers, `${path}.headers`)
-    if (map) {
-      const entries = Object.entries(map)
-      if (entries.length > TEST_SPEC_LIMITS.maxMapEntries) issue(ctx, `${path}.headers`, '请求头过多')
-      const parsed: Record<string, string | SecretReference> = {}
-      let valid = true
-      for (const [key, child] of entries) {
-        if (!HEADER_NAME_PATTERN.test(key)) {
-          valid = false
-          issue(ctx, `${path}.headers.${key}`, '请求头名称格式无效')
-          continue
-        }
-        if (SENSITIVE_HEADER_NAMES.has(key.toLowerCase()) && !isRecord(child)) {
-          valid = false
-          issue(ctx, `${path}.headers.${key}`, '敏感请求头必须使用 apitest.* Secret 引用')
-          continue
-        }
-        const headerValue = readHeaderValue(ctx, child, `${path}.headers.${key}`)
-        if (headerValue === undefined) valid = false
-        else if (typeof headerValue === 'string' && SENSITIVE_HEADER_NAMES.has(key.toLowerCase())) {
-          valid = false
-          issue(ctx, `${path}.headers.${key}`, '敏感请求头必须使用 apitest.* Secret 引用')
-        } else parsed[key] = headerValue
-      }
-      if (valid) headers = parsed
-    }
-  }
 
   let body: TestJsonValue | undefined
   if (record.body !== undefined) {
@@ -609,6 +796,7 @@ const readApiStep = (ctx: Ctx, record: Record<string, unknown>, path: string, id
 
   if (method === undefined || url === undefined || (record.query !== undefined && query === undefined)
     || (record.headers !== undefined && headers === undefined)
+    || (record.virtualHost !== undefined && virtualHost === undefined)
     || (record.body !== undefined && body === undefined)
     || (record.timeoutMs !== undefined && timeoutMs === undefined)
     || (record.expect !== undefined && expect === undefined)
@@ -628,9 +816,69 @@ const readApiStep = (ctx: Ctx, record: Record<string, unknown>, path: string, id
     ...(bodyMode ? { bodyMode } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(redirect ? { redirect } : {}),
+    ...(virtualHost ? { virtualHost } : {}),
     ...(expect ? { expect } : {}),
     ...(extract ? { extract } : {}),
   }
+}
+
+const readApiPollStep = (ctx: Ctx, record: Record<string, unknown>, path: string, id: string): ApiPollStepSpec | undefined => {
+  const method = record.method === 'GET' || record.method === 'HEAD'
+    ? (record.method as 'GET' | 'HEAD')
+    : issue(ctx, `${path}.method`, 'api.poll 只允许 GET 或 HEAD（轮询必须保持幂等读）')
+  const url = readUrl(ctx, record.url, `${path}.url`, { allowFragment: false })
+  const timeoutMs = record.timeoutMs === undefined ? undefined : readTimeout(ctx, record.timeoutMs, `${path}.timeoutMs`)
+  const intervalMs = record.intervalMs === undefined
+    ? undefined
+    : readInteger(ctx, record.intervalMs, `${path}.intervalMs`, TEST_SPEC_LIMITS.minPollIntervalMs, TEST_SPEC_LIMITS.maxPollIntervalMs)
+  const redirect = record.redirect === undefined
+    ? undefined
+    : record.redirect === 'manual' || record.redirect === 'same-origin'
+      ? record.redirect
+      : issue(ctx, `${path}.redirect`, '只允许 manual 或 same-origin')
+  const query = record.query === undefined ? undefined : readQueryMap(ctx, record.query, `${path}.query`)
+  const headers = record.headers === undefined ? undefined : readHeaderMap(ctx, record.headers, `${path}.headers`)
+  const virtualHost = record.virtualHost === undefined
+    ? undefined
+    : readVirtualHost(ctx, record.virtualHost, `${path}.virtualHost`)
+  const expect = readList(ctx, record.expect, `${path}.expect`, { min: 1, max: TEST_SPEC_LIMITS.maxExpectations }, readApiExpectation)
+  const extract = record.extract === undefined
+    ? undefined
+    : readExtractionMap(ctx, record.extract, `${path}.extract`, readApiExtraction)
+  if (method === undefined || url === undefined || expect === undefined
+    || (record.query !== undefined && query === undefined)
+    || (record.headers !== undefined && headers === undefined)
+    || (record.virtualHost !== undefined && virtualHost === undefined)
+    || (record.timeoutMs !== undefined && timeoutMs === undefined)
+    || (record.intervalMs !== undefined && intervalMs === undefined)
+    || (record.extract !== undefined && extract === undefined)
+    || (redirect === undefined && record.redirect !== undefined)) {
+    return undefined
+  }
+  return {
+    id,
+    action: 'api.poll',
+    method,
+    url,
+    ...(query ? { query } : {}),
+    ...(headers ? { headers } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(intervalMs !== undefined ? { intervalMs } : {}),
+    ...(redirect ? { redirect } : {}),
+    ...(virtualHost ? { virtualHost } : {}),
+    expect,
+    ...(extract ? { extract } : {}),
+  }
+}
+
+const readApiDelayStep = (
+  ctx: Ctx,
+  record: Record<string, unknown>,
+  path: string,
+  id: string,
+): ApiDelayStepSpec | undefined => {
+  const durationMs = readInteger(ctx, record.durationMs, `${path}.durationMs`, 1, TEST_SPEC_LIMITS.maxDelayMs)
+  return durationMs === undefined ? undefined : { id, action: 'api.delay', durationMs }
 }
 
 const readUiStep = (ctx: Ctx, record: Record<string, unknown>, path: string, id: string, action: string): UiStepSpec | undefined => {
@@ -706,8 +954,26 @@ const readStep: Reader<TestStepSpec> = (ctx, value, path) => {
   if (!record) return undefined
   const id = readId(ctx, record.id, `${path}.id`)
   if (id === undefined) return undefined
-  if (action === 'api.request') return readApiStep(ctx, record, path, id)
-  return readUiStep(ctx, record, path, id, action)
+  let guard: string | undefined
+  if (record.whenProduced !== undefined) {
+    if (ctx.version < 7) {
+      return issue(ctx, `${path}.whenProduced`, '条件执行（whenProduced）是 v7 增量；请把 version 升到 7')
+    }
+    const name = readVariableName(ctx, record.whenProduced, `${path}.whenProduced`)
+    if (name === undefined) return undefined
+    guard = name
+  }
+  const parsed = action === 'api.request'
+    ? readApiStep(ctx, record, path, id)
+    : action === 'api.poll' || action === 'api.delay'
+      ? ctx.version < 4
+        ? issue(ctx, `${path}.action`, `动作「${action}」是 v4 增量；请把 version 升到 4`)
+        : action === 'api.poll'
+          ? readApiPollStep(ctx, record, path, id)
+          : readApiDelayStep(ctx, record, path, id)
+      : readUiStep(ctx, record, path, id, action)
+  if (parsed === undefined || guard === undefined) return parsed
+  return { ...parsed, whenProduced: guard }
 }
 
 const TEST_POINT_KINDS: readonly TestPointKind[] = ['new_feature', 'regression']
@@ -745,8 +1011,60 @@ const readVerifies: Reader<string[]> = (ctx, value, path) => {
   return ids
 }
 
+/**
+ * v5 数据行：每行是一组标量（值允许 `${env.*}` / `${run.*}` 占位符，编译/物化期解析）。
+ * 行内不允许引用 `${vars.*}`——输入在 case 开始时才预置，引用其它运行变量会形成隐式
+ * 执行顺序依赖。所有行必须共享同一组键（缺失键会让部分行静默退化为空串）。
+ */
+const readCaseInputs: Reader<NonNullable<TestCaseSpec['inputs']>> = (ctx, value, path) => {
+  if (ctx.version < 5) return issue(ctx, path, '案例输入表是 v5 增量；请把 version 升到 5')
+  const variants = readList(
+    ctx,
+    value,
+    path,
+    { min: 1, max: TEST_SPEC_LIMITS.maxCaseInputs },
+    (c, raw, variantPath) => {
+      if (!isRecord(raw)) return issue(c, variantPath, '每条数据行必须是对象')
+      const entries = Object.entries(raw)
+      if (entries.length === 0) return issue(c, variantPath, '每条数据行至少需要一个键')
+      if (entries.length > TEST_SPEC_LIMITS.maxMapEntries) {
+        return issue(c, variantPath, `数据行键数不能超过 ${TEST_SPEC_LIMITS.maxMapEntries}`)
+      }
+      const row: Record<string, TestValue> = {}
+      let valid = true
+      for (const [name, child] of entries) {
+        if (readVariableName(c, name, `${variantPath}.${name}`) === undefined) {
+          valid = false
+          continue
+        }
+        const scalar = readScalar(c, child, `${variantPath}.${name}`)
+        if (scalar === undefined) {
+          valid = false
+          continue
+        }
+        if (typeof scalar === 'string' && scalar.includes('${vars.')) {
+          issue(c, `${variantPath}.${name}`, `数据行值不能引用运行变量（只允许 \${env.*} / \${run.*}）`)
+          valid = false
+          continue
+        }
+        row[name] = scalar
+      }
+      return valid ? row : undefined
+    },
+  )
+  if (variants === undefined) return undefined
+  const firstKeys = Object.keys(variants[0] ?? {}).sort()
+  variants.forEach((row, index) => {
+    const keys = Object.keys(row).sort()
+    if (keys.length !== firstKeys.length || keys.some((key, position) => key !== firstKeys[position])) {
+      issue(ctx, `${path}[${index}]`, `数据行的键必须一致（首行为 ${firstKeys.join('/')}）`)
+    }
+  })
+  return variants
+}
+
 const readCase: Reader<TestCaseSpec> = (ctx, value, path) => {
-  const record = readRecord(ctx, value, path, ['id', 'name', 'steps', 'verifies'])
+  const record = readRecord(ctx, value, path, ['id', 'name', 'steps', 'verifies', 'inputs'])
   if (!record) return undefined
   const id = readId(ctx, record.id, `${path}.id`)
   const name = readName(ctx, record.name, `${path}.name`)
@@ -755,7 +1073,13 @@ const readCase: Reader<TestCaseSpec> = (ctx, value, path) => {
   readDuplicateStepIds(ctx, steps, `${path}.steps`)
   const verifies = record.verifies === undefined ? undefined : readVerifies(ctx, record.verifies, `${path}.verifies`)
   if (record.verifies !== undefined && verifies === undefined) return undefined
-  return { id, name, steps, ...(verifies ? { verifies } : {}) }
+  const inputs = record.inputs === undefined ? undefined : readCaseInputs(ctx, record.inputs, `${path}.inputs`)
+  if (record.inputs !== undefined && inputs === undefined) return undefined
+  // 多行数据按行展开成独立 case：id 追加 `-vN` 后缀，超长会在编译期生成非法 ID。
+  if (inputs !== undefined && inputs.length > 1 && id.length > 60) {
+    issue(ctx, `${path}.id`, '数据驱动用例的 id 最多 60 字符（展开时会追加 -vN 后缀）')
+  }
+  return { id, name, steps, ...(verifies ? { verifies } : {}), ...(inputs ? { inputs } : {}) }
 }
 
 const readDuplicateStepIds = (ctx: Ctx, steps: readonly TestStepSpec[], stepsPath: string): void => {

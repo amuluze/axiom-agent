@@ -4,6 +4,7 @@ import {
   assertMessagePersistable,
   convertBuiltInCustomMessage,
   createAssistantContinueMessage,
+  createAssistantRecoveryMessage,
   createTurnAbortedMessage,
   createUserMessage,
   defaultConvertToModelMessages,
@@ -51,6 +52,8 @@ describe('built-in custom message conversion', () => {
 
   it('keeps converting the assistant-continue marker and still rejects unknown custom types', () => {
     expect(convertBuiltInCustomMessage(createAssistantContinueMessage())?.role).toBe('user')
+    expect(convertBuiltInCustomMessage(createAssistantRecoveryMessage('empty_stop'))?.content)
+      .toContain('没有给出任何可见内容')
     expect(() => defaultConvertToModelMessages([{
       id: 'c-unknown',
       role: 'custom',

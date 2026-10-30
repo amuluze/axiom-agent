@@ -1,5 +1,4 @@
 import type { ApiStepSpec, UiLocator, UiStepSpec } from '../spec/types'
-
 /**
  * 测试步骤的审批 actor（U1-5）。不伪造 Agent 的 toolCallId：审批绑定的是测试运行与步骤。
  */
@@ -50,15 +49,27 @@ export const describeTestStepApproval = (step: UiStepSpec, origin: string): Test
 })
 
 /**
- * API 步骤的审批卡摘要。只取 method/url：Agent 探索工具（`api_request`）经 Agent 层
- * 逐次审批复用同一张卡，不需要伪造 `id`/`action` 字段，卡片文案也不会与 Runner 漂移。
+ * API 步骤的审批卡摘要。只取 method/url（加上 v4 的轮询与 Host 覆盖事实）：Agent 探索
+ * 工具（`api_request`）经 Agent 层逐次审批复用同一张卡，不需要伪造 `id`/`action` 字段，
+ * 卡片文案也不会与 Runner 漂移。轮询步骤标注窗口与间隔——审批的是「整个轮询」，而不是
+ * 其中一次请求；Host 覆盖必须可见，因为它改变请求的实际路由目标。
  */
 export const describeApiTestStepApproval = (
-  step: Pick<ApiStepSpec, 'method' | 'url'>,
+  step: Pick<ApiStepSpec, 'method' | 'url'> & {
+    action?: 'api.request' | 'api.poll'
+    virtualHost?: string
+    intervalMs?: number
+    timeoutMs?: number
+  },
 ): TestStepApprovalCard => {
   const url = new URL(step.url)
+  const pollPrefix = step.action === 'api.poll' ? '轮询 ' : ''
+  const hostSuffix = step.virtualHost === undefined ? '' : `（Host: ${step.virtualHost}）`
+  const windowSuffix = step.action === 'api.poll' && step.intervalMs !== undefined
+    ? ` @ ${step.intervalMs}ms`
+    : ''
   return {
-    actionLabel: `${step.method} ${url.pathname}`,
+    actionLabel: `${pollPrefix}${step.method} ${url.pathname}${hostSuffix}${windowSuffix}`,
     origin: url.origin,
     target: `${url.hostname}${url.port ? `:${url.port}` : ''}`,
   }

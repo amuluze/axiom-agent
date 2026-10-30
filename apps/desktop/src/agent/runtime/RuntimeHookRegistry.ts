@@ -677,6 +677,7 @@ export class RuntimeHookRegistry {
       can: (operation) => isActive() && !signal.aborted && context.can(operation),
       requestAbort: () => requireActive(context.requestAbort),
       steer: (content, images) => requireActive(() => context.steer(content, images)),
+      aside: (content, images) => requireActive(() => context.aside(content, images)),
       followUp: (content, images) => requireActive(() => context.followUp(content, images)),
       nextTurn: (content, images) => requireActive(() => context.nextTurn(content, images)),
       appendMessage: (message) => requireActive(() => context.appendMessage(message)),

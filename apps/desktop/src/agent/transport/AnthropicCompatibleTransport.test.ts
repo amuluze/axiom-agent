@@ -27,6 +27,13 @@ const request: ModelRequest = {
     { id: 't2', role: 'tool', toolCallId: 'call-2', toolName: 'other', content: 'failed', isError: true, createdAt: 4 },
   ],
   tools: [{ name: 'read_file', description: 'Read', inputSchema: { type: 'object' } }],
+  stablePrefix: {
+    fingerprint: 'stable-prefix-fingerprint',
+    revision: 1,
+    systemPromptBytes: 10,
+    toolSchemaBytes: 20,
+    dynamicSuffixBytes: 0,
+  },
 }
 
 const collect = async (
@@ -68,6 +75,7 @@ describe('AnthropicCompatibleTransport', () => {
         ],
       },
     ])
+    expect(JSON.stringify(body)).not.toContain('stable-prefix-fingerprint')
   })
 
   it('serializes image, cache, thinking replay and adaptive reasoning blocks', () => {

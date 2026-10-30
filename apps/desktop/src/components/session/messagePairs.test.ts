@@ -7,6 +7,7 @@ import type {
   UserMessage,
 } from '@/agent/core/types'
 import type { SessionBlock } from './messagePairs'
+import type { ContextCheckpoint } from '@/agent/context/types'
 import {
   buildSessionBlocks,
   collectToolCallIds,
@@ -56,6 +57,25 @@ const toolResult = (id: string, toolCallId: string, isError = false, content = '
   isError,
 })
 
+const checkpoint = (throughMessageId: string): ContextCheckpoint => ({
+  id: 'checkpoint-1',
+  sessionId: 'session-1',
+  throughMessageId,
+  summary: '## 目标\n继续任务',
+  summaryHash: 'hash',
+  reason: 'manual',
+  tokensBefore: 100,
+  estimatedTokensAfter: 20,
+  requestBytesBefore: 1_000,
+  requestBytesAfter: 200,
+  modelProvider: 'test',
+  modelId: 'model',
+  promptVersion: 5,
+  excludedMessageIds: [],
+  facts: { readFiles: [], modifiedFiles: [] },
+  createdAt: 1,
+})
+
 describe('buildSessionBlocks', () => {
   it('returns an empty array for no messages', () => {
     expect(buildSessionBlocks([])).toEqual([])
@@ -84,6 +104,30 @@ describe('buildSessionBlocks', () => {
       toolName: 'write',
       call: expect.objectContaining({ id: 'a1' }),
       result: expect.objectContaining({ id: 'r1', role: 'tool' }),
+    })
+  })
+
+  it('inserts a compaction divider after the checkpoint boundary without removing history', () => {
+    const messages: AgentMessage[] = [
+      assistantMessage({
+        id: 'a1',
+        toolCalls: [toolCall('tc-1', 'write')],
+      }),
+      toolResult('r1', 'tc-1'),
+      userMessage('u2', '继续'),
+    ]
+
+    const blocks = buildSessionBlocks(messages, checkpoint('r1'))
+
+    expect(messages).toHaveLength(3)
+    expect(blocks.map((block) => block.type)).toEqual([
+      'tool',
+      'compaction-divider',
+      'user',
+    ])
+    expect(blocks[1]).toMatchObject({
+      type: 'compaction-divider',
+      checkpoint: { id: 'checkpoint-1', summary: '## 目标\n继续任务' },
     })
   })
 

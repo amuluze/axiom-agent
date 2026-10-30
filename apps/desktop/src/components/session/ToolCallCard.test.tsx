@@ -231,6 +231,19 @@ describe('ToolCallCard meta + status', () => {
     expect(html).not.toContain('tool-card__done')
     expect(html).not.toContain('tool-card__chevron')
   })
+
+  it('renders a synthetic non-executed result as neutral attribution', () => {
+    const result = baseResult({
+      isError: true,
+      details: { __synthetic: true, reason: 'not_executed' },
+    })
+    const html = renderToStaticMarkup(createElement(ToolCallCard, { toolName: 'write', result }))
+
+    expect(html).toContain('tool-card--synthetic')
+    expect(html).toContain('未执行')
+    expect(html).not.toContain('tool-card__done')
+    expect(html).not.toContain('tool-card__chevron')
+  })
 })
 
 describe('ToolCallCard diff view', () => {

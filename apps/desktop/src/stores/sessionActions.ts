@@ -51,6 +51,7 @@ import {
   normalizeAgentLimitsSettings,
   type AgentLimitsSettings,
 } from '@/agent/runtime/agentLimitsSettings'
+import type { SyntaxRepairSettings } from '@/agent/runtime/syntaxRepairSettings'
 import {
   normalizeQueueModeSettings,
   type QueueModeSettings,
@@ -61,12 +62,14 @@ import {
   setActiveContextPolicySettings,
   setActiveQueueModeSettings,
   setActiveReasoningSettings,
+  setActiveSyntaxRepairSettings,
 } from './settingsPersistence'
 import {
   AGENT_LIMITS_STORAGE_KEY,
   CONTEXT_POLICY_STORAGE_KEY,
   QUEUE_MODE_STORAGE_KEY,
   REASONING_STORAGE_KEY,
+  SYNTAX_REPAIR_STORAGE_KEY,
 } from './services/providerStorage'
 import type { AuthorizedReadFile } from '@/platform/authorizedFiles'
 import { storeT } from '@/i18n/storeTranslate'
@@ -136,6 +139,7 @@ const errorMessage = (error: unknown): string =>
 /** 从 harness 会话读取队列投影，避免 store 与 harness 状态漂移。 */
 export const queuedMessageState = (session: AgentHarness) => ({
   pendingSteeringCount: session.pendingSteeringCount,
+  pendingAsideCount: session.pendingAsideCount,
   pendingFollowUpCount: session.pendingFollowUpCount,
   pendingNextTurnCount: session.pendingNextTurnCount,
   queuedMessages: session.queuedMessages,
@@ -174,6 +178,15 @@ export const queueSteering = (
   images?: ImageContentBlock[],
 ): Promise<QueueAcceptance> =>
   queueMessage(set, get, session, content, (s, c) => s.steer(c, images))
+
+export const queueAside = (
+  set: AgentSet,
+  get: AgentGet,
+  session: AgentHarness,
+  content: string,
+  images?: ImageContentBlock[],
+): Promise<QueueAcceptance> =>
+  queueMessage(set, get, session, content, (s, c) => s.aside(c, images))
 
 export const queueNextTurn = async (
   set: AgentSet,
@@ -497,7 +510,7 @@ export const saveQueueModes = (
   if (get().runtimeLifecycle !== 'ready' || get().running || get().sessionBusy) return false
   const normalized = normalizeQueueModeSettings(settings)
   setActiveQueueModeSettings(normalized)
-  deps.getSession().setQueueModes(normalized.steering, normalized.followUp)
+  deps.getSession().setQueueModes(normalized.steering, normalized.aside, normalized.followUp)
   deps.getSession().setAutoDrain(normalized.autoDrain)
   const queuePersistError = persistLocalSettings(QUEUE_MODE_STORAGE_KEY, normalized)
   if (queuePersistError) {
@@ -600,6 +613,32 @@ export const saveAgentLimits = (
     return false
   }
   set({ agentLimitsSettings: normalized, providerMessage: storeT('status.limits.saved') })
+  return true
+}
+
+export const saveSyntaxRepairSettings = (
+  set: AgentSet,
+  get: AgentGet,
+  _deps: StoreRuntimeDeps,
+  settings: SyntaxRepairSettings,
+): boolean => {
+  const profileId = settings.profileId?.trim() || null
+  if (profileId && !get().providerProfiles.some((profile) => profile.profileId === profileId)) {
+    set({ settingsError: storeT('status.syntaxRepair.profileMissing') })
+    return false
+  }
+  const normalized = { profileId }
+  setActiveSyntaxRepairSettings(normalized)
+  const persistError = persistLocalSettings(SYNTAX_REPAIR_STORAGE_KEY, normalized)
+  if (persistError) {
+    set({ settingsError: persistError })
+    return false
+  }
+  set({
+    syntaxRepairSettings: normalized,
+    providerMessage: storeT('status.syntaxRepair.saved'),
+    settingsError: null,
+  })
   return true
 }
 

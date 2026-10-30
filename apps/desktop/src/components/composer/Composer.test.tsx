@@ -43,6 +43,7 @@ const mocks = vi.hoisted(() => ({
   messageEditRequest: null as { sessionId: string; messageId: string; content: string; images?: Array<{ type: 'image'; source: { type: 'base64'; mediaType: string; data: string } }> } | null,
   setMessageEditRequest: vi.fn(),
   queueSteering: vi.fn(async () => acceptedQueueMessage('queued-1')),
+  queueAside: vi.fn(async () => acceptedQueueMessage('aside-1')),
   authorizeFile: vi.fn(async () => null as { path: string; name: string; sizeBytes: number; isDirectory: boolean } | null),
   authorizeDirectory: vi.fn(async () => true),
   providerReady: true,
@@ -82,6 +83,7 @@ vi.mock('@/stores/agentStore', async (importOriginal) => {
     editUserMessage: mocks.editUserMessage,
     activeSessionId: mocks.activeSessionId,
     queueSteering: mocks.queueSteering,
+    queueAside: mocks.queueAside,
     authorizeFile: mocks.authorizeFile,
     authorizeDirectory: mocks.authorizeDirectory,
     contextUsage: mocks.contextUsage,
@@ -128,6 +130,7 @@ beforeEach(() => {
   mocks.activeSessionId = 'session-1'
   mocks.messageEditRequest = null
   mocks.queueSteering.mockClear()
+  mocks.queueAside.mockClear()
   window.localStorage.clear()
   mocks.providerReady = true
   mocks.providerSetupRequired = false
@@ -171,9 +174,10 @@ describe('Composer', () => {
     expect(html).toContain('添加截图附件')
   })
 
-  it('hides the attach button together with the access picker (design sidebar)', () => {
+  it('keeps the attach button when the access picker is hidden (design sidebar)', () => {
     const html = renderToStaticMarkup(createElement(Composer, { showAccessPicker: false }))
-    expect(html).not.toContain('composer__attach-button')
+    expect(html).toContain('composer__attach-button')
+    expect(html).toContain('添加截图附件')
   })
 
   it('appends a reference token when the attach button picks a file', async () => {
@@ -238,6 +242,7 @@ describe('Composer', () => {
     mocks.running = true
     const html = renderToStaticMarkup(createElement(Composer))
     expect(html).toContain('继续输入以排队后续修改')
+    expect(html).toContain('非中断')
     expect(html).toContain('aria-label="停止运行"')
     expect(html).not.toMatch(/<textarea[^>]*disabled/)
   })
@@ -457,6 +462,17 @@ describe('Composer', () => {
       await waitFor(() => expect(textarea.value).toBe(''))
       expect(mocks.queueSteering).toHaveBeenCalledWith('排队消息', undefined)
       expect(persistedHistory()).toEqual(['排队消息'])
+    })
+
+    it('queues aside submissions without using the interrupting steering channel', async () => {
+      mocks.running = true
+      const textarea = renderComposer()
+      fireEvent.change(textarea, { target: { value: '下一轮补充' } })
+      fireEvent.click(screen.getByRole('button', { name: '非中断' }))
+      await waitFor(() => expect(textarea.value).toBe(''))
+      expect(mocks.queueAside).toHaveBeenCalledWith('下一轮补充', undefined)
+      expect(mocks.queueSteering).not.toHaveBeenCalled()
+      expect(persistedHistory()).toEqual(['下一轮补充'])
     })
   })
 })

@@ -9,7 +9,7 @@ import { useT } from '@/i18n'
 
 const DocsAssistantPanel = () => {
   const { t } = useT()
-  return <AssistantSidebarPanel copy={assistantCopyFrom(t, 'app.docs.assistant')} />
+  return <AssistantSidebarPanel copy={assistantCopyFrom(t, 'app.docs.assistant')} showAccessPicker={false} />
 }
 
 export default DocsAssistantPanel

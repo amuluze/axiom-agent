@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { AgentToolExecutionContext } from '@/agent/core/types'
+import type { AgentToolExecutionContext, AgentToolPreparationContext } from '@/agent/core/types'
 import { createFakeAgentEnvironment } from './__fixtures__/fakeAgentEnvironment'
 import { createEditTool } from './editTool'
 import { createLsTool } from './lsTool'
+import { sha256Text } from './workspaceToolUtils'
 
 const baseContext = (overrides: Partial<AgentToolExecutionContext> = {}): AgentToolExecutionContext => ({
   sessionId: 'session-1',
@@ -83,6 +84,45 @@ describe('editTool prepareArguments', () => {
   it('leaves an unparsable edits string for validate to reject', () => {
     const tool = createEditTool(createFakeAgentEnvironment())
     expect(tool.prepareArguments?.({ path: 'a.ts', edits: 'not-json' })).toEqual({ path: 'a.ts', edits: 'not-json' })
+  })
+})
+
+describe('editTool prepareForApproval', () => {
+  it('shows and executes the accepted syntax repair instead of the malformed replacement', async () => {
+    const content = 'export const value = { ok: true }\n'
+    const environment = createFakeAgentEnvironment({
+      readText: async () => ({
+        workspace: { path: '/w', name: 'w' },
+        path: 'a.ts',
+        content,
+        sha256: await sha256Text(content),
+        startLine: 1,
+        endLine: 2,
+        totalLines: 2,
+        truncated: false,
+      }),
+    })
+    const context: AgentToolPreparationContext = {
+      sessionId: 'session-1',
+      runId: 'run-1',
+      toolCallId: 'tool-1',
+      signal: new AbortController().signal,
+      repairSyntax: async () => ['export const value = { ok: false }'],
+    }
+    const tool = createEditTool(environment)
+    const prepared = await tool.prepareForApproval?.({
+      path: 'a.ts',
+      edits: [{ oldText: 'export const value = { ok: true }', newText: 'export const value = { ok: false' }],
+    }, context)
+    expect(prepared).toMatchObject({
+      input: {
+        path: 'a.ts',
+        edits: [{ newText: 'export const value = { ok: false }' }],
+      },
+      details: { syntaxAutoRepair: { applied: true } },
+    })
+    expect(tool.approvalPresentation?.(prepared?.input ?? {}, prepared?.details).description)
+      .toContain('syntax repair was applied')
   })
 })
 

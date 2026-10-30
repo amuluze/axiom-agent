@@ -13,6 +13,7 @@ export const CONTEXT_POLICY_STORAGE_KEY = 'axiom.context.policy.v1'
 export const QUEUE_MODE_STORAGE_KEY = 'axiom.queue.mode.v1'
 export const REASONING_STORAGE_KEY = 'axiom.reasoning.v1'
 export const AGENT_LIMITS_STORAGE_KEY = 'axiom.agent.limits.v1'
+export const SYNTAX_REPAIR_STORAGE_KEY = 'axiom.syntax-repair.v1'
 
 export const loadProviderSelection = (): Promise<InitialProviderSelection> => resolveInitialProviderSelection(
   isTauriRuntime() ? localStorage.getItem(PROVIDER_STORAGE_KEY) : null,

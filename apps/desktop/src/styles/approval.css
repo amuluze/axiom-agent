@@ -126,6 +126,22 @@
   background: var(--accent);
 }
 
+/* 权限档切换（原生警告确认在 Rust 侧）：描边取警示色，避免与「允许一次」抢焦点。 */
+.approval-card__button--full-access {
+  color: var(--warn-text);
+  border-color: var(--warn-border);
+}
+
+.approval-card__button--full-access:hover:not(:disabled) {
+  background: var(--warn-soft);
+}
+
+.approval-card__mode-error {
+  margin: 0;
+  color: var(--diff-red);
+  font-size: 0.8846rem;
+}
+
 .approval-card__off-session {
   display: flex;
   align-items: center;

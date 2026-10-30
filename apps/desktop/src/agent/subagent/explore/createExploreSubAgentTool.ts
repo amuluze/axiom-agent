@@ -57,7 +57,7 @@ export const createExploreSubAgentTool = (): AgentTool => ({
   ],
   // v11：子会话 system prompt 按 UI 语言解析 zh-CN/en 双语模板，并支持设置页按
   // 语言保存的用户覆写（promptLocalizationHost 执行期注入）。schema 不变。
-  runtimeVersion: '16',
+  runtimeVersion: '22',
   recoveryPolicy: 'never',
   requiresApproval: false,
   executionMode: 'sequential',

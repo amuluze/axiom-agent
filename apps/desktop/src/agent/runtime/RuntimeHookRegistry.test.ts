@@ -38,6 +38,7 @@ const makeContext = (signal: AbortSignal = new AbortController().signal): AgentH
     can: (operation) => allowed.includes(operation),
     requestAbort: () => false,
     steer: async () => false,
+    aside: async () => false,
     followUp: async () => false,
     nextTurn: async () => false,
     appendMessage: async () => undefined,

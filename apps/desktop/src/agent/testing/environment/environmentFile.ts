@@ -23,11 +23,17 @@ import { TEST_SPEC_API_METHODS } from '../spec/types'
 import { containsPlaintextCredential } from '../credentialPolicy'
 
 export const ENVIRONMENT_FILE_KIND = 'axiom.test-env' as const
-export const ENVIRONMENT_FILE_VERSION = 1 as const
+/** v2 增量：自定义大写变量（多服务端点）、`secretOrigins` 白名单与多服务就绪探针。 */
+export const ENVIRONMENT_FILE_VERSION = 2 as const
+export const SUPPORTED_ENVIRONMENT_FILE_VERSIONS = [1, 2] as const
+export type EnvironmentFileVersion = (typeof SUPPORTED_ENVIRONMENT_FILE_VERSIONS)[number]
 
-/** 环境档里唯一允许出现的两个逻辑变量名（与运行期投影 `testEnvironmentRuntimeConfig` 一一对应）。 */
+/** v1 档仅允许的两个逻辑变量名；v2 起开放任意大写标识符（见 {@link ENV_VAR_NAME_PATTERN}）。 */
 export const ENVIRONMENT_VARIABLE_NAMES = ['WEB_BASE_URL', 'API_BASE_URL'] as const
 export type EnvironmentVariableName = (typeof ENVIRONMENT_VARIABLE_NAMES)[number]
+
+/** v2 自定义变量名：与 spec `${env.NAME}` 的 NAME 形状一致（Rust 侧同判据）。 */
+const ENV_VAR_NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/
 
 export type EnvironmentMode = 'local' | 'remote'
 
@@ -43,6 +49,16 @@ export interface EnvironmentProbe {
   expectStatus: readonly number[]
 }
 
+/**
+ * v2 多服务就绪探针：多服务拓扑里「就绪」是**每个服务都就绪**——控制面活了但数据面
+ * 没起来时照样跑不了用例。`var` 指向 `vars` 里声明的服务地址（缺省 `API_BASE_URL`），
+ * 路径相对该地址解析。
+ */
+export interface EnvironmentServiceProbe extends EnvironmentProbe {
+  /** 目标服务地址的变量名；必须已在本档 `vars` 中声明。 */
+  var: string
+}
+
 export interface EnvironmentRecipe {
   /** 启动命令，按顺序执行。 */
   start: readonly string[]
@@ -52,24 +68,35 @@ export interface EnvironmentRecipe {
   readiness: readonly string[]
   /** 单条命令与整体预算（毫秒）；同时作为接口探针的步骤超时预算。 */
   timeoutMs: number
-  /** 接口就绪探针；缺省 GET `/` 期望 200。 */
+  /** 接口就绪探针；缺省 GET `/` 期望 200。v1 兼容形态（相对 API_BASE_URL）。 */
   probe?: EnvironmentProbe
+  /** v2：多服务探针清单，全部通过才算就绪；与 `probe` 互斥。 */
+  probes?: readonly EnvironmentServiceProbe[]
 }
 
 export interface EnvironmentFile {
   kind: typeof ENVIRONMENT_FILE_KIND
-  version: typeof ENVIRONMENT_FILE_VERSION
+  version: EnvironmentFileVersion
   /** 环境记录 ID：导入时直接复用，因此重复导入同一份档会更新同一条环境。 */
   id: string
   name: string
   mode: EnvironmentMode
-  /** 只允许 {@link ENVIRONMENT_VARIABLE_NAMES}；`API_BASE_URL` 是第 3 级探针的目标。 */
-  vars: Partial<Record<EnvironmentVariableName, string>>
+  /**
+   * v1 只允许 {@link ENVIRONMENT_VARIABLE_NAMES}；v2 起开放任意大写标识符——多服务
+   * 拓扑的每个端点一个变量（`SERVER_BASE_URL` / `DETECTOR_MGMT_URL` / …）。
+   * `API_BASE_URL` 仍是缺省探针目标与相对路径基址。
+   */
+  vars: Readonly<Record<string, string>>
   viewport?: { width: number; height: number }
   headers: Readonly<Record<string, string>>
   allowPrivateNetwork: boolean
   /** 允许引用的 Secret **名**（`apitest.*`），值不在这里。 */
   secretNames: readonly string[]
+  /**
+   * v2：Secret 允许发往的额外 origin 白名单（`http(s)://host[:port]`）。多服务拓扑里
+   * 数据面/管理面各有凭据；不在这里声明的 origin 依旧只能走 API Base URL 同源边界。
+   */
+  secretOrigins?: readonly string[]
   recipe?: EnvironmentRecipe
 }
 
@@ -92,6 +119,9 @@ export const ENVIRONMENT_FILE_LIMITS = {
   maxSecretNames: 64,
   maxRecipeCommands: 32,
   maxTimeoutMs: 1_800_000,
+  maxVars: 64,
+  maxSecretOrigins: 16,
+  maxProbes: 8,
 } as const
 
 const ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/
@@ -104,6 +134,7 @@ const HOST_PATH_PATTERN = /^(?:\/Users\/|\/home\/|\/var\/folders\/|\/private\/va
 
 interface Ctx {
   issues: EnvironmentFileIssue[]
+  version: EnvironmentFileVersion
 }
 
 type Reader<T> = (ctx: Ctx, value: unknown, path: string) => T | undefined
@@ -195,15 +226,35 @@ const readStringList = (
 }
 
 const readVariables: Reader<EnvironmentFile['vars']> = (ctx, value, path) => {
-  const record = readRecord(ctx, value, path, ENVIRONMENT_VARIABLE_NAMES)
-  if (!record) return undefined
-  const vars: Partial<Record<EnvironmentVariableName, string>> = {}
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return issue(ctx, path, '必须是对象')
+  }
+  const vars: Record<string, string> = {}
   let valid = true
-  for (const name of ENVIRONMENT_VARIABLE_NAMES) {
-    if (record[name] === undefined) continue
-    const text = readText(ctx, record[name], `${path}.${name}`, ENVIRONMENT_FILE_LIMITS.maxStringLength)
+  for (const name of Object.keys(value as Record<string, unknown>)) {
+    // v1 只认两个保留名（fail-closed：出现自定义名要报「升版本」而不是静默接受）；
+    // v2 开放任意大写标识符（多服务端点，如 DETECTOR_MGMT_URL）。
+    const nameValid = ctx.version >= 2
+      ? ENV_VAR_NAME_PATTERN.test(name)
+      : (ENVIRONMENT_VARIABLE_NAMES as readonly string[]).includes(name)
+    if (!nameValid) {
+      issue(
+        ctx,
+        `${path}.${name}`,
+        ctx.version >= 2
+          ? '变量名必须是大写字母开头，仅含大写字母、数字与下划线，长度 1–64'
+          : `v1 档只允许 ${ENVIRONMENT_VARIABLE_NAMES.join('/')}；自定义变量请把 version 升到 2`,
+      )
+      valid = false
+      continue
+    }
+    const text = readText(ctx, (value as Record<string, unknown>)[name], `${path}.${name}`, ENVIRONMENT_FILE_LIMITS.maxStringLength)
     if (text === undefined) valid = false
     else vars[name] = text
+  }
+  if (Object.keys(vars).length > ENVIRONMENT_FILE_LIMITS.maxVars) {
+    issue(ctx, path, `变量数量不能超过 ${ENVIRONMENT_FILE_LIMITS.maxVars}`)
+    return undefined
   }
   return valid ? vars : undefined
 }
@@ -260,6 +311,32 @@ const readSecretNames: Reader<EnvironmentFile['secretNames']> = (ctx, value, pat
   return [...new Set(names)]
 }
 
+/** v2：Secret 目标白名单条目必须是严格 origin（无路径/查询/凭据），Rust 侧同判据。 */
+const readSecretOrigins: Reader<readonly string[]> = (ctx, value, path) => {
+  const origins = readStringList(ctx, value, path, ENVIRONMENT_FILE_LIMITS.maxSecretOrigins, true)
+  if (origins === undefined) return undefined
+  let valid = true
+  origins.forEach((origin, index) => {
+    let parsed: URL | null = null
+    try {
+      parsed = new URL(origin)
+    } catch {
+      parsed = null
+    }
+    const shapeValid = parsed !== null
+      && parsed.username === ''
+      && parsed.password === ''
+      && (parsed.pathname === '/' || parsed.pathname === '')
+      && parsed.search === ''
+      && parsed.hash === ''
+    if (!shapeValid) {
+      issue(ctx, `${path}[${index}]`, 'Secret 目标必须是 origin（http(s)://host[:port]），不能带路径、查询或凭据')
+      valid = false
+    }
+  })
+  return valid ? [...new Set(origins)].sort() : undefined
+}
+
 const readProbe: Reader<EnvironmentProbe> = (ctx, value, path) => {
   const record = readRecord(ctx, value, path, ['method', 'path', 'expectStatus'])
   if (!record) return undefined
@@ -283,6 +360,44 @@ const readProbe: Reader<EnvironmentProbe> = (ctx, value, path) => {
   if (method === undefined || resolvedPath === undefined || expectStatus === undefined) return undefined
   return { method, path: resolvedPath, expectStatus }
 }
+/** v2 多服务探针：带 `var` 指向的服务级探针（其余字段与单探针同构）。 */
+const readServiceProbe: Reader<EnvironmentServiceProbe> = (ctx, value, path) => {
+  const record = readRecord(ctx, value, path, ['var', 'method', 'path', 'expectStatus'])
+  if (!record) return undefined
+  const target = record.var === undefined
+    ? 'API_BASE_URL'
+    : typeof record.var === 'string' && ENV_VAR_NAME_PATTERN.test(record.var)
+      ? record.var
+      : issue(ctx, `${path}.var`, 'var 必须是已在 vars 中声明的变量名')
+  // 只把探针字段交给单探针读取器：`var` 是服务级扩展，整体传进去会触发「未知字段」。
+  const base = readProbe(ctx, {
+    method: record.method,
+    path: record.path,
+    expectStatus: record.expectStatus,
+  }, path)
+  if (target === undefined || base === undefined) return undefined
+  return { ...base, var: target }
+}
+const readList = <T>(
+  ctx: Ctx,
+  value: unknown,
+  path: string,
+  bounds: { min: number; max: number },
+  read: (ctx: Ctx, value: unknown, path: string) => T | undefined,
+): T[] | undefined => {
+  if (!Array.isArray(value)) return issue(ctx, path, '必须是数组')
+  if (value.length < bounds.min || value.length > bounds.max) {
+    return issue(ctx, path, `数量必须在 ${bounds.min} 到 ${bounds.max} 之间`)
+  }
+  const items: T[] = []
+  let valid = true
+  value.forEach((item, index) => {
+    const parsed = read(ctx, item, `${path}[${index}]`)
+    if (parsed === undefined) valid = false
+    else items.push(parsed)
+  })
+  return valid ? items : undefined
+}
 
 /**
  * 从记录里的 `recipe_json` 还原配方（就绪探针用）。**复用同一个读取器**：`recipe_json`
@@ -297,7 +412,7 @@ export const parseEnvironmentRecipeJson = (
   } catch {
     return { ok: false, reason: '环境配方不是合法 JSON' }
   }
-  const ctx: Ctx = { issues: [] }
+  const ctx: Ctx = { issues: [], version: 2 }
   const recipe = readRecipe(ctx, raw, '$.recipe')
   if (recipe === undefined || ctx.issues.length > 0) {
     const first = ctx.issues[0]
@@ -310,7 +425,7 @@ export const parseEnvironmentRecipeJson = (
 }
 
 const readRecipe: Reader<EnvironmentRecipe> = (ctx, value, path) => {
-  const record = readRecord(ctx, value, path, ['start', 'stop', 'readiness', 'timeoutMs', 'probe'])
+  const record = readRecord(ctx, value, path, ['start', 'stop', 'readiness', 'timeoutMs', 'probe', 'probes'])
   if (!record) return undefined
   const readCommands = (name: 'start' | 'stop' | 'readiness', allowEmpty: boolean): string[] | undefined =>
     record[name] === undefined
@@ -323,14 +438,34 @@ const readRecipe: Reader<EnvironmentRecipe> = (ctx, value, path) => {
     ? 120_000
     : readInteger(ctx, record.timeoutMs, `${path}.timeoutMs`, 1_000, ENVIRONMENT_FILE_LIMITS.maxTimeoutMs)
   const probe = record.probe === undefined ? undefined : readProbe(ctx, record.probe, `${path}.probe`)
+  let probes: readonly EnvironmentServiceProbe[] | undefined
+  if (record.probes !== undefined) {
+    if (ctx.version < 2) {
+      issue(ctx, `${path}.probes`, '多服务探针是 v2 增量；请把 version 升到 2')
+    } else {
+      const list = readList(ctx, record.probes, `${path}.probes`, { min: 1, max: ENVIRONMENT_FILE_LIMITS.maxProbes }, readServiceProbe)
+      if (list !== undefined) probes = list
+    }
+  }
+  if (record.probe !== undefined && record.probes !== undefined) {
+    issue(ctx, path, 'probe 与 probes 互斥：多服务形态请只用 probes')
+  }
   if (start === undefined || stop === undefined || readiness === undefined || timeoutMs === undefined) {
     return undefined
   }
   if (record.probe !== undefined && probe === undefined) return undefined
+  if (record.probes !== undefined && probes === undefined) return undefined
   if (start.length === 0 && readiness.length === 0) {
     return issue(ctx, path, '配方至少要给出启动命令或就绪命令')
   }
-  return { start, stop, readiness, timeoutMs, ...(probe ? { probe } : {}) }
+  return {
+    start,
+    stop,
+    readiness,
+    timeoutMs,
+    ...(probe ? { probe } : {}),
+    ...(probes ? { probes } : {}),
+  }
 }
 
 /**
@@ -352,17 +487,19 @@ export const parseEnvironmentFile = (source: string): ParseEnvironmentFileResult
   if (document.kind !== ENVIRONMENT_FILE_KIND) {
     return { ok: false, issues: [{ path: '$.kind', message: `必须为 "${ENVIRONMENT_FILE_KIND}"` }] }
   }
-  if (document.version !== ENVIRONMENT_FILE_VERSION) {
+  const supported = SUPPORTED_ENVIRONMENT_FILE_VERSIONS as readonly number[]
+  if (typeof document.version !== 'number' || !supported.includes(document.version)) {
     return {
       ok: false,
-      issues: [{ path: '$.version', message: `不支持的版本，当前支持 ${ENVIRONMENT_FILE_VERSION}` }],
+      issues: [{ path: '$.version', message: `不支持的版本，当前支持 ${SUPPORTED_ENVIRONMENT_FILE_VERSIONS.join(' / ')}` }],
     }
   }
+  const version = document.version as EnvironmentFileVersion
 
-  const ctx: Ctx = { issues: [] }
+  const ctx: Ctx = { issues: [], version }
   const record = readRecord(ctx, document, '$', [
     'kind', 'version', 'id', 'name', 'mode', 'vars', 'viewport', 'headers',
-    'allowPrivateNetwork', 'secretNames', 'recipe',
+    'allowPrivateNetwork', 'secretNames', 'secretOrigins', 'recipe',
   ])
   const id = readId(ctx, document.id, '$.id')
   const name = readText(ctx, document.name, '$.name', ENVIRONMENT_FILE_LIMITS.maxNameLength)
@@ -378,7 +515,30 @@ export const parseEnvironmentFile = (source: string): ParseEnvironmentFileResult
       ? true
       : issue(ctx, '$.allowPrivateNetwork', '必须是布尔值')
   const secretNames = document.secretNames === undefined ? [] : readSecretNames(ctx, document.secretNames, '$.secretNames')
+  let secretOrigins: readonly string[] | undefined
+  if (document.secretOrigins !== undefined) {
+    if (version < 2) {
+      issue(ctx, '$.secretOrigins', 'secretOrigins 是 v2 增量；请把 version 升到 2')
+    } else {
+      secretOrigins = readSecretOrigins(ctx, document.secretOrigins, '$.secretOrigins')
+    }
+  }
   const recipe = document.recipe === undefined ? undefined : readRecipe(ctx, document.recipe, '$.recipe')
+
+  // 多服务探针的 var 必须指向本档已声明的变量：指向不存在的服务地址只能得到
+  // 永远 not_ready 的探针，错误应在导入时暴露。同一个服务只允许一条探针——步骤 ID
+  // 与审批 actor 按 var 派生，重复会让两个探针共用同一个 ID。
+  if (recipe?.probes !== undefined && vars !== undefined) {
+    const seenProbeVars = new Set<string>()
+    for (const [index, probe] of recipe.probes.entries()) {
+      if (vars[probe.var] === undefined) {
+        issue(ctx, `$.recipe.probes[${index}].var`, `探针指向的变量「${probe.var}」未在 vars 中声明`)
+      } else if (seenProbeVars.has(probe.var)) {
+        issue(ctx, `$.recipe.probes[${index}].var`, `服务「${probe.var}」已有探针，不要重复声明`)
+      }
+      seenProbeVars.add(probe.var)
+    }
+  }
 
   if (mode === 'local') {
     // 起停与就绪判据是 local 档的全部意义；缺了就只能在共享环境上瞎点。
@@ -399,6 +559,7 @@ export const parseEnvironmentFile = (source: string): ParseEnvironmentFileResult
   if (ctx.issues.length > 0 || record === undefined || id === undefined || name === undefined
     || mode === undefined || vars === undefined || headers === undefined || secretNames === undefined
     || allowPrivateNetwork === undefined || (document.viewport !== undefined && viewport === undefined)
+    || (document.secretOrigins !== undefined && secretOrigins === undefined)
     || (document.recipe !== undefined && recipe === undefined)) {
     return { ok: false, issues: ctx.issues }
   }
@@ -407,7 +568,7 @@ export const parseEnvironmentFile = (source: string): ParseEnvironmentFileResult
     ok: true,
     file: {
       kind: ENVIRONMENT_FILE_KIND,
-      version: ENVIRONMENT_FILE_VERSION,
+      version,
       id,
       name,
       mode,
@@ -416,6 +577,7 @@ export const parseEnvironmentFile = (source: string): ParseEnvironmentFileResult
       headers,
       allowPrivateNetwork,
       secretNames,
+      ...(secretOrigins ? { secretOrigins } : {}),
       ...(recipe ? { recipe } : {}),
     },
   }
@@ -434,17 +596,30 @@ export interface EnvironmentRecordDraft {
   allowPrivateNetwork: boolean
   headersJson: string
   secretIdsJson: string
+  /** v2：自定义大写变量（排除两个保留名）与 Secret 额外 origin 白名单。 */
+  extraVarsJson?: string
+  secretOriginsJson?: string
 }
 
-export const environmentRecordDraftFromFile = (file: EnvironmentFile): EnvironmentRecordDraft => ({
-  id: file.id,
-  name: file.name,
-  kind: file.mode,
-  recipeJson: file.recipe ? JSON.stringify(file.recipe) : null,
-  ...(file.vars.WEB_BASE_URL === undefined ? {} : { webBaseUrl: file.vars.WEB_BASE_URL }),
-  ...(file.vars.API_BASE_URL === undefined ? {} : { apiBaseUrl: file.vars.API_BASE_URL }),
-  ...(file.viewport ? { viewportWidth: file.viewport.width, viewportHeight: file.viewport.height } : {}),
-  allowPrivateNetwork: file.allowPrivateNetwork,
-  headersJson: JSON.stringify(file.headers),
-  secretIdsJson: JSON.stringify([...file.secretNames].sort()),
-})
+export const environmentRecordDraftFromFile = (file: EnvironmentFile): EnvironmentRecordDraft => {
+  const { WEB_BASE_URL: webBaseUrl, API_BASE_URL: apiBaseUrl, ...extraVars } = file.vars
+  const extraEntries = Object.entries(extraVars)
+  return {
+    id: file.id,
+    name: file.name,
+    kind: file.mode,
+    recipeJson: file.recipe ? JSON.stringify(file.recipe) : null,
+    ...(webBaseUrl === undefined ? {} : { webBaseUrl }),
+    ...(apiBaseUrl === undefined ? {} : { apiBaseUrl }),
+    ...(file.viewport ? { viewportWidth: file.viewport.width, viewportHeight: file.viewport.height } : {}),
+    allowPrivateNetwork: file.allowPrivateNetwork,
+    headersJson: JSON.stringify(file.headers),
+    secretIdsJson: JSON.stringify([...file.secretNames].sort()),
+    ...(extraEntries.length > 0
+      ? { extraVarsJson: JSON.stringify(Object.fromEntries(extraEntries.sort(([a], [b]) => a.localeCompare(b)))) }
+      : {}),
+    ...(file.secretOrigins && file.secretOrigins.length > 0
+      ? { secretOriginsJson: JSON.stringify(file.secretOrigins) }
+      : {}),
+  }
+}

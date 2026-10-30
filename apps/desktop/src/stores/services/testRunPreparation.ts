@@ -1,4 +1,11 @@
+import { byteLength } from '@/agent/core/bytes'
 import { compileTestSpec, deriveRunPlaceholders, materializeTestPlan, type CompiledTestPlan, type RunPlaceholderValues } from '@/agent/testing/spec/compileTestPlan'
+import {
+  FIXTURE_REFERENCE_MAX_BYTES,
+  FIXTURE_REFERENCE_MAX_FILES,
+  collectFixtureReferences,
+  resolveFixtureReferences,
+} from '@/agent/testing/spec/fixtureFiles'
 import { parseTestSpec } from '@/agent/testing/spec/parseTestSpec'
 import type { TestTargetSpec } from '@/agent/testing/spec/types'
 import { readWorkspaceText } from '@/platform/workspace'
@@ -35,7 +42,27 @@ export const prepareUiTestRun = async (input: PrepareUiTestRunInput): Promise<Co
     ...(run ? { run } : {}),
   })
   if (!materialized.ok) throw new Error(issuesMessage(materialized.issues))
-  return materialized.plan
+
+  // v9：fixture 文件引用在运行准备期一次读入（工作区相对路径，tests/fixtures/ 由解析器限定）。
+  const files = collectFixtureReferences(materialized.plan)
+  if (files.length === 0) return materialized.plan
+  if (files.length > FIXTURE_REFERENCE_MAX_FILES) {
+    throw new Error(`fixture 引用文件过多（${files.length}），单次运行最多 ${FIXTURE_REFERENCE_MAX_FILES} 个`)
+  }
+  const contents = new Map<string, string>()
+  let totalBytes = 0
+  for (const file of files) {
+    const fixture = await readWorkspaceText(file, 0, 1_000, input.workspacePath)
+    if (fixture.truncated) {
+      throw new Error(`fixture 文件「${file}」超过读取上限（1000 行 / 128 KiB）`)
+    }
+    totalBytes += byteLength(fixture.content)
+    if (totalBytes > FIXTURE_REFERENCE_MAX_BYTES) {
+      throw new Error(`fixture 文件总大小超过 ${FIXTURE_REFERENCE_MAX_BYTES} 字节`)
+    }
+    contents.set(file, fixture.content)
+  }
+  return resolveFixtureReferences(materialized.plan, contents)
 }
 
 export const browserTargetOrigin = (url: string): string => {

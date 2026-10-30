@@ -6,7 +6,7 @@ import {
 } from 'react'
 import { PanelLeft } from 'lucide-react'
 import { useAgentStore } from '@/stores/agentStore'
-import { useUiStore } from '@/stores/uiStore'
+import { selectSidebarWidth, useUiStore } from '@/stores/uiStore'
 import { primeOperatingSystem } from '@/platform/osRuntime'
 import { watchAuthorizedWorkspaces } from '@/components/terminal/terminalWorkspaceWatch'
 import { Sidebar } from '@/components/sidebar/Sidebar'
@@ -66,7 +66,7 @@ const ShellLayout = ({ children }: { children: ReactNode }) => {
   const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed)
   const sidebarCompact = useUiStore((state) => state.sidebarCompact)
   const sidebarOverlayOpen = useUiStore((state) => state.sidebarOverlayOpen)
-  const sidebarWidth = useUiStore((state) => state.sidebarWidth)
+  const sidebarWidth = useUiStore(selectSidebarWidth)
   const toggleSidebar = useUiStore((state) => state.toggleSidebar)
   const terminalPanelOpen = useUiStore((state) => state.terminalPanelOpen)
   const connectPanelOpen = useUiStore((state) => state.connectPanelOpen)

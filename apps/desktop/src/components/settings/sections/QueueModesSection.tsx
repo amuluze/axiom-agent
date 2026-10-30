@@ -35,6 +35,20 @@ export const QueueModesSection = ({ hook, context, isSaved, onSave }: QueueModes
           </select>
         </label>
         <label>
+          {t('settings.queue.aside')}
+          <select
+            disabled={busy}
+            onChange={(event) => setDraft({
+              ...draft,
+              aside: event.target.value as typeof draft.aside,
+            })}
+            value={draft.aside}
+          >
+            <option value="one-at-a-time">{t('settings.queue.oneAtATime')}</option>
+            <option value="all">{t('settings.queue.asideAll')}</option>
+          </select>
+        </label>
+        <label>
           {t('settings.queue.followUp')}
           <select
             disabled={busy}

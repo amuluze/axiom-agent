@@ -18,7 +18,7 @@ describe('QueueModesSection', () => {
 
   it('enables 保存队列模式 when the draft diverges from saved settings', () => {
     const hook = buildQueueModesHook({
-      draft: { steering: 'all', followUp: 'all', autoDrain: true },
+      draft: { steering: 'all', aside: 'all', followUp: 'all', autoDrain: true },
     })
     const html = renderToStaticMarkup(createElement(QueueModesSection, {
       hook,
@@ -27,6 +27,7 @@ describe('QueueModesSection', () => {
       onSave: vi.fn(),
     }))
     expect(html).toContain('value="all"')
+    expect(html).toContain('Aside 投递')
     expect(html).not.toContain('disabled=""')
   })
 })

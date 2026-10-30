@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ArtifactReference, ToolCall } from './types'
-import { createToolResultMessage, type ToolCallOutcome } from './toolResults'
+import type { AgentEvent, ArtifactReference, ToolCall } from './types'
+import { createToolResultMessage, failToolCalls, type ToolCallOutcome } from './toolResults'
 
 const makeCall = (id = 'call-1', name = 'screenshot'): ToolCall => ({
   id,
@@ -89,5 +89,25 @@ describe('createToolResultMessage message byte budget', () => {
     expect(externalize).toHaveBeenCalledOnce()
     expect(message.artifact).toMatchObject({ id: 'artifact-1' })
     expect(message.content).toContain('完整工具结果已安全保存为 Artifact')
+  })
+})
+
+describe('failToolCalls', () => {
+  it('marks non-executed placeholder results as synthetic in messages and audit events', async () => {
+    const events: AgentEvent[] = []
+    const result = await failToolCalls(
+      [makeCall()],
+      '未执行工具',
+      'run-1',
+      (event) => { events.push(event) },
+      256 * 1024,
+      undefined,
+      new Set(),
+    )
+
+    expect(result.messages[0]?.details).toEqual({ __synthetic: true, reason: 'not_executed' })
+    expect(events.find((event) => event.type === 'tool_execution_end')).toMatchObject({
+      result: { details: { __synthetic: true, reason: 'not_executed' } },
+    })
   })
 })

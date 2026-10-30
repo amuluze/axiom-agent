@@ -22,7 +22,10 @@ export interface ToolBatchResult {
 }
 
 /** 构造一个纯文本错误结果。 */
-export const createToolError = (message: string): AgentToolResult => ({ content: message })
+export const createToolError = (
+  message: string,
+  details?: AgentToolResult['details'],
+): AgentToolResult => ({ content: message, ...(details === undefined ? {} : { details }) })
 
 /**
  * 单条工具结果消息的整体字节预算。message_end 是持久化屏障，Rust 侧
@@ -208,7 +211,10 @@ export const failToolCalls = async (
       approvalState: 'not_required',
       recoveryPolicy: 'never',
     })
-    const result = createToolError(typeof reason === 'function' ? reason(call) : reason)
+    const result = createToolError(
+      typeof reason === 'function' ? reason(call) : reason,
+      { __synthetic: true, reason: 'not_executed' },
+    )
     await emit({
       type: 'tool_execution_end',
       runId,

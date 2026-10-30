@@ -3,207 +3,313 @@
   "components": [
     {
       "id": "hook:axiom.desktop.runtime-hooks",
-      "version": "10",
+      "version": "11",
       "sourceFiles": [
         "src/agent/runtime/RuntimeHookRegistry.ts",
         "src/agent/runtime/productRuntimeHooks.ts"
       ],
-      "semanticDigest": "ba9cc9f465faa72fac2f1f2ab354959ce2bfcdc71e948317598a495ecf319bb8"
+      "semanticDigest": "20c5fd848ee05992341570df8a2072c15c473cb17f4197243d9251013a651a12"
     },
     {
       "id": "hook:axiom.runtime.harness-options-hooks",
-      "version": "7",
+      "version": "9",
       "sourceFiles": [
         "src/agent/runtime/RuntimeHookRegistry.ts",
         "src/agent/runtime/AgentHarness.ts"
       ],
-      "semanticDigest": "dc11b043c51bb72a2549f952b18370888b2c44c719347ccc59925ba2028fa6a6"
+      "semanticDigest": "8fd9f7c78fcdc5ab283c2751affbfb463fcf3a82a048f497031b78b96c4529be"
     },
     {
       "id": "provider:demo",
-      "version": "3",
+      "version": "7",
       "sourceFiles": [
+        "src/agent/core/messages.ts",
+        "src/agent/core/planningGuard.ts",
+        "src/agent/core/runAgentLoop.ts",
+        "src/agent/core/streamAssistantMessage.ts",
+        "src/agent/core/streamInterruption.ts",
+        "src/agent/core/stablePrefix.ts",
+        "src/agent/core/systemPromptLayout.ts",
+        "src/agent/core/turnHelpers.ts",
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/DemoModelTransport.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "b1e06e2a895381783b30ac200be8ea7c873a38f7935308c91d139bb0e5b97e0c"
+      "semanticDigest": "833f3762caa11fff813750248f0e02bc2514201cea38e1e4022be2a647d176db"
     },
     {
       "id": "provider:generic-openai-compatible",
-      "version": "11",
+      "version": "16",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts",
         "src/agent/core/providerError.ts",
-        "src/agent/core/streamAssistantMessage.ts"
+        "src/agent/core/messages.ts",
+        "src/agent/core/planningGuard.ts",
+        "src/agent/core/runAgentLoop.ts",
+        "src/agent/core/streamAssistantMessage.ts",
+        "src/agent/core/streamInterruption.ts",
+        "src/agent/core/stablePrefix.ts",
+        "src/agent/core/systemPromptLayout.ts",
+        "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "06dfa5a34ae1fe157bbc5e4b12cb3a276fa5821c87ba3f024e660d2c54a5505b"
+      "semanticDigest": "99b045cfe31e692c459ef34624d7a6ba5fbcd16512e90f74aa15c6d48684441d"
     },
     {
       "id": "provider:custom-openai-compatible",
-      "version": "11",
+      "version": "16",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts",
         "src/agent/core/providerError.ts",
-        "src/agent/core/streamAssistantMessage.ts"
+        "src/agent/core/messages.ts",
+        "src/agent/core/planningGuard.ts",
+        "src/agent/core/runAgentLoop.ts",
+        "src/agent/core/streamAssistantMessage.ts",
+        "src/agent/core/streamInterruption.ts",
+        "src/agent/core/stablePrefix.ts",
+        "src/agent/core/systemPromptLayout.ts",
+        "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "06dfa5a34ae1fe157bbc5e4b12cb3a276fa5821c87ba3f024e660d2c54a5505b"
+      "semanticDigest": "99b045cfe31e692c459ef34624d7a6ba5fbcd16512e90f74aa15c6d48684441d"
     },
     {
       "id": "provider:openai",
-      "version": "11",
+      "version": "16",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAIResponsesTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts",
         "src/agent/core/providerError.ts",
-        "src/agent/core/streamAssistantMessage.ts"
+        "src/agent/core/messages.ts",
+        "src/agent/core/planningGuard.ts",
+        "src/agent/core/runAgentLoop.ts",
+        "src/agent/core/streamAssistantMessage.ts",
+        "src/agent/core/streamInterruption.ts",
+        "src/agent/core/stablePrefix.ts",
+        "src/agent/core/systemPromptLayout.ts",
+        "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "1dd6443a3a2b5df89977f41b5280e74f9a0d69bfbb94c557caa8b9bcc218088d"
+      "semanticDigest": "7275fdeaf8fe55d03947bcfd111185e9502c997c8d8c4ab0f7b871ba20b616ec"
     },
     {
       "id": "provider:generic-anthropic-compatible",
-      "version": "11",
+      "version": "16",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/AnthropicCompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts",
         "src/agent/core/providerError.ts",
-        "src/agent/core/streamAssistantMessage.ts"
+        "src/agent/core/messages.ts",
+        "src/agent/core/planningGuard.ts",
+        "src/agent/core/runAgentLoop.ts",
+        "src/agent/core/streamAssistantMessage.ts",
+        "src/agent/core/streamInterruption.ts",
+        "src/agent/core/stablePrefix.ts",
+        "src/agent/core/systemPromptLayout.ts",
+        "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "18b1c066da6c432a8967bab5c6c33cb61569f1767e962cfa70aa64f19f215b36"
+      "semanticDigest": "aca49984c2073c5f9f4e2e4e671150b07397940c805a57ec2afd060d7df39f8e"
     },
     {
       "id": "provider:custom-anthropic-compatible",
-      "version": "11",
+      "version": "16",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/AnthropicCompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts",
         "src/agent/core/providerError.ts",
-        "src/agent/core/streamAssistantMessage.ts"
+        "src/agent/core/messages.ts",
+        "src/agent/core/planningGuard.ts",
+        "src/agent/core/runAgentLoop.ts",
+        "src/agent/core/streamAssistantMessage.ts",
+        "src/agent/core/streamInterruption.ts",
+        "src/agent/core/stablePrefix.ts",
+        "src/agent/core/systemPromptLayout.ts",
+        "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "18b1c066da6c432a8967bab5c6c33cb61569f1767e962cfa70aa64f19f215b36"
+      "semanticDigest": "aca49984c2073c5f9f4e2e4e671150b07397940c805a57ec2afd060d7df39f8e"
     },
     {
       "id": "provider:zhipu-glm",
-      "version": "11",
+      "version": "16",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts",
         "src/agent/core/providerError.ts",
-        "src/agent/core/streamAssistantMessage.ts"
+        "src/agent/core/messages.ts",
+        "src/agent/core/planningGuard.ts",
+        "src/agent/core/runAgentLoop.ts",
+        "src/agent/core/streamAssistantMessage.ts",
+        "src/agent/core/streamInterruption.ts",
+        "src/agent/core/stablePrefix.ts",
+        "src/agent/core/systemPromptLayout.ts",
+        "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "06dfa5a34ae1fe157bbc5e4b12cb3a276fa5821c87ba3f024e660d2c54a5505b"
+      "semanticDigest": "99b045cfe31e692c459ef34624d7a6ba5fbcd16512e90f74aa15c6d48684441d"
     },
     {
       "id": "provider:deepseek",
-      "version": "11",
+      "version": "16",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts",
         "src/agent/core/providerError.ts",
-        "src/agent/core/streamAssistantMessage.ts"
+        "src/agent/core/messages.ts",
+        "src/agent/core/planningGuard.ts",
+        "src/agent/core/runAgentLoop.ts",
+        "src/agent/core/streamAssistantMessage.ts",
+        "src/agent/core/streamInterruption.ts",
+        "src/agent/core/stablePrefix.ts",
+        "src/agent/core/systemPromptLayout.ts",
+        "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "06dfa5a34ae1fe157bbc5e4b12cb3a276fa5821c87ba3f024e660d2c54a5505b"
+      "semanticDigest": "99b045cfe31e692c459ef34624d7a6ba5fbcd16512e90f74aa15c6d48684441d"
     },
     {
       "id": "provider:minimax-chat",
-      "version": "11",
+      "version": "16",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts",
         "src/agent/core/providerError.ts",
-        "src/agent/core/streamAssistantMessage.ts"
+        "src/agent/core/messages.ts",
+        "src/agent/core/planningGuard.ts",
+        "src/agent/core/runAgentLoop.ts",
+        "src/agent/core/streamAssistantMessage.ts",
+        "src/agent/core/streamInterruption.ts",
+        "src/agent/core/stablePrefix.ts",
+        "src/agent/core/systemPromptLayout.ts",
+        "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "06dfa5a34ae1fe157bbc5e4b12cb3a276fa5821c87ba3f024e660d2c54a5505b"
+      "semanticDigest": "99b045cfe31e692c459ef34624d7a6ba5fbcd16512e90f74aa15c6d48684441d"
     },
     {
       "id": "provider:ollama",
-      "version": "11",
+      "version": "16",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts",
         "src/agent/core/providerError.ts",
-        "src/agent/core/streamAssistantMessage.ts"
+        "src/agent/core/messages.ts",
+        "src/agent/core/planningGuard.ts",
+        "src/agent/core/runAgentLoop.ts",
+        "src/agent/core/streamAssistantMessage.ts",
+        "src/agent/core/streamInterruption.ts",
+        "src/agent/core/stablePrefix.ts",
+        "src/agent/core/systemPromptLayout.ts",
+        "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "06dfa5a34ae1fe157bbc5e4b12cb3a276fa5821c87ba3f024e660d2c54a5505b"
+      "semanticDigest": "99b045cfe31e692c459ef34624d7a6ba5fbcd16512e90f74aa15c6d48684441d"
     },
     {
       "id": "provider:gemini",
-      "version": "11",
+      "version": "16",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts",
         "src/agent/core/providerError.ts",
-        "src/agent/core/streamAssistantMessage.ts"
+        "src/agent/core/messages.ts",
+        "src/agent/core/planningGuard.ts",
+        "src/agent/core/runAgentLoop.ts",
+        "src/agent/core/streamAssistantMessage.ts",
+        "src/agent/core/streamInterruption.ts",
+        "src/agent/core/stablePrefix.ts",
+        "src/agent/core/systemPromptLayout.ts",
+        "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "06dfa5a34ae1fe157bbc5e4b12cb3a276fa5821c87ba3f024e660d2c54a5505b"
+      "semanticDigest": "99b045cfe31e692c459ef34624d7a6ba5fbcd16512e90f74aa15c6d48684441d"
     },
     {
       "id": "provider:kimi",
-      "version": "11",
+      "version": "16",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts",
         "src/agent/core/providerError.ts",
-        "src/agent/core/streamAssistantMessage.ts"
+        "src/agent/core/messages.ts",
+        "src/agent/core/planningGuard.ts",
+        "src/agent/core/runAgentLoop.ts",
+        "src/agent/core/streamAssistantMessage.ts",
+        "src/agent/core/streamInterruption.ts",
+        "src/agent/core/stablePrefix.ts",
+        "src/agent/core/systemPromptLayout.ts",
+        "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "06dfa5a34ae1fe157bbc5e4b12cb3a276fa5821c87ba3f024e660d2c54a5505b"
+      "semanticDigest": "99b045cfe31e692c459ef34624d7a6ba5fbcd16512e90f74aa15c6d48684441d"
     },
     {
       "id": "provider:kimi-coding",
-      "version": "11",
+      "version": "16",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/AnthropicCompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts",
         "src/agent/core/providerError.ts",
-        "src/agent/core/streamAssistantMessage.ts"
+        "src/agent/core/messages.ts",
+        "src/agent/core/planningGuard.ts",
+        "src/agent/core/runAgentLoop.ts",
+        "src/agent/core/streamAssistantMessage.ts",
+        "src/agent/core/streamInterruption.ts",
+        "src/agent/core/stablePrefix.ts",
+        "src/agent/core/systemPromptLayout.ts",
+        "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "18b1c066da6c432a8967bab5c6c33cb61569f1767e962cfa70aa64f19f215b36"
+      "semanticDigest": "aca49984c2073c5f9f4e2e4e671150b07397940c805a57ec2afd060d7df39f8e"
     },
     {
       "id": "provider:orcarouter",
-      "version": "11",
+      "version": "16",
       "sourceFiles": [
         "src/agent/transport/builtinProviderDescriptors.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/sse.ts",
         "src/agent/transport/generatedProviderData.ts",
         "src/agent/core/providerError.ts",
-        "src/agent/core/streamAssistantMessage.ts"
+        "src/agent/core/messages.ts",
+        "src/agent/core/planningGuard.ts",
+        "src/agent/core/runAgentLoop.ts",
+        "src/agent/core/streamAssistantMessage.ts",
+        "src/agent/core/streamInterruption.ts",
+        "src/agent/core/stablePrefix.ts",
+        "src/agent/core/systemPromptLayout.ts",
+        "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "06dfa5a34ae1fe157bbc5e4b12cb3a276fa5821c87ba3f024e660d2c54a5505b"
+      "semanticDigest": "99b045cfe31e692c459ef34624d7a6ba5fbcd16512e90f74aa15c6d48684441d"
     },
     {
       "id": "provider:opencode-go",
-      "version": "3",
+      "version": "8",
       "sourceFiles": [
+        "src/agent/core/messages.ts",
+        "src/agent/core/planningGuard.ts",
         "src/agent/core/providerError.ts",
+        "src/agent/core/runAgentLoop.ts",
+        "src/agent/core/stablePrefix.ts",
         "src/agent/core/streamAssistantMessage.ts",
+        "src/agent/core/streamInterruption.ts",
+        "src/agent/core/systemPromptLayout.ts",
+        "src/agent/core/turnHelpers.ts",
         "src/agent/transport/AnthropicCompatibleTransport.ts",
         "src/agent/transport/OpenAICompatibleTransport.ts",
         "src/agent/transport/OpenAIResponsesTransport.ts",
@@ -211,11 +317,11 @@
         "src/agent/transport/generatedProviderData.ts",
         "src/agent/transport/sse.ts"
       ],
-      "semanticDigest": "685c04c4df27c343c3073fd0399122641d91aaa08f6c14bdfcc7bbf1f4f346fb"
+      "semanticDigest": "b3372eb2d18f0ae1d67be4f264a58cc7bb9bf45f1277c61fa3fa19a0a8522c85"
     },
     {
       "id": "tool:api_request",
-      "version": "5",
+      "version": "6",
       "sourceFiles": [
         "src/agent/tools/apiRequestTool.ts",
         "src/agent/environment/AgentEnvironment.ts",
@@ -227,13 +333,16 @@
         "src-tauri/src/api_test_policy.rs",
         "src-tauri/src/test_repository.rs"
       ],
-      "semanticDigest": "18947230c05d7707a61c1a855a403cef8589c00a9cc37d77f102b3982eab41b4"
+      "semanticDigest": "4845cbd6e790d2603800f06540ab1272d230dbf9c24ea30271d2d9e8e2581fb8"
     },
     {
       "id": "tool:apply_changes",
-      "version": "10",
+      "version": "12",
       "sourceFiles": [
         "src/agent/tools/applyChangesTool.ts",
+        "src/agent/tools/editSyntaxRepair.ts",
+        "src/agent/core/syntaxRepairModel.ts",
+        "src/agent/core/toolExecution.ts",
         "src/agent/tools/workspaceToolUtils.ts",
         "src/agent/tools/toolDiff.ts",
         "src/agent/approval/ApprovalCoordinator.ts",
@@ -245,7 +354,7 @@
         "src-tauri/src/workspace_changes.rs",
         "src/platform/workspaceApproval.ts"
       ],
-      "semanticDigest": "7c42f1c3d1f4e1a9cbe249adf9d224749bb1fe60715a8b25e25de6c299fa6f96"
+      "semanticDigest": "ece256e035be7fe9a7f455b6c10a1b40eae842ec6fa1751180213df796176790"
     },
     {
       "id": "tool:bash",
@@ -274,9 +383,12 @@
     },
     {
       "id": "tool:edit",
-      "version": "12",
+      "version": "14",
       "sourceFiles": [
         "src/agent/tools/editTool.ts",
+        "src/agent/tools/editSyntaxRepair.ts",
+        "src/agent/core/syntaxRepairModel.ts",
+        "src/agent/core/toolExecution.ts",
         "src/agent/tools/workspaceToolUtils.ts",
         "src/agent/tools/toolDiff.ts",
         "src/agent/approval/ApprovalCoordinator.ts",
@@ -288,11 +400,11 @@
         "src-tauri/src/workspace_access.rs",
         "src/platform/workspaceApproval.ts"
       ],
-      "semanticDigest": "e4048f11ffd4d571eace1776b9c2404917a1e0d53b937103103b1ce6a0c6988f"
+      "semanticDigest": "91d80219c6725e1c39ec89c2244abb71c1b79e59bd6225a8662d754c91ea2835"
     },
     {
       "id": "tool:examine_subagent",
-      "version": "11",
+      "version": "17",
       "sourceFiles": [
         "src/agent/subagent/reviewers/createExamineSubAgentTool.ts",
         "src/agent/subagent/reviewers/createReviewerSubAgentTool.ts",
@@ -303,6 +415,14 @@
         "src/agent/subagent/scopedReadEnvironment.ts",
         "src/agent/subagent/contracts.ts",
         "src/agent/runtime/AgentSession.ts",
+        "src/agent/core/messages.ts",
+        "src/agent/core/planningGuard.ts",
+        "src/agent/core/runAgentLoop.ts",
+        "src/agent/core/streamAssistantMessage.ts",
+        "src/agent/core/streamInterruption.ts",
+        "src/agent/core/turnHelpers.ts",
+        "src/agent/core/stablePrefix.ts",
+        "src/agent/core/systemPromptLayout.ts",
         "src/stores/services/subAgentObservability.ts",
         "src/agent/subagent/readonlyTools.ts",
         "src/agent/subagent/scopeProbe.ts",
@@ -311,11 +431,11 @@
         "src/agent/runtime/autoRetry.ts",
         "src/agent/runtime/sessionRuntimeUpdates.ts"
       ],
-      "semanticDigest": "4085995510d59ba5f9415f29ead95b48cadb453dcd5f2a08a1bfd92279672881"
+      "semanticDigest": "c06b56c01a13eee7ce766a863a4cf2343dbd825753daf141f2a42de298b49f79"
     },
     {
       "id": "tool:explore_subagent",
-      "version": "16",
+      "version": "22",
       "sourceFiles": [
         "src/agent/subagent/explore/createExploreSubAgentTool.ts",
         "src/agent/subagent/explore/buildExplorePrompt.ts",
@@ -324,6 +444,14 @@
         "src/agent/subagent/scopedReadEnvironment.ts",
         "src/agent/subagent/contracts.ts",
         "src/agent/runtime/AgentSession.ts",
+        "src/agent/core/messages.ts",
+        "src/agent/core/planningGuard.ts",
+        "src/agent/core/runAgentLoop.ts",
+        "src/agent/core/streamAssistantMessage.ts",
+        "src/agent/core/streamInterruption.ts",
+        "src/agent/core/turnHelpers.ts",
+        "src/agent/core/stablePrefix.ts",
+        "src/agent/core/systemPromptLayout.ts",
         "src/stores/services/subAgentObservability.ts",
         "src/agent/subagent/readonlyTools.ts",
         "src/agent/subagent/scopeProbe.ts",
@@ -332,11 +460,11 @@
         "src/agent/runtime/autoRetry.ts",
         "src/agent/runtime/sessionRuntimeUpdates.ts"
       ],
-      "semanticDigest": "88cab04cd7ba48fe63b69d0cc75587da9889a167f3f20b6c1c8bb63b83893c1b"
+      "semanticDigest": "37b46b40642e33dbce3df26c6df3ff75573523c33286cc5cd1a4530ab18ae6f9"
     },
     {
       "id": "tool:design_query",
-      "version": "24",
+      "version": "25",
       "sourceFiles": [
         "src/agent/tools/designQueryTool.ts",
         "src/agent/tools/workspaceToolUtils.ts",
@@ -365,7 +493,7 @@
         "src/agent/design/axSerialize.ts",
         "src/agent/core/stripUnsupportedImages.ts"
       ],
-      "semanticDigest": "d95b52ba4e1aaee6f3b864654cfcc15c49236e404f960749fc5b62150647a49c"
+      "semanticDigest": "4fa025a2d113e893ea6a9b0ce1a4f165ad49ebfe55c8a3e50ea88585178b9f27"
     },
     {
       "id": "tool:design_import",
@@ -388,27 +516,27 @@
     },
     {
       "id": "tool:find",
-      "version": "6",
+      "version": "7",
       "sourceFiles": [
         "src/agent/tools/findTool.ts",
         "src/agent/tools/workspaceToolUtils.ts",
         "src/agent/tools/truncate.ts"
       ],
-      "semanticDigest": "ff30ccf0805bc5515f33cac26bcc864f70979e92d2cce32952c80afe00f04efc"
+      "semanticDigest": "3f99c9fc406fb1c967d61b3df45ff08df58d9f2a84a089a5b6055a76df769ae3"
     },
     {
       "id": "tool:grep",
-      "version": "6",
+      "version": "7",
       "sourceFiles": [
         "src/agent/tools/grepTool.ts",
         "src/agent/tools/workspaceToolUtils.ts",
         "src/agent/tools/truncate.ts"
       ],
-      "semanticDigest": "2634dd690f204be31a19a84e0ac6e39b197ae4575c931b0421f87e88839d8b0c"
+      "semanticDigest": "83eec27ab33a6118a3ee4c521b1003fdd9adfb68cd80781ae7dafeb73340adc0"
     },
     {
       "id": "tool:inspect_subagent",
-      "version": "11",
+      "version": "17",
       "sourceFiles": [
         "src/agent/subagent/reviewers/createInspectSubAgentTool.ts",
         "src/agent/subagent/reviewers/createReviewerSubAgentTool.ts",
@@ -419,6 +547,14 @@
         "src/agent/subagent/scopedReadEnvironment.ts",
         "src/agent/subagent/contracts.ts",
         "src/agent/runtime/AgentSession.ts",
+        "src/agent/core/messages.ts",
+        "src/agent/core/planningGuard.ts",
+        "src/agent/core/runAgentLoop.ts",
+        "src/agent/core/streamAssistantMessage.ts",
+        "src/agent/core/streamInterruption.ts",
+        "src/agent/core/turnHelpers.ts",
+        "src/agent/core/stablePrefix.ts",
+        "src/agent/core/systemPromptLayout.ts",
         "src/stores/services/subAgentObservability.ts",
         "src/agent/subagent/readonlyTools.ts",
         "src/agent/subagent/scopeProbe.ts",
@@ -427,28 +563,28 @@
         "src/agent/runtime/autoRetry.ts",
         "src/agent/runtime/sessionRuntimeUpdates.ts"
       ],
-      "semanticDigest": "a7c9e7954444e58969c874f2a711959c63d8aacbc09261b6ec4eca10b76fd456"
+      "semanticDigest": "6de037e806632dd645fd64da16f54c9c07d3f08828c7862c4a20e68290686746"
     },
     {
       "id": "tool:load_skill",
-      "version": "6",
+      "version": "12",
       "sourceFiles": [
         "src/agent/skills/ProjectSkillRegistry.ts",
         "src/agent/skills/createLoadSkillTool.ts",
         "src/agent/skills/parseSkillFile.ts",
         "src/agent/skills/builtinSkillBodies.ts"
       ],
-      "semanticDigest": "5bd8c6c9455be3c3c47e0014cd05c5d4c18eacc35f3b689f0d38020d93b9020a"
+      "semanticDigest": "1cb2254a5bfbde0ca7a129660defeae56751e831a604deae37a846a5943e7104"
     },
     {
       "id": "tool:ls",
-      "version": "5",
+      "version": "6",
       "sourceFiles": [
         "src/agent/tools/lsTool.ts",
         "src/agent/tools/workspaceToolUtils.ts",
         "src/agent/tools/truncate.ts"
       ],
-      "semanticDigest": "14459895c3547fa80b2870e256b9960f36ab55f9cb672d316c67ba255ba52835"
+      "semanticDigest": "34f19d79ede785e71b7b20ea8df9ad9e55da96f2a832418a674673ae9da0eda4"
     },
     {
       "id": "tool:read",
@@ -480,7 +616,7 @@
     },
     {
       "id": "tool:review_subagent",
-      "version": "13",
+      "version": "19",
       "sourceFiles": [
         "src/agent/subagent/reviewers/createReviewSubAgentTool.ts",
         "src/agent/subagent/reviewers/createReviewerSubAgentTool.ts",
@@ -491,6 +627,14 @@
         "src/agent/subagent/scopedReadEnvironment.ts",
         "src/agent/subagent/contracts.ts",
         "src/agent/runtime/AgentSession.ts",
+        "src/agent/core/messages.ts",
+        "src/agent/core/planningGuard.ts",
+        "src/agent/core/runAgentLoop.ts",
+        "src/agent/core/streamAssistantMessage.ts",
+        "src/agent/core/streamInterruption.ts",
+        "src/agent/core/turnHelpers.ts",
+        "src/agent/core/stablePrefix.ts",
+        "src/agent/core/systemPromptLayout.ts",
         "src/stores/services/subAgentObservability.ts",
         "src/agent/subagent/readonlyTools.ts",
         "src/agent/subagent/scopeProbe.ts",
@@ -499,7 +643,7 @@
         "src/agent/runtime/autoRetry.ts",
         "src/agent/runtime/sessionRuntimeUpdates.ts"
       ],
-      "semanticDigest": "b789b8c2de111dbc61c0150ecbb1f87a6417f6668f669eae87755527cecfe30e"
+      "semanticDigest": "15e3cea8f4015654a133c96ef7ac1d678bd03dd8f46c1e6d9353c23ef5e2f38e"
     },
     {
       "id": "tool:write",

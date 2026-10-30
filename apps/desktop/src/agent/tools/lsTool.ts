@@ -12,7 +12,7 @@ export const createLsTool = (environment: AgentEnvironment): AgentTool => ({
     '工作区授权不能解除凭据或 Axiom 数据保护；隐私目录只开放经原生确认的项目子目录，拒绝后不要通过改名或其他工具绕过。',
     '目录以“/”结尾；传入授权工作区内的相对路径。',
   ],
-  runtimeVersion: '5',
+  runtimeVersion: '6',
   recoveryPolicy: 'idempotent',
   idempotencyKey: (input) => {
     if (!isJsonObject(input)) return 'ls:invalid'
@@ -74,6 +74,7 @@ export const createLsTool = (environment: AgentEnvironment): AgentTool => ({
           sizeBytes: entry.sizeBytes,
         })),
         truncated: result.truncated,
+        ...(result.entries.length === 0 ? { contextRetention: 'discardable' } : {}),
       },
     }
   },

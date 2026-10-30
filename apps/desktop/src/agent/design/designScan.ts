@@ -29,6 +29,8 @@ export interface DesignScanRenderOutcome {
   samples?: number
   distinctColors?: number
   topColorFraction?: number
+  /** 会话扫描可选回传的 PNG；画布按钮不请求，避免无谓编码与内存占用。 */
+  base64?: string
 }
 
 /** 单页扫描的输入（从 PenDocument 提取，纯数据）。 */
@@ -455,10 +457,16 @@ const verdictOf = (
  * 批量渲染器**必须**对每个待渲染页回报一次；未回报（扫描被中断等）的页记
  * warning「渲染检查未完成」而不是 fail——中断不应伪装成页面错误。
  */
+export interface DesignScanBatchRenderOptions {
+  /** 会话扫描需要 warn 页缩略图时传入；缺省只回像素统计。 */
+  thumbnailMaxBytes?: number
+}
+
 export type DesignScanBatchRenderPage = (
   pages: readonly DesignScanPageInput[],
   onPageDone: (pageId: string, outcome: DesignScanRenderOutcome) => void,
   onActive: (pageIds: readonly string[] | null) => void,
+  options?: DesignScanBatchRenderOptions,
 ) => Promise<void>
 
 export const scanDesignPagesBatch = async (

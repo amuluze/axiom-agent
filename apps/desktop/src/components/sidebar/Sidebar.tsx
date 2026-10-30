@@ -2,8 +2,10 @@ import { Suspense, lazy, useMemo, useRef, useState, type FormEvent, type ReactNo
 import { useAgentStore } from '@/stores/agentStore'
 import { useConnectStore } from '@/stores/connectStore'
 import {
+  DEFAULT_ASSISTANT_SIDEBAR_WIDTH,
   DEFAULT_SIDEBAR_WIDTH,
   MIN_SIDEBAR_WIDTH,
+  selectSidebarWidth,
   sidebarMaxWidth,
   useUiStore,
 } from '@/stores/uiStore'
@@ -174,7 +176,7 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
   const sessionQueueCounts = agentPreview?.sessionQueueCounts ?? storeSessionQueueCounts
   const storeToggleSidebar = useUiStore((state) => state.toggleSidebar)
   const toggleSidebar = uiPreview?.toggleSidebar ?? storeToggleSidebar
-  const storeSidebarWidth = useUiStore((state) => state.sidebarWidth)
+  const storeSidebarWidth = useUiStore(selectSidebarWidth)
   const sidebarWidth = uiPreview?.sidebarWidth ?? storeSidebarWidth
   const storeSetSidebarWidth = useUiStore((state) => state.setSidebarWidth)
   const setSidebarWidth = uiPreview?.setSidebarWidth ?? storeSetSidebarWidth
@@ -327,7 +329,7 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
     const drag = dragStateRef.current
     if (!drag) return
     const next = drag.startWidth + (event.clientX - drag.startX)
-    if (next !== useUiStore.getState().sidebarWidth) setSidebarWidth(next)
+    if (next !== selectSidebarWidth(useUiStore.getState())) setSidebarWidth(next)
   }
 
   const onResizerPointerEnd = (event: React.PointerEvent<HTMLDivElement>): void => {
@@ -343,7 +345,7 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
     event.preventDefault()
     const delta = event.key === 'ArrowRight' ? KEYBOARD_RESIZE_STEP : -KEYBOARD_RESIZE_STEP
-    setSidebarWidth(useUiStore.getState().sidebarWidth + delta)
+    setSidebarWidth(selectSidebarWidth(useUiStore.getState()) + delta)
   }
 
   const resizer = variant === 'default' && (
@@ -360,7 +362,11 @@ export const Sidebar = ({ variant = 'default' }: SidebarProps = {}) => {
       onPointerUp={onResizerPointerEnd}
       onPointerCancel={onResizerPointerEnd}
       onKeyDown={onResizerKeyDown}
-      onDoubleClick={() => setSidebarWidth(DEFAULT_SIDEBAR_WIDTH)}
+      onDoubleClick={() => setSidebarWidth(
+        designMode || view === 'docs' || view === 'testing'
+          ? DEFAULT_ASSISTANT_SIDEBAR_WIDTH
+          : DEFAULT_SIDEBAR_WIDTH,
+      )}
     />
   )
 

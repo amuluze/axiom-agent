@@ -5,6 +5,7 @@ import type { AgentEnvironment, WorkspaceChangeOperation } from '@/agent/environ
 import { desktopAgentEnvironment } from '@/agent/environment/agentEnvironmentHost'
 import { hasOnlyKeys, isJsonObject, isMutablePath } from './workspaceToolUtils'
 import { buildApplyChangesResultDiff } from './toolDiff'
+import { prepareSyntaxRepair } from './editSyntaxRepair'
 
 const MAX_OPERATIONS = 32
 const MAX_TEXT_BYTES = 1024 * 1024
@@ -138,6 +139,11 @@ const approvalPreview = (operation: WorkspaceChangeOperation): string => {
     : preview
 }
 
+const syntaxRepairDetails = (details: JsonValue | undefined): JsonValue[] => {
+  if (details === undefined || !isJsonObject(details) || !Array.isArray(details.syntaxAutoRepairs)) return []
+  return details.syntaxAutoRepairs
+}
+
 export const createApplyChangesTool = (environment: AgentEnvironment): AgentTool => ({
   name: 'apply_changes',
   label: 'apply_changes',
@@ -151,7 +157,7 @@ export const createApplyChangesTool = (environment: AgentEnvironment): AgentTool
   ],
   // v5：结果 details 新增 diffAdded/diffRemoved/diffPreview（只覆盖 create-file/
   // patch-file 文本型操作）；schema 不变，仅输出语义增强（details 不回灌模型）。
-  runtimeVersion: '10',
+  runtimeVersion: '12',
   recoveryPolicy: 'never',
   description:
     'Atomically apply up to 32 non-overlapping workspace changes after a single per-file review: create-file, patch-file (with sha256 conflict detection), create-directory, move, and recoverable trash. Any failure rolls back the partially applied steps; the request is not auto-replayed. Each invocation requires an approval lease.',
@@ -250,14 +256,41 @@ export const createApplyChangesTool = (environment: AgentEnvironment): AgentTool
     if (overlapping) return { ok: false, error: 'Batch must not contain duplicate or ancestor/descendant paths.' }
     return { ok: true, value: { operations: typed } }
   },
-  approvalPresentation: (input) => {
+  prepareForApproval: async (input, context) => {
     const operations = asOperations(input)
+    const preparedOperations: WorkspaceChangeOperation[] = []
+    const repairs: JsonValue[] = []
+    for (const operation of operations) {
+      if (operation.type !== 'patch-file') {
+        preparedOperations.push(operation)
+        continue
+      }
+      const prepared = await prepareSyntaxRepair({
+        path: operation.path,
+        edits: [{ oldText: operation.oldText, newText: operation.newText }],
+        environment,
+        context,
+        expectedSha256: operation.expectedSha256,
+      })
+      preparedOperations.push({ ...operation, newText: prepared.edits[0].newText })
+      if (prepared.details !== undefined && isJsonObject(prepared.details) && prepared.details.syntaxAutoRepair !== undefined) {
+        repairs.push({ path: operation.path, detail: prepared.details.syntaxAutoRepair })
+      }
+    }
+    return {
+      input: { operations: preparedOperations },
+      ...(repairs.length > 0 ? { details: { syntaxAutoRepairs: repairs } } : {}),
+    }
+  },
+  approvalPresentation: (input, preparationDetails) => {
+    const operations = asOperations(input)
+    const repairs = syntaxRepairDetails(preparationDetails)
     return {
       category: 'workspace-write',
       title: `Apply ${operations.length} workspace ${operations.length === 1 ? 'change' : 'changes'} atomically?`,
       titleKey: 'app.approval.applyChanges.title',
       titleParams: { count: operations.length },
-      description: 'All changes share one transaction: conflicts or failures trigger rollback. Trash entries enter the Axiom recoverable store.',
+      description: `All changes share one transaction: conflicts or failures trigger rollback. Trash entries enter the Axiom recoverable store.${repairs.length > 0 ? ` Syntax repairs were applied to ${repairs.length} file${repairs.length > 1 ? 's' : ''} before this approval.` : ''}`,
       descriptionKey: 'app.approval.applyChanges.description',
       changes: operations.map((operation) => ({
         path: operation.type === 'move' ? `${operation.from} → ${operation.to}` : operation.path,
@@ -265,7 +298,7 @@ export const createApplyChangesTool = (environment: AgentEnvironment): AgentTool
       })),
     }
   },
-  auditArguments: (input) => {
+  auditArguments: (input, preparationDetails) => {
     const operations = asOperations(input)
     return {
       operationCount: operations.length,
@@ -275,6 +308,9 @@ export const createApplyChangesTool = (environment: AgentEnvironment): AgentTool
         textBytes: operationTextBytes(operation),
         expectedSha256: 'expectedSha256' in operation ? operation.expectedSha256 ?? null : null,
       })),
+      ...(syntaxRepairDetails(preparationDetails).length > 0
+        ? { syntaxAutoRepairs: syntaxRepairDetails(preparationDetails) }
+        : {}),
     }
   },
   execute: async (input, context) => {
@@ -309,6 +345,9 @@ export const createApplyChangesTool = (environment: AgentEnvironment): AgentTool
           sha256: change.sha256 ?? null,
         })),
         completedAfterAbort,
+        ...(syntaxRepairDetails(context.preparationDetails).length > 0
+          ? { syntaxAutoRepairs: syntaxRepairDetails(context.preparationDetails) }
+          : {}),
         ...(buildApplyChangesResultDiff(operations) ?? {}),
       },
     }

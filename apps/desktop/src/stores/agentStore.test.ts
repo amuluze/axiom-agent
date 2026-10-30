@@ -275,7 +275,7 @@ describe('agentStore session activation', () => {
     const persisted = await repository.loadSession(legacy.session.id)
     expect(persisted.session.runtimeManifest?.hooks).toContainEqual(expect.objectContaining({
       id: 'axiom.desktop.runtime-hooks',
-      version: '10',
+      version: '11',
     }))
     await expect(useAgentStore.getState().deleteSession(sourceSessionId)).resolves.toBe(true)
   })
@@ -699,18 +699,20 @@ describe('agentStore session activation', () => {
     expect(state.sessionBusy).toBe(false)
   })
 
-  it('persists queue modes, agent limits, reasoning, and clears queued messages', async () => {
+  it('persists queue modes, agent limits, syntax repair, reasoning, and clears queued messages', async () => {
     const { useAgentStore } = await import('./agentStore')
     await useAgentStore.getState().initialize()
     expect(useAgentStore.getState().runtimeLifecycle).toBe('ready')
 
     expect(useAgentStore.getState().saveQueueModes({
       steering: 'all',
+      aside: 'all',
       followUp: 'all',
       autoDrain: true,
     })).toBe(true)
     expect(useAgentStore.getState().queueModeSettings).toMatchObject({
       steering: 'all',
+      aside: 'all',
       followUp: 'all',
     })
 
@@ -726,6 +728,17 @@ describe('agentStore session activation', () => {
       maxTotalTokens: 1_000_000,
       approvalTimeoutMs: 90_000,
     })
+
+    const repairProfileId = useAgentStore.getState().providerProfiles[0]?.profileId
+    expect(repairProfileId).toBeTruthy()
+    expect(useAgentStore.getState().saveSyntaxRepairSettings({
+      profileId: repairProfileId ?? null,
+    })).toBe(true)
+    expect(useAgentStore.getState().syntaxRepairSettings.profileId).toBe(repairProfileId)
+    expect(useAgentStore.getState().saveSyntaxRepairSettings({
+      profileId: 'missing-profile',
+    })).toBe(false)
+    expect(useAgentStore.getState().syntaxRepairSettings.profileId).toBe(repairProfileId)
 
     // demo provider 不支持 reasoning，normalize 会按能力回落为 off。
     await expect(useAgentStore.getState().saveReasoningSettings({
@@ -860,6 +873,73 @@ describe('agentStore session activation', () => {
     await expect(useAgentStore.getState().deleteSession(backgroundSessionId)).resolves.toBe(true)
     await expect(useAgentStore.getState().selectSession(previousActiveSessionId!)).resolves.toBe(true)
     expect(useAgentStore.getState().saveQueueAutoDrain(true)).toBe(true)
+  })
+
+  it('releases a queued message for a running background session and clears its badge', async () => {
+    const { useAgentStore } = await import('./agentStore')
+    const previousActiveSessionId = useAgentStore.getState().activeSessionId
+    const workspace = { path: '/repo/queued-release', name: 'queued-release', gitBranch: null }
+    useAgentStore.setState({ authorizedWorkspace: workspace, authorizedWorkspaces: [workspace] })
+    await expect(useAgentStore.getState().createNewSession('/repo/queued-release')).resolves.toBe(true)
+    const backgroundSessionId = useAgentStore.getState().activeSessionId!
+    let foregroundSessionId: string | undefined
+
+    const inFlight = repository.blockNextEvent(backgroundSessionId, 'message_end')
+    const running = useAgentStore.getState().send('running background alpha')
+    await inFlight
+    try {
+      await expect(useAgentStore.getState().createNewSession('/repo/queued-release')).resolves.toBe(true)
+      foregroundSessionId = useAgentStore.getState().activeSessionId!
+      expect(useAgentStore.getState().saveQueueAutoDrain(false)).toBe(true)
+
+      await expect(useAgentStore.getState().sendToSession(backgroundSessionId, 'release while running'))
+        .resolves.toBe(true)
+      expect(useAgentStore.getState().sessionQueueCounts[backgroundSessionId]).toBe(1)
+
+      // 后台队列放行不走前台 send/queuedMessages，而是直接驱动该会话缓存 harness。
+      await expect(useAgentStore.getState().releaseQueuedForSession(backgroundSessionId)).resolves.toBe(true)
+      // 放行把目标提升为 steering 并武装下一轮注入；在真正消费前仍占队列一条。
+      const background = getRuntimeSession(backgroundSessionId)
+      expect(background?.queuedMessages).toHaveLength(1)
+      expect(background?.queuedMessages[0]?.kind).toBe('steering')
+      expect(useAgentStore.getState().sessionQueueCounts[backgroundSessionId]).toBe(1)
+    } finally {
+      repository.releaseEvent()
+      await running
+      expect(useAgentStore.getState().sessionQueueCounts[backgroundSessionId]).toBeUndefined()
+      await useAgentStore.getState().clearQueuedMessages()
+      if (foregroundSessionId) await useAgentStore.getState().deleteSession(foregroundSessionId)
+      await useAgentStore.getState().deleteSession(backgroundSessionId)
+      await useAgentStore.getState().selectSession(previousActiveSessionId!)
+      expect(useAgentStore.getState().saveQueueAutoDrain(true)).toBe(true)
+    }
+  })
+
+  it('releases an idle background queue item by starting that session run', async () => {
+    const { useAgentStore } = await import('./agentStore')
+    const previousActiveSessionId = useAgentStore.getState().activeSessionId
+    const workspace = { path: '/repo/idle-release', name: 'idle-release', gitBranch: null }
+    useAgentStore.setState({ authorizedWorkspace: workspace, authorizedWorkspaces: [workspace] })
+    await expect(useAgentStore.getState().createNewSession('/repo/idle-release')).resolves.toBe(true)
+    const backgroundSessionId = useAgentStore.getState().activeSessionId!
+    let foregroundSessionId: string | undefined
+    try {
+      const accepted = await useAgentStore.getState().queueNextTurn('idle background release')
+      if (!accepted.accepted) throw new Error('queueNextTurn should be accepted')
+
+      // 切到另一会话后，目标会话的 harness 仍在缓存里但处于 idle。
+      await expect(useAgentStore.getState().createNewSession('/repo/idle-release')).resolves.toBe(true)
+      foregroundSessionId = useAgentStore.getState().activeSessionId!
+      await expect(useAgentStore.getState().releaseQueuedForSession(backgroundSessionId)).resolves.toBe(true)
+
+      const background = getRuntimeSession(backgroundSessionId)
+      expect(background?.isRunning).toBe(false)
+      expect(background?.queuedMessages).toEqual([])
+    } finally {
+      if (foregroundSessionId) await useAgentStore.getState().deleteSession(foregroundSessionId)
+      await useAgentStore.getState().deleteSession(backgroundSessionId)
+      await useAgentStore.getState().selectSession(previousActiveSessionId!)
+    }
   })
 
 })

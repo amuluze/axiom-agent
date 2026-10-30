@@ -16,6 +16,7 @@ import { createId } from '@/agent/core/id'
 import type { TestStepApprover } from '@/agent/testing/approval/testStepApprover'
 import type { TestEnvironmentFacts } from '@/agent/testing/environment/envFacts'
 import type { CompiledTestPlan } from '@/agent/testing/spec/compileTestPlan'
+import { isApiTestStep } from '@/agent/testing/spec/stepActions'
 import { testPlanExecutions, type StepStatusChange } from '@/agent/testing/runner/runTestPlan'
 import { stopsBatch, type FailureOrigin } from '@/agent/testing/runner/runState'
 import type { TestEnvironmentRecord } from '@/platform/testEnvironments'
@@ -88,7 +89,7 @@ const uiTargetFor = (input: {
   runId: string
 }): { runId: string; tabId: string; origin: string } | undefined => {
   const hasUiSteps = testPlanExecutions(input.plan)
-    .some((execution) => execution.steps.some((step) => step.action !== 'api.request'))
+    .some((execution) => execution.steps.some((step) => !isApiTestStep(step)))
   if (!hasUiSteps) return undefined
   if (!input.tab) throw new Error('含 UI 步骤的用例需要先选择一个已打开对应站点的 Browser Tab')
   const origin = browserTargetOrigin(input.tab.url)
@@ -116,6 +117,8 @@ export const runTestSuite = async (input: TestSuiteRunInput): Promise<TestSuiteR
   if (input.environment && needsEnvironmentProbe) {
     const gate = await ensureEnvironmentReady({
       environment: input.environment,
+      // 多服务探针从运行期变量投影解析目标地址（含 v2 自定义服务变量）。
+      vars: runtimeEnvironment.values,
       runId: batchId,
       approver: input.approver,
       signal: input.signal,

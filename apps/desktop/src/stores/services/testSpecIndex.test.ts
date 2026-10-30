@@ -55,6 +55,40 @@ describe('scanTestSpecs', () => {
     })
   })
 
+  it('counts polling and delay as API steps rather than UI steps', async () => {
+    mocks.findWorkspaceFiles.mockResolvedValue({ matches: [{ path: 'tests/poll.testspec.json', kind: 'file' }] })
+    mocks.readWorkspaceText.mockResolvedValue({
+      content: JSON.stringify({
+        kind: 'axiom.test',
+        version: 9,
+        id: 'poll',
+        name: '轮询',
+        target: {},
+        testPoints: [{ id: 'tp', kind: 'regression', title: '轮询', acceptance: '最终一致' }],
+        cases: [{
+          id: 'case-one',
+          name: '轮询',
+          verifies: ['tp'],
+          steps: [
+            { id: 'poll', action: 'api.poll', method: 'GET', url: 'https://example.test/ready', expect: [{ status: 200 }] },
+            { id: 'delay', action: 'api.delay', durationMs: 10 },
+            { id: 'request', action: 'api.request', method: 'GET', url: 'https://example.test/result' },
+          ],
+        }],
+      }),
+      truncated: false,
+    })
+
+    const entries = await scanTestSpecs('/repo', new AbortController().signal)
+
+    expect(entries[0]).toMatchObject({
+      valid: true,
+      stepCount: 3,
+      uiStepCount: 0,
+      apiStepCount: 3,
+    })
+  })
+
   it('keeps invalid files in the index with validation issues', async () => {
     mocks.findWorkspaceFiles.mockResolvedValue({ matches: [{ path: 'tests/bad.testspec.json', kind: 'file' }] })
     mocks.readWorkspaceText.mockResolvedValue({ content: '{', truncated: false })

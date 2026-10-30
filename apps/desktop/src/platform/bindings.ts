@@ -359,6 +359,12 @@ export type TestEnvironment = {
 	allowPrivateNetwork: boolean,
 	headersJson: string,
 	secretIdsJson: string,
+	/**
+	 *  v21：自定义大写变量（多服务端点）与 Secret 额外 origin 白名单（JSON 文本，
+	 *  语义校验在环境档解析器/保存校验侧）。
+	 */
+	extraVarsJson: string,
+	secretOriginsJson: string,
 	createdAt: number,
 	updatedAt: number,
 };

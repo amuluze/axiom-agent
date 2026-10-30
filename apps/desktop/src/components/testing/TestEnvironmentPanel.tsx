@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Plus, Save, Trash2 } from 'lucide-react'
 import { createId } from '@/agent/core/id'
 import { useT } from '@/i18n'
@@ -30,6 +30,13 @@ interface EnvironmentDraft {
   allowPrivateNetwork: boolean
   headersJson: string
   secretIdsJson: string
+  /**
+   * v2 环境档的结构事实（自定义服务变量与 Secret 目标白名单）。表单不提供编辑入口
+   * （改动走环境档导入），但保存必须原样带回——否则一次「改个名字」的保存就会把
+   * 导入的多服务拓扑清空。
+   */
+  extraVarsJson: string
+  secretOriginsJson: string
 }
 
 const emptyDraft = (): EnvironmentDraft => ({
@@ -42,6 +49,8 @@ const emptyDraft = (): EnvironmentDraft => ({
   allowPrivateNetwork: false,
   headersJson: '{}',
   secretIdsJson: '[]',
+  extraVarsJson: '{}',
+  secretOriginsJson: '[]',
 })
 
 const draftOf = (environment: TestEnvironmentRecord): EnvironmentDraft => ({
@@ -54,7 +63,35 @@ const draftOf = (environment: TestEnvironmentRecord): EnvironmentDraft => ({
   allowPrivateNetwork: environment.allowPrivateNetwork,
   headersJson: environment.headersJson,
   secretIdsJson: environment.secretIdsJson,
+  extraVarsJson: environment.extraVarsJson,
+  secretOriginsJson: environment.secretOriginsJson,
 })
+
+/** 只读展示：多服务变量（损坏 JSON 按空处理，展示层不抛错）。 */
+const summarizeServiceVars = (json: string, emptyLabel: string): string => {
+  try {
+    const parsed: unknown = JSON.parse(json || '{}')
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return emptyLabel
+    const entries = Object.entries(parsed as Record<string, unknown>)
+      .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+      .sort(([a], [b]) => a.localeCompare(b))
+    return entries.length === 0 ? emptyLabel : entries.map(([name, value]) => `${name}=${value}`).join(' · ')
+  } catch {
+    return emptyLabel
+  }
+}
+
+/** 只读展示：Secret 目标白名单。 */
+const summarizeSecretOrigins = (json: string): string => {
+  try {
+    const parsed: unknown = JSON.parse(json || '[]')
+    if (!Array.isArray(parsed)) return '—'
+    const origins = parsed.filter((value): value is string => typeof value === 'string')
+    return origins.length === 0 ? '—' : origins.join(' · ')
+  } catch {
+    return '—'
+  }
+}
 
 const optionalInteger = (value: string): number | undefined => {
   if (value.trim() === '') return undefined
@@ -81,10 +118,22 @@ export const TestEnvironmentPanel = ({
   const [secretValue, setSecretValue] = useState('')
   const [secretStatus, setSecretStatus] = useState<string | null>(null)
   const [importingPath, setImportingPath] = useState<string | null>(null)
+  /**
+   * 「新建环境」先 onSelect(null) 再进入编辑：受控父组件把选中项置空后，下面的
+   * effect 会看到 selected 从记录变成空。若它无条件 setEditing(false)，创建表单
+   * 刚挂上就被立刻收起（选中过环境时必现）。ref 记住这是主动新建，跳过重置；
+   * 选中任意记录或保存成功后清掉，后续清空仍按原语义退出编辑。
+   */
+  const creatingRef = useRef(false)
 
   useEffect(() => {
-    if (selected) setDraft(draftOf(selected))
-    setEditing(false)
+    if (selected) {
+      creatingRef.current = false
+      setDraft(draftOf(selected))
+      setEditing(false)
+    } else if (!creatingRef.current) {
+      setEditing(false)
+    }
     setError(null)
     setSecretValue('')
     setSecretStatus(null)
@@ -95,6 +144,7 @@ export const TestEnvironmentPanel = ({
   }
 
   const startCreate = (): void => {
+    creatingRef.current = true
     onSelect(null)
     setDraft(emptyDraft())
     setEditing(true)
@@ -125,6 +175,8 @@ export const TestEnvironmentPanel = ({
         allowPrivateNetwork: draft.allowPrivateNetwork,
         headersJson: draft.headersJson,
         secretIdsJson: draft.secretIdsJson,
+        extraVarsJson: draft.extraVarsJson,
+        secretOriginsJson: draft.secretOriginsJson,
         updatedAt: Date.now(),
       })
       // 原生变更确认框被取消：保持编辑态，不当作已保存。
@@ -178,6 +230,8 @@ export const TestEnvironmentPanel = ({
         allowPrivateNetwork: draft.allowPrivateNetwork,
         headersJson: draft.headersJson,
         secretIdsJson: draft.secretIdsJson,
+        ...(draft.extraVarsJson === undefined ? {} : { extraVarsJson: draft.extraVarsJson }),
+        ...(draft.secretOriginsJson === undefined ? {} : { secretOriginsJson: draft.secretOriginsJson }),
         updatedAt: Date.now(),
       })
       if (!saved) return
@@ -312,43 +366,50 @@ export const TestEnvironmentPanel = ({
 
       {(editing || selected) && (
         <div className="testing-view__environment-form">
-          <label>
-            <span>{t('testing.environment.name')}</span>
-            <input value={draft.name} disabled={!editing || disabled || saving} onChange={(event) => update('name', event.target.value)} />
-          </label>
-          <label>
-            <span>{t('testing.environment.webBaseUrl')}</span>
-            <input value={draft.webBaseUrl} disabled={!editing || disabled || saving} onChange={(event) => update('webBaseUrl', event.target.value)} />
-          </label>
-          <label>
-            <span>{t('testing.environment.apiBaseUrl')}</span>
-            <input value={draft.apiBaseUrl} disabled={!editing || disabled || saving} onChange={(event) => update('apiBaseUrl', event.target.value)} />
-          </label>
-          <label>
-            <span>{t('testing.environment.viewportWidth')}</span>
-            <input type="number" value={draft.viewportWidth} disabled={!editing || disabled || saving} onChange={(event) => update('viewportWidth', event.target.value)} />
-          </label>
-          <label>
-            <span>{t('testing.environment.viewportHeight')}</span>
-            <input type="number" value={draft.viewportHeight} disabled={!editing || disabled || saving} onChange={(event) => update('viewportHeight', event.target.value)} />
-          </label>
-          <label className="testing-view__environment-checkbox">
-            <input
-              type="checkbox"
-              checked={draft.allowPrivateNetwork}
-              disabled={!editing || disabled || saving}
-              onChange={(event) => setDraft((current) => ({ ...current, allowPrivateNetwork: event.target.checked }))}
-            />
-            <span>{t('testing.environment.allowPrivateNetwork')}</span>
-          </label>
-          <label>
-            <span>{t('testing.environment.headersJson')}</span>
-            <textarea value={draft.headersJson} disabled={!editing || disabled || saving} onChange={(event) => update('headersJson', event.target.value)} />
-          </label>
-          <label>
-            <span>{t('testing.environment.secretIdsJson')}</span>
-            <textarea value={draft.secretIdsJson} disabled={!editing || disabled || saving} onChange={(event) => update('secretIdsJson', event.target.value)} />
-          </label>
+          {/* 字段按「标识 / 端点 / 视口 / 布尔」分区：名称与 URL 各占两列，
+              宽高各占一列，回环开关填满剩余列——旧版是一串裸 inline label，
+              宽度交给浏览器后整块溢出成一团。 */}
+          <div className="testing-view__environment-fields">
+            <label className="testing-view__field testing-view__field--name">
+              <span>{t('testing.environment.name')}</span>
+              <input value={draft.name} placeholder="quoin-local" disabled={!editing || disabled || saving} onChange={(event) => update('name', event.target.value)} />
+            </label>
+            <label className="testing-view__field testing-view__field--url">
+              <span>{t('testing.environment.webBaseUrl')}</span>
+              <input className="testing-view__mono" value={draft.webBaseUrl} placeholder="http://localhost:5173" disabled={!editing || disabled || saving} onChange={(event) => update('webBaseUrl', event.target.value)} />
+            </label>
+            <label className="testing-view__field testing-view__field--url">
+              <span>{t('testing.environment.apiBaseUrl')}</span>
+              <input className="testing-view__mono" value={draft.apiBaseUrl} placeholder="http://localhost:8080" disabled={!editing || disabled || saving} onChange={(event) => update('apiBaseUrl', event.target.value)} />
+            </label>
+            <label className="testing-view__field testing-view__field--number">
+              <span>{t('testing.environment.viewportWidth')}</span>
+              <input type="number" min={320} step={1} value={draft.viewportWidth} placeholder="1280" disabled={!editing || disabled || saving} onChange={(event) => update('viewportWidth', event.target.value)} />
+            </label>
+            <label className="testing-view__field testing-view__field--number">
+              <span>{t('testing.environment.viewportHeight')}</span>
+              <input type="number" min={240} step={1} value={draft.viewportHeight} placeholder="800" disabled={!editing || disabled || saving} onChange={(event) => update('viewportHeight', event.target.value)} />
+            </label>
+            <label className="testing-view__environment-checkbox">
+              <input
+                type="checkbox"
+                checked={draft.allowPrivateNetwork}
+                disabled={!editing || disabled || saving}
+                onChange={(event) => setDraft((current) => ({ ...current, allowPrivateNetwork: event.target.checked }))}
+              />
+              <span>{t('testing.environment.allowPrivateNetwork')}</span>
+            </label>
+          </div>
+          <div className="testing-view__environment-json">
+            <label className="testing-view__field">
+              <span>{t('testing.environment.headersJson')}</span>
+              <textarea className="testing-view__mono" rows={3} spellCheck={false} value={draft.headersJson} disabled={!editing || disabled || saving} onChange={(event) => update('headersJson', event.target.value)} />
+            </label>
+            <label className="testing-view__field">
+              <span>{t('testing.environment.secretIdsJson')}</span>
+              <textarea className="testing-view__mono" rows={3} spellCheck={false} value={draft.secretIdsJson} disabled={!editing || disabled || saving} onChange={(event) => update('secretIdsJson', event.target.value)} />
+            </label>
+          </div>
           {editing && (
             <div className="testing-view__secret-editor">
               <label>
@@ -372,10 +433,21 @@ export const TestEnvironmentPanel = ({
             </div>
           )}
           {editing && (
-            <button type="button" className="testing-view__primary" disabled={disabled || saving || !draft.name.trim()} onClick={() => void save()}>
-              <Save size={13} aria-hidden="true" />
-              {saving ? t('testing.environment.saving') : t('testing.environment.save')}
-            </button>
+            <div className="testing-view__environment-actions">
+              <button type="button" className="testing-view__primary" disabled={disabled || saving || !draft.name.trim()} onClick={() => void save()}>
+                <Save size={13} aria-hidden="true" />
+                {saving ? t('testing.environment.saving') : t('testing.environment.save')}
+              </button>
+            </div>
+          )}
+          {selected && !editing && (
+            <div className="testing-view__environment-mode">
+              <p>{t('testing.environment.extraVars')}</p>
+              <code>{summarizeServiceVars(selected.extraVarsJson, t('testing.environment.extraVarsEmpty'))}</code>
+              <p>{t('testing.environment.secretOrigins')}</p>
+              <code>{summarizeSecretOrigins(selected.secretOriginsJson)}</code>
+              <p>{t('testing.environment.secretOriginsHint')}</p>
+            </div>
           )}
           {selected && !editing && (
             <p className="testing-view__environment-mode">
@@ -386,10 +458,12 @@ export const TestEnvironmentPanel = ({
             </p>
           )}
           {selected && !editing && (
-            <button type="button" className="testing-view__danger" disabled={disabled || saving} onClick={() => void remove()}>
-              <Trash2 size={13} aria-hidden="true" />
-              {t('testing.environment.delete')}
-            </button>
+            <div className="testing-view__environment-actions">
+              <button type="button" className="testing-view__danger" disabled={disabled || saving} onClick={() => void remove()}>
+                <Trash2 size={13} aria-hidden="true" />
+                {t('testing.environment.delete')}
+              </button>
+            </div>
           )}
         </div>
       )}

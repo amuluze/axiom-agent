@@ -33,6 +33,13 @@ const request: ModelRequest = {
     },
   ],
   tools: [{ name: 'read_file', description: 'Read', inputSchema: { type: 'object' } }],
+  stablePrefix: {
+    fingerprint: 'stable-prefix-fingerprint',
+    revision: 1,
+    systemPromptBytes: 10,
+    toolSchemaBytes: 20,
+    dynamicSuffixBytes: 0,
+  },
 }
 
 const collect = async (
@@ -63,6 +70,7 @@ describe('OpenAICompatibleTransport', () => {
       { role: 'tool', tool_call_id: 'call-previous', content: 'contents' },
     ])
     expect(JSON.stringify(body)).not.toContain('secret')
+    expect(JSON.stringify(body)).not.toContain('stable-prefix-fingerprint')
   })
 
   it('serializes images, thinking replay and reasoning effort', () => {

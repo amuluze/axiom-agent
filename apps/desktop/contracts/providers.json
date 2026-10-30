@@ -20,7 +20,7 @@
       "id": "generic-openai-compatible",
       "label": "OpenAI Compatible",
       "apiFormat": "openai-compatible",
-      "transportVersion": "11",
+      "transportVersion": "16",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.openai-compatible.api-key",
@@ -52,7 +52,7 @@
       "id": "custom-openai-compatible",
       "label": "自定义（OpenAI）",
       "apiFormat": "openai-compatible",
-      "transportVersion": "11",
+      "transportVersion": "16",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.custom-openai-compatible.api-key",
@@ -83,7 +83,7 @@
       "id": "openai",
       "label": "OpenAI Responses",
       "apiFormat": "openai-responses",
-      "transportVersion": "11",
+      "transportVersion": "16",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.openai-responses.api-key",
@@ -115,7 +115,7 @@
       "id": "generic-anthropic-compatible",
       "label": "Anthropic Compatible",
       "apiFormat": "anthropic-compatible",
-      "transportVersion": "11",
+      "transportVersion": "16",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.generic-anthropic-compatible.api-key",
@@ -150,7 +150,7 @@
       "id": "custom-anthropic-compatible",
       "label": "自定义（Anthropic）",
       "apiFormat": "anthropic-compatible",
-      "transportVersion": "11",
+      "transportVersion": "16",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.custom-anthropic-compatible.api-key",
@@ -181,7 +181,7 @@
       "id": "zhipu-glm",
       "label": "GLM",
       "apiFormat": "openai-compatible",
-      "transportVersion": "11",
+      "transportVersion": "16",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.zhipu-glm.api-key",
@@ -275,7 +275,7 @@
       "id": "deepseek",
       "label": "DeepSeek",
       "apiFormat": "openai-compatible",
-      "transportVersion": "11",
+      "transportVersion": "16",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.deepseek.api-key",
@@ -340,7 +340,7 @@
       "id": "minimax-chat",
       "label": "MiniMax",
       "apiFormat": "openai-compatible",
-      "transportVersion": "11",
+      "transportVersion": "16",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.minimax-chat.api-key",
@@ -404,7 +404,7 @@
       "id": "ollama",
       "label": "Ollama",
       "apiFormat": "openai-compatible",
-      "transportVersion": "11",
+      "transportVersion": "16",
       "auth": {
         "kind": "none"
       },
@@ -494,7 +494,7 @@
       "id": "gemini",
       "label": "Google Gemini",
       "apiFormat": "openai-compatible",
-      "transportVersion": "11",
+      "transportVersion": "16",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.gemini.api-key",
@@ -571,7 +571,7 @@
       "id": "kimi",
       "label": "Kimi",
       "apiFormat": "openai-compatible",
-      "transportVersion": "11",
+      "transportVersion": "16",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.kimi.api-key",
@@ -634,7 +634,7 @@
       "id": "kimi-coding",
       "label": "Kimi Coding",
       "apiFormat": "anthropic-compatible",
-      "transportVersion": "11",
+      "transportVersion": "16",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.kimi-coding.api-key",
@@ -689,7 +689,7 @@
       "id": "orcarouter",
       "label": "OrcaRouter",
       "apiFormat": "openai-compatible",
-      "transportVersion": "11",
+      "transportVersion": "16",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.orcarouter.api-key",
@@ -782,7 +782,7 @@
       "id": "opencode-go",
       "label": "OpenCode Go",
       "apiFormat": "openai-compatible",
-      "transportVersion": "3",
+      "transportVersion": "8",
       "auth": {
         "kind": "api-key",
         "defaultSecretId": "provider.opencode-go.api-key",

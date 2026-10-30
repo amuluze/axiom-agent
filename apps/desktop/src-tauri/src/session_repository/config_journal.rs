@@ -179,10 +179,9 @@ pub(super) async fn append_journal_entry(
         || request.payload_json.len() > MAX_MESSAGE_BYTES
         || !payload.is_object()
         || match request.kind.as_str() {
-            "queue" => !request
-                .queue_kind
-                .as_deref()
-                .is_some_and(|kind| matches!(kind, "steering" | "follow-up" | "next-turn")),
+            "queue" => !request.queue_kind.as_deref().is_some_and(|kind| {
+                matches!(kind, "steering" | "aside" | "follow-up" | "next-turn")
+            }),
             "message_append" | "runtime_update" => request.queue_kind.is_some(),
             _ => true,
         }
@@ -193,7 +192,7 @@ pub(super) async fn append_journal_entry(
     // 此前单连接模型靠外层 connection Mutex 串行化，池化后 DEFERRED 事务在
     // SELECT（读快照）→ INSERT（升级写锁）间若他人提交会得到 BUSY_SNAPSHOT
     // 且 busy_timeout 不重试；IMMEDIATE 让并发写者经 busy_timeout 排队，
-    // 同 ID 重试（journal 幂等契约，见 docs/invariants.md #1）收敛到 Ok。
+    // 同 ID 重试（journal 幂等契约，见 .docs/invariants.md #1）收敛到 Ok。
     // 手工管理 COMMIT/ROLLBACK：sqlx 的 begin() 只有 DEFERRED 模式。
     sqlx::query("BEGIN IMMEDIATE")
         .execute(&mut *connection)

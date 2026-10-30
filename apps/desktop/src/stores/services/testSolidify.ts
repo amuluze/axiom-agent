@@ -18,6 +18,7 @@ import {
   type SolidifyOptions,
 } from '@/agent/testing/spec/solidify'
 import { extractExplorerSteps } from '@/agent/testing/spec/trajectory'
+import { isApiDriverStep } from '@/agent/testing/spec/stepActions'
 import type { TestStepSpec } from '@/agent/testing/spec/types'
 import { getRepository } from '@/stores/repositoryCore'
 
@@ -54,7 +55,7 @@ export const countDraftSteps = (draft: SolidifyDraft): number =>
   draft.spec.cases.reduce((total, testCase) => total + testCase.steps.length, 0)
 
 const stepDetail = (step: TestStepSpec): string => {
-  if (step.action === 'api.request') return `${step.method} ${step.url}`
+  if (isApiDriverStep(step)) return `${step.method} ${step.url}`
   if (step.action === 'ui.navigate') return step.url
   if (step.action === 'ui.press') return step.key
   return ''

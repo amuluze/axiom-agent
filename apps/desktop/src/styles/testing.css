@@ -33,6 +33,25 @@
   min-width: 0;
   overflow-x: auto;
   flex: 1;
+  /* 文件标签页横向滚动：滚动条只在悬停时显形，避免常态一条实心横条压住顶栏。 */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.testing-view__tabs:hover {
+  scrollbar-color: var(--border-subtle) transparent;
+}
+
+.testing-view__tabs::-webkit-scrollbar {
+  height: 4px;
+}
+
+.testing-view__tabs::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+.testing-view__tabs:hover::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
 }
 
 .testing-view__tab {
@@ -154,8 +173,8 @@
   padding: 4px 12px;
   border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
-  min-height: 30px;
   flex-wrap: wrap;
+  min-height: 30px;
 }
 
 .testing-view__envbar-item {
@@ -188,6 +207,53 @@
 .testing-view__envbar-button:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+/* 环境条控件（Browser Tab 选择）：裸 select 在深色底上读不出可点性，
+   因此给卡片底 + 胶囊描边 + 内嵌 chevron；聚焦用 accent 描边提示键盘可达。 */
+.testing-view__envbar-control {
+  gap: 4px;
+  padding: 1px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--bg-card);
+  transition: border-color 0.12s ease;
+}
+
+.testing-view__envbar-control:focus-within {
+  border-color: var(--accent);
+}
+
+.testing-view__envbar-control-icon {
+  flex: none;
+  color: var(--text-tertiary);
+}
+
+.testing-view__envbar-control select {
+  appearance: none;
+  -webkit-appearance: none;
+  max-width: 240px;
+  padding: 1px 15px 1px 0;
+  border: 0;
+  background-color: transparent;
+  background-image: var(--chevron-down);
+  background-repeat: no-repeat;
+  background-position: right center;
+  background-size: 11px 11px;
+}
+
+.testing-view__envbar-control select:hover {
+  color: var(--text-primary);
+}
+
+.testing-view__envbar-chevron {
+  flex: none;
+  color: var(--text-tertiary);
+  transition: transform 0.12s ease;
+}
+
+.testing-view__envbar-chevron.is-open {
+  transform: rotate(180deg);
 }
 
 .testing-view__envbar-ok {
@@ -228,6 +294,12 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* 主体是滚动容器：子块按自身内容高度排布。默认 flex-shrink:1 会把卡片压扁，
+   而卡片有 overflow:hidden——用例/报告行被直接裁掉（长列表必现）。 */
+.testing-view__body > * {
+  flex-shrink: 0;
 }
 
 .testing-view__title-row {
@@ -284,6 +356,14 @@
   background: var(--accent);
   border-radius: 999px;
   transition: width 0.2s ease;
+}
+
+/* 套件运行中的「第 n/N 个：路径」行。 */
+.testing-view__suite-progress {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
 }
 
 /* ── KPI 卡（tsCases 3 / tsRprt 6）────────────────────────── */
@@ -470,6 +550,14 @@
   line-height: 1.4;
 }
 
+.testing-view__row-type {
+  flex: none;
+  min-width: 36px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-align: right;
+}
+
 .testing-view__row-duration {
   flex: none;
   font-size: 11px;
@@ -547,6 +635,13 @@
   font-size: 10px;
   font-weight: 600;
   white-space: nowrap;
+}
+
+/* 行内状态胶囊定宽居中：「通过 / 未运行」宽度不同时右缘不再参差，表头「判定」也对得齐。 */
+.testing-view__row > .testing-view__pill {
+  flex: none;
+  min-width: 52px;
+  justify-content: center;
 }
 
 .testing-view__pill--pass {
@@ -769,6 +864,559 @@
   color: var(--warn-text);
 }
 
+/* ── 批次/套件摘要条 ────────────────────────────────────────── */
+
+.testing-view__suite-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.testing-view__suite-coverage {
+  color: var(--text-tertiary);
+}
+
+.testing-view__suite-verdict {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-weight: 500;
+}
+
+.testing-view__suite-problem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--warn-text);
+}
+
+.testing-view__suite-problem code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* ── 通用按钮（环境面板 / Secret 编辑）──────────────────────── */
+
+.testing-view__primary,
+.testing-view__secondary,
+.testing-view__danger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  white-space: nowrap;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.testing-view__primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-inverse);
+  font-weight: 500;
+}
+
+.testing-view__primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.testing-view__secondary {
+  background: var(--bg-input);
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.testing-view__secondary:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.testing-view__danger {
+  background: transparent;
+  border-color: transparent;
+  color: var(--diff-red);
+}
+
+.testing-view__danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+}
+
+/* ── 运行环境面板（环境条展开）────────────────────────────────
+   卡片式容器 + 6 列字段网格：名称/两个 Base URL 各占两列，视口宽高各占一列，
+   回环开关补齐余量；JSON 两列并排、Secret 编辑单行 + 状态行。 */
+
+.testing-view__environment {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 8px 12px 0;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--bg-card);
+  flex-shrink: 0;
+  /* 面板可折叠，展开时也不能把下方用例表挤出视口；上限留够一整张编辑表单的高度。 */
+  max-height: min(60vh, 560px);
+  overflow-y: auto;
+}
+
+.testing-view__environment-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.testing-view__environment-toolbar > label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.testing-view__environment-toolbar select {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 26px;
+  padding: 0 26px 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background-color: var(--bg-input);
+  background-image: var(--chevron-down);
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 13px 13px;
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
+.testing-view__environment-files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-main);
+}
+
+.testing-view__environment-files-title {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.testing-view__environment-files ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.testing-view__environment-files li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.testing-view__environment-files li > code {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 导入按钮靠右：路径长度参差时按钮仍对齐成一列。 */
+.testing-view__environment-files li > .testing-view__secondary {
+  margin-left: auto;
+}
+
+.testing-view__environment-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.testing-view__environment-fields {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  align-items: end;
+  gap: 8px 10px;
+}
+
+.testing-view__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.testing-view__field > span {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.testing-view__field--name,
+.testing-view__field--url {
+  grid-column: span 2;
+}
+
+.testing-view__field--number {
+  grid-column: span 1;
+}
+
+.testing-view__environment input:not([type='checkbox']),
+.testing-view__environment textarea {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
+.testing-view__environment textarea {
+  height: auto;
+  min-height: 54px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.testing-view__environment .testing-view__mono {
+  font-family: var(--font-mono);
+}
+
+.testing-view__environment input:not([type='checkbox']):focus,
+.testing-view__environment textarea:focus {
+  outline: 0;
+  border-color: var(--accent);
+}
+
+/* 只读态（选中环境未进入编辑）用主背景压低对比，同时保持文本可读。 */
+.testing-view__environment input:disabled,
+.testing-view__environment textarea:disabled {
+  background: var(--bg-main);
+  color: var(--text-secondary);
+}
+
+.testing-view__environment-json {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 10px;
+}
+
+.testing-view__environment-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  grid-column: span 4;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-input);
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.testing-view__environment-checkbox:has(input:disabled) {
+  cursor: not-allowed;
+  color: var(--text-tertiary);
+}
+
+.testing-view__environment-checkbox input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.testing-view__secret-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto auto;
+  align-items: end;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.testing-view__secret-editor > [role='status'] {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: var(--accent-text);
+}
+
+.testing-view__environment-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.testing-view__environment-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.testing-view__environment-mode p {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.testing-view__environment-mode code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.testing-view__environment-error {
+  margin: 0;
+  font-size: 11px;
+  color: var(--diff-red);
+}
+
+/* ── 运行期写步骤审批（TestStepApprovalPanel）──────────────────
+   运行中插在步骤流/用例表里；此前完全无样式（裸 dl + 裸 button）。卡片用
+   warn 描边表达「需要人决策」，动作按钮复用 __primary/__secondary。 */
+
+.testing-approval-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--warn-border);
+  border-radius: 12px;
+  background: var(--bg-card);
+}
+
+.testing-approval-list h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.testing-approval-hint,
+.testing-approval-empty {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.testing-approval-empty {
+  padding: 8px 12px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-card);
+}
+
+.testing-approval-list ul {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.testing-approval-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-main);
+}
+
+.testing-approval-item dl {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0;
+}
+
+.testing-approval-item dl > div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.testing-approval-item dt {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+/* 动作/目标是安全决策依据，宁可换行也不截断。 */
+.testing-approval-item dd {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.testing-approval-item dd code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.testing-approval-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  margin-left: auto;
+}
+
+/* ── authoring 区（为本功能写用例 / 产物核对）────────────────── */
+
+.testing-view__authoring {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--bg-card);
+}
+
+.testing-view__authoring-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.testing-view__authoring-controls input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.testing-view__authoring-controls input:focus {
+  outline: 0;
+  border-color: var(--accent);
+}
+
+.testing-view__authoring > p[role='status'] {
+  margin: 0;
+  font-size: 11px;
+  color: var(--accent-text);
+}
+
+.testing-view__authoring-result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.testing-view__authoring-result p {
+  margin: 0;
+}
+
+.testing-view__authoring-result code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* 报告里的运行环境事实行（低权重，跟在标题行下方）。 */
+.testing-view__env-facts {
+  margin: -4px 0 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+@media (max-width: 1180px) {
+  /* 报告 6 张 KPI 在窄窗挤成竖条：先降到 3 列，再降到 2 列。 */
+  .testing-view__kpis--six {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 980px) {
+  .testing-view__environment-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .testing-view__field--name,
+  .testing-view__field--url,
+  .testing-view__environment-checkbox {
+    grid-column: span 2;
+  }
+
+  .testing-view__environment-json {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .testing-view__secret-editor {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .testing-view__secret-editor > button {
+    justify-self: start;
+  }
+
+  /* 标题行的操作按钮换行到副标题下方，而不是把标题挤成省略号。 */
+  .testing-view__title-row {
+    flex-wrap: wrap;
+  }
+
+  .testing-view__kpis,
+  .testing-view__kpis--six {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* 预期/实际/证据是长句，横向三列在窄窗只剩撇号宽。 */
+  .testing-view__failure-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* ── 报告返回链接 ──────────────────────────────────────────── */
 
 .testing-view__back-to-spec {
@@ -810,14 +1458,15 @@
 /* ── 空态（tsEmpt）─────────────────────────────────────────── */
 
 .testing-view--empty {
-  align-items: center;
-  justify-content: center;
   padding: 32px;
   display: flex;
+  /* 内容高于窗口时可滚动：justify-content:center 会把溢出部分裁在滚动容器外。 */
+  overflow-y: auto;
 }
 
 .testing-view__empty-card {
   max-width: 480px;
+  margin: auto;
   padding: 24px;
   border: 1px solid var(--border-subtle);
   border-radius: 10px;
@@ -844,20 +1493,26 @@
 
 .testing-view__empty-add {
   display: flex;
-  align-items: center;
-  gap: 4px;
+  align-items: flex-end;
+  gap: 8px;
   width: 100%;
-  flex-direction: column;
 }
 
 .testing-view__empty-add label {
   display: flex;
+  flex: 1;
+  min-width: 0;
   flex-direction: column;
   align-items: flex-start;
   gap: 4px;
-  width: 100%;
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+/* 与 28px 输入框同高，避免按钮在行尾悬空半截。 */
+.testing-view__empty-add .testing-view__chip {
+  flex: none;
+  height: 28px;
 }
 
 .testing-view__empty-add input {
@@ -875,6 +1530,8 @@
 .testing-view__empty-snippet {
   margin: 0;
   width: 100%;
+  max-height: 168px;
+  overflow: auto;
   padding: 10px 12px;
   border-radius: 6px;
   background: var(--bg-hover);
@@ -882,6 +1539,7 @@
   font-family: var(--font-mono);
   font-size: 12px;
   text-align: left;
+  white-space: pre-wrap;
 }
 
 .testing-view__empty-actions {

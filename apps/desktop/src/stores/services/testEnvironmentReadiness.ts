@@ -42,6 +42,9 @@ const fingerprintOf = (environment: TestEnvironmentRecord): string => JSON.strin
   environment.allowPrivateNetwork,
   environment.headersJson,
   environment.secretIdsJson,
+  // v2：自定义服务地址与 Secret 目标白名单同样改变「这是哪套环境」。
+  environment.extraVarsJson,
+  environment.secretOriginsJson,
 ])
 
 /** 测试接缝：清空会话内的就绪缓存。 */
@@ -49,6 +52,8 @@ export const resetEnvironmentReadinessCache = (): void => readyCache.clear()
 
 export interface EnsureEnvironmentReadyInput {
   environment: TestEnvironmentRecord
+  /** 运行期变量投影（含 v2 自定义服务地址）；探针目标从这里解析。 */
+  vars?: Readonly<Record<string, string>>
   runId: string
   approver: TestStepApprover
   signal: AbortSignal
@@ -66,6 +71,7 @@ const toGated = (
     probe: result.probe,
     readiness: result.readiness,
     preparedBy,
+    ...(result.probes && result.probes.length > 0 ? { probes: result.probes } : {}),
   }),
 })
 
@@ -85,6 +91,7 @@ export const ensureEnvironmentReady = async (
     input.environment,
     await probeEnvironmentReadiness({
       environment: input.environment,
+      ...(input.vars ? { vars: input.vars } : {}),
       runId: input.runId,
       approver: input.approver,
       signal: input.signal,

@@ -39,7 +39,7 @@ import { formatAvailableDocs } from './formatAvailableDocs'
  * 注释/格式/内部重构不进入指纹，故不会误触发。动态注入（授权上下文/AGENTS.md/
  * skills/docs/modelName/工具段）随会话变化，刻意排除在指纹之外。
  */
-export const SYSTEM_PROMPT_VERSION = 51
+export const SYSTEM_PROMPT_VERSION = 52
 
 /**
  * 与能力无关的基准提示词：人设、协作风格、工作流与输出规范。
@@ -448,21 +448,21 @@ export const buildSessionBasePrompt = ({
     buildCapabilitySections(capabilities),
     buildAccessModeSection(accessMode),
     buildAuthorizationContextSection({ workspacePath, authorizedFilePaths }),
+    testingContext,
+    buildSddWorkflowSection(capabilities),
+    TOOL_DISCOVERY_NOTICE,
     combineProjectContextWithSections(
       buildProjectContextSection(projectContext),
       agentsSection,
       skillsSection,
       docsSection,
     ),
-    testingContext,
-    buildSddWorkflowSection(capabilities),
-    TOOL_DISCOVERY_NOTICE,
   ].filter((section): section is string => typeof section === 'string' && section.length > 0)
     .join('\n\n')
 }
 
 /**
- * 工具按需加载的收尾说明，始终追加在基准段之后。
+ * 工具按需加载说明位于稳定指令区，项目上下文动态尾段之前。
  */
 export const TOOL_DISCOVERY_NOTICE =
   '# 工具发现\ndiscover_agent_tools 与基础只读工具 read/ls/grep/find 默认可用；其他工具按需加载。需要新能力时先描述意图调用 discover_agent_tools，再在下一模型轮使用返回的工具。'

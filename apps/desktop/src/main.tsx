@@ -23,7 +23,13 @@ import { runRuntimeFaultAutomation } from './platform/runtimeFaultAutomation'
 import { setDesignComponentDetailProvider, setDesignComponentInventoryProvider } from '@/agent/design/componentInventoryHost'
 import { axComponentDetailOf, axComponentInventorySummary } from '@/components/design/ax/registry'
 import { configureScanRenderConcurrency, decodePngToRgbaHost, renderAxPageToPng, renderPenPageForScan } from '@/components/design/ax/renderPageHost'
-import { setDesignPageRenderProvider, setDesignScanPageRenderProvider, setPngDecodeProvider } from '@/agent/design/designRenderHost'
+import { nativeCaptureSupported } from '@/components/design/nativePageCapture'
+import {
+  setDesignPageRenderProvider,
+  setDesignScanPageRenderProvider,
+  setDesignScanViewportCaptureProbe,
+  setPngDecodeProvider,
+} from '@/agent/design/designRenderHost'
 import { WorkspaceRecoveryGate } from './components/WorkspaceRecoveryGate'
 import { initConnectService } from './stores/services/connectService'
 import { initBrowserPanelService } from './stores/services/browserPanelService'
@@ -50,6 +56,9 @@ setDesignComponentDetailProvider(axComponentDetailOf)
 setDesignPageRenderProvider(renderAxPageToPng)
 // 扫描验证：逐页离屏渲染 + 像素统计（`design_query` mode=scan 与画布扫描面板共用）。
 setDesignScanPageRenderProvider(renderPenPageForScan)
+// 原生截图只能截当前视口：没有已打开的设计画布时，会话扫描不得退回 capture
+// staging（会铺满窗口），改为显式跳过渲染并提示打开设计视图。
+setDesignScanViewportCaptureProbe(nativeCaptureSupported)
 // 扫描渲染并发度按光栅化路径定：native（capture 挂载铺满视口）必须串行，
 // offscreen 独立容器 3 路并行安全。
 configureScanRenderConcurrency()

@@ -2,6 +2,7 @@ import {
   AgentEnvironmentError,
   type AgentEnvironment,
 } from '@/agent/environment/AgentEnvironment'
+import { PROJECT_CONTEXT_HEADING } from '@/agent/core/systemPromptLayout'
 
 /**
  * AGENTS.md 注入的字节上限，对齐宿主单次 read 的输出字节上限
@@ -134,4 +135,4 @@ export const loadProjectContext = async (
  * 由 {@link buildSessionBasePrompt} 过滤，保持提示词最小化。
  */
 export const buildProjectContextSection = (content: string | null): string | null =>
-  content && content.length > 0 ? `# 项目上下文\n${content}` : null
+  content && content.length > 0 ? `${PROJECT_CONTEXT_HEADING}\n${content}` : null

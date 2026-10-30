@@ -83,6 +83,9 @@ const TERMINAL_PANEL_HEIGHT_STORAGE_KEY = 'axiom.terminal.panelHeight.v1'
 const SFTP_PANEL_HEIGHT_STORAGE_KEY = 'axiom.sftp.panelHeight.v1'
 const RUNTIME_RAIL_WIDTH_STORAGE_KEY = 'axiom.runtime.railWidth.v1'
 const SIDEBAR_WIDTH_STORAGE_KEY = 'axiom.ui.sidebarWidth.v1'
+const DESIGN_SIDEBAR_WIDTH_STORAGE_KEY = 'axiom.ui.designSidebarWidth.v1'
+const DOCS_SIDEBAR_WIDTH_STORAGE_KEY = 'axiom.ui.docsSidebarWidth.v1'
+const TESTING_SIDEBAR_WIDTH_STORAGE_KEY = 'axiom.ui.testingSidebarWidth.v1'
 const DOCS_TREE_WIDTH_STORAGE_KEY = 'axiom.docs.treeWidth.v1'
 const MAX_RECENT_WORKSPACES = 20
 
@@ -105,6 +108,9 @@ export const MAX_RUNTIME_RAIL_WIDTH = 720
 // rail 之外至少为会话主体保留的宽度：过窄窗口下 rail 让位，不把消息列挤没。
 const RUNTIME_RAIL_BODY_RESERVED_WIDTH = 420
 export const DEFAULT_SIDEBAR_WIDTH = 264
+// 设计/文档助手包含消息流与完整 Composer，默认比导航侧栏宽；与普通侧栏独立记忆，
+// 进入助手视图自动套用，返回会话时恢复普通侧栏宽度。
+export const DEFAULT_ASSISTANT_SIDEBAR_WIDTH = 360
 // 与 tokens.css 的 --sidebar-width 默认值一致；上下限保证导航文案可读、
 // 会话主体仍占大头。上限在窄视口下还会被 sidebarMaxWidth 进一步收紧。
 export const MIN_SIDEBAR_WIDTH = 200
@@ -364,6 +370,22 @@ const loadSidebarWidth = (): number => {
   return clampSidebarWidth(stored, sidebarMaxWidth())
 }
 
+const loadAssistantSidebarWidth = (storageKey: string): number => {
+  if (typeof window === 'undefined') return DEFAULT_ASSISTANT_SIDEBAR_WIDTH
+  const raw = window.localStorage.getItem(storageKey)
+  if (raw === null) return DEFAULT_ASSISTANT_SIDEBAR_WIDTH
+  const stored = Number(raw)
+  if (!Number.isFinite(stored)) return DEFAULT_ASSISTANT_SIDEBAR_WIDTH
+  return clampSidebarWidth(stored, sidebarMaxWidth())
+}
+
+const sidebarWidthStorageKeyForView = (view: AppView): string => {
+  if (view === 'design') return DESIGN_SIDEBAR_WIDTH_STORAGE_KEY
+  if (view === 'docs') return DOCS_SIDEBAR_WIDTH_STORAGE_KEY
+  if (view === 'testing') return TESTING_SIDEBAR_WIDTH_STORAGE_KEY
+  return SIDEBAR_WIDTH_STORAGE_KEY
+}
+
 const loadRuntimeRailWidth = (): number => {
   if (typeof window === 'undefined') return DEFAULT_RUNTIME_RAIL_WIDTH
   const stored = Number(window.localStorage.getItem(RUNTIME_RAIL_WIDTH_STORAGE_KEY))
@@ -401,6 +423,9 @@ interface UiState {
   sidebarCompact: boolean
   sidebarOverlayOpen: boolean
   sidebarWidth: number
+  designSidebarWidth: number
+  docsSidebarWidth: number
+  testingSidebarWidth: number
   runtimeRailOpen: boolean
   runtimeRailPane: RuntimeRailPane
   runtimeRailWidth: number
@@ -469,6 +494,19 @@ interface UiState {
   closeFeedback: () => void
 }
 
+/** Shell 与侧栏把手共用同一选择器，避免轨道宽度与拖拽起点跨视图分叉。 */
+export const selectSidebarWidth = (
+  state: Pick<
+    UiState,
+    'view' | 'sidebarWidth' | 'designSidebarWidth' | 'docsSidebarWidth' | 'testingSidebarWidth'
+  >,
+): number => {
+  if (state.view === 'design') return state.designSidebarWidth
+  if (state.view === 'docs') return state.docsSidebarWidth
+  if (state.view === 'testing') return state.testingSidebarWidth
+  return state.sidebarWidth
+}
+
 const initialLanguage = loadUiLanguage()
 const initialTheme = loadUiTheme()
 const initialFontSizePx = loadUiFontSizePx()
@@ -492,6 +530,9 @@ export const useUiStore = create<UiState>((set, get) => ({
   sidebarCompact: false,
   sidebarOverlayOpen: false,
   sidebarWidth: loadSidebarWidth(),
+  designSidebarWidth: loadAssistantSidebarWidth(DESIGN_SIDEBAR_WIDTH_STORAGE_KEY),
+  docsSidebarWidth: loadAssistantSidebarWidth(DOCS_SIDEBAR_WIDTH_STORAGE_KEY),
+  testingSidebarWidth: loadAssistantSidebarWidth(TESTING_SIDEBAR_WIDTH_STORAGE_KEY),
   runtimeRailOpen: false,
   runtimeRailPane: 'picker',
   runtimeRailWidth: loadRuntimeRailWidth(),
@@ -556,14 +597,19 @@ export const useUiStore = create<UiState>((set, get) => ({
     sidebarOverlayOpen: false,
   }),
   closeSidebarOverlay: () => set({ sidebarOverlayOpen: false }),
-  // 宽度是显式布局偏好：clamp 后持久化，拖拽/键盘共用此入口。
+  // 宽度是显式布局偏好：设计/文档/测试助手与普通侧栏分别记忆，拖拽/键盘共用此入口。
   setSidebarWidth: (sidebarWidth) => {
     if (!Number.isFinite(sidebarWidth)) return
     const next = clampSidebarWidth(sidebarWidth, sidebarMaxWidth())
+    const view = get().view
+    const storageKey = sidebarWidthStorageKeyForView(view)
     if (typeof window !== 'undefined') {
-      window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(next))
+      window.localStorage.setItem(storageKey, String(next))
     }
-    set({ sidebarWidth: next })
+    if (view === 'design') set({ designSidebarWidth: next })
+    else if (view === 'docs') set({ docsSidebarWidth: next })
+    else if (view === 'testing') set({ testingSidebarWidth: next })
+    else set({ sidebarWidth: next })
   },
   toggleRuntimeRail: () => set((state) => (state.runtimeRailOpen
     ? { runtimeRailOpen: false }

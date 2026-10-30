@@ -43,10 +43,10 @@ describe('DesignAssistantPanel 设计助手侧栏', () => {
   it('无会话：展示设计助手引导（标题/说明/三条清单）与开始入口', () => {
     render(<DesignAssistantPanel />)
     expect(screen.getByText('设计助手')).toBeTruthy()
-    expect(screen.getByText('通过与模型对话，实时更新右侧设计稿')).toBeTruthy()
+    expect(screen.getByText('通过与模型对话，实时生成并更新右侧设计稿')).toBeTruthy()
     expect(screen.getByText('描述设计意图，模型解析并修改')).toBeTruthy()
     expect(screen.getByText('多轮对话逐步调整布局与样式')).toBeTruthy()
-    expect(screen.getByText('确认后一键落实到右侧设计稿')).toBeTruthy()
+    expect(screen.getByText('确认后写入设计稿文件，画布即时刷新')).toBeTruthy()
     expect(screen.getByText('开始设计会话')).toBeTruthy()
     expect(screen.queryByTestId('composer-mock')).toBeNull()
     expect(screen.queryByTestId('stream-mock')).toBeNull()
@@ -58,12 +58,12 @@ describe('DesignAssistantPanel 设计助手侧栏', () => {
     await waitFor(() => expect(mocks.createNewSession).toHaveBeenCalledTimes(1))
   })
 
-  it('有会话但无消息：保留引导 + 真实 Composer（session 变体，并保留审批模式）', () => {
+  it('有会话但无消息：保留引导 + 紧凑 Composer（隐藏审批入口）', () => {
     mocks.activeSessionId = 's1'
     render(<DesignAssistantPanel />)
     expect(screen.getByText('设计助手')).toBeTruthy()
     expect(screen.getByTestId('composer-mock').getAttribute('data-variant')).toBe('session')
-    expect(screen.getByTestId('composer-mock').getAttribute('data-show-access-picker')).toBe('true')
+    expect(screen.getByTestId('composer-mock').getAttribute('data-show-access-picker')).toBe('false')
     expect(screen.queryByText('开始设计会话')).toBeNull()
     expect(screen.queryByTestId('stream-mock')).toBeNull()
   })

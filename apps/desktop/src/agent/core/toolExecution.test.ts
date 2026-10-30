@@ -6,6 +6,9 @@ import type {
   AssistantMessage,
   BeforeToolCall,
   JsonValue,
+  ModelRequest,
+  ModelStreamEvent,
+  ModelTransport,
   ToolCall,
 } from './types'
 import {
@@ -154,6 +157,111 @@ describe('waitForApproval', () => {
   })
 })
 
+describe('prepareToolCall · approval preparation', () => {
+  it('runs syntax repair before approval and binds the repaired input', async () => {
+    let repairRequest: ModelRequest | undefined
+    const transport: ModelTransport = {
+      async *stream(request): AsyncIterable<ModelStreamEvent> {
+        repairRequest = request
+        yield { type: 'text_delta', delta: '{"replacements":["fixed"]}' }
+        yield { type: 'done', stopReason: 'stop' }
+      },
+    }
+    const tool = makeTool({
+      requiresApproval: true,
+      prepareForApproval: async (input, context) => {
+        const replacements = await context.repairSyntax?.({
+          path: 'a.ts',
+          language: 'TypeScript',
+          diagnostic: 'missing }',
+          before: 'before',
+          after: 'after',
+          replacements: [{ oldText: 'before', newText: 'after' }],
+        })
+        return { input: { value: replacements?.[0] ?? input }, details: { repaired: true } }
+      },
+      approvalPresentation: (input, details) => ({
+        title: String((input as { value?: JsonValue }).value),
+        description: JSON.stringify(details),
+      }),
+    })
+    const beforeToolCall = vi.fn(async () => ({
+      decision: 'approved' as const,
+      approvalLease: 'lease-1',
+    }))
+    const prepared = await prepareToolCall(
+      makeCall(),
+      makeAssistant(),
+      makeContext([tool], [tool.name]),
+      'run',
+      new AbortController().signal,
+      sink().emit,
+      beforeToolCall,
+      { transport },
+    )
+    expect(repairRequest).toMatchObject({ tools: [], maxOutputTokens: 32_768 })
+    expect(beforeToolCall).toHaveBeenCalledWith(expect.objectContaining({
+      input: { value: 'fixed' },
+      presentation: { title: 'fixed', description: '{"repaired":true}' },
+    }))
+    expect(prepared).toMatchObject({
+      input: { value: 'fixed' },
+      preparationDetails: { repaired: true },
+      approvalLease: 'lease-1',
+    })
+  })
+
+  it('uses a dedicated syntax repair runtime when configured', async () => {
+    let repairRequest: ModelRequest | undefined
+    const mainTransport: ModelTransport = {
+      stream(): AsyncIterable<ModelStreamEvent> {
+        throw new Error('主模型不应处理语法修复')
+      },
+    }
+    const repairTransport: ModelTransport = {
+      async *stream(request): AsyncIterable<ModelStreamEvent> {
+        repairRequest = request
+        yield { type: 'text_delta', delta: '{"replacements":["fixed"]}' }
+        yield { type: 'done', stopReason: 'stop' }
+      },
+    }
+    const tool = makeTool({
+      prepareForApproval: async (input, context) => ({
+        input: {
+          value: (await context.repairSyntax?.({
+            path: 'a.ts',
+            language: 'TypeScript',
+            diagnostic: 'missing }',
+            before: 'before',
+            after: 'after',
+            replacements: [{ oldText: 'before', newText: 'after' }],
+          }))?.[0] ?? input,
+        },
+      }),
+    })
+
+    const prepared = await prepareToolCall(
+      makeCall(),
+      makeAssistant(),
+      makeContext([tool], [tool.name]),
+      'run',
+      new AbortController().signal,
+      sink().emit,
+      undefined,
+      {
+        transport: mainTransport,
+        syntaxRepair: {
+          model: { provider: 'repair-provider', model: 'repair-model' },
+          transport: repairTransport,
+        },
+      },
+    )
+
+    expect(repairRequest?.model).toEqual({ provider: 'repair-provider', model: 'repair-model' })
+    expect(prepared).toMatchObject({ input: { value: 'fixed' } })
+  })
+})
+
 describe('applyAfterToolCall', () => {
   const prepared: PreparedToolCall = {
     call: makeCall(),
@@ -201,6 +309,21 @@ describe('prepareToolCall', () => {
     if ('tool' in outcome) throw new Error('expected a failure outcome')
     expect(outcome.isError).toBe(true)
     expect(outcome.result.content).toContain('未注册工具：ghost')
+  })
+
+  it('suggests a registered tool when a provider namespace prefixes its name', async () => {
+    const { emit } = sink()
+    const outcome = await prepareToolCall(
+      makeCall('functions__echo'),
+      makeAssistant(),
+      makeContext([makeTool()], ['echo']),
+      'r',
+      new AbortController().signal,
+      emit,
+      undefined,
+    )
+    if ('tool' in outcome) throw new Error('expected a failure outcome')
+    expect(outcome.result.content).toContain('你是否想使用 echo')
   })
 
   it('reports a tool that exists but is not yet active', async () => {

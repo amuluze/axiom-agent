@@ -978,6 +978,7 @@ describe('runAgentLoop', () => {
     expect(execute).not.toHaveBeenCalled()
     expect(result.messages[2]?.content).toContain('参数可能不完整')
     expect(transport.requests).toHaveLength(2)
+    expect(transport.requests[1]?.systemPrompt).toContain('参数可能不完整')
   })
 
   it('auto-continues a text response truncated by max_tokens when there are no tool calls', async () => {
@@ -1004,6 +1005,7 @@ describe('runAgentLoop', () => {
     const lastMessage = secondRequestMessages[secondRequestMessages.length - 1]
     expect(lastMessage).toMatchObject({ role: 'user' })
     expect(lastMessage.content).toContain('截断')
+    expect(transport.requests[1]?.systemPrompt).toContain('从中断处继续')
     const assistants = result.messages.filter((message) => message.role === 'assistant')
     expect(assistants.map((message) => message.content)).toEqual(['前半段输出', '后半段输出'])
   })
@@ -2408,40 +2410,99 @@ describe('runAgentLoop budget notices (proportional thresholds)', () => {
 })
 
 describe('empty assistant responses from a successful stream', () => {
-  it('excludes an empty assistant turn so it never reaches the next provider request', async () => {
-    // Provider 空流但正常结束（message_start → 无内容块 → message_stop）：
-    // 若空 assistant 消息落盘且不带 excludeFromModelContext，下一轮请求会构造
-    // { role: 'assistant', content: [] }，Anthropic-compatible 会返回 HTTP 400。
+  it('retries an empty assistant turn once without sending the empty message back', async () => {
     const emptyResponse = (): ModelStreamEvent[] => [
       { type: 'start', responseId: 'response-empty' },
       { type: 'done', stopReason: 'stop' },
     ]
-    const firstTransport = new ScriptedTransport([emptyResponse()])
+    const transport = new ScriptedTransport([emptyResponse(), textResponse('recovered')])
     const context = createContext()
-    const first = await runAgentLoop({
+    const result = await runAgentLoop({
       context,
       prompts: [createUserMessage('empty reply')],
-      transport: firstTransport,
+      transport,
     })
-    expect(first.reason).toBe('completed')
+    expect(result.reason).toBe('completed')
+    expect(transport.requests).toHaveLength(2)
+    expect(transport.requests[1]?.systemPrompt).toContain('没有可见内容或工具调用')
+    expect(transport.requests[1]?.messages.at(-1)?.content).toContain('重新完成当前任务')
 
-    const emptyAssistant = first.messages.find((message) => message.role === 'assistant')
+    const emptyAssistant = result.newMessages.find((message) => (
+      message.role === 'assistant' && message.content === ''
+    ))
     expect(emptyAssistant).toBeDefined()
-    // 成功终态的空消息也必须整体排除出模型上下文
     expect('excludeFromModelContext' in emptyAssistant!).toBe(true)
-
-    const secondTransport = new ScriptedTransport([textResponse('ok')])
-    const second = await runAgentLoop({
-      context,
-      prompts: [createUserMessage('next turn')],
-      transport: secondTransport,
-    })
-    expect(second.reason).toBe('completed')
-    for (const message of secondTransport.requests[0]!.messages) {
+    for (const message of transport.requests[1]!.messages) {
       if (message.role === 'assistant') {
         expect(message.content.length + (message.toolCalls?.length ?? 0)).toBeGreaterThan(0)
       }
     }
+  })
+
+  it('stops after a repeated empty response', async () => {
+    const emptyResponse = (): ModelStreamEvent[] => [
+      { type: 'start', responseId: 'response-empty' },
+      { type: 'done', stopReason: 'stop' },
+    ]
+    const transport = new ScriptedTransport([emptyResponse(), emptyResponse()])
+
+    const result = await runAgentLoop({
+      context: createContext(),
+      prompts: [createUserMessage('empty reply')],
+      transport,
+    })
+
+    expect(result.reason).toBe('error')
+    expect(result.errorMessage).toContain('连续返回空响应')
+    expect(transport.requests).toHaveLength(2)
+  })
+
+  it('retries an obvious textual tool call through the native protocol', async () => {
+    const transport = new ScriptedTransport([
+      textResponse('<tool_call>{"name":"echo","arguments":{"value":"x"}}</tool_call>'),
+      textResponse('recovered without a fake call'),
+    ])
+
+    const result = await runAgentLoop({
+      context: createContext([createEchoTool(async () => ({ content: 'unused' }))]),
+      prompts: [createUserMessage('use the tool')],
+      transport,
+    })
+
+    expect(result.reason).toBe('completed')
+    expect(transport.requests).toHaveLength(2)
+    expect(transport.requests[1]?.systemPrompt).toContain('普通文本')
+    expect(transport.requests[1]?.messages.at(-1)?.content).toContain('原生调用协议')
+  })
+
+  it('interrupts a repeated planning stream and retries once with a correction', async () => {
+    const repeated = '我需要先检查相关文件，然后再决定下一步。'.repeat(4)
+    const transport = new ScriptedTransport([
+      [
+        { type: 'start' },
+        ...Array.from({ length: 100 }, () => ({
+          type: 'thinking_delta' as const,
+          contentIndex: 0,
+          delta: repeated,
+        })),
+        { type: 'done', stopReason: 'stop' },
+      ],
+      textResponse('已基于现有信息直接收口'),
+    ])
+
+    const result = await runAgentLoop({
+      context: createContext([createEchoTool(async () => ({ content: 'unused' }))]),
+      prompts: [createUserMessage('inspect first')],
+      transport,
+    })
+
+    expect(result.reason).toBe('completed')
+    expect(transport.requests).toHaveLength(2)
+    expect(transport.requests[1]?.systemPrompt).toContain('重复规划')
+    expect(transport.requests[1]?.messages.at(-1)?.content).toContain('立即发出原生工具调用')
+    expect(transport.requests[1]?.messages.some((message) => (
+      message.role === 'assistant' && message.content.includes('需要先检查')
+    ))).toBe(false)
   })
 
   it('excludes a thinking-only truncated assistant turn (no visible text) from model context', async () => {

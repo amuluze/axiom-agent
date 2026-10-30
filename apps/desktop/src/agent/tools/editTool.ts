@@ -4,6 +4,7 @@ import type { AgentEnvironment } from '@/agent/environment/AgentEnvironment'
 import { desktopAgentEnvironment } from '@/agent/environment/agentEnvironmentHost'
 import { hasOnlyKeys, isJsonObject, isMutablePath, sha256Text } from './workspaceToolUtils'
 import { buildEditResultDiff } from './toolDiff'
+import { prepareSyntaxRepair } from './editSyntaxRepair'
 
 const MAX_TEXT_BYTES = 1024 * 1024
 const MAX_PREVIEW_CHARS = 12_000
@@ -41,6 +42,9 @@ const asEditInput = (input: JsonValue): EditInput => {
     }),
   }
 }
+
+const syntaxRepairDetail = (details: JsonValue | undefined): JsonValue | undefined =>
+  details !== undefined && isJsonObject(details) ? details.syntaxAutoRepair : undefined
 
 const diffBlock = (prefix: '-' | '+', value: string): { content: string; truncated: boolean } => {
   const truncated = value.length > MAX_PREVIEW_CHARS
@@ -103,7 +107,7 @@ export const createEditTool = (environment: AgentEnvironment): AgentTool => ({
   // v11：完全访问档真正兑现 schema 承诺——写通道消费审批租约 tier，工作区外
   // 绝对路径在 Unrestricted 租约下可用（此前仅 apply_changes/restore_trash 生效，
   // edit 恒在 Rust 侧被拒）。schema 与保护路径判定不变。
-  runtimeVersion: '12',
+  runtimeVersion: '14',
   recoveryPolicy: 'idempotent',
   prepareArguments: prepareEditArguments,
   idempotencyKey: async (input) => {
@@ -179,7 +183,15 @@ export const createEditTool = (environment: AgentEnvironment): AgentTool => ({
     }
     return { ok: true, value: input }
   },
-  approvalPresentation: (input) => {
+  prepareForApproval: async (input, context) => {
+    const { path, edits } = asEditInput(input)
+    const prepared = await prepareSyntaxRepair({ path, edits, environment, context })
+    return {
+      input: { path, edits: prepared.edits },
+      ...(prepared.details === undefined ? {} : { details: prepared.details }),
+    }
+  },
+  approvalPresentation: (input, preparationDetails) => {
     const { path, edits } = asEditInput(input)
     const preview = edits
       .map((edit, index) => {
@@ -192,19 +204,22 @@ export const createEditTool = (environment: AgentEnvironment): AgentTool => ({
       title: edits.length > 1 ? `Edit ${path} (${edits.length} replacements)?` : `Edit ${path}?`,
       titleKey: 'app.approval.edit.title',
       titleParams: { path, count: edits.length },
-      description: 'Axiom applies the replacements only when every oldText matches the file exactly once.',
+      description: `Axiom applies the replacements only when every oldText matches the file exactly once.${syntaxRepairDetail(preparationDetails) ? ' A syntax repair was applied before this approval.' : ''}`,
       descriptionKey: 'app.approval.edit.description',
       path,
       preview,
     }
   },
-  auditArguments: (input) => {
+  auditArguments: (input, preparationDetails) => {
     const { path, edits } = asEditInput(input)
     return {
       path,
       editCount: edits.length,
       oldTextBytes: edits.map((edit) => byteLength(edit.oldText)),
       newTextBytes: edits.map((edit) => byteLength(edit.newText)),
+      ...(syntaxRepairDetail(preparationDetails) === undefined
+        ? {}
+        : { syntaxAutoRepair: syntaxRepairDetail(preparationDetails) }),
     }
   },
   execute: async (input, context) => {
@@ -226,6 +241,9 @@ export const createEditTool = (environment: AgentEnvironment): AgentTool => ({
         editCount: edits.length,
         operation: 'edited',
         completedAfterAbort,
+        ...(syntaxRepairDetail(context.preparationDetails) === undefined
+          ? {}
+          : { syntaxAutoRepair: syntaxRepairDetail(context.preparationDetails) }),
         ...buildEditResultDiff(result.path, edits),
       },
     }

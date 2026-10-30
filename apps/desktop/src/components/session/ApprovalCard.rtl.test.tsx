@@ -21,6 +21,9 @@ const mocks = vi.hoisted(() => ({
   } | null,
   approveToolCall: vi.fn<(toolCallId: string) => Promise<void>>(),
   denyToolCall: vi.fn<(toolCallId: string) => Promise<void>>(),
+  accessMode: 'standard' as 'standard' | 'no-approval',
+  accessModeChanging: false,
+  setAccessMode: vi.fn<(mode: 'standard' | 'no-approval') => Promise<string | null>>(),
 }))
 
 vi.mock('@/stores/agentStore', async (importOriginal) => {
@@ -34,6 +37,9 @@ vi.mock('@/stores/agentStore', async (importOriginal) => {
         pendingApproval: mocks.pendingApproval,
         approveToolCall: mocks.approveToolCall,
         denyToolCall: mocks.denyToolCall,
+        accessMode: mocks.accessMode,
+        accessModeChanging: mocks.accessModeChanging,
+        setAccessMode: mocks.setAccessMode,
       } as StoreState),
   }
 })
@@ -42,6 +48,10 @@ afterEach(() => {
   mocks.pendingApproval = null
   mocks.approveToolCall.mockClear()
   mocks.denyToolCall.mockClear()
+  mocks.accessMode = 'standard'
+  mocks.accessModeChanging = false
+  mocks.setAccessMode.mockReset()
+  mocks.setAccessMode.mockResolvedValue(null)
 })
 
 const pending = {
@@ -134,5 +144,39 @@ describe('ApprovalCard (RTL)', () => {
     }
     rerender(<ApprovalCard />)
     expect(screen.getByRole('button', { name: '允许一次' })).toBeDisabled()
+  })
+
+  it('点击完全访问把当前会话切到 no-approval，且不代替用户放行本次调用', async () => {
+    const user = userEvent.setup()
+    mocks.pendingApproval = pending
+    render(<ApprovalCard />)
+
+    await user.click(screen.getByRole('button', { name: '完全访问' }))
+
+    expect(mocks.setAccessMode).toHaveBeenCalledTimes(1)
+    expect(mocks.setAccessMode).toHaveBeenCalledWith('no-approval')
+    // 模式切换只改档位：本次调用仍由用户点「允许一次」放行（原生警告确认在 Rust 侧）。
+    expect(mocks.approveToolCall).not.toHaveBeenCalled()
+  })
+
+  it('模式切换被取消时在卡片内提示原因', async () => {
+    const user = userEvent.setup()
+    mocks.setAccessMode.mockResolvedValue('切换访问模式失败：用户取消启用完全访问')
+    mocks.pendingApproval = pending
+    render(<ApprovalCard />)
+
+    await user.click(screen.getByRole('button', { name: '完全访问' }))
+
+    // 卡片本身是 role="alert"，这里按文案定位切换失败提示。
+    expect(await screen.findByText(/用户取消启用完全访问/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '完全访问' })).toBeEnabled()
+  })
+
+  it('已是完全访问时不重复提供切换按钮', () => {
+    mocks.accessMode = 'no-approval'
+    mocks.pendingApproval = pending
+    render(<ApprovalCard />)
+    expect(screen.queryByRole('button', { name: '完全访问' })).toBeNull()
+    expect(screen.getByRole('button', { name: '允许一次' })).toBeInTheDocument()
   })
 })

@@ -15,6 +15,33 @@ const PATTERNS: &[(&str, &str)] = &[
     ),
 ];
 
+/// 名字显式声明「非生产凭据」的作用域前缀（env 变量风格，大小写不敏感）。
+///
+/// 名称作用域豁免只作用于「按名字判定」这一层：令牌形态（sk-/ghp_/私钥块）与
+/// 当前 Provider 密钥的精确匹配仍然命中——真实凭据不会被放过。依据是这些前缀
+/// 本身就是内容作者的声明（该值属测试/示例夹具），不是扫描器的猜测。
+const NON_CREDENTIAL_NAME_SCOPES: &[&str] = &[
+    "E2E_", "TEST_", "TESTING_", "CI_", "DEMO_", "EXAMPLE_", "FAKE_", "MOCK_", "SAMPLE_",
+    "FIXTURE_", "STUB_",
+];
+
+/// 值里显式标注「假值」的词段：按分隔符切段后**整段**匹配，避免 contest 命中
+/// test 一类的子串误伤。真实凭据极少整段等于这些词（`correct-horse-battery-staple`
+/// 这类真口令不含这些词段，仍按凭据拦截）。
+const NON_CREDENTIAL_VALUE_SEGMENTS: &[&str] = &[
+    "e2e",
+    "fake",
+    "mock",
+    "sample",
+    "example",
+    "dummy",
+    "changeme",
+    "placeholder",
+    "notreal",
+    "foobar",
+    "demo",
+];
+
 fn patterns() -> Result<&'static CredentialPatterns, String> {
     static COMPILED: OnceLock<Result<CredentialPatterns, String>> = OnceLock::new();
     COMPILED
@@ -32,12 +59,39 @@ fn patterns() -> Result<&'static CredentialPatterns, String> {
         .map_err(Clone::clone)
 }
 
+/// 名称是否落在测试/示例作用域（如 `E2E_AUTH_SECRET`、`TEST_PASSWORD`）。
+fn non_credential_scope(name: &str) -> bool {
+    let upper = name.trim().to_ascii_uppercase();
+    NON_CREDENTIAL_NAME_SCOPES
+        .iter()
+        .any(|scope| upper.starts_with(scope))
+}
+
+/// 值是否含显式标注假值的词段（整段匹配）。
+fn placeholder_value_segment(value: &str) -> bool {
+    value
+        .split(['-', '_', '.', '/', ':', '+', '@'])
+        .any(|segment| {
+            NON_CREDENTIAL_VALUE_SEGMENTS.contains(&segment.to_ascii_lowercase().as_str())
+        })
+}
+
 fn credential_field(name: &str) -> bool {
     let normalized: String = name
         .chars()
         .filter(char::is_ascii_alphanumeric)
         .flat_map(char::to_lowercase)
         .collect();
+    // 公钥标识（publicKey / publicKeyToken / publicKeyId）不是秘密：公钥本就公开，
+    // 真正的私钥另由「私钥块」形态规则与 privatekey 字段名覆盖。
+    if normalized.contains("publickey") {
+        return false;
+    }
+    // 名字已声明非生产作用域（E2E_/TEST_/CI_…）：该值属测试/示例夹具，
+    // 不按凭据字段判定（曾把 e2e/.env.example 的示例值当成真实凭据，阻断整轮请求）。
+    if non_credential_scope(name) {
+        return false;
+    }
     [
         "apikey",
         "accesstoken",
@@ -73,6 +127,10 @@ fn credential_value(value: &str) -> bool {
     .iter()
     .any(|prefix| lower.starts_with(prefix))
     {
+        return false;
+    }
+    // 值整段等于显式假值词（e2e/fake/mock/…）：夹具值不是凭据。
+    if placeholder_value_segment(&lower) {
         return false;
     }
     value
@@ -227,5 +285,58 @@ mod tests {
         }
         assert!(validate_model_egress("{}", None).is_ok());
         assert!(validate_model_egress("not json", None).is_err());
+    }
+
+    #[test]
+    fn accepts_test_scope_fixtures_and_still_blocks_real_credentials() {
+        // 回归：会话读入 e2e/.env.example（测试夹具示例值）后，4 处 E2E_* 赋值
+        // 被判成高置信「凭据赋值」，整轮模型请求被阻止——会话被永久卡死。
+        let fixture = "\
+# Quoin e2e 本地测试环境配置示例
+E2E_AUTH_SECRET=quoin-manager-e2e-auth-secret-key
+E2E_QUOIN_DETECTOR_SECRET=quoin-manager-e2e-shared-secret
+E2E_ADMIN_PASSWORD=e2e-admin-pass-123
+E2E_STAFF_PASSWORD=E2e-staff-pass-123";
+        assert!(
+            validate_model_egress(&serde_json::json!({"text": fixture}).to_string(), None).is_ok(),
+            "E2E 夹具示例值不应触发凭据拦截"
+        );
+        // 夹具作用域只豁免「按名字判定」这一层：真实凭据形态仍必须拦截。
+        let provider_token = format!("sk-ant-{}", "aB1234567890".repeat(3));
+        assert!(validate_model_egress(
+            &serde_json::json!({"text": format!("E2E_API_KEY={provider_token}")}).to_string(),
+            None
+        )
+        .is_err());
+        // 当前 Provider 密钥落在夹具作用域里也照拦（精确匹配优先于作用域豁免）。
+        assert!(validate_model_egress(
+            &serde_json::json!({"text": "E2E_AUTH_SECRET=known-provider-secret"}).to_string(),
+            Some("known-provider-secret")
+        )
+        .is_err());
+        // 生产作用域的真实凭据不受影响。
+        for text in [
+            "DATABASE_PASSWORD=correct-horse-battery-staple",
+            "API_KEY=contest-secret-value-2024",
+            "PROD_AUTH_SECRET=8f3c1d9a7b5e2f4c6a0d",
+        ] {
+            assert!(
+                validate_model_egress(&serde_json::json!({"text": text}).to_string(), None)
+                    .is_err(),
+                "{text}"
+            );
+        }
+        // 值整段等于显式假值词：夹具值不按凭据判定（名字非测试作用域时同样成立）。
+        assert!(validate_model_egress(
+            &serde_json::json!({"text": "QUOIN_ADMIN_PASSWORD=quoin-e2e-admin-pass"}).to_string(),
+            None
+        )
+        .is_ok());
+        // 公钥标识不是秘密（微软程序集 publicKeyToken）。
+        assert!(validate_model_egress(
+            &serde_json::json!({"text": "publicKeyToken=\"6595b64144ccf1df\""}).to_string(),
+            None
+        )
+        .is_ok());
     }
 }

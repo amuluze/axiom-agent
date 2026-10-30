@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { useState } from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -58,6 +59,8 @@ describe('TestEnvironmentPanel', () => {
       viewportHeight: 800,
       headersJson: '{}',
       secretIdsJson: '[]',
+      extraVarsJson: '{}',
+      secretOriginsJson: '[]',
       allowPrivateNetwork: false,
     }))
     expect(onChanged).toHaveBeenCalledWith(expect.stringMatching(/^test-env-/))
@@ -146,6 +149,8 @@ describe('TestEnvironmentPanel', () => {
           allowPrivateNetwork: true,
           headersJson: '{}',
           secretIdsJson: '[]',
+          extraVarsJson: '{}',
+          secretOriginsJson: '[]',
           createdAt: 1,
           updatedAt: 2,
         }]}
@@ -186,6 +191,8 @@ describe('TestEnvironmentPanel', () => {
           allowPrivateNetwork: false,
           headersJson: '{}',
           secretIdsJson: '[]',
+          extraVarsJson: '{}',
+          secretOriginsJson: '[]',
           createdAt: 1,
           updatedAt: 2,
         }]}
@@ -208,5 +215,47 @@ describe('TestEnvironmentPanel', () => {
     expect(screen.queryByRole('button', { name: '导入为运行环境' })).toBeNull()
     expect(screen.getByText(/需要修复：\$\.mode 只允许 local 或 remote/)).toBeTruthy()
     expect(screen.getByText(/档位：远程（只读校验）/)).toBeTruthy()
+  })
+
+  it('keeps the create form open after the parent clears the selection', () => {
+    // 受控父组件里「新建环境」会把 selectedId 置空；清空引起的 effect 若无条件
+    // 退出编辑，创建表单会立刻消失（选中过环境时必现，非受控 mock 不会暴露）。
+    const Controlled = () => {
+      const [selectedId, setSelectedId] = useState<string | null>('env-1')
+      return (
+        <TestEnvironmentPanel
+          environments={[{
+            id: 'env-1',
+            name: '远程环境',
+            kind: 'remote',
+            recipeJson: null,
+            webBaseUrl: 'https://staging.test',
+            apiBaseUrl: null,
+            viewportWidth: null,
+            viewportHeight: null,
+            allowPrivateNetwork: false,
+            headersJson: '{}',
+            secretIdsJson: '[]',
+            extraVarsJson: '{}',
+            secretOriginsJson: '[]',
+            createdAt: 1,
+            updatedAt: 2,
+          }]}
+          environmentFiles={[]}
+          selectedId={selectedId}
+          disabled={false}
+          onSelect={setSelectedId}
+          onChanged={vi.fn().mockResolvedValue(undefined)}
+        />
+      )
+    }
+    render(<Controlled />)
+
+    fireEvent.click(screen.getByRole('button', { name: '新建环境' }))
+
+    expect(screen.getByLabelText('名称')).toBeEnabled()
+    expect(screen.getByLabelText('名称')).toHaveValue('')
+    // 名称为空时不能保存，但表单本身必须仍在编辑态（保存按钮存在即说明表单没被收起）。
+    expect(screen.getByRole('button', { name: '保存环境' })).toBeDisabled()
   })
 })

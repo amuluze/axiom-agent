@@ -18,7 +18,7 @@ vi.mock('./testRuntimeService', () => ({ startUiTestRun: mocks.startUiTestRun })
 import { runTestSuite, type TestSuiteRunInput } from './testSuiteRunner'
 import type { TestEnvironmentRecord } from '@/platform/testEnvironments'
 
-const plan = (options: { ui?: boolean; webBaseUrl?: string } = {}): CompiledTestPlan => ({
+const plan = (options: { ui?: boolean; webBaseUrl?: string; poll?: boolean } = {}): CompiledTestPlan => ({
   specId: 'spec',
   name: 'Spec',
   specVersion: 2,
@@ -28,9 +28,17 @@ const plan = (options: { ui?: boolean; webBaseUrl?: string } = {}): CompiledTest
   cases: [{
     id: 'case-1',
     name: 'Case',
-    steps: [options.ui === true
-      ? { id: 'click', action: 'ui.click', locator: { testId: 'go' } }
-      : { id: 'ping', action: 'api.request', method: 'GET', url: 'https://api.test/ping' }],
+    steps: [options.poll === true
+      ? {
+        id: 'poll',
+        action: 'api.poll',
+        method: 'GET',
+        url: 'https://api.test/ping',
+        expect: [{ status: 200 }],
+      }
+      : options.ui === true
+        ? { id: 'click', action: 'ui.click', locator: { testId: 'go' } }
+        : { id: 'ping', action: 'api.request', method: 'GET', url: 'https://api.test/ping' }],
   }],
 })
 
@@ -46,6 +54,8 @@ const environment: TestEnvironmentRecord = {
   allowPrivateNetwork: false,
   headersJson: '{}',
   secretIdsJson: '[]',
+  extraVarsJson: '{}',
+  secretOriginsJson: '[]',
   createdAt: 1,
   updatedAt: 2,
 }
@@ -206,6 +216,18 @@ describe('runTestSuite', () => {
       target: { tabId: 'tab-1', origin: 'https://shop.test' },
     })
   })
+  it('does not require a browser tab for a polling-only suite', async () => {
+    mocks.prepareUiTestRun.mockResolvedValue(plan({ poll: true }))
+
+    const result = await run({
+      specs: [{ path: 'tests/poll.testspec.json', uiStepCount: 0, apiStepCount: 1 }],
+    })
+
+    expect(result.entries[0]?.status).toBe('passed')
+    expect(mocks.startUiTestRun).toHaveBeenCalledTimes(1)
+    expect(mocks.startUiTestRun.mock.calls[0]?.[0].target).toBeUndefined()
+  })
+
   it('carries the report case statuses so the coverage KPI needs no extra host read', async () => {
     mocks.startUiTestRun.mockResolvedValue({
       status: 'failed',

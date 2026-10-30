@@ -5,7 +5,14 @@ import {
   evaluateContextBudget,
   postTurnCompactionReason,
 } from './budget'
-import { compactModelRequest } from './compaction'
+import {
+  checkpointNarrative,
+  compactModelRequest,
+  CompactionProgressError,
+  groupContextMessages,
+  hashContextSummary,
+  type CompactionReplacement,
+} from './compaction'
 import type { SummaryInstructionOptions } from './summaryInstructions'
 import {
   summaryHookCancelled,
@@ -20,6 +27,7 @@ import type {
   ContextPolicy,
 } from './types'
 import { createContextPolicy } from './types'
+import { sanitizeContextMessages } from './sanitize'
 
 interface ContextWindowManagerOptions {
   transport: ModelTransport
@@ -35,10 +43,47 @@ const isAbortError = (error: unknown): boolean =>
     ? error.name === 'AbortError'
     : error instanceof Error && error.name === 'AbortError'
 
+interface SpeculativeCompactionCandidate {
+  replacement: CompactionReplacement
+  prefixHash: string
+}
+
+interface SpeculativeCompactionTask {
+  controller: AbortController
+  checkpointId?: string
+  modelProvider: string
+  modelId: string
+  transport: ModelTransport
+  settled: boolean
+  candidate?: SpeculativeCompactionCandidate
+  promise: Promise<SpeculativeCompactionCandidate | undefined>
+}
+
+const compactionPrefix = (
+  request: ModelRequest,
+  throughMessageId: string,
+): AgentMessage[] | undefined => {
+  const groups = groupContextMessages(request.messages)
+  const boundary = groups.findIndex(
+    (group) => group.messages[group.messages.length - 1]?.id === throughMessageId,
+  )
+  if (boundary < 0) return undefined
+  return groups.slice(0, boundary + 1).flatMap((group) => group.messages)
+}
+
+const compactionPrefixHash = async (
+  request: ModelRequest,
+  throughMessageId: string,
+): Promise<string | undefined> => {
+  const prefix = compactionPrefix(request, throughMessageId)
+  return prefix ? hashContextSummary(JSON.stringify(prefix)) : undefined
+}
+
 export class ContextWindowManager {
   private checkpoint?: ContextCheckpoint
   private forcedReason?: CompactionReason
   private forcedExcludedMessageIds: string[] = []
+  private speculativeTask?: SpeculativeCompactionTask
 
   constructor(private readonly options: ContextWindowManagerOptions) {
     this.checkpoint = options.checkpoint ?? undefined
@@ -80,9 +125,135 @@ export class ContextWindowManager {
   }
 
   reset(): void {
+    this.clearSpeculativeTask(true)
     this.checkpoint = undefined
     this.forcedReason = undefined
     this.forcedExcludedMessageIds = []
+  }
+
+  get speculativeCompactionState(): 'idle' | 'running' | 'ready' {
+    if (!this.speculativeTask) return 'idle'
+    return this.speculativeTask.candidate ? 'ready' : 'running'
+  }
+
+  cancelSpeculativeCompaction(): Promise<void> {
+    const task = this.speculativeTask
+    this.clearSpeculativeTask(true)
+    return task ? task.promise.then(() => undefined) : Promise.resolve()
+  }
+
+  private clearSpeculativeTask(abort: boolean): void {
+    const task = this.speculativeTask
+    this.speculativeTask = undefined
+    if (abort && task && !task.settled) {
+      task.controller.abort(new DOMException('Speculative compaction invalidated', 'AbortError'))
+    }
+  }
+
+  private speculativeTaskMatches(
+    task: SpeculativeCompactionTask,
+    request: ModelRequest,
+    transport: ModelTransport,
+  ): boolean {
+    return task.checkpointId === this.checkpoint?.id
+      && task.modelProvider === request.model.provider
+      && task.modelId === request.model.model
+      && task.transport === transport
+  }
+
+  speculateIfIdleDue(
+    request: ModelRequest,
+    transport: ModelTransport = this.options.transport,
+  ): Promise<boolean> {
+    if (this.forcedReason) return Promise.resolve(false)
+    const policy = this.policyFor(request)
+    if (!postTurnCompactionReason(this.evaluate(request, transport), policy)) {
+      return Promise.resolve(false)
+    }
+    const existing = this.speculativeTask
+    if (existing && this.speculativeTaskMatches(existing, request, transport)) {
+      if (!existing.settled || existing.candidate) {
+        return existing.promise.then((candidate) => Boolean(candidate))
+      }
+    }
+    this.clearSpeculativeTask(true)
+
+    const controller = new AbortController()
+    const snapshot = structuredClone(request)
+    const task: SpeculativeCompactionTask = {
+      controller,
+      checkpointId: this.checkpoint?.id,
+      modelProvider: request.model.provider,
+      modelId: request.model.model,
+      transport,
+      settled: false,
+      promise: Promise.resolve(undefined),
+    }
+    task.promise = compactModelRequest({
+      request: snapshot,
+      transport,
+      policy,
+      checkpoint: this.checkpoint ? structuredClone(this.checkpoint) : undefined,
+      reason: 'manual',
+      signal: controller.signal,
+    }).then(async (result) => {
+      if (!result || controller.signal.aborted) return undefined
+      const summary = checkpointNarrative(result.checkpoint)
+      if (!summary) return undefined
+      const prefixHash = await compactionPrefixHash(snapshot, result.checkpoint.throughMessageId)
+      if (!prefixHash || controller.signal.aborted) return undefined
+      const candidate: SpeculativeCompactionCandidate = {
+        replacement: {
+          summary,
+          throughMessageId: result.checkpoint.throughMessageId,
+        },
+        prefixHash,
+      }
+      task.candidate = candidate
+      return candidate
+    }).catch(() => undefined).finally(() => {
+      task.settled = true
+    })
+    this.speculativeTask = task
+    return task.promise.then((candidate) => Boolean(candidate))
+  }
+
+  private async takeSpeculativeReplacement(
+    request: ModelRequest,
+    reason: CompactionReason,
+    excludedMessageIds: string[],
+    signal: AbortSignal,
+    transport: ModelTransport,
+  ): Promise<CompactionReplacement | undefined> {
+    const task = this.speculativeTask
+    if (!task || !this.speculativeTaskMatches(task, request, transport)) {
+      if (task) this.clearSpeculativeTask(true)
+      return undefined
+    }
+    const abort = (): void => task.controller.abort(signal.reason)
+    if (signal.aborted) abort()
+    else signal.addEventListener('abort', abort, { once: true })
+    const candidate = await task.promise.finally(() => signal.removeEventListener('abort', abort))
+    if (this.speculativeTask === task) this.clearSpeculativeTask(false)
+    if (!candidate || signal.aborted) return undefined
+    const prefixHash = await compactionPrefixHash(request, candidate.replacement.throughMessageId)
+    if (prefixHash !== candidate.prefixHash) return undefined
+    try {
+      const preview = await compactModelRequest({
+        request,
+        transport,
+        policy: this.policyFor(request),
+        checkpoint: this.checkpoint,
+        reason,
+        signal,
+        excludedMessageIds,
+        replacement: candidate.replacement,
+      })
+      return preview ? candidate.replacement : undefined
+    } catch (error) {
+      if (signal.aborted || isAbortError(error)) throw error
+      return undefined
+    }
   }
 
   prepareModelRequest = async (
@@ -102,22 +273,68 @@ export class ContextWindowManager {
     this.forcedReason = undefined
     this.forcedExcludedMessageIds = []
 
-    if (!forcedReason && !usage.needsCompaction) return request
+    if (!forcedReason && !usage.needsCompaction) {
+      if (this.speculativeTask && !this.speculativeTask.settled) this.clearSpeculativeTask(true)
+      return request
+    }
+
+    const reason = forcedReason ?? usage.reason ?? 'token_threshold'
+    const speculativeReplacement = await this.takeSpeculativeReplacement(
+      request,
+      reason,
+      excludedMessageIds,
+      signal,
+      transport,
+    )
+    if (speculativeReplacement) {
+      const compacted = await this.runCompaction(
+        request,
+        reason,
+        signal,
+        excludedMessageIds,
+        transport,
+        undefined,
+        speculativeReplacement,
+      )
+      if (compacted) return compacted
+    }
+
+    const rescuedRequest: ModelRequest = {
+      ...request,
+      messages: sanitizeContextMessages(request.messages, { aggressive: true }),
+    }
+    const rescuedUsage = evaluateContextBudget(
+      rescuedRequest,
+      transport,
+      policy,
+      this.checkpoint,
+    )
+    if (!forcedReason && !rescuedUsage.needsCompaction) {
+      await this.options.emit({
+        type: 'context_usage',
+        usage: rescuedUsage,
+        checkpointId: this.checkpoint?.id,
+      })
+      return rescuedRequest
+    }
 
     try {
       const compacted = await this.runCompaction(
-        request,
-        forcedReason ?? usage.reason ?? 'token_threshold',
+        rescuedRequest,
+        forcedReason ?? rescuedUsage.reason ?? usage.reason ?? 'token_threshold',
         signal,
         excludedMessageIds,
         transport,
       )
       if (compacted) return compacted
-      if (forcedReason === 'overflow') {
-        throw new Error('Provider 上下文溢出后没有足够的完整消息组可供压缩')
-      }
+      throw new CompactionProgressError(
+        forcedReason === 'overflow'
+          ? 'Provider 上下文溢出后没有足够的完整消息组可供压缩'
+          : '上下文已超过压缩阈值，但没有足够的完整消息组可供压缩',
+      )
     } catch (error) {
       if (signal.aborted || isAbortError(error)) throw error
+      if (error instanceof CompactionProgressError) throw error
       if (
         usage.requestBytes > policy.hardRequestByteLimit
         || usage.estimatedTokens > policy.contextWindow
@@ -127,13 +344,13 @@ export class ContextWindowManager {
       }
     }
 
-    if (usage.requestBytes > policy.hardRequestByteLimit) {
+    if (rescuedUsage.requestBytes > policy.hardRequestByteLimit) {
       throw new Error('模型请求超过 Rust 2 MiB 硬上限，且当前上下文无法继续压缩')
     }
-    if (usage.estimatedTokens > policy.contextWindow) {
+    if (rescuedUsage.estimatedTokens > policy.contextWindow) {
       throw new Error('模型请求超过配置的上下文窗口，且当前上下文无法继续压缩')
     }
-    return request
+    return rescuedRequest
   }
 
   async compactManually(
@@ -142,6 +359,7 @@ export class ContextWindowManager {
     transport: ModelTransport = this.options.transport,
     summaryInstructions?: SummaryInstructionOptions,
   ): Promise<ModelRequest> {
+    this.clearSpeculativeTask(true)
     const compacted = await this.runCompaction(
       request,
       'manual',
@@ -154,29 +372,6 @@ export class ContextWindowManager {
     return compacted
   }
 
-  /**
-   * post-turn 空闲压缩（对齐 codex 的 post-turn compaction slot）：在回合结算后的
-   * 空隙里按软水位（硬阈值的 85%/90%，见 budget.ts）提前压缩，让下一个请求不必
-   * 为上一轮的历史膨胀同步买单。best-effort——没有可压缩空间或压缩失败时静默
-   * 返回 false，硬阈值兜底仍在 prepareModelRequest；pending 的 overflow 恢复
-   * 优先于空闲压缩，不在此消费 forced 状态。
-   */
-  async compactIfIdleDue(
-    request: ModelRequest,
-    signal: AbortSignal,
-    transport: ModelTransport = this.options.transport,
-  ): Promise<boolean> {
-    if (this.forcedReason) return false
-    const reason = postTurnCompactionReason(this.evaluate(request, transport), this.policyFor(request))
-    if (!reason) return false
-    try {
-      const compacted = await this.runCompaction(request, reason, signal, [], transport)
-      return Boolean(compacted)
-    } catch {
-      return false
-    }
-  }
-
   private async runCompaction(
     request: ModelRequest,
     reason: CompactionReason,
@@ -184,6 +379,7 @@ export class ContextWindowManager {
     excludedMessageIds: string[],
     transport: ModelTransport,
     summaryInstructions?: SummaryInstructionOptions,
+    speculativeReplacement?: CompactionReplacement,
   ): Promise<ModelRequest | undefined> {
     const compactionId = createId('compaction')
     await this.options.emit({ type: 'compaction_start', compactionId, reason })
@@ -206,7 +402,7 @@ export class ContextWindowManager {
         signal,
         excludedMessageIds,
         summaryInstructions,
-        replacement: hookResult?.replacement,
+        replacement: hookResult?.replacement ?? speculativeReplacement,
       })
       if (!result) {
         await this.options.emit({
@@ -236,6 +432,7 @@ export class ContextWindowManager {
         aborted: false,
       })
       this.checkpoint = result.checkpoint
+      this.clearSpeculativeTask(true)
       await this.options.emit({
         type: 'context_usage',
         usage: result.usageAfter,

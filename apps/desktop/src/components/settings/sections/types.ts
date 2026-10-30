@@ -4,6 +4,7 @@ import type { QueueModeSettings } from '@/agent/runtime/queueSettings'
 import type { AgentLimitsSettings } from '@/agent/runtime/agentLimitsSettings'
 import type { StoredAgentSession, StorageStats } from '@/persistence/types'
 import type { ProviderProfile, ProviderProfileDraft } from '@/agent/transport/provider'
+import type { SyntaxRepairSettings } from '@/agent/runtime/syntaxRepairSettings'
 
 export interface ProviderModelDescriptor {
   providerId: string
@@ -55,6 +56,12 @@ export interface AgentLimitsDraftHook {
   save: (settings: AgentLimitsSettings) => boolean
   setDraft: (settings: AgentLimitsSettings) => void
   reset: () => void
+}
+
+export interface SyntaxRepairHook {
+  profiles: ProviderProfile[]
+  settings: SyntaxRepairSettings
+  save: (settings: SyntaxRepairSettings) => boolean
 }
 
 export interface SessionsHook {

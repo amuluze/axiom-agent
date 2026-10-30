@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { CompiledTestPlan } from '../spec/compileTestPlan'
-import type { ApiStepSpec, UiStepSpec } from '../spec/types'
+import type { ApiDriverStep, UiStepSpec } from '../spec/types'
 import {
   runTestPlan,
   type ApiTestDriver,
@@ -42,7 +42,7 @@ const passing = async (): Promise<StepOutcome> => ({ verdict: 'passed' })
 
 const drivers = (
   uiRun: (step: UiStepSpec, context: StepExecutionContext) => Promise<StepOutcome> = passing,
-  apiRun: (step: ApiStepSpec, context: StepExecutionContext) => Promise<StepOutcome> = passing,
+  apiRun: (step: ApiDriverStep, context: StepExecutionContext) => Promise<StepOutcome> = passing,
 ) => {
   const ui: UiTestDriver = { runStep: vi.fn(uiRun) }
   const api: ApiTestDriver = { runStep: vi.fn(apiRun) }
@@ -239,7 +239,7 @@ describe('runTestPlan', () => {
       }],
     }
     const ui = vi.fn(async (_step: UiStepSpec, _context: StepExecutionContext): Promise<StepOutcome> => ({ verdict: 'passed' }))
-    const api = vi.fn(async (_step: ApiStepSpec, _context: StepExecutionContext): Promise<StepOutcome> => ({
+    const api = vi.fn(async (_step: ApiDriverStep, _context: StepExecutionContext): Promise<StepOutcome> => ({
       verdict: 'passed',
       extractedVariables: {
         orderId: { value: 42, sensitive: false },
@@ -315,7 +315,7 @@ const hookPlan = (cases = [{ id: 'checkout', name: '结算', steps: [hookStep('c
 
 const runHooks = async (
   hookTestPlan: CompiledTestPlan,
-  run: (step: ApiStepSpec, context: StepExecutionContext) => Promise<StepOutcome>,
+  run: (step: ApiDriverStep, context: StepExecutionContext) => Promise<StepOutcome>,
   signal = new AbortController().signal,
 ): Promise<{ report: TestRunReport; executed: string[]; signals: AbortSignal[] }> => {
   const executed: string[] = []
@@ -568,5 +568,351 @@ describe('runTestPlan hooks', () => {
     expect(report.testPoints).toEqual(withPoints.testPoints)
     expect(report.caseIds).toEqual(['coupon', 'order'])
     expect(report.caseVerifies).toEqual([['tp-checkout'], []])
+  })
+})
+
+describe('runTestPlan v4（api.poll 分派与 api.delay 本地等待）', () => {
+  const passing = async (): Promise<StepOutcome> => ({ verdict: 'passed' })
+
+  it('routes api.poll through the API driver and api.delay locally without approval', async () => {
+    const pollPlan: CompiledTestPlan = {
+      specId: 'quoin',
+      name: '配置下发',
+      specVersion: 4,
+      specHash: 'poll123',
+      target: {},
+      environmentNames: [],
+      cases: [{
+        id: 'push',
+        name: '下发',
+        steps: [
+          { id: 'create-site', action: 'api.request', method: 'POST', url: 'http://127.0.0.1:8090/api/v1/websites' },
+          { id: 'wait-route', action: 'api.poll', method: 'GET', url: 'http://127.0.0.1:8081/', virtualHost: 'site.example.test', intervalMs: 500, timeoutMs: 60_000, expect: [{ status: 200 }] },
+          { id: 'cross-second', action: 'api.delay', durationMs: 20 },
+        ],
+      }],
+    }
+    const seen: string[] = []
+    const api: ApiTestDriver = {
+      runStep: async (step) => {
+        seen.push(step.action)
+        return { verdict: 'passed' }
+      },
+    }
+    const ui: UiTestDriver = { runStep: vi.fn(passing) }
+    const changes: StepStatusChange[] = []
+    const report = await runTestPlan({
+      plan: pollPlan,
+      ui,
+      api,
+      signal: new AbortController().signal,
+      onStepStatusChange: (change) => changes.push(change),
+    })
+    expect(seen).toEqual(['api.request', 'api.poll'])
+    expect(ui.runStep).not.toHaveBeenCalled()
+    expect(report.status).toBe('passed')
+    expect(report.cases[0]?.steps.map((step) => step.status)).toEqual(['passed', 'passed', 'passed'])
+    expect(report.cases[0]?.steps[2]?.message).toBe('等待 20 ms')
+  })
+
+  it('cancels an in-flight delay when the run is aborted', async () => {
+    const controller = new AbortController()
+    const delayPlan: CompiledTestPlan = {
+      specId: 'quoin',
+      name: '跨秒边界',
+      specVersion: 4,
+      specHash: 'delay123',
+      target: {},
+      environmentNames: [],
+      cases: [{
+        id: 'token',
+        name: '令牌撤销',
+        steps: [
+          { id: 'login', action: 'api.request', method: 'POST', url: 'http://127.0.0.1:8090/api/v1/auth/login' },
+          { id: 'wait-boundary', action: 'api.delay', durationMs: 30_000 },
+          { id: 'disable', action: 'api.request', method: 'POST', url: 'http://127.0.0.1:8090/api/v1/account/users/1/disable' },
+        ],
+      }],
+    }
+    const api: ApiTestDriver = {
+      runStep: async (_step, context) => {
+        // 第一个请求完成后立刻停止：delay 必须被打断，后续步骤记 canceled。
+        controller.abort()
+        expect(context.signal.aborted).toBe(true)
+        return { verdict: 'passed' }
+      },
+    }
+    const report = await runTestPlan({
+      plan: delayPlan,
+      ui: { runStep: vi.fn(passing) },
+      api,
+      signal: controller.signal,
+    })
+    expect(report.cases[0]?.steps.map((step) => step.status)).toEqual(['passed', 'canceled', 'canceled'])
+  })
+})
+
+describe('runTestPlan v5（数据行 seeds 的作用域）', () => {
+  it('seeds case variables before beforeEach and does not leak them into other cases', async () => {
+    const seededPlan: CompiledTestPlan = {
+      specId: 'quoin',
+      name: '数据驱动',
+      specVersion: 7,
+      specHash: 'v5seed',
+      target: {},
+      environmentNames: [],
+      hooks: {
+        beforeEach: [{
+          id: 'hook',
+          action: 'api.request',
+          method: 'POST',
+          url: 'http://127.0.0.1:8090/hook',
+          body: { code: `\${vars.code}` },
+          whenProduced: 'code',
+          expect: [{ status: 200 }],
+        }],
+      },
+      cases: [
+        {
+          id: 'probe-v1',
+          name: '探测 · 1/2',
+          steps: [{
+            id: 's',
+            action: 'api.request',
+            method: 'POST',
+            url: 'http://127.0.0.1:8090/x',
+            body: { code: `\${vars.code}` },
+            expect: [{ status: 200 }],
+          }],
+          seeds: { code: 'A1' },
+        },
+        {
+          id: 'plain',
+          name: '无数据行',
+          steps: [{ id: 's2', action: 'api.request', method: 'GET', url: 'http://127.0.0.1:8090/y', expect: [{ status: 200 }] }],
+        },
+      ],
+    }
+    const seen: unknown[] = []
+    const api: ApiTestDriver = {
+      runStep: async (step) => {
+        seen.push(step)
+        return { verdict: 'passed' }
+      },
+    }
+    const report = await runTestPlan({
+      plan: seededPlan,
+      ui: { runStep: vi.fn() },
+      api,
+      signal: new AbortController().signal,
+    })
+    expect(report.status).toBe('passed')
+    // beforeEach 与 case 步骤都看到同一行输入值。
+    expect((seen[0] as { body?: unknown }).body).toEqual({ code: 'A1' })
+    expect((seen[1] as { body?: unknown }).body).toEqual({ code: 'A1' })
+    // 第二个 case 没有数据行：输入值不会泄漏（变量表按 case 隔离）。
+    expect(JSON.stringify(seen[2])).not.toContain('A1')
+    expect(report.cases.map((testCase) => testCase.caseId)).toEqual([
+      '$beforeEach:probe-v1', 'probe-v1',
+      '$beforeEach:plain', 'plain',
+    ])
+    // 第二个 case 没有数据行：守卫让引用缺失种子的 hook 跳过，而不是发出 undefined。
+    expect(report.cases.map((testCase) => testCase.status)).toEqual([
+      'passed', 'passed',
+      'skipped', 'passed',
+    ])
+  })
+})
+
+describe('runTestPlan v6（运行时凭据注入）', () => {
+  it('passes only the referenced sensitive variable to the API driver', async () => {
+    const credentialPlan: CompiledTestPlan = {
+      specId: 'quoin',
+      name: 'JWT 流程',
+      specVersion: 6,
+      specHash: 'v6cred',
+      target: {},
+      environmentNames: [],
+      cases: [{
+        id: 'login-flow',
+        name: '登录后调用',
+        steps: [
+          {
+            id: 'login',
+            action: 'api.request',
+            method: 'POST',
+            url: 'http://127.0.0.1:8090/login',
+            expect: [{ status: 200 }],
+            extract: { token: { jsonPointer: '/data/access_token', sensitive: true } },
+          },
+          {
+            id: 'call',
+            action: 'api.request',
+            method: 'GET',
+            url: 'http://127.0.0.1:8090/me',
+            headers: { Authorization: { variable: 'token', prefix: 'Bearer ' } },
+            expect: [{ status: 200 }],
+          },
+        ],
+      }],
+    }
+    const calls: Array<{ step: unknown; context: { credentialVariables?: unknown } }> = []
+    const api: ApiTestDriver = {
+      runStep: async (step, context) => {
+        calls.push({ step, context })
+        return calls.length === 1
+          ? { verdict: 'passed', extractedVariables: { token: { value: 'jwt-from-login', sensitive: true } } }
+          : { verdict: 'passed' }
+      },
+    }
+    const report = await runTestPlan({
+      plan: credentialPlan,
+      ui: { runStep: vi.fn() },
+      api,
+      signal: new AbortController().signal,
+    })
+    expect(report.status).toBe('passed')
+    // 步骤里的引用保持对象形态（宿主据此注入）；值只传被引用的变量。
+    expect(calls[1]?.step).toMatchObject({
+      headers: { Authorization: { variable: 'token', prefix: 'Bearer ' } },
+    })
+    expect(calls[1]?.context.credentialVariables).toEqual({ token: 'jwt-from-login' })
+    // 未引用变量的步骤不携带凭据表。
+    expect(calls[0]?.context.credentialVariables).toBeUndefined()
+    // 敏感值仍进入脱敏名单。
+    expect(calls[1]?.context).toMatchObject({ sensitiveValues: ['jwt-from-login'] })
+  })
+})
+
+describe('runTestPlan v7（条件执行守卫）', () => {
+  const guardedPlan = (guarded: string): CompiledTestPlan => ({
+    specId: 'quoin',
+    name: '条件清理',
+    specVersion: 7,
+    specHash: 'v7guard',
+    target: {},
+    environmentNames: [],
+    cases: [{
+      id: 'cleanup',
+      name: '条件清理',
+      steps: [
+        {
+          id: 'cleanup-delete',
+          action: 'api.request',
+          method: 'DELETE',
+          url: 'http://127.0.0.1:8090/x/1',
+          whenProduced: guarded,
+          expect: [{ statusIn: [200, 404] }],
+        } as never,
+      ],
+    }],
+  })
+
+  it('skips a guarded step when the variable was never produced and keeps the run passing', async () => {
+    const api: ApiTestDriver = { runStep: vi.fn(async () => ({ verdict: 'passed' as const })) }
+    const report = await runTestPlan({
+      plan: guardedPlan('siteId'),
+      ui: { runStep: vi.fn() },
+      api,
+      signal: new AbortController().signal,
+    })
+    expect(api.runStep).not.toHaveBeenCalled()
+    expect(report.cases[0]?.steps[0]).toMatchObject({
+      status: 'skipped',
+      message: '条件未满足：变量「siteId」未产出',
+    })
+    expect(report.status).toBe('skipped')
+  })
+
+  it('executes the guarded step when an earlier extraction produced the variable', async () => {
+    const plan: CompiledTestPlan = {
+      ...guardedPlan('siteId'),
+      cases: [{
+        id: 'cleanup',
+        name: '条件清理',
+        steps: [
+          {
+            id: 'create',
+            action: 'api.request',
+            method: 'POST',
+            url: 'http://127.0.0.1:8090/x',
+            expect: [{ status: 200 }],
+            extract: { siteId: { jsonPointer: '/id' } },
+          },
+          {
+            id: 'cleanup-delete',
+            action: 'api.request',
+            method: 'DELETE',
+            url: `http://127.0.0.1:8090/x/\${vars.siteId}`,
+            whenProduced: 'siteId',
+            expect: [{ statusIn: [200, 404] }],
+          } as never,
+        ],
+      }],
+    }
+    const steps: unknown[] = []
+    const api: ApiTestDriver = {
+      runStep: async (step) => {
+        steps.push(step)
+        return steps.length === 1
+          ? { verdict: 'passed', extractedVariables: { siteId: { value: 7, sensitive: false } } }
+          : { verdict: 'passed' }
+      },
+    }
+    const report = await runTestPlan({
+      plan,
+      ui: { runStep: vi.fn() },
+      api,
+      signal: new AbortController().signal,
+    })
+    expect(report.status).toBe('passed')
+    expect(steps[1]).toMatchObject({ url: 'http://127.0.0.1:8090/x/7' })
+  })
+
+  it('fails closed instead of sending an undefined consumer variable', async () => {
+    const plan: CompiledTestPlan = {
+      specId: 'conditional',
+      name: '条件产物',
+      specVersion: 7,
+      specHash: 'v7-undefined',
+      target: {},
+      environmentNames: [],
+      cases: [{
+        id: 'conditional',
+        name: '条件产物',
+        steps: [
+          {
+            id: 'optional-create',
+            action: 'api.request',
+            method: 'POST',
+            url: 'http://127.0.0.1:8090/x',
+            whenProduced: 'siteId',
+            expect: [{ status: 200 }],
+            extract: { siteId: { jsonPointer: '/id' } },
+          },
+          {
+            id: 'consume',
+            action: 'api.request',
+            method: 'GET',
+            url: `http://127.0.0.1:8090/x/\${vars.siteId}`,
+            expect: [{ status: 200 }],
+          },
+        ],
+      }],
+    }
+    const api: ApiTestDriver = { runStep: vi.fn(async () => ({ verdict: 'passed' as const })) }
+    const report = await runTestPlan({
+      plan,
+      ui: { runStep: vi.fn() },
+      api,
+      signal: new AbortController().signal,
+    })
+
+    expect(api.runStep).not.toHaveBeenCalled()
+    expect(report.cases[0]?.steps).toMatchObject([
+      { stepId: 'optional-create', status: 'skipped' },
+      { stepId: 'consume', status: 'error' },
+    ])
+    expect(report.status).toBe('error')
   })
 })

@@ -168,6 +168,166 @@ describe('test spec version contract', () => {
     expect(v3.issues).toEqual([{ path: '$.testPoints', message: 'v3 文件必须声明至少一个测试点' }])
   })
 
+  // v4 增量（多服务拓扑）：轮询/小睡/Host 覆盖与新断言只在 v4 起被接受。
+  it('gates v4 actions, virtualHost and expectation variants on version 4', () => {
+    // 保留 probeSpec 的 testPoints/verifies：替换 cases 时丢掉追溯会引入无关的
+    // 「测试点无认领」错误，掩盖本用例真正要验证的版本门。
+    const v4Step = (step: Record<string, unknown>): Record<string, unknown> => ({
+      ...(probeSpec('https://api.test/ping') as Record<string, unknown>),
+      cases: [{ id: 'probe-case', name: '探针用例', verifies: ['tp-probe'], steps: [step] }],
+    })
+    const poll = { id: 'probe-step', action: 'api.poll', method: 'GET', url: 'https://api.test/ping', expect: [{ status: 200 }] }
+    const delay = { id: 'probe-step', action: 'api.delay', durationMs: 1500 }
+    expect(validateTestSpec(v4Step(poll)).ok).toBe(true)
+    expect(validateTestSpec(v4Step(delay)).ok).toBe(true)
+    expect(validateTestSpec({
+      ...v4Step({ id: 'probe-step', action: 'api.request', method: 'GET', url: 'https://api.test/ping', virtualHost: 'shop.example.test' }),
+    }).ok).toBe(true)
+    expect(validateTestSpec(v4Step({ ...poll, method: 'POST' })).ok).toBe(false)
+    expect(validateTestSpec(v4Step({ ...poll, expect: [] })).ok).toBe(false)
+
+    for (const version of [2, 3]) {
+      const pollIssue = validateTestSpec({ ...v4Step(poll), version })
+      expect(pollIssue.ok).toBe(false)
+      if (pollIssue.ok) continue
+      expect(pollIssue.issues[0]?.message).toContain('v4 增量')
+      const hostIssue = validateTestSpec({
+        ...v4Step({ id: 'probe-step', action: 'api.request', method: 'GET', url: 'https://api.test/ping', virtualHost: 'shop.example.test' }),
+        version,
+      })
+      expect(hostIssue.ok).toBe(false)
+      if (hostIssue.ok) continue
+      expect(hostIssue.issues[0]?.message).toContain('v4 增量')
+    }
+  })
+
+  // v5 增量（数据驱动）：cases[].inputs 只在 v5 起被接受，行内键在步骤里以 ${vars.*} 引用。
+  it('gates data-driven case inputs on version 5', () => {
+    const withInputs = (version: number): unknown => {
+      const spec = probeSpec('https://api.test/ping', version) as Record<string, unknown>
+      const cases = (spec.cases as Record<string, unknown>[]).map((testCase) => ({
+        ...testCase,
+        steps: [{
+          id: 'probe-step',
+          action: 'api.request',
+          method: 'POST',
+          url: 'https://api.test/ping',
+          body: { code: `\${vars.code}` },
+        }],
+        inputs: [{ code: 'A1' }, { code: 'B2' }],
+      }))
+      return { ...spec, cases }
+    }
+    expect(validateTestSpec(withInputs(5)).ok).toBe(true)
+    for (const version of [2, 3, 4]) {
+      const rejected = validateTestSpec(withInputs(version))
+      expect(rejected.ok).toBe(false)
+      if (rejected.ok) continue
+      expect(rejected.issues.some((issue) => issue.message.includes('v5 增量'))).toBe(true)
+    }
+  })
+
+  // v6 增量（运行时凭据）：敏感头可用 { variable, prefix? } 引用同 case 的 sensitive 抽取。
+  it('gates runtime credential header references on version 6', () => {
+    const withVariableHeader = (version: number): unknown => {
+      const spec = probeSpec('https://api.test/ping', version) as Record<string, unknown>
+      const cases = (spec.cases as Record<string, unknown>[]).map((testCase) => ({
+        ...testCase,
+        steps: [{
+          id: 'probe-step',
+          action: 'api.request',
+          method: 'GET',
+          url: 'https://api.test/ping',
+          headers: { Authorization: { variable: 'token', prefix: 'Bearer ' } },
+        }],
+      }))
+      return { ...spec, cases }
+    }
+    expect(validateTestSpec(withVariableHeader(6)).ok).toBe(true)
+    for (const version of [2, 3, 4, 5]) {
+      const rejected = validateTestSpec(withVariableHeader(version))
+      expect(rejected.ok).toBe(false)
+      if (rejected.ok) continue
+      expect(rejected.issues.some((issue) => issue.message.includes('v6 增量'))).toBe(true)
+    }
+  })
+
+  // v7 增量（条件清理）：whenProduced 守卫与 statusIn 多状态断言。
+  it('gates conditional steps and status sets on version 7', () => {
+    const withV7 = (version: number): unknown => {
+      const spec = probeSpec('https://api.test/ping', version) as Record<string, unknown>
+      const cases = (spec.cases as Record<string, unknown>[]).map((testCase) => ({
+        ...testCase,
+        steps: [{
+          id: 'probe-step',
+          action: 'api.request',
+          method: 'DELETE',
+          url: 'https://api.test/ping',
+          whenProduced: 'siteId',
+          expect: [{ statusIn: [200, 404] }],
+        }],
+      }))
+      return { ...spec, cases }
+    }
+    expect(validateTestSpec(withV7(7)).ok).toBe(true)
+    for (const version of [2, 3, 4, 5, 6]) {
+      const rejected = validateTestSpec(withV7(version))
+      expect(rejected.ok).toBe(false)
+      if (rejected.ok) continue
+      expect(rejected.issues.some((issue) => issue.message.includes('v7 增量'))).toBe(true)
+    }
+  })
+
+  // v8 增量（负断言）：bodyNotContains 只在 v8 起被接受。
+  it('gates negative body assertions on version 8', () => {
+    const withNegative = (version: number): unknown => {
+      const spec = probeSpec('https://api.test/ping', version) as Record<string, unknown>
+      const cases = (spec.cases as Record<string, unknown>[]).map((testCase) => ({
+        ...testCase,
+        steps: [{
+          id: 'probe-step',
+          action: 'api.request',
+          method: 'GET',
+          url: 'https://api.test/ping',
+          expect: [{ bodyNotContains: 'secret-marker' }],
+        }],
+      }))
+      return { ...spec, cases }
+    }
+    expect(validateTestSpec(withNegative(8)).ok).toBe(true)
+    for (const version of [2, 3, 4, 5, 6, 7]) {
+      const rejected = validateTestSpec(withNegative(version))
+      expect(rejected.ok).toBe(false)
+      if (rejected.ok) continue
+      expect(rejected.issues.some((issue) => issue.message.includes('v8 增量'))).toBe(true)
+    }
+  })
+
+  // v9 增量（fixture 文件引用）：JSON 体内 {file} 只在 v9 起被接受。
+  it('gates fixture file references on version 9', () => {
+    const withFixture = (version: number): unknown => {
+      const spec = probeSpec('https://api.test/ping', version) as Record<string, unknown>
+      const cases = (spec.cases as Record<string, unknown>[]).map((testCase) => ({
+        ...testCase,
+        steps: [{
+          id: 'probe-step',
+          action: 'api.request',
+          method: 'POST',
+          url: 'https://api.test/ping',
+          body: { certificate_content: { file: 'tests/fixtures/cert.pem' } },
+        }],
+      }))
+      return { ...spec, cases }
+    }
+    expect(validateTestSpec(withFixture(9)).ok).toBe(true)
+    for (const version of [2, 3, 4, 5, 6, 7, 8]) {
+      const rejected = validateTestSpec(withFixture(version))
+      expect(rejected.ok).toBe(false)
+      if (rejected.ok) continue
+      expect(rejected.issues.some((issue) => issue.message.includes('v9 增量'))).toBe(true)
+    }
+  })
+
   it('rejects undeclared top-level keys and step actions', () => {
     const undeclaredKey = validateTestSpec({
       ...(probeSpec('https://api.test/ping') as Record<string, unknown>),

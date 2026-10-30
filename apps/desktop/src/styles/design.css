@@ -702,6 +702,8 @@
 }
 
 .design-assistant__intro {
+  /* 说明与清单共用的行宽：两者各自居中后仍同轴，长文案的折行点也一致。 */
+  --intro-measure: 272px;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -733,14 +735,19 @@
 
 .design-assistant__subtitle {
   margin: 0;
+  max-width: var(--intro-measure);
   font-size: 12px;
   color: var(--text-secondary);
 }
 
+/* 引导区是「居中标题 + 左对齐清单」：清单因此自成一列并居中（auto 外边距），
+   勾选图标落在一条与标题同轴的竖直导轨上。原先是 width:100% + 贴边 padding，
+   清单左缘悬在居中标题之外，与上方任何元素都没有对齐关系。 */
 .design-assistant__checklist {
   width: 100%;
-  margin: 6px 0 0;
-  padding: 0 6px;
+  max-width: var(--intro-measure);
+  margin: 6px auto 0;
+  padding: 0;
   list-style: none;
   display: flex;
   flex-direction: column;
@@ -760,6 +767,18 @@
   flex: none;
   margin-top: 2px;
   color: var(--accent);
+}
+
+/* 引导块在「顶栏 ↔ Composer」之间垂直居中（.pen Shared10 的 space_between 分布）。
+   用首尾子元素的 auto 外边距而非 justify-content: center——后者在内容高于可用
+   高度时会把顶部裁掉且滚不回去；auto 外边距无剩余空间时归零，退化为顶部对齐
+   并可正常滚动。 */
+.design-assistant__intro > :first-child {
+  margin-top: auto;
+}
+
+.design-assistant__intro > :last-child {
+  margin-bottom: auto;
 }
 
 /* 消息流复用 SessionView 的实现（窄栏）：容器给出可滚动区，内层 session__* 自持样式。 */

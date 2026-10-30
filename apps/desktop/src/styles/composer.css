@@ -133,13 +133,14 @@
    分毫不动；圆角取全圆，与下方 chip 行的 999px 圆角同一语言；clone 保证折行逐段圆角。
    底色与描边逐字取 chip（.composer__mention-badge）的配方，保持同一视觉语言；
    文字颜色无法跟随（textarea 富文本着色会破坏原生光标/选区/IME），保持正文色。
-   垂直 padding 上 1 下 3 是光学居中补偿：背景按 em 盒（Inter 上 13/下 3）扩展，
-   而路径类墨迹是「上 10.3/下 2.6」，墨迹中心比 em 盒中心高约 1.2px——对称 padding
-   会让文字在胶囊里偏下，上下 padding 错位 2px 把墨迹视觉重心拉回胶囊中心。 */
+   垂直 padding 上 0 下 2：高度从「行高量级」缩到 em 盒 + 2px，相邻两行的胶囊之间
+   留出约 2px 间隙——胶囊原本与行高同高（em 盒 16 + 上下 4 ≈ 20.3 ≈ line-height 20.25），
+   连续两行有引用时两个胶囊会贴在一起，第二行那颗看起来像错位到上一行。下 2 上 0
+   同时保留墨迹光学居中（Inter 墨迹中心比 em 盒中心低约 1.2px，背景整体下移 1px）。 */
 .composer__mention-token {
   border-radius: 999px;
   margin: 0 -4px;
-  padding: 1px 4px 3px;
+  padding: 0 4px 2px;
   background: var(--accent-soft);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent);
   box-decoration-break: clone;
@@ -150,6 +151,10 @@
   position: relative;
   z-index: 1;
   width: 100%;
+  /* 必须清零：UA 给 textarea 的 2px padding 会让文字起点比高亮层右下 2px、
+     可用宽度少 4px——胶囊与文字整体错位，且接近行尾时两层会在不同的字处折行，
+     胶囊就被画到与文字不同的行上。置 0 后两层的内容盒逐像素重合。 */
+  padding: 0;
   resize: none;
   border: 0;
   outline: 0;
@@ -296,19 +301,19 @@
   background: var(--accent);
 }
 
-.composer__follow-up {
+.composer__aside {
   padding: 5px 8px;
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   font-size: 0.9231rem;
 }
 
-.composer__follow-up:hover:not(:disabled) {
+.composer__aside:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
 
-.composer__follow-up:disabled {
+.composer__aside:disabled {
   opacity: 0.45;
 }
 
@@ -336,7 +341,7 @@
    而不是把「免审批模式」「稍后跟进」压成两行。 */
 .composer__access-mode,
 .composer__attach-button,
-.composer__follow-up,
+.composer__aside,
 .composer__budget-trigger,
 .composer__usage,
 .composer__send,

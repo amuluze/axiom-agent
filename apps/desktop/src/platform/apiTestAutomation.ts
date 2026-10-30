@@ -1,8 +1,7 @@
 import type { TestStepApprover } from '@/agent/testing/approval/testStepApprover'
 import { describeApiTestStepApproval } from '@/agent/testing/approval/testStepApproval'
 import type { ApiTestDriver, StepOutcome } from '@/agent/testing/runner/runTestPlan'
-import type { ApiStepSpec } from '@/agent/testing/spec/types'
-import type { ExtractedTestValue } from '@/agent/testing/spec/types'
+import type { ApiDriverStep, ExtractedTestValue } from '@/agent/testing/spec/types'
 import { invoke } from '@tauri-apps/api/core'
 
 export interface ApiTestTarget {
@@ -38,7 +37,7 @@ export class NativeApprovalCanceledError extends Error {
   }
 }
 
-const requestFor = (target: ApiTestTarget, step: ApiStepSpec) => ({
+const requestFor = (target: ApiTestTarget, step: ApiDriverStep) => ({
   runId: target.runId,
   stepId: step.id,
   ...(target.environmentId ? { environmentId: target.environmentId } : {}),
@@ -48,18 +47,19 @@ const requestFor = (target: ApiTestTarget, step: ApiStepSpec) => ({
 /** 带 Secret 的步骤会先弹原生内容确认；取消时返回 null（不签发租约）。 */
 export const issueApiTestStepLease = (
   target: ApiTestTarget,
-  step: ApiStepSpec,
+  step: ApiDriverStep,
 ): Promise<ApiTestLeaseIssued | null> => invoke<ApiTestLeaseIssued | null>('issue_api_test_step_lease', {
   request: requestFor(target, step),
 })
 
 export const runApiTestStep = (
   target: ApiTestTarget,
-  step: ApiStepSpec,
+  step: ApiDriverStep,
   leaseId: string,
   sensitiveValues: readonly string[] = [],
+  credentialVariables: Readonly<Record<string, string>> = {},
 ): Promise<ApiTestStepResult> => invoke<ApiTestStepResult>('run_api_test_step', {
-  request: { ...requestFor(target, step), leaseId, sensitiveValues },
+  request: { ...requestFor(target, step), leaseId, sensitiveValues, variableValues: credentialVariables },
 })
 
 export const cancelApiTestRun = (runId: string): Promise<boolean> =>
@@ -74,9 +74,10 @@ export const cancelApiTestRun = (runId: string): Promise<boolean> =>
  */
 export const runApiTestStepWithLease = async (
   target: ApiTestTarget,
-  step: ApiStepSpec,
+  step: ApiDriverStep,
   signal: AbortSignal,
   sensitiveValues: readonly string[] = [],
+  credentialVariables: Readonly<Record<string, string>> = {},
 ): Promise<ApiTestStepResult> => {
   if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
   const onAbort = (): void => { void cancelApiTestRun(target.runId) }
@@ -85,7 +86,7 @@ export const runApiTestStepWithLease = async (
     const lease = await issueApiTestStepLease(target, step)
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
     if (lease === null) throw new NativeApprovalCanceledError()
-    return await runApiTestStep(target, step, lease.leaseId, sensitiveValues)
+    return await runApiTestStep(target, step, lease.leaseId, sensitiveValues, credentialVariables)
   } finally {
     signal.removeEventListener('abort', onAbort)
   }
@@ -115,6 +116,7 @@ export const createApiTestDriver = (
         step,
         context.signal,
         context.sensitiveValues ?? [],
+        context.credentialVariables ?? {},
       )
     } catch (error) {
       if (error instanceof NativeApprovalCanceledError) {

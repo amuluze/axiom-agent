@@ -32,9 +32,11 @@ export interface AssistantSidebarPanelProps {
   copy: AssistantPanelCopy
   /** 返回目标：无会话时的回退视图（如 'new-task'）。 */
   fallbackView?: 'new-task'
+  /** 窄栏可隐藏审批入口；附件、模型与发送保持可用。 */
+  showAccessPicker?: boolean
 }
 
-export const AssistantSidebarPanel = ({ copy, fallbackView = 'new-task' }: AssistantSidebarPanelProps) => {
+export const AssistantSidebarPanel = ({ copy, fallbackView = 'new-task', showAccessPicker = true }: AssistantSidebarPanelProps) => {
   const activeSessionId = useAgentStore((state) => state.activeSessionId)
   const messages = useAgentStore((state) => state.messages)
   const setView = useUiStore((state) => state.setView)
@@ -105,7 +107,7 @@ export const AssistantSidebarPanel = ({ copy, fallbackView = 'new-task' }: Assis
       )}
       <div className="design-assistant__composer">
         {activeSessionId ? (
-          <Composer variant="session" />
+          <Composer variant="session" showAccessPicker={showAccessPicker} />
         ) : (
           <button
             type="button"

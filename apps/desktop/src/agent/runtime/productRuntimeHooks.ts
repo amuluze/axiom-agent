@@ -15,7 +15,7 @@ import type { SummaryRuntimeHooks } from './summaryHooks'
  */
 export const DESKTOP_RUNTIME_HOOK_REGISTRATION: RuntimeHookRegistration = Object.freeze({
   id: 'axiom.desktop.runtime-hooks',
-  version: '10',
+  version: '11',
   source: 'desktop',
   priority: 100,
   timeoutMs: 5_000,

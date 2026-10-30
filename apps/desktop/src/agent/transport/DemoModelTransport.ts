@@ -10,7 +10,9 @@ const textChunks = (content: string): string[] => {
 }
 
 export class DemoModelTransport implements ModelTransport {
-  requestByteLength = (request: ModelRequest): number => new TextEncoder().encode(JSON.stringify(request)).byteLength
+  requestByteLength = (request: ModelRequest): number => new TextEncoder().encode(
+    JSON.stringify(request, (key, value) => key === 'stablePrefix' ? undefined : value),
+  ).byteLength
 
   async *stream(request: ModelRequest, signal: AbortSignal): AsyncIterable<ModelStreamEvent> {
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError')

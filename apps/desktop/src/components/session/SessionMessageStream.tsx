@@ -8,7 +8,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useAgentStore } from '@/stores/agentStore'
 import { useUiStore } from '@/stores/uiStore'
-import { RichMessageContent } from '@/components/MessageContent'
+import { MessageContent, RichMessageContent } from '@/components/MessageContent'
 import { ArtifactPreview } from '@/components/ArtifactPreview'
 import { ToolCallCard } from '@/components/session/ToolCallCard'
 import { ResultChip } from '@/components/session/ResultChip'
@@ -117,6 +117,16 @@ const HistoryBlock = memo(({
     if (block.type === 'error-card') {
       return <ErrorCard messageId={block.message.id} error={block.error} message={block.message} />
     }
+    if (block.type === 'compaction-divider') {
+      return (
+        <details className="session__compaction-divider">
+          <summary>较早上下文已压缩</summary>
+          <div className="session__compaction-summary">
+            <MessageContent content={block.checkpoint.summary} />
+          </div>
+        </details>
+      )
+    }
     return null
   })()
 
@@ -197,6 +207,7 @@ export const SessionMessageStream = ({ scrollResetKey }: { scrollResetKey?: stri
   const storeError = useAgentStore((state) => state.error)
   const storeRunning = useAgentStore((state) => state.running)
   const storeSessionBusy = useAgentStore((state) => state.sessionBusy)
+  const storeContextCheckpoint = useAgentStore((state) => state.contextCheckpoint)
   const storeBranchFromMessage = useAgentStore((state) => state.branchFromMessage)
   const storeRetryAssistant = useAgentStore((state) => state.retryAssistant)
   const storeSetSummaryRequest = useUiStore((state) => state.setSummaryRequest)
@@ -207,6 +218,7 @@ export const SessionMessageStream = ({ scrollResetKey }: { scrollResetKey?: stri
   const error = preview ? preview.error ?? null : storeError
   const running = preview ? preview.running ?? false : storeRunning
   const sessionBusy = preview ? preview.sessionBusy ?? false : storeSessionBusy
+  const contextCheckpoint = preview ? null : storeContextCheckpoint
   const branchFromMessage = preview?.branchFromMessage ?? storeBranchFromMessage
   const retryAssistant = preview?.retryAssistant ?? storeRetryAssistant
   const setSummaryRequest = preview?.setSummaryRequest ?? storeSetSummaryRequest
@@ -215,7 +227,10 @@ export const SessionMessageStream = ({ scrollResetKey }: { scrollResetKey?: stri
   const outputAnchorRef = useRef<HTMLDivElement | null>(null)
   const storeStreamingDraft = useAgentStore((state) => state.streamingDraft)
   const streamingDraft = preview ? preview.streamingDraft ?? null : storeStreamingDraft
-  const blocks = useMemo(() => buildSessionBlocks(messages), [messages])
+  const blocks = useMemo(
+    () => buildSessionBlocks(messages, contextCheckpoint),
+    [contextCheckpoint, messages],
+  )
   const busy = running || sessionBusy
   const showPaused = !['completed', 'error'].includes(endReason ?? '') && messages.length > 0 && endReason === 'stopped'
 

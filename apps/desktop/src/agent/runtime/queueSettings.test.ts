@@ -7,13 +7,15 @@ import {
 
 describe('queue mode settings', () => {
   it('accepts only supported persisted delivery modes', () => {
-    expect(normalizeQueueModeSettings({ steering: 'all', followUp: 'one-at-a-time' })).toEqual({
+    expect(normalizeQueueModeSettings({ steering: 'all', aside: 'all', followUp: 'one-at-a-time' })).toEqual({
       steering: 'all',
+      aside: 'all',
       followUp: 'one-at-a-time',
       autoDrain: true,
     })
     expect(normalizeQueueModeSettings({ steering: 'invalid', followUp: 'all' })).toEqual({
       steering: 'one-at-a-time',
+      aside: 'one-at-a-time',
       followUp: 'all',
       autoDrain: true,
     })
@@ -22,6 +24,7 @@ describe('queue mode settings', () => {
   it('defaults autoDrain to true and only accepts booleans (旧会话 payload 无此字段)', () => {
     expect(normalizeQueueModeSettings({ steering: 'all', followUp: 'all', autoDrain: false })).toEqual({
       steering: 'all',
+      aside: 'one-at-a-time',
       followUp: 'all',
       autoDrain: false,
     })

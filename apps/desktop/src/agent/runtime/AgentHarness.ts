@@ -87,6 +87,7 @@ export type AgentHarnessStructuralPhase = Extract<AgentHarnessPhase, 'branch_sum
 export type AgentHarnessCallbackOperation =
   | 'request_abort'
   | 'steer'
+  | 'aside'
   | 'follow_up'
   | 'next_turn'
   | 'append_message'
@@ -112,7 +113,7 @@ const isRuntimeHookType = (value: string): value is RuntimeHookType => value in 
 
 export const HARNESS_OPTIONS_HOOK_REGISTRATION: RuntimeHookRegistration = Object.freeze({
   id: 'axiom.runtime.harness-options-hooks',
-  version: '7',
+  version: '9',
   source: 'harness-options',
 })
 
@@ -222,6 +223,7 @@ export interface AgentHarnessCallbackContext {
   can: (operation: AgentHarnessCallbackOperation) => boolean
   requestAbort: () => boolean
   steer: (content: string, images?: ImageContentBlock[]) => Promise<boolean>
+  aside: (content: string, images?: ImageContentBlock[]) => Promise<boolean>
   followUp: (content: string, images?: ImageContentBlock[]) => Promise<boolean>
   nextTurn: (content: string, images?: ImageContentBlock[]) => Promise<boolean>
   appendMessage: (message: AgentMessage) => Promise<void>
@@ -675,6 +677,7 @@ export class AgentHarness {
   get canQueueMessages(): boolean { return this.lifecycleState === 'active' && this.session.canQueueMessages }
   get signal(): AbortSignal | undefined { return this.session.signal }
   get pendingSteeringCount(): number { return this.session.pendingSteeringCount }
+  get pendingAsideCount(): number { return this.session.pendingAsideCount }
   get pendingFollowUpCount(): number { return this.session.pendingFollowUpCount }
   get pendingNextTurnCount(): number { return this.session.pendingNextTurnCount }
   get queuedMessages(): QueuedMessageSnapshot[] { return this.session.queuedMessages }
@@ -682,7 +685,12 @@ export class AgentHarness {
   /** sendQueuedNow 的武装目标：点击「立即发送」已接受、等待 turn 边界注入的队列项。 */
   get armedQueueMessageId(): string | undefined { return this.session.armedQueueMessageId }
   /** 当前队列模式（投递档 + autoDrain）：宿主在缓存激活等边界对齐全局设置用。 */
-  get queueModes(): { steering: QueueDeliveryMode; followUp: QueueDeliveryMode; autoDrain: boolean } {
+  get queueModes(): {
+    steering: QueueDeliveryMode
+    aside: QueueDeliveryMode
+    followUp: QueueDeliveryMode
+    autoDrain: boolean
+  } {
     return this.session.queueModes
   }
   get messages(): AgentMessage[] { return this.session.messages }
@@ -732,6 +740,13 @@ export class AgentHarness {
   async steer(content: string, images?: ImageContentBlock[]): Promise<QueueAcceptance> {
     this.assertActive('steer')
     const accepted = await this.session.steer(content, images)
+    if (accepted.accepted) this.emitQueueUpdate()
+    return accepted
+  }
+
+  async aside(content: string, images?: ImageContentBlock[]): Promise<QueueAcceptance> {
+    this.assertActive('aside')
+    const accepted = await this.session.aside(content, images)
     if (accepted.accepted) this.emitQueueUpdate()
     return accepted
   }
@@ -825,9 +840,13 @@ export class AgentHarness {
     return discarded
   }
 
-  setQueueModes(steering: QueueDeliveryMode, followUp: QueueDeliveryMode): void {
+  setQueueModes(
+    steering: QueueDeliveryMode,
+    aside: QueueDeliveryMode,
+    followUp: QueueDeliveryMode,
+  ): void {
     this.assertActive('setQueueModes')
-    this.session.setQueueModes(steering, followUp)
+    this.session.setQueueModes(steering, aside, followUp)
   }
 
   async appendMessage(message: AgentMessage): Promise<void> {
@@ -1043,6 +1062,7 @@ export class AgentHarness {
       } catch (error) {
         cleanupErrors.push(error)
       }
+      await this.session.cancelBackgroundWork()
       await Promise.allSettled([...this.deferredTasks].map((task) => task.promise))
       const handlers = [...this.cleanupHandlers].reverse()
       this.cleanupHandlers.clear()
@@ -1127,6 +1147,7 @@ export class AgentHarness {
             : [
                 'request_abort',
                 'steer',
+                'aside',
                 'follow_up',
                 'next_turn',
                 'append_message',
@@ -1156,6 +1177,8 @@ export class AgentHarness {
       // UI/store 的，扩到这里会改动已封存的 hook 契约。
       steer: (content, images) => requireAllowed('steer', async () =>
         (await this.steer(content, images)).accepted),
+      aside: (content, images) => requireAllowed('aside', async () =>
+        (await this.aside(content, images)).accepted),
       followUp: (content, images) => requireAllowed('follow_up', async () =>
         (await this.followUp(content, images)).accepted),
       nextTurn: (content, images) => requireAllowed('next_turn', async () =>

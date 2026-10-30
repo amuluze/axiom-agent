@@ -65,6 +65,7 @@ describe('settingsPersistence', () => {
     expect(mod.activeQueueModeSettings).toBeDefined()
     expect(mod.activeReasoningSettings).toBeDefined()
     expect(mod.activeAgentLimitsSettings).toBeDefined()
+    expect(mod.activeSyntaxRepairSettings).toEqual({ profileId: null })
   })
 
   it('setters update the live binding observable by importers', async () => {
@@ -86,9 +87,12 @@ describe('settingsPersistence', () => {
     // load path picks up the stored value.
     localStorageState.set('axiom.reasoning.v1', JSON.stringify({ level: 'high', mode: 'effort', budgetTokens: 4096 }))
     localStorageState.set('axiom.queue.mode.v1', JSON.stringify({ steering: 'all', followUp: 'all' }))
+    localStorageState.set('axiom.syntax-repair.v1', JSON.stringify({ profileId: 'repair-profile' }))
     const mod = await loadFreshModule()
     expect(mod.activeReasoningSettings.level).toBe('high')
     expect(mod.activeQueueModeSettings.steering).toBe('all')
+    expect(mod.activeQueueModeSettings.aside).toBe('one-at-a-time')
+    expect(mod.activeSyntaxRepairSettings).toEqual({ profileId: 'repair-profile' })
   })
 
   it('falls back to defaults when localStorage payload is corrupted', async () => {

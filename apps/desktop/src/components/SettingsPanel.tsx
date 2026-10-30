@@ -33,6 +33,7 @@ import { ProviderSection } from '@/components/settings/sections/ProviderSection'
 import { ContextPolicySection } from '@/components/settings/sections/ContextPolicySection'
 import { QueueModesSection } from '@/components/settings/sections/QueueModesSection'
 import { LimitsSection } from '@/components/settings/sections/LimitsSection'
+import { SyntaxRepairSection } from '@/components/settings/sections/SyntaxRepairSection'
 import {
   DEFAULT_AGENT_LIMITS_SETTINGS,
   normalizeAgentLimitsSettings,
@@ -53,6 +54,7 @@ import type {
   QueueModesDraftHook,
   SessionsHook,
   SettingsSectionContext,
+  SyntaxRepairHook,
 } from '@/components/settings/sections/types'
 
 interface SettingsPanelProps {
@@ -85,6 +87,7 @@ export const SettingsPanel = ({ open, onClose, inline = false, section }: Settin
   const contextPolicySettings = useAgentStore((state) => state.contextPolicySettings)
   const queueModeSettings = useAgentStore((state) => state.queueModeSettings)
   const agentLimitsSettings = useAgentStore((state) => state.agentLimitsSettings)
+  const syntaxRepairSettings = useAgentStore((state) => state.syntaxRepairSettings)
   const contextPolicySaving = useAgentStore((state) => state.contextPolicySaving)
   const authorizedWorkspace = useAgentStore((state) => state.authorizedWorkspace)
   const saveProvider = useAgentStore((state) => state.saveProvider)
@@ -101,6 +104,7 @@ export const SettingsPanel = ({ open, onClose, inline = false, section }: Settin
   const saveContextPolicy = useAgentStore((state) => state.saveContextPolicy)
   const saveQueueModes = useAgentStore((state) => state.saveQueueModes)
   const saveAgentLimits = useAgentStore((state) => state.saveAgentLimits)
+  const saveSyntaxRepairSettings = useAgentStore((state) => state.saveSyntaxRepairSettings)
   const retryInitialize = useAgentStore((state) => state.retryInitialize)
 
   const [draft, setDraft] = useState<ProviderProfileDraft>(provider)
@@ -305,6 +309,12 @@ export const SettingsPanel = ({ open, onClose, inline = false, section }: Settin
     reset: () => setAgentLimitsDraft({ ...DEFAULT_AGENT_LIMITS_SETTINGS }),
   }
 
+  const syntaxRepairHook: SyntaxRepairHook = {
+    profiles: providerProfiles,
+    settings: syntaxRepairSettings,
+    save: saveSyntaxRepairSettings,
+  }
+
   const sessionsHook: SessionsHook = {
     sessions,
     activeSessionId,
@@ -356,6 +366,10 @@ export const SettingsPanel = ({ open, onClose, inline = false, section }: Settin
               effectiveContextTokens={effectiveContextPolicy.contextWindow - effectiveContextPolicy.reserveTokens}
               effectiveKeepRecentTokens={effectiveContextPolicy.keepRecentTokens}
               effectiveByteBufferBytes={effectiveContextPolicy.hardRequestByteLimit - effectiveContextPolicy.requestByteThreshold}
+            />
+            <SyntaxRepairSection
+              hook={syntaxRepairHook}
+              context={sectionContext}
             />
             <QueueModesSection
               hook={queueModesHook}

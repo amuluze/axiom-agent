@@ -69,15 +69,59 @@ export const fullyInsideViewport = (
   && screen.y + screen.height <= viewport.height - inset
 
 /**
- * 页在当前缩放下能否装进视口（装不下的页无法原位整页采集，走 staging 回退）。
- * 口径必须与 fullyInsideViewport 同 inset：扫掠的停驻点把页**居中**，若「装得下」
- * 但居中后贴边（y=0 < inset），该页永远不满足完全可见——平移循环空转到 guard
- * 耗尽，剩余页全部误报「渲染检查未完成」。因此「装得下」= 装进视口减去两侧 inset。
+ * 该页**完整装进视口**的最大倍率（画布坐标尺寸 × scale ≤ 视口减两侧 inset）。
+ *
+ * 用途：装不下视口的页不再降级到「全屏 staging 遮罩」采集（那条路径会挂一个
+ * `position:fixed;inset:0` 的全窗口不透明遮罩——用户看到的「检查设计稿时全屏
+ * 浮现」就是它），而是**原地取景**：把相机缩到本页装得下的倍率再原位截取。
+ * 页仍留在画布原位，只有相机倍率变了。
+ *
+ * 不设上限 1：调用方只在「当前倍率装不下」时用它（此时结果必然小于当前倍率），
+ * 上限会让「能以 1.5 装下却按 1.0 取景」——白缩一档，纯浪费像素。
  */
-export const fitsViewport = (screen: ScreenRect, viewport: ViewportBox, inset = 2): boolean =>
-  screen.width > 0 && screen.height > 0
-  && screen.width <= viewport.width - inset * 2
-  && screen.height <= viewport.height - inset * 2
+export const fitScaleFor = (
+  item: { width: number; height: number },
+  viewport: ViewportBox,
+  inset = 2,
+): number => {
+  const width = Math.max(item.width, 1)
+  const height = Math.max(item.height, 1)
+  return Math.min(
+    (viewport.width - inset * 2) / width,
+    (viewport.height - inset * 2) / height,
+  )
+}
+
+/**
+ * 页与页在**画布坐标**上的重叠关系（页 id → 与之重叠的页 id 集合）。
+ *
+ * 与缩放无关：整体 uniform scale 不改变相交关系，故可直接用画布坐标判定。
+ * 重叠页的原位截图会拍到压在它上面的另一页内容——像素统计失真。调用方据此把
+ * 重叠页**隔离采集**（采集时把目标页抬到最上层），而不是退到全屏遮罩路径。
+ */
+export const overlappingPageIds = (
+  placements: readonly { id: string; x: number; y: number; width: number; height: number }[],
+): Map<string, Set<string>> => {
+  const result = new Map<string, Set<string>>()
+  const link = (left: string, right: string): void => {
+    const leftSet = result.get(left) ?? new Set<string>()
+    leftSet.add(right)
+    result.set(left, leftSet)
+    const rightSet = result.get(right) ?? new Set<string>()
+    rightSet.add(left)
+    result.set(right, rightSet)
+  }
+  for (let i = 0; i < placements.length; i += 1) {
+    const left = placements[i]
+    if (!left) continue
+    for (let j = i + 1; j < placements.length; j += 1) {
+      const right = placements[j]
+      if (!right) continue
+      if (rectsIntersect(left, right)) link(left.id, right.id)
+    }
+  }
+  return result
+}
 
 /**
  * 平移目标（surface 的 translate 值）：把页中心对到视口中心。入参是**画布坐标**
@@ -94,57 +138,10 @@ export const panTargetFor = (
 
 /**
  * 两页矩形是否相交（画布坐标）——相交页的原位截图会拍到覆盖其上的另一页内容，
- * 扫掠编排器把相交页路由到 staging 回退（正确性优先）。
+ * 扫掠编排器对相交页做**隔离采集**（采集时临时隐藏压在上面的邻页）。
  */
 export const rectsIntersect = (a: ScreenRect, b: ScreenRect): boolean =>
   a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
-
-/**
- * 不能原位采集、必须走 staging 挂载回退的页 id 集合。
- *
- * 两条成因：**装不进视口的巨页**（截图放不下）与**与其它页相交的页**（原位截图会
- * 拍到覆盖其上的另一页内容，像素统计失真）。正确性优先于并行度。
- *
- * 入参是**画布坐标**的页摆位（placements 直出）。相机只有 uniform scale + translate，
- * 不改变相交关系与相对尺寸，因此画布坐标 × scale 的判定与屏幕坐标判定等价——
- * 这正是这里不读 DOM 的理由：原实现在两两比较的循环体里每次都调
- * `getBoundingClientRect`，把「读矩形」放大成 2N² 次强制同步布局，65 页的稿光
- * 这一段就足以让「开始扫描」肉眼卡顿。纯比较本身不是瓶颈（实测 500 页两两比较
- * 约 1ms），不值得为它引入空间索引。
- */
-export const stagingPageIds = (
-  placements: readonly { id: string; x: number; y: number; width: number; height: number }[],
-  scale: number,
-  viewport: ViewportBox,
-  inset = 2,
-): Set<string> => {
-  const result = new Set<string>()
-  const screen = placements.map((item) => ({
-    id: item.id,
-    x: item.x * scale,
-    y: item.y * scale,
-    width: item.width * scale,
-    height: item.height * scale,
-  }))
-  for (const item of screen) {
-    if (!fitsViewport(item, viewport, inset)) result.add(item.id)
-  }
-  for (let i = 0; i < screen.length; i += 1) {
-    const left = screen[i]
-    if (!left) continue
-    for (let j = i + 1; j < screen.length; j += 1) {
-      const right = screen[j]
-      if (!right) continue
-      if (rectsIntersect(left, right)) {
-        result.add(left.id)
-        result.add(right.id)
-      }
-    }
-  }
-  return result
-}
-
-
 
 /** 有界并发池：按 limit 并行消费队列（扫描步内多页并行截图）。 */
 export const runPool = async <T>(

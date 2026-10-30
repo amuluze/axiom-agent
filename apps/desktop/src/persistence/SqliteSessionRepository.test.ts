@@ -575,7 +575,7 @@ describe('SqliteSessionRepository 队列项顺序（payload.order）', () => {
         session_id: 's-order',
         sequence: 5,
         kind: 'queue',
-        queue_kind: 'steering',
+        queue_kind: 'aside',
         payload_json: JSON.stringify({
           message: { id: 'm-moved', role: 'user', content: 'moved', createdAt: 1 },
           order: 0.5,
@@ -603,7 +603,7 @@ describe('SqliteSessionRepository 队列项顺序（payload.order）', () => {
     const { repository } = await createRepository(pendingJournal)
     const snapshot = await repository.loadSession('s-order')
     expect(snapshot.journalEntries).toEqual([
-      expect.objectContaining({ id: 'journal-with-order', order: 0.5 }),
+      expect.objectContaining({ id: 'journal-with-order', queueKind: 'aside', order: 0.5 }),
       expect.objectContaining({ id: 'journal-legacy' }),
     ])
     expect((snapshot.journalEntries[1] as { order?: number }).order).toBeUndefined()

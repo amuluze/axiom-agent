@@ -99,3 +99,61 @@ describe('browserTargetOrigin', () => {
     expect(() => browserTargetOrigin('file:///tmp/index.html')).toThrow('HTTP(S)')
   })
 })
+
+describe('prepareUiTestRun v9（fixture 文件引用）', () => {
+  beforeEach(() => mocks.readWorkspaceText.mockReset())
+
+  const specWithFixture = JSON.stringify({
+    kind: 'axiom.test',
+    version: 9,
+    id: 'cert',
+    name: '证书导入',
+    target: { apiBaseUrl: 'https://api.test' },
+    testPoints: [{ id: 'tp-cert', kind: 'new_feature', title: '导入', acceptance: '可客观判定' }],
+    cases: [{
+      id: 'import',
+      name: '导入证书',
+      verifies: ['tp-cert'],
+      steps: [{
+        id: 'import',
+        action: 'api.request',
+        method: 'POST',
+        url: '/certificates/import',
+        body: {
+          certificate_content: { file: 'tests/fixtures/cert.pem' },
+          key_content: { file: 'tests/fixtures/key.pem' },
+        },
+        expect: [{ status: 201 }],
+      }],
+    }],
+  })
+
+  it('reads fixture files from the workspace and injects their contents', async () => {
+    mocks.readWorkspaceText
+      .mockResolvedValueOnce({ content: specWithFixture, truncated: false })
+      .mockResolvedValueOnce({ content: 'CERT-PEM', truncated: false })
+      .mockResolvedValueOnce({ content: 'KEY-PEM', truncated: false })
+    const plan = await prepareUiTestRun({ path: 'tests/cert.testspec.json', workspacePath: '/repo' })
+    expect(plan.cases[0]?.steps[0]).toMatchObject({
+      body: { certificate_content: 'CERT-PEM', key_content: 'KEY-PEM' },
+    })
+    expect(mocks.readWorkspaceText).toHaveBeenNthCalledWith(2, 'tests/fixtures/cert.pem', 0, 1_000, '/repo')
+  })
+
+  it('fails closed when a fixture exceeds the read budget', async () => {
+    mocks.readWorkspaceText
+      .mockResolvedValueOnce({ content: specWithFixture, truncated: false })
+      .mockResolvedValueOnce({ content: 'CERT-PEM', truncated: true })
+    await expect(prepareUiTestRun({ path: 'tests/cert.testspec.json', workspacePath: '/repo' }))
+      .rejects.toThrow('超过读取上限')
+  })
+
+  it('rejects fixture paths outside tests/fixtures at parse time', async () => {
+    mocks.readWorkspaceText.mockResolvedValueOnce({
+      content: specWithFixture.replace('tests/fixtures/cert.pem', '../secret.pem'),
+      truncated: false,
+    })
+    await expect(prepareUiTestRun({ path: 'tests/cert.testspec.json', workspacePath: '/repo' }))
+      .rejects.toThrow('文件引用必须是 tests/fixtures/ 下的工作区相对路径')
+  })
+})

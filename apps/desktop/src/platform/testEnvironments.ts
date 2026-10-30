@@ -16,6 +16,9 @@ export interface TestEnvironmentRecord {
   allowPrivateNetwork: boolean
   headersJson: string
   secretIdsJson: string
+  /** v21：环境档 v2 的自定义大写变量（多服务端点）与 Secret 目标白名单（JSON 文本）。 */
+  extraVarsJson: string
+  secretOriginsJson: string
   createdAt: number
   updatedAt: number
 }
@@ -33,6 +36,9 @@ export interface SaveTestEnvironmentRecord {
   allowPrivateNetwork: boolean
   headersJson: string
   secretIdsJson: string
+  /** v21：缺省保持旧记录语义（无额外变量、Secret 仍只发往 API Base URL 同源）。 */
+  extraVarsJson?: string
+  secretOriginsJson?: string
   updatedAt: number
 }
 

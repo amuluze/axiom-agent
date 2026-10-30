@@ -7,6 +7,11 @@ const mocks = vi.hoisted(() => ({
   providerReady: false,
   providerSetupRequired: false,
   messagesCount: 0,
+  view: 'new-task' as 'new-task' | 'design' | 'docs' | 'testing',
+  sidebarWidth: 264,
+  designSidebarWidth: 360,
+  docsSidebarWidth: 360,
+  testingSidebarWidth: 360,
   sidebarCollapsed: false,
   sidebarCompact: false,
   sidebarOverlayOpen: false,
@@ -39,8 +44,12 @@ vi.mock('@/stores/uiStore', async (importOriginal) => {
     ...original,
     useUiStore: <T,>(selector: (state: UiState) => T): T => selector({
       ...original.useUiStore.getState(),
-      view: 'new-task',
+      view: mocks.view,
       settingsSection: 'general',
+      sidebarWidth: mocks.sidebarWidth,
+      designSidebarWidth: mocks.designSidebarWidth,
+      docsSidebarWidth: mocks.docsSidebarWidth,
+      testingSidebarWidth: mocks.testingSidebarWidth,
       sidebarCollapsed: mocks.sidebarCollapsed,
       sidebarUserOverride: mocks.sidebarCollapsed,
       sidebarCompact: mocks.sidebarCompact,
@@ -55,6 +64,11 @@ beforeEach(() => {
   mocks.providerReady = false
   mocks.providerSetupRequired = false
   mocks.messagesCount = 0
+  mocks.view = 'new-task'
+  mocks.sidebarWidth = 264
+  mocks.designSidebarWidth = 360
+  mocks.docsSidebarWidth = 360
+  mocks.testingSidebarWidth = 360
   mocks.sidebarCollapsed = false
   mocks.sidebarCompact = false
   mocks.sidebarOverlayOpen = false
@@ -76,6 +90,22 @@ describe('App shell integration', () => {
     mocks.providerSetupRequired = true
     const html = renderToStaticMarkup(createElement(App))
     expect(html).toContain('composer')
+  })
+
+  it.each([
+    { view: 'design' as const, expectedWidth: 400 },
+    { view: 'docs' as const, expectedWidth: 392 },
+    { view: 'testing' as const, expectedWidth: 384 },
+  ])('applies the $view assistant width to the shell instead of the session sidebar width', ({ view, expectedWidth }) => {
+    mocks.providerReady = true
+    mocks.view = view
+    mocks.sidebarWidth = 264
+    mocks.designSidebarWidth = 400
+    mocks.docsSidebarWidth = 392
+    mocks.testingSidebarWidth = 384
+    const html = renderToStaticMarkup(createElement(App))
+    expect(html).toContain(`--sidebar-current-width:${expectedWidth}px`)
+    expect(html).not.toContain('--sidebar-current-width:264px')
   })
 
   it('renders only the reopen button when the desktop sidebar is collapsed', () => {

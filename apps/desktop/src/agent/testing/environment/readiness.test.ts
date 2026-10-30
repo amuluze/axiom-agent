@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   classifyReadiness,
   readinessProbePlan,
+  readinessProbePlans,
   type EnvironmentProbePlan,
   type ProbeObservation,
 } from './readiness'
@@ -140,5 +141,73 @@ describe('classifyReadiness', () => {
       ready: false,
       verdict: 'canceled',
     })
+  })
+})
+
+describe('readinessProbePlans（v2 多服务就绪）', () => {
+  const vars = {
+    WEB_BASE_URL: 'http://127.0.0.1:5173',
+    API_BASE_URL: 'http://127.0.0.1:8090',
+    DETECTOR_MGMT_URL: 'http://127.0.0.1:18081',
+    DATA_PLANE_URL: 'http://127.0.0.1:8081',
+  }
+  const recipeJson = JSON.stringify({
+    start: [],
+    stop: [],
+    readiness: ['true'],
+    timeoutMs: 60_000,
+    probes: [
+      { var: 'API_BASE_URL', path: '/api/v1/health', expectStatus: [200] },
+      { var: 'DETECTOR_MGMT_URL', path: '/ready', expectStatus: [200] },
+      { var: 'DATA_PLANE_URL', path: '/', expectStatus: [200, 404] },
+    ],
+  })
+
+  it('builds one plan per declared service, each with a distinct step id', () => {
+    const result = readinessProbePlans({
+      apiBaseUrl: null,
+      vars,
+      recipeJson,
+      stepId: 'env-probe:env-1',
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.plans.map((entry) => entry.var)).toEqual([
+      'API_BASE_URL',
+      'DETECTOR_MGMT_URL',
+      'DATA_PLANE_URL',
+    ])
+    expect(result.plans.map((entry) => entry.step.id)).toEqual([
+      'env-probe:env-1',
+      'env-probe:env-1:DETECTOR_MGMT_URL',
+      'env-probe:env-1:DATA_PLANE_URL',
+    ])
+    expect(result.plans[1]?.step.url).toBe('http://127.0.0.1:18081/ready')
+    expect(result.plans[2]?.expectStatus).toEqual([200, 404])
+    expect(result.plans[1]?.step.timeoutMs).toBe(60_000)
+  })
+
+  it('falls back to the record apiBaseUrl for the reserved API_BASE_URL var', () => {
+    const result = readinessProbePlans({
+      apiBaseUrl: 'http://127.0.0.1:9',
+      recipeJson: null,
+      stepId: 'env-probe:env-1',
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.plans).toHaveLength(1)
+    expect(result.plans[0]?.step.url).toBe('http://127.0.0.1:9/')
+  })
+
+  it('fails closed when a probe targets a variable the environment does not provide', () => {
+    const result = readinessProbePlans({
+      apiBaseUrl: null,
+      vars: { API_BASE_URL: 'http://127.0.0.1:8090' },
+      recipeJson,
+      stepId: 'env-probe:env-1',
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.reason).toContain('DETECTOR_MGMT_URL')
   })
 })

@@ -25,6 +25,7 @@ import {
   editUserMessage as editUserMessageAction,
   moveQueuedMessage as moveQueuedMessageAction,
   promoteQueuedMessage as promoteQueuedMessageAction,
+  queueAside as queueAsideAction,
   queueNextTurn as queueNextTurnAction,
   queueSteering as queueSteeringAction,
   restoreQueuedMessage as restoreQueuedMessageAction,
@@ -62,6 +63,7 @@ export interface AgentSessionSlice {
   queuedMessages: QueuedMessageSnapshot[]
   recoveredQueuedMessages: QueuedMessageSnapshot[]
   pendingSteeringCount: number
+  pendingAsideCount: number
   pendingFollowUpCount: number
   pendingNextTurnCount: number
   /** sendQueuedNow 已接受、等待 turn 边界注入的队列项 id（运行中武装，消费/作废即清）。 */
@@ -75,6 +77,7 @@ export interface AgentSessionSlice {
   contextCheckpoint: ContextCheckpoint | null
   send: (content: string, images?: ImageContentBlock[]) => Promise<void>
   queueSteering: (content: string, images?: ImageContentBlock[]) => Promise<QueueAcceptance>
+  queueAside: (content: string, images?: ImageContentBlock[]) => Promise<QueueAcceptance>
   queueNextTurn: (content: string, images?: ImageContentBlock[]) => Promise<QueueAcceptance>
   /** 原位改写队列项（保留图片与队列位置）。 */
   editQueuedMessage: (
@@ -125,6 +128,7 @@ export const createAgentSessionSlice = (
   queuedMessages: [],
   recoveredQueuedMessages: [],
   pendingSteeringCount: 0,
+  pendingAsideCount: 0,
   pendingFollowUpCount: 0,
   pendingNextTurnCount: 0,
   armedQueueMessageId: null,
@@ -136,6 +140,7 @@ export const createAgentSessionSlice = (
   contextCheckpoint: null,
   send: (content, images) => sendAction(set, get, deps, content, images),
   queueSteering: (content, images) => queueSteeringAction(set, get, deps.getSession(), content, images),
+  queueAside: (content, images) => queueAsideAction(set, get, deps.getSession(), content, images),
   queueNextTurn: (content, images) => queueNextTurnAction(set, get, deps.getSession(), content, images),
   editQueuedMessage: (messageId, content, images) =>
     editQueuedMessageAction(set, get, deps, messageId, content, images),

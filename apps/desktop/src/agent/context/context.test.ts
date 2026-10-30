@@ -57,6 +57,20 @@ class AbortingSummaryTransport extends SummaryTransport {
   }
 }
 
+class InsufficientRecoveryTransport extends SummaryTransport {
+  override requestByteLength = (request: ModelRequest): number => {
+    if (request.systemPrompt.includes('上下文压缩器')) return 1_000
+    return request.messages.some((message) => message.id.startsWith('context-summary:'))
+      ? 8_500
+      : 10_000
+  }
+}
+
+class NoProgressTransport extends SummaryTransport {
+  override requestByteLength = (request: ModelRequest): number =>
+    request.systemPrompt.includes('上下文压缩器') ? 1_000 : 10_000
+}
+
 const requestFor = (messages: AgentMessage[]): ModelRequest => ({
   sessionId: 'session-1',
   runId: 'run-1',
@@ -682,6 +696,224 @@ describe('context compaction', () => {
       reason: 'byte_threshold',
       signal: new AbortController().signal,
     })).rejects.toThrow('Compaction 后模型请求仍超过 Rust 2 MiB 硬上限')
+  })
+
+  it('blocks automatic continuation when compaction cannot recover 80% headroom', async () => {
+    await expect(compactModelRequest({
+      request: requestFor(messages),
+      transport: new InsufficientRecoveryTransport(),
+      policy: {
+        ...createContextPolicy(1_000_000),
+        keepRecentTokens: 1,
+        requestByteThreshold: 10_000,
+      },
+      reason: 'byte_threshold',
+      signal: new AbortController().signal,
+    })).rejects.toThrow('80% 安全水位')
+  })
+
+  it('detects automatic compaction that makes no measurable progress', async () => {
+    await expect(compactModelRequest({
+      request: requestFor(messages),
+      transport: new NoProgressTransport(),
+      policy: {
+        ...createContextPolicy(1_000_000),
+        keepRecentTokens: 1,
+        requestByteThreshold: 10_000,
+      },
+      reason: 'byte_threshold',
+      signal: new AbortController().signal,
+    })).rejects.toThrow('未降低上下文用量')
+  })
+
+  it('does not fall through when an over-threshold request has no safe compaction boundary', async () => {
+    const transport: ModelTransport = {
+      requestByteLength: () => 1_900_000,
+      async *stream() { yield { type: 'done', stopReason: 'stop' } },
+    }
+    const manager = new ContextWindowManager({
+      transport,
+      policy: createContextPolicy(1_000_000),
+      emit: () => undefined,
+    })
+
+    await expect(manager.prepareModelRequest(
+      requestFor([{ id: 'u1', role: 'user', content: 'single group', createdAt: 1 }]),
+      new AbortController().signal,
+    )).rejects.toThrow('没有足够的完整消息组')
+  })
+
+  it('uses aggressive local rescue before paying for a summary request', async () => {
+    const transport = new SummaryTransport()
+    const manager = new ContextWindowManager({
+      transport,
+      policy: {
+        contextWindow: 1_000_000,
+        reserveTokens: 1_000,
+        keepRecentTokens: 1_000,
+        requestByteThreshold: 1_500,
+        hardRequestByteLimit: HARD_MODEL_REQUEST_BYTES,
+      },
+      emit: () => undefined,
+    })
+    const artifact = (id: string, content: string, createdAt: number): AgentMessage => ({
+      id,
+      role: 'tool',
+      toolCallId: `call-${id}`,
+      toolName: 'bash',
+      content,
+      artifact: {
+        id: `artifact-${id}`,
+        kind: 'text',
+        mediaType: 'text/plain',
+        relativePath: `${id}.txt`,
+        contentHash: id.repeat(64).slice(0, 64),
+        sizeBytes: content.length,
+        createdAt,
+      },
+      isError: false,
+      createdAt,
+    })
+
+    const prepared = await manager.prepareModelRequest(requestFor([
+      artifact('a', 'large output\n'.repeat(500), 1),
+      artifact('b', 'latest output', 2),
+    ]), new AbortController().signal)
+
+    expect(transport.requests).toHaveLength(0)
+    expect(prepared.messages[0]?.content).toContain('Artifact artifact-a')
+    expect(prepared.messages[1]?.content).toBe('latest output')
+    expect(manager.currentCheckpoint).toBeUndefined()
+  })
+
+  it('prepares a speculative candidate without switching checkpoint and commits it after crossing the threshold', async () => {
+    const transport = new SummaryTransport()
+    const policy = {
+      contextWindow: 1_000_000,
+      reserveTokens: 1_000,
+      keepRecentTokens: 1,
+      requestByteThreshold: 10_000,
+      hardRequestByteLimit: HARD_MODEL_REQUEST_BYTES,
+    }
+    const events: AgentEvent[] = []
+    const manager = new ContextWindowManager({
+      transport,
+      policy,
+      emit: (event) => { events.push(event) },
+    })
+    const request = requestFor([
+      { ...messages[0]!, content: `create a note ${'x'.repeat(12_000)}` },
+      ...messages.slice(1),
+    ])
+
+    await expect(manager.speculateIfIdleDue(request, transport)).resolves.toBe(true)
+    expect(manager.speculativeCompactionState).toBe('ready')
+    expect(manager.currentCheckpoint).toBeUndefined()
+    expect(transport.requests).toHaveLength(1)
+    expect(events.some((event) => event.type === 'compaction_start')).toBe(false)
+
+    const prepared = await manager.prepareModelRequest(request, new AbortController().signal)
+
+    expect(transport.requests).toHaveLength(1)
+    expect(prepared.messages[0]?.id).toMatch(/^context-summary:/u)
+    expect(manager.currentCheckpoint?.reason).toBe('byte_threshold')
+    expect(manager.speculativeCompactionState).toBe('idle')
+    expect(events.filter((event) => event.type === 'compaction_start')).toHaveLength(1)
+    expect(events.some((event) => event.type === 'compaction_end' && event.checkpoint)).toBe(true)
+  })
+
+  it('invalidates a speculative candidate when its summarized prefix changed', async () => {
+    const transport = new SummaryTransport()
+    const policy = {
+      contextWindow: 1_000_000,
+      reserveTokens: 1_000,
+      keepRecentTokens: 1,
+      requestByteThreshold: 10_000,
+      hardRequestByteLimit: HARD_MODEL_REQUEST_BYTES,
+    }
+    const manager = new ContextWindowManager({ transport, policy, emit: () => undefined })
+    const request = requestFor([
+      { ...messages[0]!, content: `create a note ${'x'.repeat(12_000)}` },
+      ...messages.slice(1),
+    ])
+    await manager.speculateIfIdleDue(request, transport)
+    const changed: ModelRequest = {
+      ...request,
+      messages: request.messages.map((message) => message.id === 'u1'
+        ? { ...message, content: `${message.content} changed` }
+        : message),
+    }
+
+    await manager.prepareModelRequest(changed, new AbortController().signal)
+
+    expect(transport.requests).toHaveLength(2)
+    expect(manager.currentCheckpoint).toBeDefined()
+  })
+
+  it('lets a current before-compaction hook override a ready speculative candidate', async () => {
+    const transport = new SummaryTransport()
+    const manager = new ContextWindowManager({
+      transport,
+      policy: {
+        contextWindow: 1_000_000,
+        reserveTokens: 1_000,
+        keepRecentTokens: 1,
+        requestByteThreshold: 10_000,
+        hardRequestByteLimit: HARD_MODEL_REQUEST_BYTES,
+      },
+      emit: () => undefined,
+      beforeCompaction: () => ({
+        replacement: { summary: '## 目标\n使用当前 Hook 摘要', throughMessageId: 't1' },
+      }),
+    })
+    const request = requestFor([
+      { ...messages[0]!, content: `create a note ${'x'.repeat(12_000)}` },
+      ...messages.slice(1),
+    ])
+    await manager.speculateIfIdleDue(request, transport)
+
+    await manager.prepareModelRequest(request, new AbortController().signal)
+
+    expect(transport.requests).toHaveLength(1)
+    expect(manager.currentCheckpoint?.summary).toContain('使用当前 Hook 摘要')
+  })
+
+  it('cancels an unfinished speculative summary before a below-threshold foreground request', async () => {
+    let notifyStarted = (): void => undefined
+    const started = new Promise<void>((resolve) => { notifyStarted = resolve })
+    const transport: ModelTransport = {
+      requestByteLength: (request) => request.systemPrompt.includes('上下文压缩器') ? 100 : 9_500,
+      async *stream(request, signal) {
+        if (!request.systemPrompt.includes('上下文压缩器')) return
+        notifyStarted()
+        await new Promise<void>((_resolve, reject) => {
+          const abort = (): void => reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
+          if (signal.aborted) abort()
+          else signal.addEventListener('abort', abort, { once: true })
+        })
+        yield { type: 'done', stopReason: 'stop' }
+      },
+    }
+    const manager = new ContextWindowManager({
+      transport,
+      policy: {
+        contextWindow: 1_000_000,
+        reserveTokens: 1_000,
+        keepRecentTokens: 1,
+        requestByteThreshold: 10_000,
+        hardRequestByteLimit: HARD_MODEL_REQUEST_BYTES,
+      },
+      emit: () => undefined,
+    })
+    const request = requestFor(messages)
+    const speculation = manager.speculateIfIdleDue(request, transport)
+    await started
+
+    const prepared = await manager.prepareModelRequest(request, new AbortController().signal)
+
+    expect(prepared).toBe(request)
+    await expect(speculation).resolves.toBe(false)
+    expect(manager.speculativeCompactionState).toBe('idle')
   })
 
   it('does not switch checkpoint when persistence listeners fail', async () => {

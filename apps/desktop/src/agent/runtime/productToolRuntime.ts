@@ -6,6 +6,7 @@ import { createDiscoverAgentToolsTool } from '@/agent/tools/discoverAgentToolsTo
 import type { AgentEnvironment } from '@/agent/environment/AgentEnvironment'
 import { desktopAgentEnvironment } from '@/agent/environment/agentEnvironmentHost'
 import { scopeAgentEnvironment } from '@/agent/environment/scopeAgentEnvironment'
+import { insertBeforeProjectContextTail } from '@/agent/core/systemPromptLayout'
 
 export interface ProductToolRuntime {
   discoveryToolName: string
@@ -52,7 +53,7 @@ export const buildSystemPrompt = ({
     }
   }
   if (snippets.length === 0 && orderedGuidelines.length === 0) return basePrompt
-  const sections: string[] = [basePrompt]
+  const sections: string[] = []
   if (snippets.length > 0) {
     sections.push(`# 可用能力\n${snippets.map((snippet) => `- ${snippet}`).join('\n')}`)
   }
@@ -62,7 +63,7 @@ export const buildSystemPrompt = ({
   if (gitBranchPrefix !== undefined) {
     sections.push(buildGitBranchRuleSection(gitBranchPrefix))
   }
-  return sections.join('\n\n')
+  return insertBeforeProjectContextTail(basePrompt, sections.join('\n\n'))
 }
 
 /**

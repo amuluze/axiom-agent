@@ -263,6 +263,7 @@ const COMPOSER_AGENT_NOOPS = {
   // result.updated（undefined 会在点击路径抛未处理 rejection），拒绝分支既形状
   // 合法又语义诚实——预览态的运行时本来就「不接受」。
   queueSteering: async () => ({ accepted: false as const, reason: 'runtime-not-accepting' as const }),
+  queueAside: async () => ({ accepted: false as const, reason: 'runtime-not-accepting' as const }),
   clearQueuedMessages: () => undefined,
   // 恢复编辑走 falsy 早退（restored 为空即不动输入框），undefined 即安全的 no-op。
   restoreQueuedMessage: async () => undefined,
@@ -330,12 +331,18 @@ const composerAgentSlice = (fixture: Record<string, unknown>): NonNullable<Desig
   authorizedWorkspace: designPreviewWorkspace,
   authorizedWorkspaces: [designPreviewWorkspace],
   pendingSteeringCount: fixture.queued === 'two' ? 1 : 0,
+  pendingAsideCount: 0,
   pendingFollowUpCount: fixture.queued === 'two' ? 1 : 0,
   pendingNextTurnCount: 0,
   queuedMessages: fixture.queued === 'two' ? designPreviewQueuedMessages : [],
   recoveredQueuedMessages: [],
   armedQueueMessageId: null,
-  queueModeSettings: { steering: 'one-at-a-time', followUp: 'one-at-a-time', autoDrain: true },
+  queueModeSettings: {
+    steering: 'one-at-a-time',
+    aside: 'one-at-a-time',
+    followUp: 'one-at-a-time',
+    autoDrain: true,
+  },
   ...COMPOSER_AGENT_NOOPS,
 })
 

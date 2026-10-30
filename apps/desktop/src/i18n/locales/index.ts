@@ -12,6 +12,8 @@ import {
   limitsZh,
   queueModesEn,
   queueModesZh,
+  syntaxRepairEn,
+  syntaxRepairZh,
 } from './runtime'
 import { archivedEn, archivedZh, sessionsEn, sessionsZh } from './sessions'
 import { aboutEn, aboutZh, usageEn, usageZh } from './usage'
@@ -31,6 +33,7 @@ export const messageCatalogs: Record<'zh-CN' | 'en', MessageCatalog> = {
     ...reasoningZh,
     ...contextPolicyZh,
     ...queueModesZh,
+    ...syntaxRepairZh,
     ...limitsZh,
     ...sessionsZh,
     ...archivedZh,
@@ -51,6 +54,7 @@ export const messageCatalogs: Record<'zh-CN' | 'en', MessageCatalog> = {
     ...reasoningEn,
     ...contextPolicyEn,
     ...queueModesEn,
+    ...syntaxRepairEn,
     ...limitsEn,
     ...sessionsEn,
     ...archivedEn,

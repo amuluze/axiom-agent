@@ -81,8 +81,8 @@ describe('parseTestSpec', () => {
   })
 
   it('rejects unknown schema versions', () => {
-    expect(issuesOf({ ...specWith([fillCoupon()]), version: 4 })[0]?.path).toBe('$.version')
-    expect(issuesOf({ ...specWith([fillCoupon()]), version: 0 })[0]?.message).toBe('不支持的版本，当前支持 1 / 2 / 3')
+    expect(issuesOf({ ...specWith([fillCoupon()]), version: 10 })[0]?.path).toBe('$.version')
+    expect(issuesOf({ ...specWith([fillCoupon()]), version: 0 })[0]?.message).toBe('不支持的版本，当前支持 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9')
   })
 
   it('fails closed on unknown fields such as tabId or ref', () => {
@@ -311,10 +311,10 @@ describe('parseTestSpec v2/v3 增量', () => {
   })
 
   it('rejects unsupported versions and lists the supported ones', () => {
-    expect(issuesOf({ ...head, version: 4, cases: [caseWith([fillCoupon()])] }))
-      .toEqual([{ path: '$.version', message: '不支持的版本，当前支持 1 / 2 / 3' }])
+    expect(issuesOf({ ...head, version: 10, cases: [caseWith([fillCoupon()])] }))
+      .toEqual([{ path: '$.version', message: '不支持的版本，当前支持 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9' }])
     expect(issuesOf({ ...head, version: '2', cases: [caseWith([fillCoupon()])] }))
-      .toEqual([{ path: '$.version', message: '不支持的版本，当前支持 1 / 2 / 3' }])
+      .toEqual([{ path: '$.version', message: '不支持的版本，当前支持 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9' }])
   })
 
   it('rejects dangling verifies and orphan test points', () => {
@@ -384,5 +384,366 @@ describe('parseTestSpec secret boundary', () => {
     ]))).toEqual([
       { path: '$.cases[0].steps[0].url', message: 'API 地址不能包含 fragment（#...）' },
     ])
+  })
+})
+
+describe('parseTestSpec v4 增量（多服务拓扑）', () => {
+  const v4Spec = (steps: unknown[]) => ({
+    ...head,
+    version: 4,
+    testPoints: [{ id: 'tp-probe', kind: 'new_feature', title: '探测', acceptance: '可客观判定的预期' }],
+    cases: [{ id: 'probe', name: '探测用例', verifies: ['tp-probe'], steps }],
+  })
+
+  it('accepts api.poll / api.delay / virtualHost in v4', () => {
+    const result = validateTestSpec(v4Spec([
+      {
+        id: 's-poll',
+        action: 'api.poll',
+        method: 'GET',
+        url: `\${env.DATA_PLANE_URL}/`,
+        virtualHost: `site-\${run.slug}.example.test`,
+        intervalMs: 2000,
+        timeoutMs: 60_000,
+        expect: [{ status: 200 }],
+      },
+      { id: 's-delay', action: 'api.delay', durationMs: 1500 },
+      {
+        id: 's-host',
+        action: 'api.request',
+        method: 'GET',
+        url: 'http://127.0.0.1:8081/',
+        virtualHost: 'api.example.test:8443',
+        expect: [{ status: 200 }],
+      },
+    ]))
+    expect(result.ok).toBe(true)
+  })
+
+  it('keeps poll idempotent: GET/HEAD only, expectations required, interval bounded', () => {
+    expect(issuesOf(v4Spec([{ id: 's', action: 'api.poll', method: 'POST', url: '/x', expect: [{ status: 200 }] }]))[0]?.message)
+      .toContain('GET 或 HEAD')
+    expect(issuesOf(v4Spec([{ id: 's', action: 'api.poll', method: 'GET', url: '/x', expect: [] }]))
+      .some((issue) => issue.path === '$.cases[0].steps[0].expect')).toBe(true)
+    expect(issuesOf(v4Spec([{ id: 's', action: 'api.poll', method: 'GET', url: '/x', intervalMs: 100, expect: [{ status: 200 }] }]))[0]?.message)
+      .toContain('500')
+    expect(issuesOf(v4Spec([{ id: 's', action: 'api.poll', method: 'GET', url: '/x', body: { a: 1 }, expect: [{ status: 200 }] }]))[0]?.message)
+      .toContain('未知字段「body」')
+  })
+
+  it('validates virtualHost as host[:port] without scheme/path/credentials', () => {
+    const badValues = [
+      'https://api.example.test',
+      'api.example.test/path',
+      'user:pass@host',
+      'host:99999',
+      'host:0x10',
+      '-lead.example.test',
+      'a:1:2',
+    ]
+    for (const value of badValues) {
+      expect(issuesOf(v4Spec([{ id: 's', action: 'api.request', method: 'GET', url: 'http://127.0.0.1:1/', virtualHost: value }]))[0]?.path)
+        .toBe('$.cases[0].steps[0].virtualHost')
+    }
+  })
+
+  it('rejects v4 fields in v3 files with actionable upgrade messages', () => {
+    const poll = issuesOf({ ...v4Spec([{ id: 's', action: 'api.poll', method: 'GET', url: '/x', expect: [{ status: 200 }] }]), version: 3 })
+    expect(poll[0]?.message).toContain('v4 增量')
+    const host = issuesOf({ ...v4Spec([{ id: 's', action: 'api.request', method: 'GET', url: 'http://127.0.0.1:1/', virtualHost: 'a.test' }]), version: 3 })
+    expect(host[0]?.message).toContain('v4 增量')
+    const delay = issuesOf({ ...v4Spec([{ id: 's', action: 'api.delay', durationMs: 100 }]), version: 3 })
+    expect(delay[0]?.message).toContain('v4 增量')
+  })
+
+  it('accepts the v4 expectation variants only from v4 and keeps sensitive headers rejected', () => {
+    const variants = [
+      { headerExists: { name: 'x-security-block' } },
+      { headerAbsent: { name: 'x-security-block' } },
+      { jsonPointerLengthEquals: { pointer: '/data/items', value: 200 } },
+      { jsonPointerNumberAtLeast: { pointer: '/data/total', value: 0 } },
+      { jsonPointerNumberAtMost: { pointer: '/data/total', value: 200 } },
+    ]
+    for (const variant of variants) {
+      const step = { id: 's', action: 'api.request', method: 'GET', url: '/x', expect: [variant] }
+      expect(validateTestSpec(v4Spec([step])).ok).toBe(true)
+      const v3 = issuesOf({ ...v4Spec([step]), version: 3 })
+      expect(v3[0]?.message).toContain('v4 增量')
+    }
+    expect(issuesOf(v4Spec([{ id: 's', action: 'api.request', method: 'GET', url: '/x', expect: [{ headerExists: { name: 'set-cookie' } }] }]))[0]?.message)
+      .toContain('敏感响应头')
+  })
+})
+
+describe('parseTestSpec v5（数据驱动 case）', () => {
+  const v5Spec = (steps: unknown[], inputs?: unknown) => ({
+    ...head,
+    version: 5,
+    testPoints: [{ id: 'tp-probe', kind: 'new_feature', title: '探测', acceptance: '可客观判定的预期' }],
+    cases: [{
+      id: 'probe',
+      name: '探测用例',
+      verifies: ['tp-probe'],
+      steps,
+      ...(inputs === undefined ? {} : { inputs }),
+    }],
+  })
+  const step = (value: string) => ({
+    id: 's',
+    action: 'api.request',
+    method: 'POST',
+    url: '/x',
+    body: { value },
+    expect: [{ status: 200 }],
+  })
+
+  it(`accepts data rows referencing \${vars.*} and env/run placeholders inside row values`, () => {
+    const result = validateTestSpec(v5Spec(
+      [step(`\${vars.code}`)],
+      [
+        { code: 'A1', count: 1, tenant: 'acme' },
+        { code: 'B2', count: 2, tenant: 'acme' },
+        { code: `\${run.slug}`, count: 3, tenant: `\${env.API_BASE_URL}` },
+      ],
+    ))
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.spec.cases[0]?.inputs).toHaveLength(3)
+    expect(result.spec.cases[0]?.inputs?.[2]).toMatchObject({ tenant: `\${env.API_BASE_URL}` })
+  })
+
+  it('rejects inputs in v4 files and malformed rows', () => {
+    const v4 = issuesOf({ ...v5Spec([step(`\${vars.code}`)], [{ code: 'A1' }]), version: 4 })
+    expect(v4[0]).toEqual({ path: '$.cases[0].inputs', message: '案例输入表是 v5 增量；请把 version 升到 5' })
+
+    expect(issuesOf(v5Spec([step(`\${vars.code}`)], [{ code: 'A1' }, { other: 'B2' }])))
+      .toContainEqual({ path: '$.cases[0].inputs[1]', message: '数据行的键必须一致（首行为 code）' })
+    expect(issuesOf(v5Spec([step(`\${vars.code}`)], [{ code: `\${vars.other}` }])))
+      .toContainEqual({ path: '$.cases[0].inputs[0].code', message: `数据行值不能引用运行变量（只允许 \${env.*} / \${run.*}）` })
+    expect(issuesOf(v5Spec([step(`\${vars.code}`)], [{}])))
+      .toContainEqual({ path: '$.cases[0].inputs[0]', message: '每条数据行至少需要一个键' })
+    expect(issuesOf(v5Spec([step(`\${vars.code}`)], [])))
+      .toContainEqual({ path: '$.cases[0].inputs', message: '至少需要 1 项' })
+  })
+
+  it('caps multi-row case ids so the -vN suffix stays valid', () => {
+    const longId = `c${'x'.repeat(62)}`
+    const raw = {
+      ...v5Spec([step(`\${vars.code}`)], [{ code: 'A1' }, { code: 'B2' }]),
+      cases: [{
+        id: longId,
+        name: '长 ID 用例',
+        verifies: ['tp-probe'],
+        steps: [step(`\${vars.code}`)],
+        inputs: [{ code: 'A1' }, { code: 'B2' }],
+      }],
+    }
+    expect(issuesOf(raw)).toContainEqual({
+      path: '$.cases[0].id',
+      message: '数据驱动用例的 id 最多 60 字符（展开时会追加 -vN 后缀）',
+    })
+  })
+})
+
+describe('parseTestSpec v6（运行时凭据引用）', () => {
+  const v6Spec = (headerValue: unknown, version = 6) => ({
+    ...head,
+    version,
+    testPoints: [{ id: 'tp-probe', kind: 'new_feature', title: '探测', acceptance: '可客观判定的预期' }],
+    cases: [{
+      id: 'probe',
+      name: '登录后调用',
+      verifies: ['tp-probe'],
+      steps: [
+        {
+          id: 'login',
+          action: 'api.request',
+          method: 'POST',
+          url: '/login',
+          expect: [{ status: 200 }],
+          extract: { token: { jsonPointer: '/data/access_token', sensitive: true } },
+        },
+        {
+          id: 'call',
+          action: 'api.request',
+          method: 'GET',
+          url: '/me',
+          headers: { Authorization: headerValue },
+          expect: [{ status: 200 }],
+        },
+      ],
+    }],
+  })
+
+  it('accepts variable references with an auth-scheme prefix', () => {
+    const result = validateTestSpec(v6Spec({ variable: 'token', prefix: 'Bearer ' }))
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.spec.cases[0]?.steps[1]).toMatchObject({
+      headers: { Authorization: { variable: 'token', prefix: 'Bearer ' } },
+    })
+    expect(validateTestSpec(v6Spec({ variable: 'token' })).ok).toBe(true)
+  })
+
+  it('gates variable references on version 6', () => {
+    const rejected = issuesOf(v6Spec({ variable: 'token', prefix: 'Bearer ' }, 5))
+    expect(rejected.some((issue) => issue.message.includes('v6 增量'))).toBe(true)
+  })
+
+  it('keeps plaintext sensitive headers rejected and refuses mixed reference shapes', () => {
+    expect(issuesOf(v6Spec('Bearer hardcoded-token')).some((issue) => issue.message.includes('Secret')))
+      .toBe(true)
+    const mixed = issuesOf(v6Spec({ secretId: 'apitest.token', variable: 'token' }))
+    expect(mixed[0]).toEqual({
+      path: '$.cases[0].steps[1].headers.Authorization',
+      message: '请求头值不能同时是 Secret 与运行时变量引用',
+    })
+  })
+
+  it('validates the auth-scheme prefix shape and variable name', () => {
+    for (const prefix of ['Bearer', 'Bearer  ', 'Bea rer ', '1Bearer ', 'Bearer\n']) {
+      expect(issuesOf(v6Spec({ variable: 'token', prefix }))[0]?.message)
+        .toBe('运行时凭据前缀必须是「Scheme 」形式（如 Bearer ）')
+    }
+    expect(issuesOf(v6Spec({ variable: '1bad', prefix: 'Bearer ' }))[0]?.message)
+      .toContain('变量名必须以字母开头')
+    expect(issuesOf(v6Spec({ variable: 'token', prefix: 'Bearer ', extra: true }))[0]?.message)
+      .toContain('未知字段「extra」')
+  })
+})
+
+describe('parseTestSpec v7（条件清理与多状态断言）', () => {
+  const v7Spec = (steps: unknown[], version = 7) => ({
+    ...head,
+    version,
+    testPoints: [{ id: 'tp-probe', kind: 'new_feature', title: '探测', acceptance: '可客观判定的预期' }],
+    cases: [{ id: 'probe', name: '探测用例', verifies: ['tp-probe'], steps }],
+  })
+  const request = (overrides: Record<string, unknown> = {}) => ({
+    id: 's',
+    action: 'api.request',
+    method: 'DELETE',
+    url: '/x',
+    expect: [{ status: 200 }],
+    ...overrides,
+  })
+
+  it('accepts statusIn arrays and stores them on the step', () => {
+    const result = validateTestSpec(v7Spec([
+      {
+        ...request(),
+        expect: [{ statusIn: [200, 204, 404, 404] }],
+      },
+    ]))
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.spec.cases[0]?.steps[0]).toMatchObject({
+      expect: [{ statusIn: [200, 204, 404] }],
+    })
+  })
+
+  it('rejects statusIn before v7 and malformed status lists', () => {
+    const v6 = issuesOf({ ...v7Spec([{ ...request(), expect: [{ statusIn: [200, 404] }] }]), version: 6 })
+    expect(v6[0]).toEqual({
+      path: '$.cases[0].steps[0].expect[0]',
+      message: '断言「statusIn」是 v7 增量；请把 version 升到 7',
+    })
+    for (const value of [[], ['200'], [99], [600], Array.from({ length: 9 }, (_, i) => 200 + i)]) {
+      expect(issuesOf(v7Spec([{ ...request(), expect: [{ statusIn: value }] }])).length)
+        .toBeGreaterThan(0)
+    }
+  })
+
+  it('accepts whenProduced guards and rejects them before v7', () => {
+    const result = validateTestSpec(v7Spec([
+      request({ whenProduced: 'siteId' }),
+    ]))
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.spec.cases[0]?.steps[0]).toMatchObject({ whenProduced: 'siteId' })
+    expect(issuesOf({ ...v7Spec([request({ whenProduced: 'siteId' })]), version: 6 })[0]).toEqual({
+      path: '$.cases[0].steps[0].whenProduced',
+      message: '条件执行（whenProduced）是 v7 增量；请把 version 升到 7',
+    })
+    expect(issuesOf(v7Spec([request({ whenProduced: '1bad' })]))[0]?.message)
+      .toContain('变量名必须以字母开头')
+  })
+})
+
+describe('parseTestSpec v8（负断言）', () => {
+  const v8Spec = (expectValue: unknown, version = 8) => ({
+    ...head,
+    version,
+    testPoints: [{ id: 'tp-probe', kind: 'new_feature', title: '探测', acceptance: '可客观判定的预期' }],
+    cases: [{
+      id: 'probe', name: '探测用例', verifies: ['tp-probe'],
+      steps: [{
+        id: 's', action: 'api.request', method: 'GET', url: '/x',
+        expect: [expectValue],
+      }],
+    }],
+  })
+
+  it('accepts bodyNotContains from v8', () => {
+    const result = validateTestSpec(v8Spec({ bodyNotContains: 'e2e-secret' }))
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.spec.cases[0]?.steps[0]).toMatchObject({ expect: [{ bodyNotContains: 'e2e-secret' }] })
+  })
+
+  it('gates bodyNotContains on v8 and rejects empty text', () => {
+    expect(issuesOf({ ...v8Spec({ bodyNotContains: 'x' }), version: 7 })[0]).toEqual({
+      path: '$.cases[0].steps[0].expect[0]',
+      message: '断言「bodyNotContains」是 v8 增量；请把 version 升到 8',
+    })
+    expect(issuesOf(v8Spec({ bodyNotContains: '' }))[0]?.message).toContain('不能为空')
+  })
+})
+
+describe('parseTestSpec v9（fixture 文件引用）', () => {
+  const v9Spec = (body: unknown, version = 9) => ({
+    ...head,
+    version,
+    testPoints: [{ id: 'tp-probe', kind: 'new_feature', title: '探测', acceptance: '可客观判定的预期' }],
+    cases: [{
+      id: 'probe', name: '探测用例', verifies: ['tp-probe'],
+      steps: [{
+        id: 's', action: 'api.request', method: 'POST', url: '/x',
+        body, expect: [{ status: 200 }],
+      }],
+    }],
+  })
+
+  it('accepts fixture references in JSON bodies from v9', () => {
+    const result = validateTestSpec(v9Spec({
+      name: 'cert',
+      certificate_content: { file: 'tests/fixtures/cert.pem' },
+      nested: [{ key_content: { file: 'tests/fixtures/key.pem' } }],
+    }))
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.spec.cases[0]?.steps[0]).toMatchObject({
+      body: { certificate_content: { file: 'tests/fixtures/cert.pem' } },
+    })
+  })
+
+  it('gates fixture references on v9', () => {
+    expect(issuesOf({ ...v9Spec({ file: { file: 'tests/fixtures/cert.pem' } }), version: 8 })[0]?.message)
+      .toContain('v9 增量')
+  })
+
+  it('rejects absolute paths, traversal and mixed objects', () => {
+    const badPaths = [
+      { file: '/etc/passwd' },
+      { file: 'tests/fixtures/../secret.pem' },
+      { file: 'tests/fixtures/./cert.pem' },
+      { file: 'fixtures/cert.pem' },
+    ]
+    for (const reference of badPaths) {
+      expect(issuesOf(v9Spec({ certificate_content: reference }))[0]?.message)
+        .toContain('文件引用必须是 tests/fixtures/ 下的工作区相对路径')
+    }
+    expect(issuesOf(v9Spec({ certificate_content: { file: 'tests/fixtures/cert.pem', sensitive: true } }))[0]?.message)
+      .toContain('文件引用对象只能包含 file 字段')
   })
 })

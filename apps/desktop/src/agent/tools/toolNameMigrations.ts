@@ -34,20 +34,43 @@ export const RUNTIME_TOOL_NAME_MIGRATIONS: Record<string, string> = {
 // widening the contract. Bumping the version without adding an entry here is
 // the exact drift this table exists to prevent.
 export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
+  { previousName: 'edit', previousVersion: '13', currentName: 'edit', currentVersion: '14' },
+  { previousName: 'apply_changes', previousVersion: '11', currentName: 'apply_changes', currentVersion: '12' },
+  { previousName: 'explore_subagent', previousVersion: '21', currentName: 'explore_subagent', currentVersion: '22' },
+  { previousName: 'review_subagent', previousVersion: '18', currentName: 'review_subagent', currentVersion: '19' },
+  { previousName: 'inspect_subagent', previousVersion: '16', currentName: 'inspect_subagent', currentVersion: '17' },
+  { previousName: 'examine_subagent', previousVersion: '16', currentName: 'examine_subagent', currentVersion: '17' },
+  { previousName: 'explore_subagent', previousVersion: '20', currentName: 'explore_subagent', currentVersion: '22' },
+  { previousName: 'review_subagent', previousVersion: '17', currentName: 'review_subagent', currentVersion: '19' },
+  { previousName: 'inspect_subagent', previousVersion: '15', currentName: 'inspect_subagent', currentVersion: '17' },
+  { previousName: 'examine_subagent', previousVersion: '15', currentName: 'examine_subagent', currentVersion: '17' },
+  { previousName: 'edit', previousVersion: '12', currentName: 'edit', currentVersion: '14' },
+  { previousName: 'apply_changes', previousVersion: '10', currentName: 'apply_changes', currentVersion: '12' },
+  { previousName: 'explore_subagent', previousVersion: '19', currentName: 'explore_subagent', currentVersion: '22' },
+  { previousName: 'review_subagent', previousVersion: '16', currentName: 'review_subagent', currentVersion: '19' },
+  { previousName: 'inspect_subagent', previousVersion: '14', currentName: 'inspect_subagent', currentVersion: '17' },
+  { previousName: 'examine_subagent', previousVersion: '14', currentName: 'examine_subagent', currentVersion: '17' },
+  { previousName: 'explore_subagent', previousVersion: '18', currentName: 'explore_subagent', currentVersion: '22' },
+  { previousName: 'review_subagent', previousVersion: '15', currentName: 'review_subagent', currentVersion: '19' },
+  { previousName: 'inspect_subagent', previousVersion: '13', currentName: 'inspect_subagent', currentVersion: '17' },
+  { previousName: 'examine_subagent', previousVersion: '13', currentName: 'examine_subagent', currentVersion: '17' },
   // api_request → v5：非 macOS 平台的「在场门」从静默放行改为宿主原生确认对话框
   // （macOS 行为不变：仍是手势 + 内容确认两层）；schema 不变，旧入参/恢复路径继续兼容。
   // 历史条目一律指向当前 live 版本——迁移表拒绝中间目标版本（单跳迁移）。
-  { previousName: 'api_request', previousVersion: '4', currentName: 'api_request', currentVersion: '5' },
+  { previousName: 'api_request', previousVersion: '4', currentName: 'api_request', currentVersion: '6' },
   // api_request → v4：带 Secret 的步骤签发租约前叠加原生内容确认，取消映射为 rejected；
   // schema 不变，旧入参/恢复路径继续兼容。
-  { previousName: 'api_request', previousVersion: '3', currentName: 'api_request', currentVersion: '5' },
-  { previousName: 'api_request', previousVersion: '2', currentName: 'api_request', currentVersion: '5' },
-  { previousName: 'api_request', previousVersion: '1', currentName: 'api_request', currentVersion: '5' },
+  { previousName: 'api_request', previousVersion: '3', currentName: 'api_request', currentVersion: '6' },
+  { previousName: 'api_request', previousVersion: '2', currentName: 'api_request', currentVersion: '6' },
+  { previousName: 'api_request', previousVersion: '1', currentName: 'api_request', currentVersion: '6' },
+  // api_request → v6：接受可选 virtualHost（Host 头覆盖，v4 测试协议的多服务拓扑能力）。
+  // 旧版本调用不携带该字段，语义不变；只是 schema 扩展，因此仍是单跳迁移。
+  { previousName: 'api_request', previousVersion: '5', currentName: 'api_request', currentVersion: '6' },
   // write → v12（父目录语义：缺失父目录在授权根内自动创建，见 task `write-parent-directory`；契约加宽，旧入参不变）。
   { previousName: 'write', previousVersion: '11', currentName: 'write', currentVersion: '12' },
   { previousName: 'write', previousVersion: '10', currentName: 'write', currentVersion: '12' },
-  { previousName: 'edit', previousVersion: '11', currentName: 'edit', currentVersion: '12' },
-  { previousName: 'apply_changes', previousVersion: '9', currentName: 'apply_changes', currentVersion: '10' },
+  { previousName: 'edit', previousVersion: '11', currentName: 'edit', currentVersion: '14' },
+  { previousName: 'apply_changes', previousVersion: '9', currentName: 'apply_changes', currentVersion: '12' },
   { previousName: 'restore_trash', previousVersion: '6', currentName: 'restore_trash', currentVersion: '7' },
   { previousName: 'bash', previousVersion: '25', currentName: 'bash', currentVersion: '26' },
   { previousName: 'design_import', previousVersion: '8', currentName: 'design_import', currentVersion: '9' },
@@ -56,72 +79,86 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   // （此前仅 apply_changes/restore_trash 消费 tier，write/edit 恒被 Rust 拒绝）。
   // schema 不变，保护路径判定不变。
   { previousName: 'write', previousVersion: '9', currentName: 'write', currentVersion: '12' },
-  { previousName: 'edit', previousVersion: '10', currentName: 'edit', currentVersion: '12' },
+  { previousName: 'edit', previousVersion: '10', currentName: 'edit', currentVersion: '14' },
   { previousName: 'design_import', previousVersion: '7', currentName: 'design_import', currentVersion: '9' },
+  // design_query → v25（scan 命中当前画布同一 SHA 时复用画布原位扫掠，避免单页
+  // staging 铺满窗口；无匹配画布/无原生截图时仍走离屏单页回退。schema 不变）。
+  { previousName: 'design_query', previousVersion: '24', currentName: 'design_query', currentVersion: '25' },
   // design_query → v24（工具描述声明：无 .axiom/design/components.json 时清单来自 Axiom 宿主
   // 注册表，不得用于本项目稿与 codegen；输入 schema 与 details 字段不变）。
-  { previousName: 'design_query', previousVersion: '23', currentName: 'design_query', currentVersion: '24' },
+  { previousName: 'design_query', previousVersion: '23', currentName: 'design_query', currentVersion: '25' },
   // design_query → v23（scan 报告页级判定新增 `renderReason`：`render: 'skipped'` 现在带
   // 结构化原因 unavailable / no-size / interrupted，消费方不必读 issue 文案去猜「没验」；
   // 输入 schema 不变，既有 details 字段只增不改）。
-  { previousName: 'design_query', previousVersion: '22', currentName: 'design_query', currentVersion: '24' },
+  { previousName: 'design_query', previousVersion: '22', currentName: 'design_query', currentVersion: '25' },
   // design_query → v22（共享 Browser SetViewport 实现统一，输入与输出 schema 不变）。
-  { previousName: 'design_query', previousVersion: '21', currentName: 'design_query', currentVersion: '24' },
+  { previousName: 'design_query', previousVersion: '21', currentName: 'design_query', currentVersion: '25' },
   // design_query → v21（输入 schema 改为按 mode 判别的 anyOf，运行时兼容旧式省略 mode 入参）。
-  { previousName: 'design_query', previousVersion: '20', currentName: 'design_query', currentVersion: '24' },
+  { previousName: 'design_query', previousVersion: '20', currentName: 'design_query', currentVersion: '25' },
   // design_query → v20（契约扩展：.ax 1.5 slots——mode=component 详单新增 slots 段、
   // 读取路径核对 decl.slots；compare 新增可选 via='preview' 同引擎档（阈值 0.5%）。
   // 输入新增可选 via 字段，既有入参不变）。
   // design_query → v19（契约扩展：.ax 1.4 symbols——summary/page 返回 symbols 段、
   // node 可寻址 symbol body 子树、code 发射局部组件；输入 schema 不变）。
-  { previousName: 'design_query', previousVersion: '19', currentName: 'design_query', currentVersion: '24' },
-  { previousName: 'design_query', previousVersion: '18', currentName: 'design_query', currentVersion: '24' },
-  { previousName: 'design_query', previousVersion: '17', currentName: 'design_query', currentVersion: '24' },
+  { previousName: 'design_query', previousVersion: '19', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '18', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '17', currentName: 'design_query', currentVersion: '25' },
   { previousName: 'write', previousVersion: '8', currentName: 'write', currentVersion: '12' },
-  { previousName: 'edit', previousVersion: '9', currentName: 'edit', currentVersion: '12' },
-  { previousName: 'apply_changes', previousVersion: '8', currentName: 'apply_changes', currentVersion: '10' },
+  { previousName: 'edit', previousVersion: '9', currentName: 'edit', currentVersion: '14' },
+  { previousName: 'apply_changes', previousVersion: '8', currentName: 'apply_changes', currentVersion: '12' },
   { previousName: 'restore_trash', previousVersion: '5', currentName: 'restore_trash', currentVersion: '7' },
   { previousName: 'design_import', previousVersion: '6', currentName: 'design_import', currentVersion: '9' },
-  { previousName: 'explore_subagent', previousVersion: '15', currentName: 'explore_subagent', currentVersion: '16' },
-  { previousName: 'review_subagent', previousVersion: '12', currentName: 'review_subagent', currentVersion: '13' },
-  { previousName: 'inspect_subagent', previousVersion: '10', currentName: 'inspect_subagent', currentVersion: '11' },
-  { previousName: 'examine_subagent', previousVersion: '10', currentName: 'examine_subagent', currentVersion: '11' },
-  { previousName: 'explore_subagent', previousVersion: '14', currentName: 'explore_subagent', currentVersion: '16' },
-  { previousName: 'review_subagent', previousVersion: '11', currentName: 'review_subagent', currentVersion: '13' },
-  { previousName: 'inspect_subagent', previousVersion: '9', currentName: 'inspect_subagent', currentVersion: '11' },
-  { previousName: 'examine_subagent', previousVersion: '9', currentName: 'examine_subagent', currentVersion: '11' },
-  { previousName: 'explore_subagent', previousVersion: '12', currentName: 'explore_subagent', currentVersion: '16' },
-  { previousName: 'explore_subagent', previousVersion: '13', currentName: 'explore_subagent', currentVersion: '16' },
-  { previousName: 'review_subagent', previousVersion: '10', currentName: 'review_subagent', currentVersion: '13' },
-  { previousName: 'inspect_subagent', previousVersion: '8', currentName: 'inspect_subagent', currentVersion: '11' },
-  { previousName: 'examine_subagent', previousVersion: '8', currentName: 'examine_subagent', currentVersion: '11' },
-  { previousName: 'review_subagent', previousVersion: '9', currentName: 'review_subagent', currentVersion: '13' },
-  { previousName: 'inspect_subagent', previousVersion: '7', currentName: 'inspect_subagent', currentVersion: '11' },
-  { previousName: 'examine_subagent', previousVersion: '7', currentName: 'examine_subagent', currentVersion: '11' },
+  { previousName: 'explore_subagent', previousVersion: '17', currentName: 'explore_subagent', currentVersion: '22' },
+  { previousName: 'review_subagent', previousVersion: '14', currentName: 'review_subagent', currentVersion: '19' },
+  { previousName: 'inspect_subagent', previousVersion: '12', currentName: 'inspect_subagent', currentVersion: '17' },
+  { previousName: 'examine_subagent', previousVersion: '12', currentName: 'examine_subagent', currentVersion: '17' },
+  { previousName: 'explore_subagent', previousVersion: '16', currentName: 'explore_subagent', currentVersion: '22' },
+  { previousName: 'review_subagent', previousVersion: '13', currentName: 'review_subagent', currentVersion: '19' },
+  { previousName: 'inspect_subagent', previousVersion: '11', currentName: 'inspect_subagent', currentVersion: '17' },
+  { previousName: 'examine_subagent', previousVersion: '11', currentName: 'examine_subagent', currentVersion: '17' },
+  { previousName: 'explore_subagent', previousVersion: '15', currentName: 'explore_subagent', currentVersion: '22' },
+  { previousName: 'review_subagent', previousVersion: '12', currentName: 'review_subagent', currentVersion: '19' },
+  { previousName: 'inspect_subagent', previousVersion: '10', currentName: 'inspect_subagent', currentVersion: '17' },
+  { previousName: 'examine_subagent', previousVersion: '10', currentName: 'examine_subagent', currentVersion: '17' },
+  { previousName: 'explore_subagent', previousVersion: '14', currentName: 'explore_subagent', currentVersion: '22' },
+  { previousName: 'review_subagent', previousVersion: '11', currentName: 'review_subagent', currentVersion: '19' },
+  { previousName: 'inspect_subagent', previousVersion: '9', currentName: 'inspect_subagent', currentVersion: '17' },
+  { previousName: 'examine_subagent', previousVersion: '9', currentName: 'examine_subagent', currentVersion: '17' },
+  { previousName: 'explore_subagent', previousVersion: '12', currentName: 'explore_subagent', currentVersion: '22' },
+  { previousName: 'explore_subagent', previousVersion: '13', currentName: 'explore_subagent', currentVersion: '22' },
+  { previousName: 'review_subagent', previousVersion: '10', currentName: 'review_subagent', currentVersion: '19' },
+  { previousName: 'inspect_subagent', previousVersion: '8', currentName: 'inspect_subagent', currentVersion: '17' },
+  { previousName: 'examine_subagent', previousVersion: '8', currentName: 'examine_subagent', currentVersion: '17' },
+  { previousName: 'review_subagent', previousVersion: '9', currentName: 'review_subagent', currentVersion: '19' },
+  { previousName: 'inspect_subagent', previousVersion: '7', currentName: 'inspect_subagent', currentVersion: '17' },
+  { previousName: 'examine_subagent', previousVersion: '7', currentName: 'examine_subagent', currentVersion: '17' },
   { previousName: 'write', previousVersion: '7', currentName: 'write', currentVersion: '12' },
-  { previousName: 'edit', previousVersion: '8', currentName: 'edit', currentVersion: '12' },
-  { previousName: 'apply_changes', previousVersion: '7', currentName: 'apply_changes', currentVersion: '10' },
+  { previousName: 'edit', previousVersion: '8', currentName: 'edit', currentVersion: '14' },
+  { previousName: 'apply_changes', previousVersion: '7', currentName: 'apply_changes', currentVersion: '12' },
   { previousName: 'restore_trash', previousVersion: '4', currentName: 'restore_trash', currentVersion: '7' },
   { previousName: 'bash', previousVersion: '22', currentName: 'bash', currentVersion: '26' },
   { previousName: 'bash', previousVersion: '21', currentName: 'bash', currentVersion: '26' },
   { previousName: 'bash', previousVersion: '20', currentName: 'bash', currentVersion: '26' },
   { previousName: 'bash', previousVersion: '19', currentName: 'bash', currentVersion: '26' },
   { previousName: 'design_import', previousVersion: '5', currentName: 'design_import', currentVersion: '9' },
-  { previousName: 'design_query', previousVersion: '16', currentName: 'design_query', currentVersion: '24' },
-  { previousName: 'design_query', previousVersion: '15', currentName: 'design_query', currentVersion: '24' },
+  { previousName: 'design_query', previousVersion: '16', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '15', currentName: 'design_query', currentVersion: '25' },
   { previousName: 'discover_agent_tools', previousVersion: '6', currentName: 'discover_agent_tools', currentVersion: '7' },
   { previousName: 'discover_agent_tools', previousVersion: '5', currentName: 'discover_agent_tools', currentVersion: '7' },
   { previousName: 'discover_agent_tools', previousVersion: '4', currentName: 'discover_agent_tools', currentVersion: '7' },
   { previousName: 'design_import', previousVersion: '4', currentName: 'design_import', currentVersion: '9' },
-  { previousName: 'design_query', previousVersion: '14', currentName: 'design_query', currentVersion: '24' },
+  { previousName: 'design_query', previousVersion: '14', currentName: 'design_query', currentVersion: '25' },
   { previousName: 'bash', previousVersion: '18', currentName: 'bash', currentVersion: '26' },
   { previousName: 'restore_trash', previousVersion: '3', currentName: 'restore_trash', currentVersion: '7' },
-  { previousName: 'apply_changes', previousVersion: '6', currentName: 'apply_changes', currentVersion: '10' },
-  { previousName: 'edit', previousVersion: '7', currentName: 'edit', currentVersion: '12' },
+  { previousName: 'apply_changes', previousVersion: '6', currentName: 'apply_changes', currentVersion: '12' },
+  { previousName: 'edit', previousVersion: '7', currentName: 'edit', currentVersion: '14' },
   { previousName: 'write', previousVersion: '6', currentName: 'write', currentVersion: '12' },
-  { previousName: 'find', previousVersion: '5', currentName: 'find', currentVersion: '6' },
-  { previousName: 'grep', previousVersion: '5', currentName: 'grep', currentVersion: '6' },
-  { previousName: 'ls', previousVersion: '4', currentName: 'ls', currentVersion: '5' },
+  { previousName: 'find', previousVersion: '5', currentName: 'find', currentVersion: '7' },
+  { previousName: 'find', previousVersion: '6', currentName: 'find', currentVersion: '7' },
+  { previousName: 'grep', previousVersion: '5', currentName: 'grep', currentVersion: '7' },
+  { previousName: 'grep', previousVersion: '6', currentName: 'grep', currentVersion: '7' },
+  { previousName: 'ls', previousVersion: '4', currentName: 'ls', currentVersion: '6' },
+  { previousName: 'ls', previousVersion: '5', currentName: 'ls', currentVersion: '6' },
   { previousName: 'read', previousVersion: '7', currentName: 'read', currentVersion: '8' },
   // design_query → v4（契约扩展：mode=component 单组件详单 + scan 可选 tokensCss
   // 一致性报告 + 组件节点注册表核对——输入新增 component/tokensCss 可选字段）。
@@ -143,19 +180,19 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   // design_query → v9：说明文案收敛到与其它产图工具同一占位子串，并明确
   // 「模型能力所限 ≠ 环境无渲染能力」（Domain 不变量 6）。
   // 历史条目随 bump 统一改指 live v10（恢复查表要求 currentVersion === live）。
-  { previousName: 'design_query', previousVersion: '13', currentName: 'design_query', currentVersion: '24' },
-  { previousName: 'design_query', previousVersion: '12', currentName: 'design_query', currentVersion: '24' },
-  { previousName: 'design_query', previousVersion: '11', currentName: 'design_query', currentVersion: '24' },
-  { previousName: 'design_query', previousVersion: '1', currentName: 'design_query', currentVersion: '24' },
-  { previousName: 'design_query', previousVersion: '2', currentName: 'design_query', currentVersion: '24' },
-  { previousName: 'design_query', previousVersion: '3', currentName: 'design_query', currentVersion: '24' },
-  { previousName: 'design_query', previousVersion: '4', currentName: 'design_query', currentVersion: '24' },
-  { previousName: 'design_query', previousVersion: '5', currentName: 'design_query', currentVersion: '24' },
-  { previousName: 'design_query', previousVersion: '6', currentName: 'design_query', currentVersion: '24' },
-  { previousName: 'design_query', previousVersion: '7', currentName: 'design_query', currentVersion: '24' },
-  { previousName: 'design_query', previousVersion: '10', currentName: 'design_query', currentVersion: '24' },
-  { previousName: 'design_query', previousVersion: '9', currentName: 'design_query', currentVersion: '24' },
-  { previousName: 'design_query', previousVersion: '8', currentName: 'design_query', currentVersion: '24' },
+  { previousName: 'design_query', previousVersion: '13', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '12', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '11', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '1', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '2', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '3', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '4', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '5', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '6', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '7', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '10', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '9', currentName: 'design_query', currentVersion: '25' },
+  { previousName: 'design_query', previousVersion: '8', currentName: 'design_query', currentVersion: '25' },
   // design_import → v2：租约改按 create_workspace_file 口径绑定编译产物（approvalLeaseInput）
   // ——v1 的租约绑定模型输入 {source,target}，与写通道消费侧失配，该工具从未能落盘；
   // schema 不变，属行为修复。
@@ -181,11 +218,24 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   // Composer 输入约定保持一致；schema 不变。
   // load_skill → v6：内置正文回退按 UI 语言解析 zh-CN/en 双语变体，并应用设置页
   // 保存的 per-language 用户覆写（promptLocalizationHost 执行期注入）。schema 不变。
-  { previousName: 'load_skill', previousVersion: '1', currentName: 'load_skill', currentVersion: '6' },
-  { previousName: 'load_skill', previousVersion: '2', currentName: 'load_skill', currentVersion: '6' },
-  { previousName: 'load_skill', previousVersion: '3', currentName: 'load_skill', currentVersion: '6' },
-  { previousName: 'load_skill', previousVersion: '4', currentName: 'load_skill', currentVersion: '6' },
-  { previousName: 'load_skill', previousVersion: '5', currentName: 'load_skill', currentVersion: '6' },
+  { previousName: 'load_skill', previousVersion: '1', currentName: 'load_skill', currentVersion: '12' },
+  { previousName: 'load_skill', previousVersion: '2', currentName: 'load_skill', currentVersion: '12' },
+  { previousName: 'load_skill', previousVersion: '3', currentName: 'load_skill', currentVersion: '12' },
+  // load_skill → v7：内置 test-design Skill 正文升级到测试协议 v4（多服务拓扑：api.poll /
+  // api.delay / virtualHost / 新断言），返回正文语义变化，按正文契约单跳迁移。
+  { previousName: 'load_skill', previousVersion: '6', currentName: 'load_skill', currentVersion: '12' },
+  // load_skill → v8：内置 test-design Skill 正文升级到测试协议 v5（cases[].inputs 数据行）。
+  { previousName: 'load_skill', previousVersion: '7', currentName: 'load_skill', currentVersion: '12' },
+  // load_skill → v9：内置 test-design Skill 正文升级到测试协议 v6（运行时凭据引用）。
+  { previousName: 'load_skill', previousVersion: '8', currentName: 'load_skill', currentVersion: '12' },
+  // load_skill → v10：内置 test-design Skill 正文升级到测试协议 v7（条件清理 + statusIn）。
+  { previousName: 'load_skill', previousVersion: '9', currentName: 'load_skill', currentVersion: '12' },
+  // load_skill → v11：内置 test-design Skill 正文升级到测试协议 v8（bodyNotContains 负断言）。
+  { previousName: 'load_skill', previousVersion: '10', currentName: 'load_skill', currentVersion: '12' },
+  // load_skill → v12：内置 test-design Skill 正文升级到测试协议 v9（fixture 文件引用）。
+  { previousName: 'load_skill', previousVersion: '11', currentName: 'load_skill', currentVersion: '12' },
+  { previousName: 'load_skill', previousVersion: '4', currentName: 'load_skill', currentVersion: '12' },
+  { previousName: 'load_skill', previousVersion: '5', currentName: 'load_skill', currentVersion: '12' },
 
   // explore_subagent → v10
   // v2：首次注册（discover-gated，不加入默认激活集）。
@@ -217,16 +267,16 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   // schema 不变。
   // → v16（inspect/examine v11、review v13）：英文模板的工具说明改用英文 hint，
   // 不再在 `# Allowed tools` 下混入中文。schema 不变。
-  { previousName: 'explore_subagent', previousVersion: '2', currentName: 'explore_subagent', currentVersion: '16' },
-  { previousName: 'explore_subagent', previousVersion: '3', currentName: 'explore_subagent', currentVersion: '16' },
-  { previousName: 'explore_subagent', previousVersion: '4', currentName: 'explore_subagent', currentVersion: '16' },
-  { previousName: 'explore_subagent', previousVersion: '5', currentName: 'explore_subagent', currentVersion: '16' },
-  { previousName: 'explore_subagent', previousVersion: '6', currentName: 'explore_subagent', currentVersion: '16' },
-  { previousName: 'explore_subagent', previousVersion: '7', currentName: 'explore_subagent', currentVersion: '16' },
-  { previousName: 'explore_subagent', previousVersion: '8', currentName: 'explore_subagent', currentVersion: '16' },
-  { previousName: 'explore_subagent', previousVersion: '9', currentName: 'explore_subagent', currentVersion: '16' },
-  { previousName: 'explore_subagent', previousVersion: '10', currentName: 'explore_subagent', currentVersion: '16' },
-  { previousName: 'explore_subagent', previousVersion: '11', currentName: 'explore_subagent', currentVersion: '16' },
+  { previousName: 'explore_subagent', previousVersion: '2', currentName: 'explore_subagent', currentVersion: '22' },
+  { previousName: 'explore_subagent', previousVersion: '3', currentName: 'explore_subagent', currentVersion: '22' },
+  { previousName: 'explore_subagent', previousVersion: '4', currentName: 'explore_subagent', currentVersion: '22' },
+  { previousName: 'explore_subagent', previousVersion: '5', currentName: 'explore_subagent', currentVersion: '22' },
+  { previousName: 'explore_subagent', previousVersion: '6', currentName: 'explore_subagent', currentVersion: '22' },
+  { previousName: 'explore_subagent', previousVersion: '7', currentName: 'explore_subagent', currentVersion: '22' },
+  { previousName: 'explore_subagent', previousVersion: '8', currentName: 'explore_subagent', currentVersion: '22' },
+  { previousName: 'explore_subagent', previousVersion: '9', currentName: 'explore_subagent', currentVersion: '22' },
+  { previousName: 'explore_subagent', previousVersion: '10', currentName: 'explore_subagent', currentVersion: '22' },
+  { previousName: 'explore_subagent', previousVersion: '11', currentName: 'explore_subagent', currentVersion: '22' },
 
   // review_subagent → v2：新增可选 diff 参数——子 Agent 无 bash/git，父 Agent 经
   // diff 参数携带 git diff 全文，消除「只看改动后状态、看不到改了什么」的 diff 盲区。
@@ -247,26 +297,26 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   // review_subagent → v8（inspect/examine v6）：子会话 system prompt 按 UI 语言
   // 解析 zh-CN/en 双语模板（en 模板 verdict 锚点 Verdict: pass/fail，解析器双语），
   // 并支持设置页按语言保存的用户覆写。schema 不变。
-  { previousName: 'review_subagent', previousVersion: '1', currentName: 'review_subagent', currentVersion: '13' },
-  { previousName: 'review_subagent', previousVersion: '2', currentName: 'review_subagent', currentVersion: '13' },
-  { previousName: 'review_subagent', previousVersion: '3', currentName: 'review_subagent', currentVersion: '13' },
-  { previousName: 'review_subagent', previousVersion: '4', currentName: 'review_subagent', currentVersion: '13' },
-  { previousName: 'review_subagent', previousVersion: '5', currentName: 'review_subagent', currentVersion: '13' },
-  { previousName: 'review_subagent', previousVersion: '6', currentName: 'review_subagent', currentVersion: '13' },
-  { previousName: 'review_subagent', previousVersion: '7', currentName: 'review_subagent', currentVersion: '13' },
-  { previousName: 'review_subagent', previousVersion: '8', currentName: 'review_subagent', currentVersion: '13' },
-  { previousName: 'inspect_subagent', previousVersion: '1', currentName: 'inspect_subagent', currentVersion: '11' },
-  { previousName: 'inspect_subagent', previousVersion: '2', currentName: 'inspect_subagent', currentVersion: '11' },
-  { previousName: 'inspect_subagent', previousVersion: '3', currentName: 'inspect_subagent', currentVersion: '11' },
-  { previousName: 'inspect_subagent', previousVersion: '4', currentName: 'inspect_subagent', currentVersion: '11' },
-  { previousName: 'inspect_subagent', previousVersion: '5', currentName: 'inspect_subagent', currentVersion: '11' },
-  { previousName: 'inspect_subagent', previousVersion: '6', currentName: 'inspect_subagent', currentVersion: '11' },
-  { previousName: 'examine_subagent', previousVersion: '1', currentName: 'examine_subagent', currentVersion: '11' },
-  { previousName: 'examine_subagent', previousVersion: '2', currentName: 'examine_subagent', currentVersion: '11' },
-  { previousName: 'examine_subagent', previousVersion: '3', currentName: 'examine_subagent', currentVersion: '11' },
-  { previousName: 'examine_subagent', previousVersion: '4', currentName: 'examine_subagent', currentVersion: '11' },
-  { previousName: 'examine_subagent', previousVersion: '5', currentName: 'examine_subagent', currentVersion: '11' },
-  { previousName: 'examine_subagent', previousVersion: '6', currentName: 'examine_subagent', currentVersion: '11' },
+  { previousName: 'review_subagent', previousVersion: '1', currentName: 'review_subagent', currentVersion: '19' },
+  { previousName: 'review_subagent', previousVersion: '2', currentName: 'review_subagent', currentVersion: '19' },
+  { previousName: 'review_subagent', previousVersion: '3', currentName: 'review_subagent', currentVersion: '19' },
+  { previousName: 'review_subagent', previousVersion: '4', currentName: 'review_subagent', currentVersion: '19' },
+  { previousName: 'review_subagent', previousVersion: '5', currentName: 'review_subagent', currentVersion: '19' },
+  { previousName: 'review_subagent', previousVersion: '6', currentName: 'review_subagent', currentVersion: '19' },
+  { previousName: 'review_subagent', previousVersion: '7', currentName: 'review_subagent', currentVersion: '19' },
+  { previousName: 'review_subagent', previousVersion: '8', currentName: 'review_subagent', currentVersion: '19' },
+  { previousName: 'inspect_subagent', previousVersion: '1', currentName: 'inspect_subagent', currentVersion: '17' },
+  { previousName: 'inspect_subagent', previousVersion: '2', currentName: 'inspect_subagent', currentVersion: '17' },
+  { previousName: 'inspect_subagent', previousVersion: '3', currentName: 'inspect_subagent', currentVersion: '17' },
+  { previousName: 'inspect_subagent', previousVersion: '4', currentName: 'inspect_subagent', currentVersion: '17' },
+  { previousName: 'inspect_subagent', previousVersion: '5', currentName: 'inspect_subagent', currentVersion: '17' },
+  { previousName: 'inspect_subagent', previousVersion: '6', currentName: 'inspect_subagent', currentVersion: '17' },
+  { previousName: 'examine_subagent', previousVersion: '1', currentName: 'examine_subagent', currentVersion: '17' },
+  { previousName: 'examine_subagent', previousVersion: '2', currentName: 'examine_subagent', currentVersion: '17' },
+  { previousName: 'examine_subagent', previousVersion: '3', currentName: 'examine_subagent', currentVersion: '17' },
+  { previousName: 'examine_subagent', previousVersion: '4', currentName: 'examine_subagent', currentVersion: '17' },
+  { previousName: 'examine_subagent', previousVersion: '5', currentName: 'examine_subagent', currentVersion: '17' },
+  { previousName: 'examine_subagent', previousVersion: '6', currentName: 'examine_subagent', currentVersion: '17' },
 
   // read → v7：仅文本判定下的图片降级文案收敛到统一占位子串（UNSUPPORTED_IMAGE_NOTE），
   // 并明确「模型能力所限 ≠ 读取失败」（Domain 不变量 6）。schema 不变，输出语义变化。
@@ -287,21 +337,21 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   { previousName: 'read', previousVersion: '5', currentName: 'read', currentVersion: '8' },
 
   // ls → v4 (formerly list_workspace)
-  { previousName: 'list_workspace', previousVersion: '1', currentName: 'ls', currentVersion: '5' },
-  { previousName: 'ls', previousVersion: '2', currentName: 'ls', currentVersion: '5' },
-  { previousName: 'ls', previousVersion: '3', currentName: 'ls', currentVersion: '5' },
+  { previousName: 'list_workspace', previousVersion: '1', currentName: 'ls', currentVersion: '6' },
+  { previousName: 'ls', previousVersion: '2', currentName: 'ls', currentVersion: '6' },
+  { previousName: 'ls', previousVersion: '3', currentName: 'ls', currentVersion: '6' },
 
   // grep → v5 (formerly search_workspace)
-  { previousName: 'search_workspace', previousVersion: '1', currentName: 'grep', currentVersion: '6' },
-  { previousName: 'grep', previousVersion: '2', currentName: 'grep', currentVersion: '6' },
-  { previousName: 'grep', previousVersion: '3', currentName: 'grep', currentVersion: '6' },
-  { previousName: 'grep', previousVersion: '4', currentName: 'grep', currentVersion: '6' },
+  { previousName: 'search_workspace', previousVersion: '1', currentName: 'grep', currentVersion: '7' },
+  { previousName: 'grep', previousVersion: '2', currentName: 'grep', currentVersion: '7' },
+  { previousName: 'grep', previousVersion: '3', currentName: 'grep', currentVersion: '7' },
+  { previousName: 'grep', previousVersion: '4', currentName: 'grep', currentVersion: '7' },
 
   // find → v5
-  { previousName: 'find', previousVersion: '1', currentName: 'find', currentVersion: '6' },
-  { previousName: 'find', previousVersion: '2', currentName: 'find', currentVersion: '6' },
-  { previousName: 'find', previousVersion: '3', currentName: 'find', currentVersion: '6' },
-  { previousName: 'find', previousVersion: '4', currentName: 'find', currentVersion: '6' },
+  { previousName: 'find', previousVersion: '1', currentName: 'find', currentVersion: '7' },
+  { previousName: 'find', previousVersion: '2', currentName: 'find', currentVersion: '7' },
+  { previousName: 'find', previousVersion: '3', currentName: 'find', currentVersion: '7' },
+  { previousName: 'find', previousVersion: '4', currentName: 'find', currentVersion: '7' },
 
   // write → v6 (formerly create_workspace_file)
   // v5：幂等键从路径+字节长度改为路径+内容 SHA-256，消除"同路径同字节数、内容不同"的碰撞
@@ -316,21 +366,21 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   // edit → v7 (formerly edit_workspace_file)
   // v6：幂等键从路径+长度签名改为路径+规范化参数 SHA-256，消除长度碰撞
   // v7：结果 details 新增 diffAdded/diffRemoved/diffPreview（同 write v6）。
-  { previousName: 'edit_workspace_file', previousVersion: '2', currentName: 'edit', currentVersion: '12' },
-  { previousName: 'edit', previousVersion: '2', currentName: 'edit', currentVersion: '12' },
-  { previousName: 'edit', previousVersion: '3', currentName: 'edit', currentVersion: '12' },
-  { previousName: 'edit', previousVersion: '4', currentName: 'edit', currentVersion: '12' },
-  { previousName: 'edit', previousVersion: '5', currentName: 'edit', currentVersion: '12' },
-  { previousName: 'edit', previousVersion: '6', currentName: 'edit', currentVersion: '12' },
+  { previousName: 'edit_workspace_file', previousVersion: '2', currentName: 'edit', currentVersion: '14' },
+  { previousName: 'edit', previousVersion: '2', currentName: 'edit', currentVersion: '14' },
+  { previousName: 'edit', previousVersion: '3', currentName: 'edit', currentVersion: '14' },
+  { previousName: 'edit', previousVersion: '4', currentName: 'edit', currentVersion: '14' },
+  { previousName: 'edit', previousVersion: '5', currentName: 'edit', currentVersion: '14' },
+  { previousName: 'edit', previousVersion: '6', currentName: 'edit', currentVersion: '14' },
 
   // apply_changes → v6 (formerly apply_workspace_changes)
   // v5：结果 details 新增 diffAdded/diffRemoved/diffPreview（只覆盖 create-file/
   // patch-file 文本型操作，全非文本批次不带 diff 段）。
-  { previousName: 'apply_workspace_changes', previousVersion: '2', currentName: 'apply_changes', currentVersion: '10' },
-  { previousName: 'apply_changes', previousVersion: '2', currentName: 'apply_changes', currentVersion: '10' },
-  { previousName: 'apply_changes', previousVersion: '3', currentName: 'apply_changes', currentVersion: '10' },
-  { previousName: 'apply_changes', previousVersion: '4', currentName: 'apply_changes', currentVersion: '10' },
-  { previousName: 'apply_changes', previousVersion: '5', currentName: 'apply_changes', currentVersion: '10' },
+  { previousName: 'apply_workspace_changes', previousVersion: '2', currentName: 'apply_changes', currentVersion: '12' },
+  { previousName: 'apply_changes', previousVersion: '2', currentName: 'apply_changes', currentVersion: '12' },
+  { previousName: 'apply_changes', previousVersion: '3', currentName: 'apply_changes', currentVersion: '12' },
+  { previousName: 'apply_changes', previousVersion: '4', currentName: 'apply_changes', currentVersion: '12' },
+  { previousName: 'apply_changes', previousVersion: '5', currentName: 'apply_changes', currentVersion: '12' },
 
   // restore_trash → v3 (formerly restore_workspace_trash)
   { previousName: 'restore_workspace_trash', previousVersion: '2', currentName: 'restore_trash', currentVersion: '7' },

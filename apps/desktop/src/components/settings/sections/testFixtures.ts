@@ -30,6 +30,7 @@ const baseContextPolicy: ContextPolicySettings = {
 
 const baseQueueModes: QueueModeSettings = {
   steering: 'one-at-a-time',
+  aside: 'one-at-a-time',
   followUp: 'one-at-a-time',
   autoDrain: true,
 }

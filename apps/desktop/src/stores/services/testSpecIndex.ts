@@ -2,6 +2,7 @@ import { createId } from '@/agent/core/id'
 import { isLegacyMissingDirectory } from './testScanErrors'
 import { parseTestSpec, type TestSpecIssue } from '@/agent/testing/spec/parseTestSpec'
 import { TEST_SPEC_SUFFIX, isTestSpecPath } from '@/agent/testing/spec/specAudit'
+import { isApiTestStep } from '@/agent/testing/spec/stepActions'
 import { findWorkspaceFiles, readWorkspaceText } from '@/platform/workspace'
 
 export interface TestSpecIndexEntry {
@@ -84,7 +85,7 @@ export const scanTestSpecs = async (
         ...parsed.spec.cases.flatMap((testCase) => testCase.steps),
         ...Object.values(parsed.spec.hooks ?? {}).flatMap((hookSteps) => hookSteps ?? []),
       ]
-      const apiStepCount = steps.filter((step) => step.action === 'api.request').length
+      const apiStepCount = steps.filter(isApiTestStep).length
       return {
         path,
         valid: true,

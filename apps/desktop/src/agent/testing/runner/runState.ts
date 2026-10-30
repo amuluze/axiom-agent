@@ -109,17 +109,20 @@ export const failureOriginForOutcome = (
   }
 }
 
-/** 用例归因 = **首个未通过步骤**的归因（它决定了这个用例为什么停在这里）。 */
+/**
+ * 用例归因 = **首个可归因的未通过步骤**。条件执行产生的 `skipped` 是正常分支
+ * （例如资源未创建而跳过清理），可能出现在真正的失败之前，不能据此提前结束查找。
+ */
 export const failureOriginForCase = (
   steps: readonly { status: TestRunStatus; origin?: FailureOrigin }[],
 ): FailureOrigin | null => {
   for (const step of steps) {
-    if (['queued', 'running', 'waiting_approval', 'passed'].includes(step.status)) continue
+    if (['queued', 'running', 'waiting_approval', 'passed', 'skipped'].includes(step.status)) continue
     if (step.origin !== undefined) return step.origin
     if (step.status === 'failed') return 'assertion'
     if (step.status === 'rejected') return 'approval'
     if (step.status === 'error') return 'driver'
-    // canceled/interrupted/skipped 不是"这一步失败"：不给归因，理由由 failure_kind 表达。
+    // canceled/interrupted 不是"这一步失败"：不给归因，理由由 failure_kind 表达。
     return null
   }
   return null

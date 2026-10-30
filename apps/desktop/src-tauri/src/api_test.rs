@@ -28,11 +28,29 @@ const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const MAX_TIMEOUT_MS: u64 = 120_000;
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_REQUEST_BODY_BYTES: usize = 256 * 1024;
+/// api.poll：轮询间隔缺省/上下界（与 TS `TEST_SPEC_LIMITS` 同源约束，权威判定在这里）。
+const DEFAULT_POLL_INTERVAL_MS: u64 = 2_000;
+const MIN_POLL_INTERVAL_MS: u64 = 500;
+const MAX_POLL_INTERVAL_MS: u64 = 30_000;
+/// 单次轮询尝试的请求超时：以间隔为基准夹在 [1s, 30s]——端点比间隔还慢时，按「尚未就绪」重试。
+const MIN_POLL_ATTEMPT_TIMEOUT_MS: u64 = 1_000;
+/// 证据里的逐次尝试摘要上限：120s 窗口 × 最小 500ms 间隔也只到 240 条，超限截断并标注。
+const MAX_POLL_ATTEMPT_SUMMARIES: usize = 240;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ApiSecretReference {
     secret_id: String,
+}
+
+/// v6：运行时凭据引用——值来自同 case 内 `sensitive: true` 的抽取，随步骤请求由 WebView
+/// 传入（`variableValues`），Rust 在发请求前注入并按凭据脱敏。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ApiVariableReference {
+    variable: String,
+    #[serde(default)]
+    prefix: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +58,7 @@ pub(crate) struct ApiSecretReference {
 pub(crate) enum ApiHeaderValue {
     Plain(String),
     Secret(ApiSecretReference),
+    Variable(ApiVariableReference),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +83,7 @@ pub(crate) struct ExtractedTestValue {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ApiRequestAction {
     id: String,
+    /// `api.request`（单次）或 `api.poll`（窗口内按 interval 重试，直到 expect 全部通过）。
     action: String,
     method: String,
     url: String,
@@ -77,8 +97,14 @@ pub(crate) struct ApiRequestAction {
     body_mode: Option<String>,
     #[serde(default)]
     timeout_ms: Option<u64>,
+    /// 仅 `api.poll`：轮询间隔（毫秒）。
+    #[serde(default)]
+    interval_ms: Option<u64>,
     #[serde(default)]
     redirect: Option<String>,
+    /// Host 头覆盖（`host[:port]`）：网络目的地仍由 url 决定，只影响服务端路由。
+    #[serde(default)]
+    virtual_host: Option<String>,
     #[serde(default)]
     expect: Vec<Value>,
     #[serde(default)]
@@ -104,6 +130,10 @@ pub(crate) struct RunApiTestStepRequest {
     /// 前序敏感提取值：只用于证据脱敏，不参与请求与租约摘要。
     #[serde(default)]
     sensitive_values: Vec<String>,
+    /// v6：步骤显式引用的运行时凭据取值（变量名 → 值）。不参与租约摘要——租约绑定的是
+    /// 「引用哪个变量 + 原始动作」，值在审批后被变量表更新属于预期（令牌轮换）。
+    #[serde(default)]
+    variable_values: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -159,6 +189,7 @@ struct ApiTestCancel {
     notify: Notify,
 }
 
+#[derive(Clone)]
 struct PreparedRequest {
     method: Method,
     url: Url,
@@ -202,7 +233,7 @@ fn binding_for(
     if request.run_id.trim().is_empty()
         || request.step_id.trim().is_empty()
         || request.action.id != request.step_id
-        || request.action.action != "api.request"
+        || (request.action.action != "api.request" && request.action.action != "api.poll")
     {
         return Err("API 测试运行或步骤标识无效".to_string());
     }
@@ -294,6 +325,21 @@ fn remove_request(state: &ApiTestState, run_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 只读检查：该 run 是否已被要求停止（活跃请求在看 `cancel.notify`，间隙里看 canceled_until）。
+fn cancellation_requested(state: &ApiTestState, run_id: &str, now: Instant) -> bool {
+    let Ok(requests) = state.requests.lock() else {
+        return false;
+    };
+    requests
+        .active
+        .get(run_id)
+        .is_some_and(|cancel| cancel.canceled.load(Ordering::Acquire))
+        || requests
+            .canceled_until
+            .get(run_id)
+            .is_some_and(|expires_at| *expires_at > now)
+}
+
 fn cancel_run(state: &ApiTestState, run_id: &str, now: Instant) -> Result<bool, String> {
     let mut requests = state
         .requests
@@ -338,6 +384,33 @@ fn validate_action(action: &ApiRequestAction) -> Result<(), String> {
     if contains_plaintext_credential(&action.url) {
         return Err("API 测试 URL 包含疑似明文凭据；请改用 apitest.* Secret 引用".to_string());
     }
+    if let Some(virtual_host) = &action.virtual_host {
+        validate_virtual_host(virtual_host)?;
+    }
+    if action.action == "api.poll" {
+        // 轮询是「步骤自身声明的语义」而非隐式重试：幂等方法 + 必有就绪断言 + 有界间隔，
+        // 单租约单审批覆盖整个窗口，迭代是命令内部行为。
+        if !matches!(action.method.as_str(), "GET" | "HEAD") {
+            return Err("api.poll 只允许 GET 或 HEAD（轮询必须保持幂等读）".to_string());
+        }
+        if action.body.is_some() {
+            return Err("api.poll 不允许携带请求体".to_string());
+        }
+        if action.expect.is_empty() {
+            return Err("api.poll 必须声明至少一条就绪断言".to_string());
+        }
+    }
+    if action.interval_ms.is_some() && action.action != "api.poll" {
+        return Err("intervalMs 只属于 api.poll 步骤".to_string());
+    }
+    let interval_ms = action.interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS);
+    if action.action == "api.poll"
+        && !(MIN_POLL_INTERVAL_MS..=MAX_POLL_INTERVAL_MS).contains(&interval_ms)
+    {
+        return Err(format!(
+            "api.poll 轮询间隔必须在 {MIN_POLL_INTERVAL_MS}–{MAX_POLL_INTERVAL_MS} 毫秒之间"
+        ));
+    }
     for value in action.query.values() {
         if let Some(text) = value.as_str() {
             if contains_plaintext_credential(text) {
@@ -348,10 +421,27 @@ fn validate_action(action: &ApiRequestAction) -> Result<(), String> {
         }
     }
     for (name, value) in &action.headers {
-        if let ApiHeaderValue::Plain(text) = value {
-            if is_sensitive_header(name) || contains_plaintext_credential(text) {
-                return Err(format!("敏感请求头 {name} 必须使用 apitest.* Secret 引用"));
+        match value {
+            ApiHeaderValue::Plain(text) => {
+                if is_sensitive_header(name) || contains_plaintext_credential(text) {
+                    return Err(format!(
+                        "敏感请求头 {name} 必须使用 apitest.* Secret 或运行时变量引用"
+                    ));
+                }
             }
+            ApiHeaderValue::Variable(reference) => {
+                if !valid_variable_name(&reference.variable) {
+                    return Err("API 测试运行时凭据变量名无效".to_string());
+                }
+                if let Some(prefix) = &reference.prefix {
+                    if !valid_credential_prefix(prefix) {
+                        return Err(
+                            "API 测试运行时凭据前缀必须是「Scheme 」形式（如 Bearer ）".to_string()
+                        );
+                    }
+                }
+            }
+            ApiHeaderValue::Secret(_) => {}
         }
     }
     for expectation in &action.expect {
@@ -362,7 +452,12 @@ fn validate_action(action: &ApiRequestAction) -> Result<(), String> {
                     .to_string(),
             );
         }
-        for key in ["headerEquals", "headerContains"] {
+        for key in [
+            "headerEquals",
+            "headerContains",
+            "headerExists",
+            "headerAbsent",
+        ] {
             if let Some(name) = expectation
                 .get(key)
                 .and_then(|value| value.get("name"))
@@ -438,6 +533,20 @@ fn validate_action(action: &ApiRequestAction) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// 运行时凭据前缀是认证 scheme 标签（`Bearer ` / `Token `），不是凭据本体：
+/// 只接受「一个 ASCII 字母开头的 scheme + 单个尾随空格」，杜绝把令牌塞进前缀。
+fn valid_credential_prefix(prefix: &str) -> bool {
+    let Some(scheme) = prefix.strip_suffix(' ') else {
+        return false;
+    };
+    if scheme.is_empty() || scheme.len() > 32 || prefix.len() > 33 {
+        return false;
+    }
+    let mut characters = scheme.chars();
+    characters.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && characters.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 fn valid_variable_name(name: &str) -> bool {
@@ -520,41 +629,98 @@ fn insert_header(headers: &mut HeaderMap, name: &str, value: &str) -> Result<(),
     Ok(())
 }
 
-fn uses_secret_headers(action: &ApiRequestAction) -> bool {
-    action
-        .headers
-        .values()
-        .any(|value| matches!(value, ApiHeaderValue::Secret(_)))
+fn uses_credentials(action: &ApiRequestAction) -> bool {
+    action.headers.values().any(|value| {
+        matches!(
+            value,
+            ApiHeaderValue::Secret(_) | ApiHeaderValue::Variable(_)
+        )
+    })
 }
 
-/// Secret 注入的同源边界：环境授权的 Secret 只能发往该环境的 API Base URL。
-/// 签发租约前与真正发请求前都走这一份判定，避免先让用户确认、再在运行期失败。
-fn validate_secret_destination(
+/// v4：Host 头覆盖只接受字面 `host[:port]`（占位符已在 TS 编译期物化）。网络目的地仍由
+/// 步骤 url 决定（DNS/SSRF/TLS 校验不变），这里只约束路由头的形状，防止把 scheme、
+/// 路径或凭据夹带进 Host。
+fn validate_virtual_host(value: &str) -> Result<(), String> {
+    if value.is_empty() || value.len() > 253 {
+        return Err("API 测试 virtualHost 必须是 host[:port]".to_string());
+    }
+    if contains_plaintext_credential(value) {
+        return Err("API 测试 virtualHost 包含疑似明文凭据".to_string());
+    }
+    let (host, port) = match value.rsplit_once(':') {
+        None => (value, None),
+        Some((host, port)) => (host, Some(port)),
+    };
+    if host.is_empty() {
+        return Err("API 测试 virtualHost 必须是 host[:port]".to_string());
+    }
+    for label in host.split('.') {
+        let mut characters = label.chars();
+        let valid_label = characters.next().is_some_and(|c| c.is_ascii_alphanumeric())
+            && label
+                .chars()
+                .last()
+                .is_some_and(|c| c.is_ascii_alphanumeric())
+            && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+        if !valid_label {
+            return Err(
+                "API 测试 virtualHost 必须是 host[:port]，不能包含协议、路径或凭据".to_string(),
+            );
+        }
+    }
+    if let Some(port) = port {
+        let parsed: u32 = port
+            .parse()
+            .map_err(|_| "API 测试 virtualHost 端口无效".to_string())?;
+        if !(1..=65535).contains(&parsed) {
+            return Err("API 测试 virtualHost 端口必须在 1–65535 之间".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// 凭据（宿主 Secret 或 v6 运行时变量引用）注入的同源边界：只能发往该环境声明的目的地
+/// ——API Base URL 的同源地址，或 `secretOrigins` 里显式声明的服务 origin（多服务拓扑：
+/// 控制面、数据面管理面各有各的凭据）。签发租约前与真正发请求前都走这一份判定，避免
+/// 先让用户确认、再在运行期失败。
+fn validate_credential_destination(
     action: &ApiRequestAction,
     environment: &TestEnvironmentAccess,
 ) -> Result<(), String> {
-    if !uses_secret_headers(action) {
+    if !uses_credentials(action) {
         return Ok(());
     }
-    let base = environment
-        .api_base_url
-        .as_deref()
-        .ok_or_else(|| "使用 Secret 的请求需要测试环境配置 API Base URL".to_string())?;
-    let base_url = parse_api_url(base)?;
-    let target = parse_api_url(&action.url)?;
-    if !same_api_origin(&base_url, &target) {
-        return Err("Secret 只能发送到测试环境 API Base URL 的同源地址".to_string());
+    if environment.api_base_url.is_none() && environment.secret_origins.is_empty() {
+        return Err("使用凭据的请求需要测试环境配置 API Base URL 或 secretOrigins".to_string());
     }
-    Ok(())
+    let target = parse_api_url(&action.url)?;
+    if let Some(base) = &environment.api_base_url {
+        let base_url = parse_api_url(base)?;
+        if same_api_origin(&base_url, &target) {
+            return Ok(());
+        }
+    }
+    for origin in &environment.secret_origins {
+        let Ok(origin_url) = parse_api_url(origin) else {
+            // 环境保存侧已校验过形状；这里的坏值按不匹配处理，fail-closed。
+            continue;
+        };
+        if same_api_origin(&origin_url, &target) {
+            return Ok(());
+        }
+    }
+    Err("凭据只能发送到测试环境 API Base URL 或 secretOrigins 声明的同源地址".to_string())
 }
 
 fn prepare_request(
     action: &ApiRequestAction,
     environment: &TestEnvironmentAccess,
     secrets: &SecretState,
+    variable_values: &BTreeMap<String, String>,
 ) -> Result<PreparedRequest, String> {
     validate_action(action)?;
-    validate_secret_destination(action, environment)?;
+    validate_credential_destination(action, environment)?;
     let method = Method::from_bytes(action.method.as_bytes())
         .map_err(|_| "API 测试 HTTP method 无效".to_string())?;
     let mut url = parse_api_url(&action.url)?;
@@ -593,6 +759,14 @@ fn prepare_request(
                 secret_values.push(value.clone());
                 (value, true)
             }
+            ApiHeaderValue::Variable(reference) => {
+                let value = variable_values
+                    .get(&reference.variable)
+                    .ok_or_else(|| format!("运行时凭据变量「{}」缺少取值", reference.variable))?;
+                let resolved = format!("{}{}", reference.prefix.clone().unwrap_or_default(), value);
+                secret_values.push(resolved.clone());
+                (resolved, true)
+            }
         };
         insert_header(&mut headers, name, &resolved)?;
         evidence.insert(
@@ -622,6 +796,13 @@ fn prepare_request(
             insert_header(&mut headers, "content-type", content_type)?;
             evidence.insert("content-type".to_string(), content_type.to_string());
         }
+    }
+    // Host 覆盖最后落笔：不允许被环境/动作头抢占（headers 通道本身拒绝 host 名），证据如实记录。
+    if let Some(virtual_host) = &action.virtual_host {
+        let value = HeaderValue::from_str(virtual_host)
+            .map_err(|_| "API 测试 virtualHost 无效".to_string())?;
+        headers.insert(reqwest::header::HOST, value);
+        evidence.insert("host".to_string(), virtual_host.clone());
     }
     Ok(PreparedRequest {
         method,
@@ -831,20 +1012,19 @@ fn assertion_result(
         .iter()
         .next()
         .ok_or_else(|| "API 断言为空".to_string())?;
-    if response.truncated
-        && matches!(
-            kind.as_str(),
-            "bodyContains" | "jsonPointerExists" | "jsonPointerEquals"
-        )
-    {
+    let body_kind = matches!(
+        kind.as_str(),
+        "bodyContains"
+            | "jsonPointerExists"
+            | "jsonPointerEquals"
+            | "jsonPointerLengthEquals"
+            | "jsonPointerNumberAtLeast"
+            | "jsonPointerNumberAtMost"
+    );
+    if response.truncated && body_kind {
         return Err("响应超过断言读取上限，无法完成正文断言".to_string());
     }
-    if !response_is_textual(response)
-        && matches!(
-            kind.as_str(),
-            "bodyContains" | "jsonPointerExists" | "jsonPointerEquals"
-        )
-    {
+    if !response_is_textual(response) && body_kind {
         return Err("二进制响应不支持正文断言".to_string());
     }
     let (passed, actual) = match kind.as_str() {
@@ -859,6 +1039,28 @@ fn assertion_result(
             (
                 body_text.contains(text),
                 json!({ "responseBytes": response.total_bytes, "truncated": response.truncated }),
+            )
+        }
+        "bodyNotContains" => {
+            let text = expected
+                .as_str()
+                .ok_or_else(|| "bodyNotContains 断言无效".to_string())?;
+            (
+                !body_text.contains(text),
+                json!({ "responseBytes": response.total_bytes, "truncated": response.truncated }),
+            )
+        }
+        "statusIn" => {
+            let codes = expected
+                .as_array()
+                .ok_or_else(|| "statusIn 断言无效".to_string())?;
+            if codes.is_empty() {
+                return Err("statusIn 断言无效".to_string());
+            }
+            let status = u64::from(response.status);
+            (
+                codes.iter().any(|code| code.as_u64() == Some(status)),
+                json!(response.status),
             )
         }
         "maxElapsedMs" => {
@@ -912,9 +1114,63 @@ fn assertion_result(
             let actual = body.pointer(pointer);
             (actual == Some(wanted), bounded_json_value(actual))
         }
+        "headerExists" | "headerAbsent" => {
+            let name = expected
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "响应头断言名称无效".to_string())?;
+            let present = response.headers.get(name).is_some();
+            let passed = if kind == "headerExists" {
+                present
+            } else {
+                !present
+            };
+            (passed, json!(present))
+        }
+        "jsonPointerLengthEquals" => {
+            let (pointer, wanted) =
+                pointer_number_expectation(expected, "jsonPointerLengthEquals")?;
+            let body: Value = serde_json::from_slice(&response.body)
+                .map_err(|_| "响应不是有效 JSON".to_string())?;
+            let actual = body
+                .pointer(&pointer)
+                .and_then(Value::as_array)
+                .map(Vec::len);
+            let passed = actual
+                .map(|length| length as f64 == wanted)
+                .unwrap_or(false);
+            (passed, bounded_json_value(body.pointer(&pointer)))
+        }
+        "jsonPointerNumberAtLeast" | "jsonPointerNumberAtMost" => {
+            let (pointer, bound) = pointer_number_expectation(expected, kind.as_str())?;
+            let body: Value = serde_json::from_slice(&response.body)
+                .map_err(|_| "响应不是有效 JSON".to_string())?;
+            let actual = body.pointer(&pointer).and_then(Value::as_f64);
+            let passed = match (actual, kind.as_str()) {
+                (Some(value), "jsonPointerNumberAtLeast") => value >= bound,
+                (Some(value), _) => value <= bound,
+                (None, _) => false,
+            };
+            (passed, bounded_json_value(body.pointer(&pointer)))
+        }
         _ => return Err("未知的 API 断言".to_string()),
     };
     Ok((passed, kind.clone(), expected.clone(), actual))
+}
+
+/// v4 数值类 Pointer 断言的公共读取：`{ pointer, value }`，value 必须是有限数字。
+fn pointer_number_expectation(expected: &Value, kind: &str) -> Result<(String, f64), String> {
+    let pointer = expected
+        .get("pointer")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{kind} 断言缺少 pointer"))?
+        .to_string();
+    let value = expected
+        .get("value")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| format!("{kind} 断言缺少有限数字 value"))?;
+    Ok((pointer, value))
 }
 
 fn extract_values(
@@ -1041,16 +1297,32 @@ fn secret_step_confirmation(action: &ApiRequestAction) -> Option<String> {
         return None;
     }
     let url = parse_api_url(&action.url).ok()?;
+    let host_line = action
+        .virtual_host
+        .as_deref()
+        .map(|virtual_host| format!("\nHost 覆盖：{virtual_host}"))
+        .unwrap_or_default();
+    let poll_line = if action.action == "api.poll" {
+        format!(
+            "\n轮询：每 {} ms 一次，窗口 {} ms",
+            action.interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS),
+            action.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS),
+        )
+    } else {
+        String::new()
+    };
     Some(format!(
         "即将执行带 Secret 的 API 测试步骤：\n\n\
          步骤：{}\n\
-         请求：{} {}{}\n\
+         请求：{} {}{}{}{}\n\
          Secret：{} 个（值不会显示）\n\n\
-         Secret 只能注入到环境 API Base URL 的同源地址。",
+         Secret 只能注入到环境 API Base URL 或 secretOrigins 声明的同源地址。",
         action.id,
         action.method,
         url.origin().ascii_serialization(),
         url.path(),
+        host_line,
+        poll_line,
         secret_count,
     ))
 }
@@ -1068,7 +1340,7 @@ pub(crate) async fn issue_api_test_step_lease(
     let (environment, generation) =
         environment_access(&repository, &workspace, request.environment_id.as_deref()).await?;
     // 同源判定先行：跨源 Secret 请求在弹确认框之前就失败，不消耗用户点击。
-    validate_secret_destination(&request.action, &environment)?;
+    validate_credential_destination(&request.action, &environment)?;
     // 与 UI 步骤同一条在场门：校验全部通过后再要求，失败不消耗用户点击。
     // macOS 是「手势 + 内容确认」两层；非 macOS 没有等价手势信号，内容确认框的
     // 那一次点击即充当在场证明（不重复弹框）；无 Secret 的步骤补一次通用确认框。
@@ -1128,7 +1400,8 @@ pub(crate) async fn run_api_test_step(
         binding_for(&request.request, &environment, generation)?,
         Instant::now(),
     )?;
-    let prepared = prepare_request(&request.request.action, &environment, &secrets)?;
+    let action = &request.request.action;
+    let prepared = prepare_request(action, &environment, &secrets, &request.variable_values)?;
     // 敏感提取值不是本次请求的 SecretReference，但可能被后续步骤写进 URL/header/body；
     // 证据必须先按它们脱敏，而不是只按本次注入的 Secret 脱敏。
     let mut evidence_secrets = prepared.secret_values.clone();
@@ -1139,10 +1412,183 @@ pub(crate) async fn run_api_test_step(
             .filter(|value| !value.is_empty())
             .cloned(),
     );
-    let cancel = register_request(&state, &request.request.run_id, Instant::now())?;
-    let received = send_request(&prepared, environment.allow_private_network, &cancel).await;
-    remove_request(&state, &request.request.run_id)?;
-    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+    let poll = action.action == "api.poll";
+    let interval_ms = action.interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS);
+    let window_ms = action.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
+    let deadline = started + Duration::from_millis(window_ms);
+
+    let mut attempts: u64 = 0;
+    let mut summaries: Vec<Value> = Vec::new();
+    let mut summaries_truncated = false;
+    let mut outcome = loop {
+        // 单次尝试的请求超时：轮询按间隔夹取（端点比间隔还慢就按「尚未就绪」重试），
+        // 且不越过剩余窗口；单次执行沿用步骤声明的超时。
+        let mut attempt_prepared = prepared.clone();
+        if poll {
+            let remaining = u64::try_from(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis(),
+            )
+            .unwrap_or(0);
+            let budget = interval_ms
+                .clamp(MIN_POLL_ATTEMPT_TIMEOUT_MS, MAX_POLL_INTERVAL_MS)
+                .min(remaining)
+                .max(1);
+            attempt_prepared.timeout = Duration::from_millis(budget);
+        }
+        let attempt_started = Instant::now();
+        let outcome = match execute_attempt(
+            &state,
+            &request,
+            &attempt_prepared,
+            &environment,
+            attempt_started,
+        )
+        .await
+        {
+            Ok(outcome) => outcome,
+            // 尝试间隙里运行被停止：register_request 在 canceled_until 里拦下，转为 canceled 结算。
+            Err(message) if message == "运行已停止" => AttemptOutcome::canceled(&message),
+            Err(message) => return Err(message),
+        };
+        attempts += 1;
+        if summaries.len() < MAX_POLL_ATTEMPT_SUMMARIES {
+            summaries.push(json!({
+                "attempt": attempts,
+                "status": outcome.status_code,
+                "transport": outcome.transport,
+                "verdict": outcome.runner_verdict,
+                "elapsedMs": outcome.attempt_elapsed_ms,
+            }));
+        } else {
+            summaries_truncated = true;
+        }
+        let settled = matches!(outcome.runner_verdict, "passed" | "canceled");
+        if !poll || settled || Instant::now() >= deadline {
+            break outcome;
+        }
+        // poll：断言失败与传输/求值错误都是「尚未就绪」——窗口内按间隔重试，显式声明的
+        // 轮询语义，不违反「无隐式重试」。等待按 250ms 切片检查取消：尝试间隙没有 active
+        // 请求，停止请求落在 canceled_until 里，这里据此提前结束（最多滞后 250ms）。
+        let mut remaining_wait = Duration::from_millis(interval_ms)
+            .min(deadline.saturating_duration_since(Instant::now()));
+        while !remaining_wait.is_zero() {
+            if cancellation_requested(state.inner(), &request.request.run_id, Instant::now()) {
+                break;
+            }
+            let slice = remaining_wait.min(Duration::from_millis(250));
+            tokio::time::sleep(slice).await;
+            remaining_wait = remaining_wait.saturating_sub(slice);
+        }
+        if cancellation_requested(state.inner(), &request.request.run_id, Instant::now()) {
+            break AttemptOutcome::canceled("运行已停止");
+        }
+    };
+
+    let total_elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    evidence_secrets.append(&mut outcome.new_sensitive_values);
+    let mut evidence = outcome.evidence;
+    if poll {
+        if let Some(object) = evidence.as_object_mut() {
+            object.insert(
+                "poll".to_string(),
+                json!({
+                    "intervalMs": interval_ms,
+                    "timeoutMs": window_ms,
+                    "attempts": attempts,
+                    "elapsedMs": total_elapsed_ms,
+                    "attemptSummaries": summaries,
+                    "summariesTruncated": summaries_truncated,
+                }),
+            );
+        }
+    }
+    let evidence_content_hash =
+        persist_evidence(&app, &repository, evidence, &evidence_secrets).await?;
+
+    let canceled = outcome.runner_verdict == "canceled";
+    let evaluation_error = outcome.evaluation_error;
+    let assertion_failed = outcome.runner_verdict == "failed";
+    let message = if canceled {
+        outcome.message
+    } else if poll && outcome.runner_verdict != "passed" {
+        format!(
+            "轮询 {window_ms} ms 窗口内未就绪（{attempts} 次尝试）：{}",
+            outcome.message
+        )
+    } else {
+        outcome.message
+    };
+    Ok(ApiTestStepResult {
+        verdict: if canceled || evaluation_error {
+            "not_evaluated"
+        } else if assertion_failed {
+            "failed"
+        } else {
+            "passed"
+        }
+        .to_string(),
+        runner_verdict: outcome.runner_verdict.to_string(),
+        transport: outcome.transport.clone(),
+        message,
+        evidence_content_hash,
+        status_code: outcome.status_code,
+        elapsed_ms: total_elapsed_ms,
+        extracted: outcome.extracted,
+    })
+}
+
+/// 单次尝试的结算事实。证据只在最终尝试上落盘（轮询可能产生上百次尝试，逐次写
+/// Artifact 只会刷屏证据列表），逐次概况由外层汇总进 `poll.attemptSummaries`。
+struct AttemptOutcome {
+    runner_verdict: &'static str,
+    transport: String,
+    message: String,
+    status_code: Option<u16>,
+    attempt_elapsed_ms: u64,
+    evidence: Value,
+    extracted: BTreeMap<String, ExtractedTestValue>,
+    /// 断言/提取求值失败（not_evaluated）：对轮询而言同样是「尚未就绪」，对单次执行是 error。
+    evaluation_error: bool,
+    /// 本次尝试新产出的敏感提取值：成功尝试才有，交由外层并入证据脱敏名单。
+    new_sensitive_values: Vec<String>,
+}
+
+impl AttemptOutcome {
+    fn canceled(message: &str) -> Self {
+        Self {
+            runner_verdict: "canceled",
+            transport: "canceled".to_string(),
+            message: message.to_string(),
+            status_code: None,
+            attempt_elapsed_ms: 0,
+            evidence: json!({
+                "schemaVersion": 1,
+                "transport": "canceled",
+                "message": message,
+            }),
+            extracted: BTreeMap::new(),
+            evaluation_error: false,
+            new_sensitive_values: Vec::new(),
+        }
+    }
+}
+
+/// 执行一次请求并完成断言/提取/证据组装。`Err` 只代表命令级失败（注册/状态损坏）；
+/// 请求层结果（含传输失败与取消）都折叠为 [`AttemptOutcome`]，让轮询循环自己决策。
+async fn execute_attempt(
+    state: &ApiTestState,
+    request: &RunApiTestStepRequest,
+    prepared: &PreparedRequest,
+    environment: &TestEnvironmentAccess,
+    attempt_started: Instant,
+) -> Result<AttemptOutcome, String> {
+    let cancel = register_request(state, &request.request.run_id, Instant::now())?;
+    let received = send_request(prepared, environment.allow_private_network, &cancel).await;
+    remove_request(state, &request.request.run_id)?;
+    let elapsed_ms = u64::try_from(attempt_started.elapsed().as_millis()).unwrap_or(u64::MAX);
     match received {
         Ok(response) => {
             // H1-4 故障窗口：响应已完整收到，但断言/证据尚未落库。
@@ -1196,6 +1642,7 @@ pub(crate) async fn run_api_test_step(
                 .collect::<BTreeMap<_, _>>();
             // 敏感提取值可能出现在响应正文/断言 actual 里；它们不是请求 SecretReference，
             // 但同样必须先脱敏再写证据。
+            let mut new_sensitive_values = Vec::new();
             for value in extracted.values() {
                 if !value.sensitive {
                     continue;
@@ -1206,7 +1653,7 @@ pub(crate) async fn run_api_test_step(
                     .map(str::to_string)
                     .unwrap_or_else(|| value.value.to_string());
                 if !text.is_empty() {
-                    evidence_secrets.push(text);
+                    new_sensitive_values.push(text);
                 }
             }
             let body_for_evidence = if response.truncated || !response_is_textual(&response) {
@@ -1235,34 +1682,25 @@ pub(crate) async fn run_api_test_step(
                 "assertions": assertions,
                 "extracted": extraction_evidence,
             });
-            let evidence_content_hash =
-                persist_evidence(&app, &repository, evidence, &evidence_secrets).await?;
             let evaluation_error = assertion_error || extraction_error.is_some();
             let assertion_failed = first_failure.is_some() && !evaluation_error;
-            Ok(ApiTestStepResult {
-                verdict: if evaluation_error {
-                    "not_evaluated"
-                } else if assertion_failed {
-                    "failed"
-                } else {
-                    "passed"
-                }
-                .to_string(),
+            Ok(AttemptOutcome {
                 runner_verdict: if evaluation_error {
                     "error"
                 } else if assertion_failed {
                     "failed"
                 } else {
                     "passed"
-                }
-                .to_string(),
+                },
                 transport: "received".to_string(),
                 message: first_failure
                     .unwrap_or_else(|| format!("HTTP {} · {} ms", response.status, elapsed_ms)),
-                evidence_content_hash,
                 status_code: Some(response.status),
-                elapsed_ms,
+                attempt_elapsed_ms: elapsed_ms,
+                evidence,
                 extracted,
+                evaluation_error,
+                new_sensitive_values,
             })
         }
         Err(message) => {
@@ -1280,17 +1718,16 @@ pub(crate) async fn run_api_test_step(
                 "message": message,
                 "elapsedMs": elapsed_ms,
             });
-            let evidence_content_hash =
-                persist_evidence(&app, &repository, evidence, &evidence_secrets).await?;
-            Ok(ApiTestStepResult {
-                verdict: "not_evaluated".to_string(),
-                runner_verdict: if canceled { "canceled" } else { "error" }.to_string(),
+            Ok(AttemptOutcome {
+                runner_verdict: if canceled { "canceled" } else { "error" },
                 transport: transport.to_string(),
                 message,
-                evidence_content_hash,
                 status_code: None,
-                elapsed_ms,
+                attempt_elapsed_ms: elapsed_ms,
+                evidence,
                 extracted: BTreeMap::new(),
+                evaluation_error: !canceled,
+                new_sensitive_values: Vec::new(),
             })
         }
     }
@@ -1321,6 +1758,8 @@ mod tests {
             body_mode: None,
             timeout_ms: None,
             redirect: None,
+            virtual_host: None,
+            interval_ms: None,
             expect: vec![json!({"status": 200})],
             extract: BTreeMap::new(),
         }
@@ -1332,6 +1771,7 @@ mod tests {
             headers: BTreeMap::new(),
             secret_ids: BTreeSet::new(),
             api_base_url: Some("https://example.com".to_string()),
+            secret_origins: BTreeSet::new(),
         }
     }
 
@@ -1363,6 +1803,21 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_between_poll_attempts_is_observed() {
+        let state = ApiTestState::default();
+        let now = Instant::now();
+        assert!(!cancellation_requested(&state, "run-gap", now));
+        cancel_run(&state, "run-gap", now).unwrap();
+        assert!(cancellation_requested(&state, "run-gap", now));
+        // 间隙取消只在 TTL 内有效：过期后视为未取消（与 register_request 的清理窗口一致）。
+        assert!(!cancellation_requested(
+            &state,
+            "run-gap",
+            now + LEASE_TTL + Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
     fn cancellation_before_request_registration_is_not_lost() {
         let state = ApiTestState::default();
         let now = Instant::now();
@@ -1382,20 +1837,20 @@ mod tests {
             ApiHeaderValue::Plain("Bearer leaked".to_string()),
         );
         let secrets = SecretState::default();
-        assert!(prepare_request(&value, &access(), &secrets).is_err());
+        assert!(prepare_request(&value, &access(), &secrets, &BTreeMap::new()).is_err());
 
         let mut custom = action();
         custom.headers.insert(
             "X-Custom-Auth".to_string(),
             ApiHeaderValue::Plain("token=ghp_leaked".to_string()),
         );
-        assert!(prepare_request(&custom, &access(), &secrets).is_err());
+        assert!(prepare_request(&custom, &access(), &secrets, &BTreeMap::new()).is_err());
 
         let mut environment = access();
         environment
             .headers
             .insert("X-Custom-Auth".to_string(), "Bearer leaked".to_string());
-        assert!(prepare_request(&action(), &environment, &secrets).is_err());
+        assert!(prepare_request(&action(), &environment, &secrets, &BTreeMap::new()).is_err());
     }
 
     #[test]
@@ -1404,18 +1859,18 @@ mod tests {
 
         let mut query = action();
         query.query.insert("token".to_string(), json!("ghp_leaked"));
-        assert!(prepare_request(&query, &access(), &secrets).is_err());
+        assert!(prepare_request(&query, &access(), &secrets, &BTreeMap::new()).is_err());
 
         let mut body = action();
         body.method = "POST".to_string();
         body.body = Some(json!({ "token": "ghp_leaked" }));
-        assert!(prepare_request(&body, &access(), &secrets).is_err());
+        assert!(prepare_request(&body, &access(), &secrets, &BTreeMap::new()).is_err());
 
         let mut expectation = action();
         expectation.expect = vec![json!({
             "headerEquals": { "name": "x-trace", "value": "Bearer leaked" }
         })];
-        assert!(prepare_request(&expectation, &access(), &secrets).is_err());
+        assert!(prepare_request(&expectation, &access(), &secrets, &BTreeMap::new()).is_err());
     }
 
     #[test]
@@ -1425,7 +1880,7 @@ mod tests {
             "headerEquals": { "name": "set-cookie", "value": "session=abc" }
         })];
         let secrets = SecretState::default();
-        assert!(prepare_request(&value, &access(), &secrets).is_err());
+        assert!(prepare_request(&value, &access(), &secrets, &BTreeMap::new()).is_err());
     }
 
     #[test]
@@ -1448,7 +1903,7 @@ mod tests {
             "Bearer top-secret",
         )
         .unwrap();
-        let prepared = prepare_request(&value, &environment, &secrets).unwrap();
+        let prepared = prepare_request(&value, &environment, &secrets, &BTreeMap::new()).unwrap();
         assert_eq!(
             prepared.headers.get("authorization").unwrap(),
             "Bearer top-secret"
@@ -1503,19 +1958,19 @@ mod tests {
         let mut cross_origin = value.clone();
         cross_origin.url = "https://attacker.example/orders".to_string();
         assert_eq!(
-            prepare_request(&cross_origin, &environment, &secrets)
+            prepare_request(&cross_origin, &environment, &secrets, &BTreeMap::new())
                 .err()
                 .as_deref(),
-            Some("Secret 只能发送到测试环境 API Base URL 的同源地址"),
+            Some("凭据只能发送到测试环境 API Base URL 或 secretOrigins 声明的同源地址"),
         );
 
         let mut different_port = value.clone();
         different_port.url = "https://example.com:8443/orders".to_string();
         assert_eq!(
-            prepare_request(&different_port, &environment, &secrets)
+            prepare_request(&different_port, &environment, &secrets, &BTreeMap::new())
                 .err()
                 .as_deref(),
-            Some("Secret 只能发送到测试环境 API Base URL 的同源地址"),
+            Some("凭据只能发送到测试环境 API Base URL 或 secretOrigins 声明的同源地址"),
         );
 
         let no_base = TestEnvironmentAccess {
@@ -1523,10 +1978,13 @@ mod tests {
             headers: BTreeMap::new(),
             secret_ids: BTreeSet::from(["apitest.orders-token".to_string()]),
             api_base_url: None,
+            secret_origins: BTreeSet::new(),
         };
         assert_eq!(
-            prepare_request(&value, &no_base, &secrets).err().as_deref(),
-            Some("使用 Secret 的请求需要测试环境配置 API Base URL"),
+            prepare_request(&value, &no_base, &secrets, &BTreeMap::new())
+                .err()
+                .as_deref(),
+            Some("使用凭据的请求需要测试环境配置 API Base URL 或 secretOrigins"),
         );
     }
 
@@ -1756,5 +2214,376 @@ mod tests {
         assert_eq!(result.body.len(), MAX_RESPONSE_BYTES);
         assert_eq!(result.total_bytes, MAX_RESPONSE_BYTES + 1);
         assert_eq!(result.body_hash, hex_digest(&body));
+    }
+
+    // ---- v4：virtualHost / api.poll / 新断言 / secretOrigins ----
+
+    #[test]
+    fn body_not_contains_is_a_negative_assertion() {
+        let response = response_with(
+            200,
+            r#"{"err":"","data":{"token":"hidden"}}"#,
+            &[("content-type", "application/json")],
+        );
+        let body_text = String::from_utf8_lossy(&response.body).to_string();
+        let evaluate = |expectation: Value| {
+            assertion_result(&expectation, &response, &body_text, 1).map(|(passed, _, _, _)| passed)
+        };
+        assert!(evaluate(json!({"bodyNotContains": "leaked"})).unwrap());
+        assert!(!evaluate(json!({"bodyNotContains": "hidden"})).unwrap());
+        assert!(evaluate(json!({"bodyNotContains": ""})).is_ok());
+    }
+
+    #[test]
+    fn status_in_assertions_accept_any_listed_code() {
+        let response = response_with(404, "{}", &[]);
+        let evaluate = |expectation: Value| {
+            assertion_result(&expectation, &response, "", 1).map(|(passed, _, _, _)| passed)
+        };
+        assert!(evaluate(json!({"statusIn": [200, 404]})).unwrap());
+        assert!(!evaluate(json!({"statusIn": [200, 204]})).unwrap());
+        assert!(evaluate(json!({"statusIn": []})).is_err());
+        assert!(evaluate(json!({"statusIn": "404"})).is_err());
+    }
+
+    #[test]
+    fn virtual_host_shape_is_validated() {
+        for bad in [
+            "",
+            "https://api.example.test",
+            "api.example.test/path",
+            "user:pass@host",
+            "host:99999",
+            "host:0x10",
+            "-lead.example.test",
+            "a:1:2",
+        ] {
+            let mut value = action();
+            value.virtual_host = Some(bad.to_string());
+            assert!(
+                validate_action(&value).is_err(),
+                "virtualHost「{bad}」应当被拒绝"
+            );
+        }
+        let mut value = action();
+        value.virtual_host = Some("shop.example.test:8443".to_string());
+        assert!(validate_action(&value).is_ok());
+    }
+
+    #[test]
+    fn virtual_host_overrides_the_host_header_only() {
+        let mut value = action();
+        value.url = "http://127.0.0.1:8081/orders".to_string();
+        value.virtual_host = Some("shop.example.test".to_string());
+        let prepared =
+            prepare_request(&value, &access(), &SecretState::default(), &BTreeMap::new()).unwrap();
+        assert_eq!(
+            prepared.headers.get(reqwest::header::HOST).unwrap(),
+            "shop.example.test"
+        );
+        assert_eq!(
+            prepared.request_headers_for_evidence.get("host").unwrap(),
+            "shop.example.test"
+        );
+        // 普通 headers 通道依旧拒绝 host：覆盖只能走显式 virtualHost 字段。
+        let mut plain = action();
+        plain.headers.insert(
+            "Host".to_string(),
+            ApiHeaderValue::Plain("evil.example.test".to_string()),
+        );
+        assert!(
+            prepare_request(&plain, &access(), &SecretState::default(), &BTreeMap::new()).is_err()
+        );
+    }
+
+    #[test]
+    fn virtual_host_is_sent_on_the_wire() {
+        use std::io::{Read, Write};
+
+        // 真实 TCP 回环服务：读完整请求头后回 200，用来验证 Host 覆盖确实生效于网络线。
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 512];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                match stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => request.extend_from_slice(&buffer[..read]),
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK
+Content-Length: 2
+Content-Type: text/plain
+Connection: close
+
+ok",
+                )
+                .unwrap();
+            String::from_utf8_lossy(&request).to_string()
+        });
+
+        let mut value = action();
+        value.url = format!("http://{}/orders", addr);
+        value.virtual_host = Some("shop.example.test".to_string());
+        let prepared =
+            prepare_request(&value, &access(), &SecretState::default(), &BTreeMap::new()).unwrap();
+        let cancel = ApiTestCancel::default();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let response = runtime
+            .block_on(send_request(&prepared, true, &cancel))
+            .unwrap();
+        assert_eq!(response.status, 200);
+        let request = server.join().unwrap();
+        let lowered = request.to_ascii_lowercase();
+        assert!(
+            lowered.contains("host: shop.example.test"),
+            "Host 覆盖未生效，实际请求：{request}"
+        );
+        // 只在线上出现一次 Host 头：不能出现「URL 主机 + 覆盖主机」两份。
+        assert_eq!(
+            lowered.matches("\nhost:").count(),
+            1,
+            "重复 Host 头：{request}"
+        );
+    }
+
+    #[test]
+    fn poll_actions_must_stay_idempotent_and_bounded() {
+        let mut poll_post = action();
+        poll_post.action = "api.poll".to_string();
+        poll_post.method = "POST".to_string();
+        assert_eq!(
+            validate_action(&poll_post).err().as_deref(),
+            Some("api.poll 只允许 GET 或 HEAD（轮询必须保持幂等读）")
+        );
+
+        let mut poll_no_expect = action();
+        poll_no_expect.action = "api.poll".to_string();
+        poll_no_expect.expect = Vec::new();
+        assert_eq!(
+            validate_action(&poll_no_expect).err().as_deref(),
+            Some("api.poll 必须声明至少一条就绪断言")
+        );
+
+        let mut poll_interval_too_fast = action();
+        poll_interval_too_fast.action = "api.poll".to_string();
+        poll_interval_too_fast.interval_ms = Some(100);
+        assert!(validate_action(&poll_interval_too_fast)
+            .err()
+            .is_some_and(|message| message.contains("500")));
+
+        let mut request_with_interval = action();
+        request_with_interval.interval_ms = Some(2_000);
+        assert_eq!(
+            validate_action(&request_with_interval).err().as_deref(),
+            Some("intervalMs 只属于 api.poll 步骤")
+        );
+
+        // api.poll 的合法形态：GET + expect + 窗口与间隔。
+        let mut poll = action();
+        poll.action = "api.poll".to_string();
+        poll.method = "GET".to_string();
+        poll.interval_ms = Some(2_000);
+        poll.timeout_ms = Some(60_000);
+        assert!(validate_action(&poll).is_ok());
+
+        // binding_for 接受两种动作名（api.delay 是 Runner 本地步骤，永远不进 Rust）。
+        let request = ApiTestStepRequest {
+            run_id: "run-1".to_string(),
+            step_id: "load-orders".to_string(),
+            environment_id: None,
+            action: poll,
+        };
+        assert!(binding_for(&request, &access(), 1).is_ok());
+    }
+
+    #[test]
+    fn secrets_may_target_declared_service_origins() {
+        let mut value = action();
+        value.url = "http://127.0.0.1:18081/healthz".to_string();
+        value.headers.insert(
+            "X-Quoin-Secret".to_string(),
+            ApiHeaderValue::Secret(ApiSecretReference {
+                secret_id: "apitest.detector-secret".to_string(),
+            }),
+        );
+        let mut environment = access();
+        environment
+            .secret_ids
+            .insert("apitest.detector-secret".to_string());
+        let secrets = SecretState::default();
+        crate::secrets::store_api_test_secret(&secrets, "apitest.detector-secret", "shared-secret")
+            .unwrap();
+
+        // 未声明该 origin：拒绝（api_base_url 是 https://example.com，不同源）。
+        assert!(prepare_request(&value, &environment, &secrets, &BTreeMap::new()).is_err());
+
+        // 声明数据面管理面 origin 后放行；另一个未声明 origin 仍拒绝。
+        environment
+            .secret_origins
+            .insert("http://127.0.0.1:18081".to_string());
+        assert!(prepare_request(&value, &environment, &secrets, &BTreeMap::new()).is_ok());
+
+        let mut other_port = value.clone();
+        other_port.url = "http://127.0.0.1:18082/healthz".to_string();
+        assert!(prepare_request(&other_port, &environment, &secrets, &BTreeMap::new()).is_err());
+    }
+
+    #[test]
+    fn runtime_credentials_are_injected_and_destination_bound() {
+        let mut value = action();
+        value.headers.insert(
+            "Authorization".to_string(),
+            ApiHeaderValue::Variable(ApiVariableReference {
+                variable: "token".to_string(),
+                prefix: Some("Bearer ".to_string()),
+            }),
+        );
+        let environment = access(); // api_base_url = https://example.com
+        let secrets = SecretState::default();
+        let mut values = BTreeMap::new();
+        values.insert("token".to_string(), "jwt-abc".to_string());
+
+        let prepared = prepare_request(&value, &environment, &secrets, &values).unwrap();
+        assert_eq!(
+            prepared
+                .headers
+                .get(reqwest::header::AUTHORIZATION)
+                .unwrap(),
+            "Bearer jwt-abc"
+        );
+        // 证据按凭据脱敏（值本身进入脱敏名单，正文出现也会被替换）。
+        assert_eq!(
+            prepared
+                .request_headers_for_evidence
+                .get("Authorization")
+                .unwrap(),
+            "[REDACTED]"
+        );
+        assert!(prepared
+            .secret_values
+            .iter()
+            .any(|secret| secret == "Bearer jwt-abc"));
+
+        // 缺取值：明确失败，不静默发空头。
+        assert_eq!(
+            prepare_request(&value, &environment, &secrets, &BTreeMap::new())
+                .err()
+                .as_deref(),
+            Some("运行时凭据变量「token」缺少取值")
+        );
+
+        // 同一套目的地边界：跨源与未授权环境都拒绝。
+        let mut cross_origin = value.clone();
+        cross_origin.url = "https://attacker.example/orders".to_string();
+        assert!(prepare_request(&cross_origin, &environment, &secrets, &values).is_err());
+
+        let no_destination = TestEnvironmentAccess {
+            allow_private_network: false,
+            headers: BTreeMap::new(),
+            secret_ids: BTreeSet::new(),
+            api_base_url: None,
+            secret_origins: BTreeSet::new(),
+        };
+        assert_eq!(
+            prepare_request(&value, &no_destination, &secrets, &values)
+                .err()
+                .as_deref(),
+            Some("使用凭据的请求需要测试环境配置 API Base URL 或 secretOrigins")
+        );
+
+        // 名字/前缀形状校验。
+        let mut bad_name = value.clone();
+        bad_name.headers.insert(
+            "Authorization".to_string(),
+            ApiHeaderValue::Variable(ApiVariableReference {
+                variable: "1bad".to_string(),
+                prefix: None,
+            }),
+        );
+        assert!(validate_action(&bad_name).is_err());
+    }
+
+    fn response_with(status: u16, body: &str, headers: &[(&str, &str)]) -> ReceivedResponse {
+        let mut header_map = HeaderMap::new();
+        for (name, header_value) in headers {
+            header_map.insert(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_str(header_value).unwrap(),
+            );
+        }
+        ReceivedResponse {
+            status,
+            headers: header_map,
+            body: body.as_bytes().to_vec(),
+            total_bytes: body.len(),
+            body_hash: String::new(),
+            truncated: false,
+            final_url: Url::parse("https://example.test/").unwrap(),
+        }
+    }
+
+    #[test]
+    fn v4_assertion_variants_evaluate_in_rust() {
+        let response = response_with(
+            200,
+            r#"{"data":{"items":[1,2,3],"total":7},"err":""}"#,
+            &[
+                ("x-security-block", "waf"),
+                ("content-type", "application/json"),
+            ],
+        );
+        let body_text = String::from_utf8_lossy(&response.body).to_string();
+
+        let evaluate = |expectation: Value| {
+            assertion_result(&expectation, &response, &body_text, 12)
+                .map(|(passed, _, _, _)| passed)
+        };
+        assert!(evaluate(json!({"headerExists": {"name": "x-security-block"}})).unwrap());
+        assert!(!evaluate(json!({"headerAbsent": {"name": "x-security-block"}})).unwrap());
+        assert!(evaluate(json!({"headerAbsent": {"name": "x-missing"}})).unwrap());
+        assert!(evaluate(
+            json!({"jsonPointerLengthEquals": {"pointer": "/data/items", "value": 3}})
+        )
+        .unwrap());
+        assert!(!evaluate(
+            json!({"jsonPointerLengthEquals": {"pointer": "/data/items", "value": 4}})
+        )
+        .unwrap());
+        assert!(evaluate(
+            json!({"jsonPointerNumberAtLeast": {"pointer": "/data/total", "value": 7}})
+        )
+        .unwrap());
+        assert!(evaluate(
+            json!({"jsonPointerNumberAtMost": {"pointer": "/data/total", "value": 7.5}})
+        )
+        .unwrap());
+        assert!(!evaluate(
+            json!({"jsonPointerNumberAtLeast": {"pointer": "/data/total", "value": 8}})
+        )
+        .unwrap());
+        // 非数组/非数字目标按不成立处理（不是求值错误）。
+        assert!(!evaluate(
+            json!({"jsonPointerLengthEquals": {"pointer": "/data/total", "value": 1}})
+        )
+        .unwrap());
+        assert!(!evaluate(
+            json!({"jsonPointerNumberAtLeast": {"pointer": "/data/items", "value": 0}})
+        )
+        .unwrap());
+        // 敏感响应头的存在性断言在 validate_action 就被拒绝（与 TS 解析器同判据）。
+        let mut sensitive = action();
+        sensitive.expect = vec![json!({"headerExists": {"name": "set-cookie"}})];
+        assert_eq!(
+            validate_action(&sensitive).err().as_deref(),
+            Some("敏感响应头不能用于断言（避免实际值进入证据）")
+        );
     }
 }

@@ -54,6 +54,7 @@ export interface AgentCoreProjection {
   contextCheckpoint: ContextCheckpoint | null
   contextUsage: ContextBudgetUsage | null
   pendingSteeringCount: number
+  pendingAsideCount: number
   pendingFollowUpCount: number
   pendingNextTurnCount: number
   queuedMessages: QueuedMessageSnapshot[]
@@ -91,6 +92,7 @@ export const applySessionActivationState = (
   nextProviderProfiles: ProviderProfile[],
   queuedMessageState: {
     pendingSteeringCount: number
+    pendingAsideCount: number
     pendingFollowUpCount: number
     pendingNextTurnCount: number
     queuedMessages: QueuedMessageSnapshot[]
@@ -119,6 +121,7 @@ export const applySessionActivationState = (
     contextCheckpoint: prepared.snapshot.checkpoint,
     contextUsage,
     pendingSteeringCount: queuedMessageState.pendingSteeringCount,
+    pendingAsideCount: queuedMessageState.pendingAsideCount,
     pendingFollowUpCount: queuedMessageState.pendingFollowUpCount,
     pendingNextTurnCount: queuedMessageState.pendingNextTurnCount,
     queuedMessages: queuedMessageState.queuedMessages,
@@ -144,6 +147,7 @@ export interface SessionEventBindings {
 
 export const queuedMessageStateFor = (runtime: AgentHarness) => ({
   pendingSteeringCount: runtime.pendingSteeringCount,
+  pendingAsideCount: runtime.pendingAsideCount,
   pendingFollowUpCount: runtime.pendingFollowUpCount,
   pendingNextTurnCount: runtime.pendingNextTurnCount,
   queuedMessages: runtime.queuedMessages,

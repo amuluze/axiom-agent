@@ -118,8 +118,12 @@ describe('parseEnvironmentFile', () => {
 
   it('rejects unknown fields, unknown variable names and unknown modes', () => {
     expect(issuesOf({ owner: 'team' })).toEqual([{ path: '$.owner', message: '未知字段「owner」' }])
-    expect(issuesOf({ vars: { WEB_BASE_URL: 'http://127.0.0.1:1', DB_URL: 'postgres://x' } })).toEqual([
-      { path: '$.vars.DB_URL', message: '未知字段「DB_URL」' },
+    expect(issuesOf({ vars: { WEB_BASE_URL: 'http://127.0.0.1:1', db_url: 'postgres://x' } })).toEqual([
+      { path: '$.vars.db_url', message: 'v1 档只允许 WEB_BASE_URL/API_BASE_URL；自定义变量请把 version 升到 2' },
+    ])
+    // v1 档出现自定义大写变量 → 明确要求升版本（多服务端点是 v2 能力）。
+    expect(issuesOf({ vars: { WEB_BASE_URL: 'http://127.0.0.1:1', DETECTOR_MGMT_URL: 'http://127.0.0.1:2' } })).toEqual([
+      { path: '$.vars.DETECTOR_MGMT_URL', message: 'v1 档只允许 WEB_BASE_URL/API_BASE_URL；自定义变量请把 version 升到 2' },
     ])
     expect(issuesOf({ mode: 'cluster' })).toEqual([{ path: '$.mode', message: '只允许 local 或 remote' }])
   })
@@ -133,8 +137,8 @@ describe('parseEnvironmentFile', () => {
       ok: false,
       issues: [{ path: '$.kind', message: `必须为 "${ENVIRONMENT_FILE_KIND}"` }],
     })
-    expect(issuesOf({ version: 2 })).toEqual([
-      { path: '$.version', message: '不支持的版本，当前支持 1' },
+    expect(issuesOf({ version: 3 })).toEqual([
+      { path: '$.version', message: '不支持的版本，当前支持 1 / 2' },
     ])
   })
 
@@ -171,5 +175,108 @@ describe('parseEnvironmentFile', () => {
     expect(issuesOf({ headers: { 'x-big': 'a'.repeat(4097) } })).toEqual([
       { path: '$.headers.x-big', message: '长度不能超过 4096 字符' },
     ])
+  })
+})
+
+describe('parseEnvironmentFile v2（多服务拓扑）', () => {
+  const v2Base = {
+    ...base,
+    version: 2,
+    vars: {
+      WEB_BASE_URL: 'http://127.0.0.1:5173',
+      API_BASE_URL: 'http://127.0.0.1:8090',
+      DETECTOR_MGMT_URL: 'http://127.0.0.1:18081',
+      DATA_PLANE_URL: 'http://127.0.0.1:8081',
+    },
+  }
+  const v2File = (overrides: Record<string, unknown> = {}) =>
+    parseEnvironmentFile(JSON.stringify({ ...v2Base, ...overrides }))
+  const v2Issues = (overrides: Record<string, unknown> = {}) => {
+    const result = v2File(overrides)
+    if (result.ok) throw new Error('预期解析失败')
+    return result.issues
+  }
+
+  it('accepts custom service vars, secretOrigins and multi-service probes', () => {
+    const result = v2File({
+      secretOrigins: ['http://127.0.0.1:18081', 'http://127.0.0.1:8081'],
+      recipe: {
+        ...base.recipe,
+        probes: [
+          { var: 'API_BASE_URL', path: '/api/v1/health', expectStatus: [200] },
+          { var: 'DETECTOR_MGMT_URL', path: '/ready', expectStatus: [200] },
+          { var: 'DATA_PLANE_URL', path: '/', expectStatus: [200, 404] },
+        ],
+      },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.file.version).toBe(2)
+    expect(result.file.vars.DETECTOR_MGMT_URL).toBe('http://127.0.0.1:18081')
+    expect(result.file.secretOrigins).toEqual(['http://127.0.0.1:18081', 'http://127.0.0.1:8081'])
+    expect(result.file.recipe?.probes).toHaveLength(3)
+    expect(result.file.recipe?.probes?.[1]).toMatchObject({ var: 'DETECTOR_MGMT_URL', path: '/ready' })
+  })
+
+  it('maps custom vars and origins into the record draft (reserved names stay in their columns)', () => {
+    const result = v2File({ secretOrigins: ['http://127.0.0.1:18081'] })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const draft = environmentRecordDraftFromFile(result.file)
+    expect(draft.webBaseUrl).toBe('http://127.0.0.1:5173')
+    expect(draft.apiBaseUrl).toBe('http://127.0.0.1:8090')
+    expect(JSON.parse(draft.extraVarsJson ?? '{}')).toEqual({
+      DATA_PLANE_URL: 'http://127.0.0.1:8081',
+      DETECTOR_MGMT_URL: 'http://127.0.0.1:18081',
+    })
+    expect(JSON.parse(draft.secretOriginsJson ?? '[]')).toEqual(['http://127.0.0.1:18081'])
+  })
+
+  it('rejects probes pointing at undeclared vars and mixed probe/probes', () => {
+    expect(v2Issues({
+      recipe: { ...base.recipe, probes: [{ var: 'MISSING_URL', path: '/ready' }] },
+    })).toContainEqual({
+      path: '$.recipe.probes[0].var',
+      message: '探针指向的变量「MISSING_URL」未在 vars 中声明',
+    })
+    expect(v2Issues({
+      recipe: { ...base.recipe, probe: { path: '/' }, probes: [{ var: 'API_BASE_URL', path: '/ready' }] },
+    })).toContainEqual({
+      path: '$.recipe',
+      message: 'probe 与 probes 互斥：多服务形态请只用 probes',
+    })
+    expect(v2Issues({
+      recipe: {
+        ...base.recipe,
+        probes: [
+          { var: 'API_BASE_URL', path: '/ready' },
+          { var: 'API_BASE_URL', path: '/healthz' },
+        ],
+      },
+    })).toContainEqual({
+      path: '$.recipe.probes[1].var',
+      message: '服务「API_BASE_URL」已有探针，不要重复声明',
+    })
+  })
+
+  it('rejects secretOrigins without an origin shape and in v1 files', () => {
+    expect(v2Issues({ secretOrigins: ['http://127.0.0.1:18081/api'] })).toEqual([
+      { path: '$.secretOrigins[0]', message: 'Secret 目标必须是 origin（http(s)://host[:port]），不能带路径、查询或凭据' },
+    ])
+    expect(v2Issues({ secretOrigins: ['http://user:pass@127.0.0.1:18081'] })).toEqual([
+      { path: '$.secretOrigins[0]', message: 'Secret 目标必须是 origin（http(s)://host[:port]），不能带路径、查询或凭据' },
+    ])
+    expect(issuesOf({ secretOrigins: ['http://127.0.0.1:18081'] })).toEqual([
+      { path: '$.secretOrigins', message: 'secretOrigins 是 v2 增量；请把 version 升到 2' },
+    ])
+  })
+
+  it('rejects multi-service probes in v1 files', () => {
+    expect(issuesOf({
+      recipe: { ...base.recipe, probes: [{ var: 'API_BASE_URL', path: '/ready' }] },
+    })).toContainEqual({
+      path: '$.recipe.probes',
+      message: '多服务探针是 v2 增量；请把 version 升到 2',
+    })
   })
 })

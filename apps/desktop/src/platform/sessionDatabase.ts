@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { commands, type SaveSessionCheckpointRequest } from './bindings'
 
-export const DATABASE_VERSION = 20
+export const DATABASE_VERSION = 22
 
 export type SessionRepositoryQuery =
   | 'sessions'
@@ -159,7 +159,7 @@ export interface NativeAppendSessionJournalEntryRequest {
   sessionId: string
   sequence: number
   kind: 'queue' | 'message_append' | 'runtime_update'
-  queueKind: 'steering' | 'follow-up' | 'next-turn' | null
+  queueKind: 'steering' | 'aside' | 'follow-up' | 'next-turn' | null
   payloadJson: string
   createdAt: number
 }

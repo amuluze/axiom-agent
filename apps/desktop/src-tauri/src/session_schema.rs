@@ -9,7 +9,7 @@ use sqlx::{ConnectOptions as _, Connection, Executor, Row, SqliteConnection};
 use std::path::Path;
 use std::time::Duration;
 
-pub(crate) const DATABASE_VERSION: i64 = 20;
+pub(crate) const DATABASE_VERSION: i64 = 22;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Provider / connect 凭据表（v15 起密钥由 macOS Keychain 迁入 SQLite，Rust 独占读写）。
@@ -140,7 +140,7 @@ const V7_STATEMENTS: &[&str] = &[
        id TEXT PRIMARY KEY NOT NULL, session_id TEXT NOT NULL,
        sequence INTEGER NOT NULL CHECK (sequence >= 0),
        kind TEXT NOT NULL CHECK (kind IN ('queue', 'message_append', 'runtime_update')),
-       queue_kind TEXT CHECK (queue_kind IS NULL OR queue_kind IN ('steering', 'follow-up', 'next-turn')),
+       queue_kind TEXT CHECK (queue_kind IS NULL OR queue_kind IN ('steering', 'aside', 'follow-up', 'next-turn')),
        payload_json TEXT NOT NULL,
        status TEXT NOT NULL CHECK (status IN ('pending', 'consuming', 'applied', 'discarded')),
        consumer_run_id TEXT, created_at INTEGER NOT NULL, applied_at INTEGER,
@@ -359,6 +359,51 @@ const V20_POST_STATEMENTS: &[&str] = &[
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_test_environments_workspace_logical ON test_environments(workspace_path, logical_id)",
 ];
 
+/// v21：测试环境多服务拓扑（协议 v4 配套）——`extra_vars_json` 存环境档 v2 的自定义
+/// 大写变量（控制面/数据面等多个服务端点），`secret_origins_json` 存 Secret 允许发往的
+/// 额外 origin 白名单。两者都是环境级结构事实，默认值保持旧记录语义不变（无额外变量、
+/// Secret 仍只能发往 API Base URL 同源）。
+const V21_COLUMNS: &[ColumnMigration] = &[
+    ColumnMigration {
+        table: "test_environments",
+        column: "extra_vars_json",
+        statement: "ALTER TABLE test_environments ADD COLUMN extra_vars_json TEXT NOT NULL DEFAULT '{}'",
+    },
+    ColumnMigration {
+        table: "test_environments",
+        column: "secret_origins_json",
+        statement: "ALTER TABLE test_environments ADD COLUMN secret_origins_json TEXT NOT NULL DEFAULT '[]'",
+    },
+];
+
+const V22_STATEMENTS: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS agent_session_journal_v22 (
+       id TEXT PRIMARY KEY NOT NULL, session_id TEXT NOT NULL,
+       sequence INTEGER NOT NULL CHECK (sequence >= 0),
+       kind TEXT NOT NULL CHECK (kind IN ('queue', 'message_append', 'runtime_update')),
+       queue_kind TEXT CHECK (queue_kind IS NULL OR queue_kind IN ('steering', 'aside', 'follow-up', 'next-turn')),
+       payload_json TEXT NOT NULL,
+       status TEXT NOT NULL CHECK (status IN ('pending', 'consuming', 'applied', 'discarded')),
+       consumer_run_id TEXT, created_at INTEGER NOT NULL, applied_at INTEGER,
+       recovered_at INTEGER CHECK (recovered_at IS NULL OR
+         (recovered_at >= 0 AND kind = 'queue' AND status = 'pending' AND consumer_run_id IS NULL)),
+       UNIQUE (session_id, sequence),
+       FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE,
+       FOREIGN KEY (consumer_run_id) REFERENCES agent_runs(id) ON DELETE SET NULL,
+       CHECK ((kind = 'queue' AND queue_kind IS NOT NULL) OR (kind <> 'queue' AND queue_kind IS NULL))
+     )",
+    "INSERT OR REPLACE INTO agent_session_journal_v22
+       (id, session_id, sequence, kind, queue_kind, payload_json, status,
+        consumer_run_id, created_at, applied_at, recovered_at)
+     SELECT id, session_id, sequence, kind, queue_kind, payload_json, status,
+            consumer_run_id, created_at, applied_at, recovered_at
+     FROM agent_session_journal",
+    "DROP TABLE agent_session_journal",
+    "ALTER TABLE agent_session_journal_v22 RENAME TO agent_session_journal",
+    "CREATE INDEX idx_agent_session_journal_pending ON agent_session_journal(session_id, status, sequence)",
+    "CREATE INDEX idx_agent_session_journal_status_sequence ON agent_session_journal(status, session_id, sequence)",
+];
+
 pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -479,6 +524,18 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         statements: &[],
         columns: V20_COLUMNS,
         post_statements: V20_POST_STATEMENTS,
+    },
+    Migration {
+        version: 21,
+        statements: &[],
+        columns: V21_COLUMNS,
+        post_statements: &[],
+    },
+    Migration {
+        version: 22,
+        statements: V22_STATEMENTS,
+        columns: &[],
+        post_statements: &[],
     },
 ];
 pub(crate) fn create_options(path: &Path) -> SqliteConnectOptions {

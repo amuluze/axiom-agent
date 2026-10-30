@@ -238,6 +238,14 @@ export interface ModelToolDefinition {
   inputSchema: Record<string, JsonValue>
 }
 
+export interface ModelRequestStablePrefix {
+  fingerprint: string
+  revision: number
+  systemPromptBytes: number
+  toolSchemaBytes: number
+  dynamicSuffixBytes: number
+}
+
 export interface ModelRequest {
   sessionId: string
   runId: string
@@ -245,6 +253,8 @@ export interface ModelRequest {
   model: ModelRef
   messages: ModelMessage[]
   tools: ModelToolDefinition[]
+  /** Runtime-only diagnostics. Provider payload builders must not serialize this field. */
+  stablePrefix?: ModelRequestStablePrefix
   maxOutputTokens?: number
   reasoning?: ModelReasoning
   auth?: ModelRequestAuth
@@ -372,6 +382,7 @@ export interface AgentToolExecutionContext {
   approvalSource?: ToolApprovalSource
   signal: AbortSignal
   reportProgress: (content: string, details?: JsonValue) => Promise<void>
+  preparationDetails?: JsonValue
   /** Whether the active model accepts image inputs. Tools may degrade image output when false. */
   modelAcceptsImage?: boolean
   /**
@@ -387,6 +398,29 @@ export interface AgentToolExecutionContext {
   delegateAgent?: (
     request: AgentDelegationRequest,
   ) => Promise<AgentDelegationResult>
+}
+
+export interface SyntaxRepairRequest {
+  path: string
+  language: string
+  diagnostic: string
+  before: string
+  after: string
+  replacements: Array<{ oldText: string; newText: string }>
+  previousAttempt?: string[]
+}
+
+export interface AgentToolPreparationContext {
+  sessionId: string
+  runId: string
+  toolCallId: string
+  signal: AbortSignal
+  repairSyntax?: (request: SyntaxRepairRequest) => Promise<string[]>
+}
+
+export interface AgentToolPreparationResult {
+  input: JsonValue
+  details?: JsonValue
 }
 
 export type ToolApprovalState = 'not_required' | 'pending' | 'approved' | 'denied'
@@ -510,10 +544,14 @@ export interface AgentTool {
   invalidatesPageState?: boolean
   /** Compatibility normalization applied before validation and approval. */
   prepareArguments?: (input: JsonValue) => JsonValue
+  prepareForApproval?: (
+    input: JsonValue,
+    context: AgentToolPreparationContext,
+  ) => AgentToolPreparationResult | Promise<AgentToolPreparationResult>
   requiresApproval?: boolean
   /** bash 分级提示（镜像 Rust CommandTier），供审批 UI 分流；非安全边界。 */
   resolveTier?: (input: JsonValue) => CommandTier
-  approvalPresentation?: (input: JsonValue) => ToolApprovalPresentation
+  approvalPresentation?: (input: JsonValue, preparationDetails?: JsonValue) => ToolApprovalPresentation
   /**
    * 审批租约的绑定输入（缺省即绑定模型提供的 input）。
    *
@@ -524,7 +562,7 @@ export interface AgentTool {
    * 否则租约永远无法被消费。
    */
   approvalLeaseInput?: (input: JsonValue) => JsonValue | Promise<JsonValue>
-  auditArguments?: (input: JsonValue) => JsonValue
+  auditArguments?: (input: JsonValue, preparationDetails?: JsonValue) => JsonValue
   validate(input: JsonValue): ToolValidationResult<JsonValue>
   execute(input: JsonValue, context: AgentToolExecutionContext): Promise<AgentToolResult>
 }

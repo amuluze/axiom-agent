@@ -9,6 +9,7 @@ import { RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS } from '@/agent/tools/toolNameMig
 import { describe, expect, it } from 'vitest'
 import { HARNESS_OPTIONS_HOOK_REGISTRATION } from './AgentHarness'
 import { DESKTOP_RUNTIME_HOOK_REGISTRATION } from './productRuntimeHooks'
+import { PROVIDER_TRANSPORT_MIGRATIONS } from './runtimeDependencyManifest'
 
 interface RuntimeSemanticComponent {
   id: string
@@ -99,6 +100,22 @@ describe('工具兼容迁移表与 live 版本一致性', () => {
       if (live !== undefined && migration.currentVersion === live) return []
       return [`${migration.previousName}@${migration.previousVersion} → `
         + `${migration.currentName}@${migration.currentVersion}（live ${live ?? '未注册'}）`]
+    })
+    expect(stale).toEqual([])
+  })
+})
+
+describe('Provider 兼容迁移表与 live 版本一致性', () => {
+  it('每条表项的 currentVersion 都等于对应 Provider 的 live 版本', () => {
+    const liveVersions = new Map<string, string>(BUILTIN_PROVIDER_DESCRIPTORS.map((provider) => [
+      provider.providerId,
+      provider.transportVersion,
+    ]))
+    const stale = PROVIDER_TRANSPORT_MIGRATIONS.flatMap((migration) => {
+      const live = liveVersions.get(migration.providerId)
+      return live === migration.currentVersion
+        ? []
+        : [`${migration.providerId}@${migration.previousVersion} → ${migration.currentVersion}（live ${live ?? '未注册'}）`]
     })
     expect(stale).toEqual([])
   })

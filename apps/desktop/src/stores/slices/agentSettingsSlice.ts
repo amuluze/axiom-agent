@@ -2,11 +2,13 @@ import type { ContextPolicySettings } from '@/agent/context/types'
 import type { ReasoningSettings } from '@/agent/runtime/reasoningSettings'
 import type { AgentLimitsSettings } from '@/agent/runtime/agentLimitsSettings'
 import type { QueueModeSettings } from '@/agent/runtime/queueSettings'
+import type { SyntaxRepairSettings } from '@/agent/runtime/syntaxRepairSettings'
 import {
   activeAgentLimitsSettings,
   activeContextPolicySettings,
   activeQueueModeSettings,
   activeReasoningSettings,
+  activeSyntaxRepairSettings,
 } from '../settingsPersistence'
 import {
   saveAgentLimits as saveAgentLimitsAction,
@@ -14,6 +16,7 @@ import {
   saveQueueAutoDrain as saveQueueAutoDrainAction,
   saveQueueModes as saveQueueModesAction,
   saveReasoningSettings as saveReasoningSettingsAction,
+  saveSyntaxRepairSettings as saveSyntaxRepairSettingsAction,
   type AgentGet,
   type AgentSet,
   type StoreRuntimeDeps,
@@ -28,12 +31,14 @@ export interface AgentSettingsSlice {
   contextPolicySettings: ContextPolicySettings
   reasoningSettings: ReasoningSettings
   agentLimitsSettings: AgentLimitsSettings
+  syntaxRepairSettings: SyntaxRepairSettings
   saveQueueModes: (settings: QueueModeSettings) => boolean
   /** 切换队列自动出队（允许运行中即时切换）。 */
   saveQueueAutoDrain: (enabled: boolean) => boolean
   saveAgentLimits: (settings: AgentLimitsSettings) => boolean
   saveContextPolicy: (settings: ContextPolicySettings) => Promise<boolean>
   saveReasoningSettings: (settings: ReasoningSettings) => Promise<boolean>
+  saveSyntaxRepairSettings: (settings: SyntaxRepairSettings) => boolean
 }
 
 export const createAgentSettingsSlice = (
@@ -45,9 +50,11 @@ export const createAgentSettingsSlice = (
   contextPolicySettings: activeContextPolicySettings,
   reasoningSettings: activeReasoningSettings,
   agentLimitsSettings: activeAgentLimitsSettings,
+  syntaxRepairSettings: activeSyntaxRepairSettings,
   saveQueueModes: (settings) => saveQueueModesAction(set, get, deps, settings),
   saveQueueAutoDrain: (enabled) => saveQueueAutoDrainAction(set, get, deps, enabled),
   saveAgentLimits: (settings) => saveAgentLimitsAction(set, get, deps, settings),
   saveContextPolicy: (settings) => saveContextPolicyAction(set, get, deps, settings),
   saveReasoningSettings: (settings) => saveReasoningSettingsAction(set, get, deps, settings),
+  saveSyntaxRepairSettings: (settings) => saveSyntaxRepairSettingsAction(set, get, deps, settings),
 })

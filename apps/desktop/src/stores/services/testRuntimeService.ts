@@ -8,6 +8,7 @@ import {
 import { createUiTestDriver, type UiTestTarget } from '@/platform/testAutomation'
 import type { TestStepApprover } from '@/agent/testing/approval/testStepApprover'
 import type { CompiledTestPlan } from '@/agent/testing/spec/compileTestPlan'
+import { isApiTestStep } from '@/agent/testing/spec/stepActions'
 import {
   runTestPlan,
   testPlanExecutions,
@@ -97,7 +98,7 @@ export const startUiTestRun = async (input: StartUiTestRunInput): Promise<TestRu
   const { runId, specPath, plan, target, approver, signal } = input
   const now = input.now ?? Date.now
   const executions = testPlanExecutions(plan)
-  const hasUiSteps = executions.some((execution) => execution.steps.some((step) => step.action !== 'api.request'))
+  const hasUiSteps = executions.some((execution) => execution.steps.some((step) => !isApiTestStep(step)))
   if (hasUiSteps && !target) throw new Error('UI 测试计划缺少浏览器目标')
 
   if (target) {

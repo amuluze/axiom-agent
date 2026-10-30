@@ -36,9 +36,11 @@ export const queueModesZh = {
   'settings.queue.title': '运行中消息队列',
   'settings.queue.state': '可恢复',
   'settings.queue.steering': 'Steering 投递',
+  'settings.queue.aside': 'Aside 投递',
   'settings.queue.followUp': 'Follow-up 投递',
   'settings.queue.oneAtATime': '每轮一条',
   'settings.queue.steeringAll': '下一轮全部',
+  'settings.queue.asideAll': '下一轮全部（不中断）',
   'settings.queue.followUpAll': '结束后全部',
   'settings.queue.save': '保存队列模式',
   'settings.queue.autoDrain': '自动逐条发送',
@@ -52,9 +54,11 @@ export const queueModesEn: Record<string, string> = {
   'settings.queue.title': 'In-flight message queue',
   'settings.queue.state': 'Recoverable',
   'settings.queue.steering': 'Steering delivery',
+  'settings.queue.aside': 'Aside delivery',
   'settings.queue.followUp': 'Follow-up delivery',
   'settings.queue.oneAtATime': 'One per turn',
   'settings.queue.steeringAll': 'All next turn',
+  'settings.queue.asideAll': 'All next turn (no interrupt)',
   'settings.queue.followUpAll': 'All after finish',
   'settings.queue.save': 'Save queue modes',
   'settings.queue.autoDrain': 'Auto-send queue',
@@ -88,4 +92,20 @@ export const limitsEn: Record<string, string> = {
   'settings.limits.save': 'Save run budget',
   'settings.limits.reset': 'Restore safe defaults',
   'settings.limits.note': 'The token budget nudges toward convergence at 75% / 90% without hard-stopping; unanswered approvals are auto-denied on timeout. Applies from the next session.',
+}
+
+export const syntaxRepairZh = {
+  'settings.syntaxRepair.title': '编辑语法修复模型',
+  'settings.syntaxRepair.state': '按需调用',
+  'settings.syntaxRepair.profile': '模型配置',
+  'settings.syntaxRepair.current': '当前会话模型（自动跟随）',
+  'settings.syntaxRepair.note': '仅在编辑前可解析、编辑后不可解析时调用；配置失效会自动回退当前会话模型。',
+} satisfies Record<string, string>
+
+export const syntaxRepairEn: Record<string, string> = {
+  'settings.syntaxRepair.title': 'Edit syntax repair model',
+  'settings.syntaxRepair.state': 'On demand',
+  'settings.syntaxRepair.profile': 'Model configuration',
+  'settings.syntaxRepair.current': 'Current session model (follows automatically)',
+  'settings.syntaxRepair.note': 'Used only when an edit breaks previously valid syntax; missing configurations fall back to the current session model.',
 }

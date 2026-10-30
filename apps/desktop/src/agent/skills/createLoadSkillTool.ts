@@ -80,7 +80,7 @@ export const createLoadSkillTool = ({
     '若 load_skill 尚未激活，先调用 discover_agent_tools({ query: "load_skill" }) 激活。',
     '加载后按正文工作流执行，完成后回到用户原任务；不要把 skill 正文原样回吐给用户。',
   ],
-  runtimeVersion: '6',
+  runtimeVersion: '12',
   recoveryPolicy: 'idempotent',
   idempotencyKey: (input) => {
     if (!isJsonObject(input)) return 'load_skill:invalid'

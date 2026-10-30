@@ -98,7 +98,7 @@ interface JournalRow {
   session_id: string
   sequence: number
   kind: AgentSessionJournalEntry['kind']
-  queue_kind: 'steering' | 'follow-up' | 'next-turn' | null
+  queue_kind: 'steering' | 'aside' | 'follow-up' | 'next-turn' | null
   payload_json: string
   status: AgentSessionJournalEntry['status']
   consumer_run_id: string | null
@@ -296,7 +296,7 @@ const decodeJournalEntry = (row: JournalRow): AgentSessionJournalEntry => {
     || !['queue', 'message_append', 'runtime_update'].includes(row.kind)
     || !['pending', 'consuming', 'applied', 'discarded'].includes(row.status)
     || (row.queue_kind !== null
-      && !['steering', 'follow-up', 'next-turn'].includes(row.queue_kind))) {
+      && !['steering', 'aside', 'follow-up', 'next-turn'].includes(row.queue_kind))) {
     throw new Error('SQLite 中存在格式无效的 Agent journal 元数据')
   }
   let payload: unknown

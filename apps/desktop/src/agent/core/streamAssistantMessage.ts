@@ -14,6 +14,9 @@ import {
 } from './snapshots'
 import { validatedMessages } from './messageValidation'
 import { stripUnsupportedImages } from './stripUnsupportedImages'
+import { PLANNING_GUARD_DIAGNOSTIC, PlanningStreamGuard } from './planningGuard'
+import { STEERING_INTERRUPT_DIAGNOSTIC, type BindModelStreamInterrupt } from './streamInterruption'
+import type { ModelRequestStablePrefixCache } from './stablePrefix'
 import type {
   AgentContext,
   AgentEventSink,
@@ -129,9 +132,28 @@ export const streamAssistantMessage = async (
   ) => void | Promise<void>,
   providerLifecycle?: ModelTransportLifecycle,
   systemPromptOverride?: string,
+  stablePrefixCache?: ModelRequestStablePrefixCache,
+  stableSystemPromptOverride?: string,
+  bindModelStreamInterrupt?: BindModelStreamInterrupt,
 ): Promise<AssistantMessage> => {
   const providerRequestId = createId('provider-request')
   const partialToolCalls = new Map<number, PartialToolCall>()
+  const usedToolCallIds = new Set(context.messages.flatMap((message) => {
+    if (message.role === 'assistant') return message.toolCalls.map((call) => call.id)
+    if (message.role === 'tool') return [message.toolCallId]
+    return []
+  }))
+  const allocateToolCallId = (preferred?: string): string => {
+    const normalized = preferred?.trim()
+    if (normalized && !usedToolCallIds.has(normalized)) {
+      usedToolCallIds.add(normalized)
+      return normalized
+    }
+    let generated = createId('tool-call')
+    while (usedToolCallIds.has(generated)) generated = createId('tool-call')
+    usedToolCallIds.add(generated)
+    return generated
+  }
   const partialContentBlocks = new Map<number, AssistantContentBlock>()
   let base: Omit<AssistantMessage, 'toolCalls' | 'contentBlocks'> = {
     id: createId('message'),
@@ -151,6 +173,17 @@ export const streamAssistantMessage = async (
   const MAX_THINKING_SIGNATURE_BYTES = 64 * 1024
   let doneSeen = false
   let sentRequest: ModelRequest | undefined
+  let toolCallSeen = false
+  const planningGuard = activeToolsForContext(context).length > 0
+    ? new PlanningStreamGuard()
+    : undefined
+  let planningInterrupted = false
+  let steeringInterrupted = false
+  const modelStreamController = new AbortController()
+  const forwardModelAbort = (): void => modelStreamController.abort(signal.reason)
+  signal.addEventListener('abort', forwardModelAbort, { once: true })
+  if (signal.aborted) forwardModelAbort()
+  let releaseModelStreamInterrupt: (() => void) | null = null
   const startedTextIndexes = new Set<number>()
   const endedTextIndexes = new Set<number>()
 
@@ -244,13 +277,22 @@ export const streamAssistantMessage = async (
     if (context.reasoning && context.model.supportsReasoning === false) {
       throw new Error(`模型 ${context.model.provider}/${context.model.model} 不支持 thinking/reasoning`)
     }
+    const effectiveSystemPrompt = systemPromptOverride ?? context.systemPrompt
+    const stablePrefix = stablePrefixCache
+      ? await stablePrefixCache.resolve(
+          context,
+          transport,
+          stableSystemPromptOverride ?? effectiveSystemPrompt,
+          effectiveSystemPrompt,
+        )
+      : undefined
     let request: ModelRequest = {
       sessionId: context.sessionId,
       runId,
-      systemPrompt: systemPromptOverride ?? context.systemPrompt,
+      systemPrompt: effectiveSystemPrompt,
       model: structuredClone(context.model),
       messages: modelMessages,
-      tools: activeToolsForContext(context).map((tool) => ({
+      tools: stablePrefix?.tools ?? activeToolsForContext(context).map((tool) => ({
         name: tool.name,
         description: tool.description,
         inputSchema: cloneJsonValue(tool.inputSchema),
@@ -265,6 +307,15 @@ export const streamAssistantMessage = async (
       if (request.messages !== requestMessages) {
         context.messages = snapshotAgentMessages(request.messages)
       }
+    }
+    if (
+      stablePrefix
+      && request.systemPrompt === effectiveSystemPrompt
+      && request.model.provider === context.model.provider
+      && request.model.model === context.model.model
+      && request.tools === stablePrefix.tools
+    ) {
+      request = { ...request, stablePrefix: stablePrefix.diagnostics }
     }
     if (context.model.input?.includes('image') === false) {
       // 能力结论读 context.model（run 启动时固化的 ModelRef），run 内不重算：
@@ -287,8 +338,13 @@ export const streamAssistantMessage = async (
       toolCount: request.tools.length,
     })
     await onModelRequest?.(snapshotModelRequest(request), signal)
+    releaseModelStreamInterrupt = bindModelStreamInterrupt?.(() => {
+      if (modelStreamController.signal.aborted) return
+      steeringInterrupted = true
+      modelStreamController.abort(new DOMException('Steering message queued', 'AbortError'))
+    }) ?? null
 
-    for await (const event of transport.stream(request, signal, providerLifecycle)) {
+    stream: for await (const event of transport.stream(request, modelStreamController.signal, providerLifecycle)) {
       if (signal.aborted) break
 
       switch (event.type) {
@@ -315,6 +371,11 @@ export const streamAssistantMessage = async (
             base = { ...base, content: `${base.content}${delta}` }
           }
           await emitAssistantUpdate('text', { type: 'text_delta', contentIndex, delta }, delta)
+          if (!toolCallSeen && planningGuard?.observe(delta)) {
+            planningInterrupted = true
+            modelStreamController.abort(new DOMException('Planning loop interrupted', 'AbortError'))
+            break stream
+          }
           break
         }
 
@@ -357,6 +418,11 @@ export const streamAssistantMessage = async (
             contentIndex: event.contentIndex,
             delta,
           }, delta)
+          if (!toolCallSeen && planningGuard?.observe(delta)) {
+            planningInterrupted = true
+            modelStreamController.abort(new DOMException('Planning loop interrupted', 'AbortError'))
+            break stream
+          }
           break
         }
 
@@ -393,6 +459,7 @@ export const streamAssistantMessage = async (
         }
 
         case 'tool_call_start': {
+          toolCallSeen = true
           await endOpenText()
           const occupied = new Set([
             ...partialContentBlocks.keys(),
@@ -404,10 +471,11 @@ export const streamAssistantMessage = async (
           if (occupied.has(contentIndex)) {
             contentIndex = Math.max(-1, ...occupied) + 1
           }
+          const existing = partialToolCalls.get(event.index)
           const startedCall = {
             index: event.index,
             contentIndex,
-            id: event.id || createId('tool-call'),
+            id: existing?.id ?? allocateToolCallId(event.id),
             name: boundedDelta(event.name),
             rawArguments: '',
             thoughtSignature: event.thoughtSignature,
@@ -430,7 +498,7 @@ export const streamAssistantMessage = async (
               ...partialContentBlocks.keys(),
               ...Array.from(partialToolCalls.values(), (call) => call.contentIndex),
             ) + 1,
-            id: createId('tool-call'),
+            id: allocateToolCallId(),
             name: '',
             rawArguments: '',
           }
@@ -514,7 +582,37 @@ export const streamAssistantMessage = async (
       if (event.type === 'error') break
     }
 
-    if (signal.aborted) {
+    if (steeringInterrupted && !signal.aborted) {
+      doneSeen = true
+      base = {
+        ...base,
+        stopReason: 'stop',
+        excludeFromModelContext: true,
+        diagnostics: [
+          ...(base.diagnostics ?? []),
+          {
+            type: STEERING_INTERRUPT_DIAGNOSTIC,
+            timestamp: Date.now(),
+            details: { reason: 'steering_message_queued' },
+          },
+        ],
+      }
+    } else if (planningInterrupted) {
+      doneSeen = true
+      base = {
+        ...base,
+        stopReason: 'stop',
+        excludeFromModelContext: true,
+        diagnostics: [
+          ...(base.diagnostics ?? []),
+          {
+            type: PLANNING_GUARD_DIAGNOSTIC,
+            timestamp: Date.now(),
+            details: { reason: 'repeated_planning_without_tool_call' },
+          },
+        ],
+      }
+    } else if (signal.aborted) {
       base = { ...base, stopReason: 'aborted', errorMessage: 'Agent 运行已取消' }
     } else if (!doneSeen && base.stopReason !== 'length') {
       base = { ...base, stopReason: 'error', errorMessage: '模型流在结束事件前关闭' }
@@ -527,29 +625,78 @@ export const streamAssistantMessage = async (
     // model-stream-error 诊断，会被「Assistant message 缺少 Provider response
     // ledger」拒绝并引发 save point 级联补偿失败。
     if (!sentRequest) throw error
-    const aborted = signal.aborted || isAbortError(error)
-    base = {
-      ...base,
-      stopReason: aborted ? 'aborted' : 'error',
-      errorMessage: aborted
-        ? 'Agent 运行已取消'
-        : error instanceof Error
-          ? error.message
-          : String(error),
-      ...(!aborted
-        ? {
-            providerError: classifyProviderError({
-              message: error instanceof Error ? error.message : String(error),
-            }),
-            diagnostics: [...(base.diagnostics ?? []), diagnosticForError('model-stream-error', error)],
-          }
-        : {}),
+    if (steeringInterrupted && !signal.aborted) {
+      doneSeen = true
+      base = {
+        ...base,
+        stopReason: 'stop',
+        excludeFromModelContext: true,
+        diagnostics: [
+          ...(base.diagnostics ?? []),
+          {
+            type: STEERING_INTERRUPT_DIAGNOSTIC,
+            timestamp: Date.now(),
+            details: { reason: 'steering_message_queued' },
+          },
+        ],
+      }
+    } else if (planningInterrupted && !signal.aborted) {
+      doneSeen = true
+      base = {
+        ...base,
+        stopReason: 'stop',
+        excludeFromModelContext: true,
+        diagnostics: [
+          ...(base.diagnostics ?? []),
+          {
+            type: PLANNING_GUARD_DIAGNOSTIC,
+            timestamp: Date.now(),
+            details: { reason: 'repeated_planning_without_tool_call' },
+          },
+        ],
+      }
+    } else {
+      const aborted = signal.aborted || isAbortError(error)
+      base = {
+        ...base,
+        stopReason: aborted ? 'aborted' : 'error',
+        errorMessage: aborted
+          ? 'Agent 运行已取消'
+          : error instanceof Error
+            ? error.message
+            : String(error),
+        ...(!aborted
+          ? {
+              providerError: classifyProviderError({
+                message: error instanceof Error ? error.message : String(error),
+              }),
+              diagnostics: [...(base.diagnostics ?? []), diagnosticForError('model-stream-error', error)],
+            }
+          : {}),
+      }
     }
+  } finally {
+    releaseModelStreamInterrupt?.()
+    signal.removeEventListener('abort', forwardModelAbort)
   }
 
   await endOpenText()
 
   let message = snapshotAssistant(base, partialToolCalls, partialContentBlocks)
+  if ((steeringInterrupted || planningInterrupted) && message.toolCalls.length > 0) {
+    const interruptedIds = new Set(message.toolCalls.map((call) => call.id))
+    message = {
+      ...message,
+      toolCalls: [],
+      ...(message.contentBlocks?.length
+        ? {
+            contentBlocks: message.contentBlocks.filter(
+              (block) => block.type !== 'tool_call' || !interruptedIds.has(block.id),
+            ),
+          }
+        : {}),
+    }
+  }
   if (message.toolCalls.length > 0 && message.stopReason === 'stop') {
     message = { ...message, stopReason: 'tool_use' }
   }

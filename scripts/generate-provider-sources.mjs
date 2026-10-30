@@ -568,7 +568,14 @@ const PROVIDER_SOURCE_FILES = {
     'src/agent/transport/generatedProviderData.ts',
     // 跨 transport 共享的模型可见语义：错误分类决定自动重试，图片降级决定模型收到什么。
     'src/agent/core/providerError.ts',
+    'src/agent/core/messages.ts',
+    'src/agent/core/planningGuard.ts',
+    'src/agent/core/runAgentLoop.ts',
     'src/agent/core/streamAssistantMessage.ts',
+    'src/agent/core/streamInterruption.ts',
+    'src/agent/core/stablePrefix.ts',
+    'src/agent/core/systemPromptLayout.ts',
+    'src/agent/core/turnHelpers.ts',
   ],
   'openai-responses': [
     'src/agent/transport/builtinProviderDescriptors.ts',
@@ -576,7 +583,14 @@ const PROVIDER_SOURCE_FILES = {
     'src/agent/transport/sse.ts',
     'src/agent/transport/generatedProviderData.ts',
     'src/agent/core/providerError.ts',
+    'src/agent/core/messages.ts',
+    'src/agent/core/planningGuard.ts',
+    'src/agent/core/runAgentLoop.ts',
     'src/agent/core/streamAssistantMessage.ts',
+    'src/agent/core/streamInterruption.ts',
+    'src/agent/core/stablePrefix.ts',
+    'src/agent/core/systemPromptLayout.ts',
+    'src/agent/core/turnHelpers.ts',
   ],
   'anthropic-compatible': [
     'src/agent/transport/builtinProviderDescriptors.ts',
@@ -584,10 +598,25 @@ const PROVIDER_SOURCE_FILES = {
     'src/agent/transport/sse.ts',
     'src/agent/transport/generatedProviderData.ts',
     'src/agent/core/providerError.ts',
+    'src/agent/core/messages.ts',
+    'src/agent/core/planningGuard.ts',
+    'src/agent/core/runAgentLoop.ts',
     'src/agent/core/streamAssistantMessage.ts',
+    'src/agent/core/streamInterruption.ts',
+    'src/agent/core/stablePrefix.ts',
+    'src/agent/core/systemPromptLayout.ts',
+    'src/agent/core/turnHelpers.ts',
   ],
 }
 const DEMO_SOURCE_FILES = [
+  'src/agent/core/messages.ts',
+  'src/agent/core/planningGuard.ts',
+  'src/agent/core/runAgentLoop.ts',
+  'src/agent/core/streamAssistantMessage.ts',
+  'src/agent/core/streamInterruption.ts',
+  'src/agent/core/stablePrefix.ts',
+  'src/agent/core/systemPromptLayout.ts',
+  'src/agent/core/turnHelpers.ts',
   'src/agent/transport/builtinProviderDescriptors.ts',
   'src/agent/transport/DemoModelTransport.ts',
   'src/agent/transport/generatedProviderData.ts',
@@ -600,7 +629,7 @@ import { semanticSourceDigest } from './lib/semantic-digest.mjs'
 const generatedProviderSections = (contract) => {
   const demo = {
     id: 'provider:demo',
-    version: '3',
+    version: '7',
     sourceFiles: DEMO_SOURCE_FILES,
   }
   const entries = contract.providers.map((provider) => {

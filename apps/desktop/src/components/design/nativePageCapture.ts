@@ -87,15 +87,18 @@ export interface CapturedRegionStats {
   /** 截图像素尺寸（Retina 下为 CSS 尺寸 × dpr）。 */
   width: number
   height: number
+  /** 会话扫描显式请求时才生成的 PNG。 */
+  base64?: string
 }
 
 /**
  * 原位矩形采集（画布扫描的光栅步骤）：视口坐标 rect → 原生截图 → 解码 → 像素
- * 统计。与 captureMountedPage 的差别：页面**已经在画布上渲染**，无须挂载，也不
- * 产缩略图（画布扫描只消费统计；工具路径的缩略图走 staging 挂载路径）。
+ * 统计。页面已经在画布上渲染，无须挂载全屏 staging。底部按钮只取统计；会话
+ * 扫描传 thumbnailMaxBytes 时按同一预算阶梯附缩略图。
  */
 export const captureRectStats = async (
   rect: [number, number, number, number],
+  options: { thumbnailMaxBytes?: number } = {},
 ): Promise<CapturedRegionStats> => {
   const shot = await captureViewportWithRetry(rect)
   if (!shot.imageBase64) {
@@ -103,10 +106,21 @@ export const captureRectStats = async (
   }
   const image = await loadImageFromBase64(shot.imageBase64)
   const canvas = canvasFromImage(image, image.width, image.height)
+  let base64: string | undefined
+  if (options.thumbnailMaxBytes !== undefined) {
+    for (const factor of [1, 0.5, 0.25] as const) {
+      const output = factor === 1
+        ? canvas
+        : canvasFromImage(image, Math.max(1, Math.round(image.width * factor)), Math.max(1, Math.round(image.height * factor)))
+      base64 = dataUrlBase64Of(output)
+      if (base64.length <= options.thumbnailMaxBytes) break
+    }
+  }
   return {
     stats: sampleCanvasPixels(canvas),
     width: image.width,
     height: image.height,
+    ...(base64 !== undefined ? { base64 } : {}),
   }
 }
 

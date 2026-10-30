@@ -374,7 +374,7 @@ describe('systemPromptSections', () => {
       })
       const agentsBody = prompt.indexOf('## 约定')
       const agentsBlock = prompt.indexOf('<available_agents>')
-      const skillsBlock = prompt.indexOf('<available_skills>')
+      const skillsBlock = prompt.indexOf('<available_skills>\n')
       const docsBlock = prompt.indexOf('<available_docs>')
       // 索引是根 AGENTS.md「子目录索引」一节的机器可读形态，必须紧贴正文读。
       expect(agentsBlock).toBeGreaterThan(agentsBody)
@@ -398,7 +398,7 @@ describe('systemPromptSections', () => {
       expect(prompt).toContain('<skill source="builtin">')
     })
 
-    it('places authorization, project context, and discovery in the canonical order', () => {
+    it('places stable instructions before the project-context tail', () => {
       const prompt = buildSessionBasePrompt({
         capabilities: ['workspace:read'],
         workspacePath: '/repo/demo',
@@ -410,8 +410,8 @@ describe('systemPromptSections', () => {
       const discovery = prompt.indexOf('# 工具发现')
       expect(safety).toBeGreaterThan(-1)
       expect(authorization).toBeGreaterThan(safety)
-      expect(project).toBeGreaterThan(authorization)
-      expect(discovery).toBeGreaterThan(project)
+      expect(discovery).toBeGreaterThan(authorization)
+      expect(project).toBeGreaterThan(discovery)
     })
 
     it('injects <available_skills> as a sub-block of 项目上下文 after the AGENTS.md body', () => {
@@ -422,12 +422,12 @@ describe('systemPromptSections', () => {
       })
       const project = prompt.indexOf('# 项目上下文')
       const agentsBody = prompt.indexOf('## 约定')
-      const skillsBlock = prompt.indexOf('<available_skills>')
+      const skillsBlock = prompt.indexOf('<available_skills>\n')
       const discovery = prompt.indexOf('# 工具发现')
       expect(project).toBeGreaterThan(-1)
       expect(agentsBody).toBeGreaterThan(project)
       expect(skillsBlock).toBeGreaterThan(agentsBody)
-      expect(discovery).toBeGreaterThan(skillsBlock)
+      expect(discovery).toBeLessThan(project)
       expect(prompt).toContain('<name>pdf-tools</name>')
     })
 
@@ -452,7 +452,7 @@ describe('systemPromptSections', () => {
       failedRootCount: 0,
         },
       })
-      const skillsBlock = prompt.indexOf('<available_skills>')
+      const skillsBlock = prompt.indexOf('<available_skills>\n')
       const docsBlock = prompt.indexOf('<available_docs>')
       expect(skillsBlock).toBeGreaterThan(-1)
       expect(docsBlock).toBeGreaterThan(skillsBlock)
@@ -603,5 +603,23 @@ describe('buildSystemPrompt', () => {
     expect(result).not.toContain('运行命令。')
     expect(result).toContain('读准则')
     expect(result).not.toContain('命令准则')
+  })
+
+  it('inserts tool rules before the project-context tail', () => {
+    const result = buildSystemPrompt({
+      basePrompt: 'stable base\n\n# 项目上下文\nproject rules',
+      tools: [tool('read', '读取。', ['读准则'])],
+      gitBranchPrefix: 'feat-',
+    })
+
+    const capability = result.indexOf('# 可用能力')
+    const guidelines = result.indexOf('# 工具使用准则')
+    const git = result.indexOf('# Git 分支规则')
+    const project = result.indexOf('# 项目上下文')
+    expect(capability).toBeGreaterThan(result.indexOf('stable base'))
+    expect(guidelines).toBeGreaterThan(capability)
+    expect(git).toBeGreaterThan(guidelines)
+    expect(project).toBeGreaterThan(git)
+    expect(result.endsWith('# 项目上下文\nproject rules')).toBe(true)
   })
 })

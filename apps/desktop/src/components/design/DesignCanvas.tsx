@@ -26,6 +26,7 @@ import { buildDesignReferencePrompt } from './designSelectionContext'
 import { renderPenPageToPngBase64 } from './ax/renderPageHost'
 import { useCanvasThemeMode } from './useCanvasThemeMode'
 import { exportDesignPng } from '@/platform/designDocument'
+import { registerDesignScanBatchRenderer } from '@/agent/design/designRenderHost'
 import { useT } from '@/i18n'
 import {
   boundsOf,
@@ -154,9 +155,10 @@ const DesignCanvas = ({
   scaleRef.current = scale
   const sweepActiveRef = useRef(false)
   const sweepAbortRef = useRef(false)
-  // 原生截图可用性（异步探测，一次缓存）：可用时画布扫描走原位扫掠，否则回落
-  // staging 单页路径（jsdom 测试 / 浏览器 dev 均无原生截图）。
-  const [nativeScanReady, setNativeScanReady] = useState(false)
+  // 原生截图可用性（异步探测，一次缓存）：null = 探测中。原生可用时画布扫描走
+  // 原位扫掠，否则回落视口外 staging；探测未完成不得启动扫描——那会误选原生
+  // staging 的可见 capture 容器，把设计页重新铺满窗口。
+  const [nativeScanReady, setNativeScanReady] = useState<boolean | null>(null)
   useEffect(() => {
     let cancelled = false
     void nativeCaptureSupported().then((ok) => {
@@ -168,6 +170,8 @@ const DesignCanvas = ({
   }, [])
   // 扫掠编排器经 ref 注入（定义在 placements 之后；trampoline 稳定传给 hook）。
   const scanBatchRef = useRef<DesignScanBatchRender | null>(null)
+  // 底部按钮与会话扫描共用同一相机：批量调用排队，避免两条扫掠争用机位。
+  const scanQueueRef = useRef<Promise<void>>(Promise.resolve())
   const [sweeping, setSweeping] = useState(false)
 
   const viewDoc = doc
@@ -179,10 +183,15 @@ const DesignCanvas = ({
 
   // 扫描运行状态上提到画布层：面板与画布叠加层（当前页扫描光束 / 已完成页
   // 状态描边）消费同一份数据，扫描时画布逐页点亮（pen.dev 的动态扫描效果）。
-  const scanBatchTrampoline = useCallback<DesignScanBatchRender>(async (pages, onPageDone, onActive) => {
-    const impl = scanBatchRef.current
-    if (!impl) throw new Error('扫掠编排器未就绪')
-    await impl(pages, onPageDone, onActive)
+  const scanBatchTrampoline = useCallback<DesignScanBatchRender>(async (pages, onPageDone, onActive, options) => {
+    const execute = async () => {
+      const impl = scanBatchRef.current
+      if (!impl) throw new Error('扫掠编排器未就绪')
+      await impl(pages, onPageDone, onActive, options)
+    }
+    const queued = scanQueueRef.current.then(execute)
+    scanQueueRef.current = queued.catch(() => undefined)
+    await queued
   }, [])
   const scan = useDesignScan({
     doc: viewDoc,
@@ -193,8 +202,8 @@ const DesignCanvas = ({
   const runScanRef = useRef(scan.run)
   runScanRef.current = scan.run
   useEffect(() => {
-    if (scanOpen) void runScanRef.current()
-  }, [scanOpen])
+    if (scanOpen && nativeScanReady !== null) void runScanRef.current()
+  }, [scanOpen, nativeScanReady])
 
   // 分组排布：有坐标页原样保留，无坐标页按内容智能分组排成多行（组头带描述分组）。
   // `.ax` 评审面的手动摆放（localStorage）仍以偏移叠加在此之上。
@@ -217,23 +226,64 @@ const DesignCanvas = ({
    */
   const pageDragTarget: 'offsets' | null = axReview ? 'offsets' : null
 
+  /**
+   * 扫掠相机的上一机位：扫掠期间相机带 220ms 缓动（design.css 的 `.is-sweeping`
+   * 规则），而裁剪集合按 React state（即**目标**机位）立即重算——缓动途中的旧
+   * 机位区域，其页内容此刻已被卸载，画布上便露出一块底色（闪白）。
+   *
+   * 保留上一机位并入裁剪：缓动全程两处视野的页都在，旧机位的页随画面一起移出
+   * 视野，而不是原地消失。
+   *
+   * 用「渲染期派生 state」记录轨迹（React 官方的 adjust-state-during-render
+   * 模式）：轨迹必须在**同一次提交**里生效，否则裁剪 memo 先按目标机位算完、轨迹
+   * 才补上——闪白依旧（effect 记录就晚了整整一拍）。
+   */
+  const [cameraTrail, setCameraTrail] = useState<{
+    offset: { x: number; y: number }
+    scale: number
+  } | null>(null)
+  const [lastCamera, setLastCamera] = useState({ offset, scale })
+  if (lastCamera.offset !== offset || lastCamera.scale !== scale) {
+    setLastCamera({ offset, scale })
+    setCameraTrail(lastCamera)
+  }
+  // 轨迹只在缓动窗口内有效：相机停下后旧机位的页应卸载（否则它们常驻 DOM）。
+  // 缓动 220ms，240ms 后释放足够覆盖。
+  useEffect(() => {
+    if (!cameraTrail) return undefined
+    const timer = window.setTimeout(() => setCameraTrail(null), 240)
+    return () => window.clearTimeout(timer)
+  }, [cameraTrail])
+
   // 视口裁剪：只挂载与视口（含外扩边距）相交的页，75 页不全量渲染。
   const visiblePlacements = useMemo(() => {
     if (viewportSize.width <= 0 || viewportSize.height <= 0) return placements
-    const marginX = (viewportSize.width * CULLING_MARGIN_RATIO) / scale
-    const marginY = (viewportSize.height * CULLING_MARGIN_RATIO) / scale
-    const viewX = -offset.x / scale - marginX
-    const viewY = -offset.y / scale - marginY
-    const viewWidth = viewportSize.width / scale + marginX * 2
-    const viewHeight = viewportSize.height / scale + marginY * 2
+    const viewOf = (camera: { offset: { x: number; y: number }; scale: number }) => {
+      const marginX = (viewportSize.width * CULLING_MARGIN_RATIO) / camera.scale
+      const marginY = (viewportSize.height * CULLING_MARGIN_RATIO) / camera.scale
+      return {
+        viewX: -camera.offset.x / camera.scale - marginX,
+        viewY: -camera.offset.y / camera.scale - marginY,
+        viewWidth: viewportSize.width / camera.scale + marginX * 2,
+        viewHeight: viewportSize.height / camera.scale + marginY * 2,
+      }
+    }
+    const view = viewOf({ offset, scale })
+    // 扫掠缓动途中：并入上一机位的视野，旧机位下的页不提前卸载。
+    const trailView = sweeping && cameraTrail ? viewOf(cameraTrail) : null
     return placements.filter(
       (item) =>
-        item.x < viewX + viewWidth &&
-        item.x + item.width > viewX &&
-        item.y < viewY + viewHeight &&
-        item.y + item.height > viewY,
+        (item.x < view.viewX + view.viewWidth &&
+          item.x + item.width > view.viewX &&
+          item.y < view.viewY + view.viewHeight &&
+          item.y + item.height > view.viewY) ||
+        (trailView !== null &&
+          item.x < trailView.viewX + trailView.viewWidth &&
+          item.x + item.width > trailView.viewX &&
+          item.y < trailView.viewY + trailView.viewHeight &&
+          item.y + item.height > trailView.viewY),
     )
-  }, [placements, viewportSize, offset, scale])
+  }, [placements, viewportSize, offset, scale, sweeping, cameraTrail])
   const visibleKey = useMemo(
     () => visiblePlacements.map((item) => item.page.id).join('|'),
     [visiblePlacements],
@@ -508,9 +558,17 @@ const DesignCanvas = ({
     sweepActiveRef,
     sweepAbortRef,
     setOffset,
+    setScale,
     setSweeping,
   })
   scanBatchRef.current = runScanSweep
+
+  // 会话 design_query mode=scan 复用底部按钮的同一条原位扫掠。只在原生能力
+  // 可用时注册；doc 换代经 SHA-256 匹配自动隔离，卸载由注销函数收口。
+  useEffect(() => {
+    if (!nativeScanReady) return undefined
+    return registerDesignScanBatchRenderer(viewDoc, scanBatchTrampoline)
+  }, [viewDoc, nativeScanReady, scanBatchTrampoline])
 
   // 内容换代（Agent 写盘 / 编辑重解析）即在途扫掠作废：旧 placements 闭包下的
   // 相机推进对新布局失准，续跑只会产出成片「扫描中断」误报——让位并还原视口；
@@ -1085,19 +1143,40 @@ ${t('app.design.canvas.fitPageHint')}`}
           </button>
         )}
         <span className="design-canvas__zoom">
-          <button type="button" onClick={() => setScale((s) => clampScale(s - ZOOM_STEP))} aria-label={t('app.design.zoom.out')}>
+          <button
+            type="button"
+            onClick={() => {
+              abortSweepIfActive()
+              setScale((s) => clampScale(s - ZOOM_STEP))
+            }}
+            aria-label={t('app.design.zoom.out')}
+          >
             −
           </button>
           <span>{Math.round(scale * 100)}%</span>
-          <button type="button" onClick={() => setScale((s) => clampScale(s + ZOOM_STEP))} aria-label={t('app.design.zoom.in')}>
+          <button
+            type="button"
+            onClick={() => {
+              abortSweepIfActive()
+              setScale((s) => clampScale(s + ZOOM_STEP))
+            }}
+            aria-label={t('app.design.zoom.in')}
+          >
             +
           </button>
-          <button type="button" onClick={fitAll}>
+          <button
+            type="button"
+            onClick={() => {
+              abortSweepIfActive()
+              fitAll()
+            }}
+          >
             {t('app.design.canvas.fit')}
           </button>
           <button
             type="button"
             onClick={() => {
+              abortSweepIfActive()
               setScale(1)
               setOffset({ x: 0, y: 0 })
             }}
