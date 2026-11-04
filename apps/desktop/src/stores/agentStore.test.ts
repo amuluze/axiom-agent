@@ -694,7 +694,7 @@ describe('agentStore session activation', () => {
     expect(state.sessions.find((candidate) => candidate.id === state.activeSessionId)?.workspace)
       .toEqual(sourceWorkspace)
     expect(state.messages[0]?.content).toBe('retry source')
-    expect(state.messages.at(-1)?.role).toBe('assistant')
+    expect(state.messages.filter((message) => message.role !== 'custom').at(-1)?.role).toBe('assistant')
     expect(state.error).toBeNull()
     expect(state.sessionBusy).toBe(false)
   })

@@ -311,10 +311,12 @@
   white-space: nowrap;
 }
 
+/* 组头的文件计数：与树内条目正文同级（设计稿 dvd-ga-hn：$text-sm）。
+   此前取 $text-2xs（10px），是整棵树最小的字号，数字几乎看不清。 */
 .docs-view__group-count {
   margin-left: auto;
   flex: none;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-tertiary);
   font-weight: 600;
 }
@@ -754,4 +756,62 @@
 
 @keyframes docs-view-spin {
   to { transform: rotate(360deg); }
+}
+
+/* 历史版本：细节面板挂在编辑工具条里，列表向下展开，不挤占正文。 */
+.docs-view__history {
+  position: relative;
+}
+
+.docs-view__history > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.docs-view__history > summary::-webkit-details-marker {
+  display: none;
+}
+
+.docs-view__history[open] > summary {
+  border-color: var(--accent);
+}
+
+.docs-view__history-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 260px;
+  max-height: 320px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 8px;
+  list-style: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-popover);
+}
+
+.docs-view__history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.docs-view__history-meta {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.docs-view__history-empty {
+  padding: 6px 2px;
+  color: var(--text-tertiary);
+  font-size: 12px;
 }

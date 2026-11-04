@@ -100,8 +100,8 @@ export const buildContextProjection = (
   checkpoint?: ContextCheckpoint | null,
 ): AgentMessage[] => {
   const includedInModelContext = (message: AgentMessage): boolean => {
+    if ((message.role === 'assistant' || message.role === 'custom') && message.excludeFromModelContext === true) return false
     if (message.role !== 'assistant') return true
-    if (message.excludeFromModelContext === true) return false
     // 早期版本落盘的旧"成功/截断终态"空 assistant 消息（未标记 excludeFromModelContext，
     // 如 message_start 后直接 message_stop 的空流、仅含 thinking 块的空响应）同样不得
     // 进入模型上下文：Anthropic-compatible 会对 { role:'assistant', content:[] } 返回 400。

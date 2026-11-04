@@ -28,6 +28,8 @@ const projectDocDiagnosticMessage = (
       return t('settings.skills.docsDiagnostic.nestedScanTruncated', { count: diagnostic.affectedCount })
     case 'file_read_failed':
       return t('settings.skills.docsDiagnostic.fileReadFailed', { count: diagnostic.affectedCount })
+    case 'archive_marker_invalid':
+      return t('settings.skills.docsDiagnostic.archiveMarkerInvalid', { count: diagnostic.affectedCount })
   }
 }
 

@@ -49,6 +49,8 @@ const diagnosticMessage = (diagnostic: ProjectDocInventory['diagnostics'][number
       return `另有 ${diagnostic.affectedCount} 个嵌套文档或目录因递归扫描上限未列入；用 ls 继续检查`
     case 'file_read_failed':
       return `${diagnostic.affectedCount} 个文档读取失败，未列入索引；用 read/ls 复查对应文件`
+    case 'archive_marker_invalid':
+      return `另有 ${diagnostic.affectedCount} 份文档的归档标记写法不被识别（须为 frontmatter 中的 status: done），它们仍按活跃文档计入索引：${(diagnostic.paths ?? []).join('、')}`
   }
 }
 

@@ -20,6 +20,14 @@ const zeroUsage: AgentRunTokenUsage = {
 }
 
 describe('buildBudgetNotices', () => {
+  it('阶段额度接近上限时要求交接，不强制提前交付；token 总预算提醒仍生效', () => {
+    const notices = buildBudgetNotices(limits.maxTurns, limits.maxToolCalls, limits, thresholds, {
+      ...zeroUsage, billableTokens: limits.maxTotalTokens ?? 0,
+    }, true)
+    expect(notices.some((notice) => notice.includes('阶段预算提示'))).toBe(true)
+    expect(notices.some((notice) => notice.includes('必须立即停止扩展探索范围'))).toBe(false)
+    expect(notices.some((notice) => notice.includes('token 预算硬约束'))).toBe(true)
+  })
   it('produces no notices while budgets are comfortable', () => {
     expect(buildBudgetNotices(1, 1, limits, thresholds, zeroUsage)).toEqual([])
   })

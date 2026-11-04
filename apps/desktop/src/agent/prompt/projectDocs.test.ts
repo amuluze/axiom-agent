@@ -447,6 +447,71 @@ describe('loadProjectDocs', () => {
     expect(result.archivedCount).toBe(1)
   })
 
+  it('归档标记写法有误（键大小写 / 值大小写 / 带引号）逐文件报诊断', async () => {
+    // 归档标记是手写 frontmatter：`Status: done`、`status: DONE`、`status: "done"`
+    // 都不被识别，文档继续按活跃文档占用索引配额，而作者以为它已归档。
+    // 此前是纯静默失败——没有任何信号提示标记没生效。
+    const { environment } = makeEnv(
+      {
+        '.specs/tasks': [
+          entry('.specs/tasks/wrong-key-case.md', 'file'),
+          entry('.specs/tasks/wrong-value-case.md', 'file'),
+          entry('.specs/tasks/quoted.md', 'file'),
+          entry('.specs/tasks/ok.md', 'file'),
+        ],
+      },
+      {
+        '.specs/tasks/wrong-key-case.md': '---\nStatus: done\n---\n# 键大小写不符',
+        '.specs/tasks/wrong-value-case.md': '---\nstatus: DONE\n---\n# 值大小写不符',
+        '.specs/tasks/quoted.md': '---\nstatus: "done"\n---\n# 带引号',
+        '.specs/tasks/ok.md': '---\nstatus: done\n---\n# 正确写法',
+      },
+    )
+    const result = await loadProjectDocs(environment)
+    // 写法有误的三份仍按活跃文档计入索引（归档未生效，索引内容不变）。
+    expect(result.entries.map((item) => item.relativePath).sort()).toEqual([
+      '.specs/tasks/quoted.md',
+      '.specs/tasks/wrong-key-case.md',
+      '.specs/tasks/wrong-value-case.md',
+    ])
+    expect(result.archivedCount).toBe(1)
+    const diagnostic = result.diagnostics.find((item) => item.code === 'archive_marker_invalid')
+    expect(diagnostic).toBeDefined()
+    expect(diagnostic?.affectedCount).toBe(3)
+    // 必须逐文件指名：否则用户无从修正哪一份。
+    expect(diagnostic?.paths?.join(' ')).toContain('.specs/tasks/wrong-key-case.md')
+    expect(diagnostic?.paths?.join(' ')).toContain('.specs/tasks/wrong-value-case.md')
+    expect(diagnostic?.paths?.join(' ')).toContain('.specs/tasks/quoted.md')
+    // 写法正确的那份不得被误报。
+    expect(diagnostic?.paths?.join(' ')).not.toContain('.specs/tasks/ok.md')
+  })
+
+  it('非归档角色（领域规范 / 活文档）的 status 标记不产生归档标记诊断', async () => {
+    // 领域规范与 .docs/ 永不归档：那里写什么都不该被当成「归档标记写错」。
+    const { environment } = makeEnv(
+      {
+        '.specs/domain': [entry('.specs/domain/spec.md', 'file')],
+        '.docs': [entry('.docs/living.md', 'file')],
+      },
+      {
+        '.specs/domain/spec.md': '---\nstatus:done\n---\n# 领域规范',
+        '.docs/living.md': '---\nstatus:done\n---\n# 活文档',
+      },
+    )
+    const result = await loadProjectDocs(environment)
+    expect(result.diagnostics.filter((item) => item.code === 'archive_marker_invalid')).toEqual([])
+  })
+
+  it('非归档语义的 status 值（in_progress / draft）不算标记写错', async () => {
+    const { environment } = makeEnv(
+      { '.specs/tasks': [entry('.specs/tasks/wip.md', 'file')] },
+      { '.specs/tasks/wip.md': '---\nstatus: in_progress\n---\n# 进行中' },
+    )
+    const result = await loadProjectDocs(environment)
+    expect(result.diagnostics.filter((item) => item.code === 'archive_marker_invalid')).toEqual([])
+    expect(result.entries.map((item) => item.relativePath)).toEqual(['.specs/tasks/wip.md'])
+  })
+
   it('归档文档不占用活跃配额：大量归档不得把活跃 Task Spec 挤出索引', async () => {
     // 归档的用途是「不再挤占索引」：若它继续消耗每个目录的活跃条目上限，
     // 一个累积了几十个已完成任务的仓库会在字母序上把活跃 Spec/Plan 整扇挤出索引。

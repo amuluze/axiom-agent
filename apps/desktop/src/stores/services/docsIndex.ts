@@ -7,8 +7,10 @@ import {
 } from '@/agent/prompt/projectAgents'
 import {
   DOC_ROOTS,
+  DOC_HEAD_READ_CONCURRENCY,
   MAX_DOC_PAGE_ROOT_ENTRIES,
   ROOT_DOC_FILES,
+  extractTitle,
   scanProjectDocs,
   type ProjectDocEntry,
   type ProjectDocDiagnostic,
@@ -24,14 +26,12 @@ import { createDesktopAgentEnvironment } from '@/platform/desktopAgentEnvironmen
  * 扫描，截断估算、根级文件错误与读取失败处理已分叉，页面展示的文档可能与模型看到的
  * 索引不一致。本模块只做「扫描结果 → 页面分组」的映射，不得再含扫描逻辑。
  *
- * 页面侧另有两个「项目指南」分组（根 AGENTS.md / 嵌套 AGENTS.md，docs-view 设计稿
- * dvd-ga / dvd-gn 两组）：AGENTS.md 的提示词注入归 projectContext / projectAgents，
- * **不进 scanProjectDocs**——加进去会改变提示词契约；这里用同一份发现参数
- * （pattern / limit / maxDepth 与 projectAgents.ts 一致）单独扫，只做页面展示。
+ * 页面侧另有根/嵌套 AGENTS.md 与 `docs/` 参考文档分组：它们都不进
+ * scanProjectDocs，避免改变提示词契约；参考文档只读展示，不进入保存白名单。
  */
 
 /** 页面侧分组角色：SDD 五角色 + 两个 AGENTS.md 专用分组。 */
-export type DocsGroupRole = ProjectDocRole | 'agents-root' | 'agents-nested'
+export type DocsGroupRole = ProjectDocRole | 'agents-root' | 'agents-nested' | 'reference'
 
 export interface DocsIndexEntry {
   role: DocsGroupRole
@@ -89,11 +89,42 @@ const toAgentsEntry = (role: 'agents-root' | 'agents-nested', path: string): Doc
   revision: '',
 })
 
+const REFERENCE_DOCS_PATTERN = 'docs/**/*.md'
+const MAX_REFERENCE_DOC_ENTRIES = 512
+const MAX_REFERENCE_DOC_DEPTH = 8
+
+const toReferenceEntry = async (
+  workspace: AgentEnvironment['workspace'],
+  path: string,
+): Promise<DocsIndexEntry> => {
+  const fallback = fileStem(path)
+  try {
+    const read = await workspace.readText(path, 1, 30)
+    return {
+      role: 'reference',
+      path,
+      fileName: path.split('/').pop() ?? path,
+      title: extractTitle(read.content, fallback),
+      archived: false,
+      revision: read.sha256,
+    }
+  } catch {
+    return {
+      role: 'reference',
+      path,
+      fileName: path.split('/').pop() ?? path,
+      title: fallback,
+      archived: false,
+      revision: '',
+    }
+  }
+}
+
 /**
  * 扫描工作区的文档树。分组顺序（docs-view 设计稿树序）：项目指南（AGENTS.md）→
  * 根级文件（DESIGN.md）→ 四个受管目录（领域约束 → 任务规格 → 实施计划 → 实现现状）
- * → 子目录指南（任意目录深度的 AGENTS.md）。SDD 部分与提示词索引的分组顺序一致；
- * AGENTS.md 两组只进页面。`environment` 默认绑定到给定工作区；测试可注入伪环境。
+ * → `docs/` 参考文档 → 子目录指南（任意目录深度的 AGENTS.md）。SDD 部分与提示词
+ * 索引的分组顺序一致；其余分组只进页面。`environment` 默认绑定到给定工作区；测试可注入伪环境。
  */
 export const scanWorkspaceDocs = async (
   workspacePath?: string,
@@ -137,6 +168,38 @@ export const scanWorkspaceDocs = async (
   } catch {
     agentsScanFailed = true
   }
+  let referenceEntries: DocsIndexEntry[] = []
+  let referencesTruncated = false
+  let referencesScanFailed = false
+  try {
+    const found = await environment.workspace.find({
+      requestId: 'docs-view-reference-scan',
+      pattern: REFERENCE_DOCS_PATTERN,
+      limit: MAX_REFERENCE_DOC_ENTRIES,
+      maxDepth: MAX_REFERENCE_DOC_DEPTH,
+      signal: new AbortController().signal,
+    })
+    referencesTruncated = found.truncated
+    const referenceMatches = found.matches.filter((match) => match.kind === 'file')
+    const scannedReferences = new Array<DocsIndexEntry | undefined>(referenceMatches.length)
+    let referenceCursor = 0
+    const scanReference = async (): Promise<void> => {
+      while (referenceCursor < referenceMatches.length) {
+        const index = referenceCursor
+        referenceCursor += 1
+        const match = referenceMatches[index]
+        if (match) scannedReferences[index] = await toReferenceEntry(environment.workspace, match.path)
+      }
+    }
+    await Promise.all(Array.from(
+      { length: Math.min(DOC_HEAD_READ_CONCURRENCY, referenceMatches.length) },
+      scanReference,
+    ))
+    referenceEntries = scannedReferences.filter((entry): entry is DocsIndexEntry => entry !== undefined)
+    referenceEntries.sort((left, right) => left.path.localeCompare(right.path, 'en'))
+  } catch {
+    referencesScanFailed = true
+  }
   return {
     // 全空且无诊断时仍返回完整分组骨架——页面据此区分「没扫描到」与「扫描失败」。
     groups: [
@@ -159,6 +222,15 @@ export const scanWorkspaceDocs = async (
           .map((entry) => toDocsIndexEntry(entry, true)),
         diagnostics: scan.inventory.diagnostics.filter((diagnostic) => diagnostic.role === role),
       })),
+      {
+        role: 'reference' as DocsGroupRole,
+        root: 'docs',
+        entries: referenceEntries,
+        archivedEntries: [],
+        diagnostics: [],
+        truncated: referencesTruncated,
+        scanFailed: referencesScanFailed,
+      },
       {
         role: 'agents-nested' as DocsGroupRole,
         root: './**/AGENTS.md',

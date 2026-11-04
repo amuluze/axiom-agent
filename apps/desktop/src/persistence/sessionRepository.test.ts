@@ -1322,6 +1322,136 @@ describe('MemorySessionRepository', () => {
     })
   })
 
+  it('keeps the persisted checkpoint when a dependency replacement declares it', async () => {
+    const repository = new MemorySessionRepository()
+    const initialized = await repository.initialize(defaults)
+    const sessionId = initialized.active.session.id
+    const previous = initialized.active.session.runtimeManifest
+    if (!previous) throw new Error('missing runtime manifest')
+    const user: UserMessage = { id: 'u-deps', role: 'user', content: 'old prompt', createdAt: 1 }
+    await repository.commitMutationBatch(sessionId, {
+      id: 'mutation:dependencies-user-message',
+      sessionId,
+      events: [{ type: 'session_message_append', sessionId, message: user }],
+      createdAt: 1,
+    })
+    await repository.recordEvent(sessionId, {
+      type: 'compaction_end',
+      compactionId: 'compact-dependencies',
+      reason: 'manual',
+      aborted: false,
+      checkpoint: {
+        id: 'checkpoint-dependencies',
+        sessionId,
+        throughMessageId: user.id,
+        summary: 'summary',
+        summaryHash: await hashContextSummary('summary'),
+        reason: 'manual',
+        tokensBefore: 100,
+        estimatedTokensAfter: 10,
+        requestBytesBefore: 1000,
+        requestBytesAfter: 100,
+        modelProvider: 'test',
+        modelId: 'model',
+        promptVersion: SUMMARY_PROMPT_VERSION,
+        excludedMessageIds: [],
+        facts: { readFiles: [], modifiedFiles: [] },
+        createdAt: 2,
+      },
+    })
+    const currentManifest = runtimeManifest('model', '2')
+
+    await repository.commitMutationBatch(sessionId, {
+      id: 'mutation:dependencies-keep-checkpoint',
+      sessionId,
+      events: [{
+        type: 'runtime_dependencies_update',
+        previous: {
+          systemPrompt: 'system',
+          activeToolNames: ['discover_agent_tools'],
+          runtimeManifest: previous,
+        },
+        current: {
+          systemPrompt: 'system-after-model-switch',
+          activeToolNames: ['discover_agent_tools', 'read'],
+          runtimeManifest: currentManifest,
+        },
+        source: 'set',
+        invalidateCheckpoint: false,
+      }],
+      createdAt: 3,
+    }, currentManifest)
+
+    // 提示词 / 模型类替换：压缩摘要与确定性账本继续随会话存活。
+    expect((await repository.loadSession(sessionId)).checkpoint?.summary).toBe('summary')
+    expect((await repository.getStats()).checkpointCount).toBe(1)
+  })
+
+  it('clears the persisted checkpoint when a dependency replacement declares invalidation', async () => {
+    const repository = new MemorySessionRepository()
+    const initialized = await repository.initialize(defaults)
+    const sessionId = initialized.active.session.id
+    const previous = initialized.active.session.runtimeManifest
+    if (!previous) throw new Error('missing runtime manifest')
+    const user: UserMessage = { id: 'u-deps', role: 'user', content: 'old prompt', createdAt: 1 }
+    await repository.commitMutationBatch(sessionId, {
+      id: 'mutation:dependencies-user-message',
+      sessionId,
+      events: [{ type: 'session_message_append', sessionId, message: user }],
+      createdAt: 1,
+    })
+    await repository.recordEvent(sessionId, {
+      type: 'compaction_end',
+      compactionId: 'compact-dependencies',
+      reason: 'manual',
+      aborted: false,
+      checkpoint: {
+        id: 'checkpoint-dependencies',
+        sessionId,
+        throughMessageId: user.id,
+        summary: 'summary',
+        summaryHash: await hashContextSummary('summary'),
+        reason: 'manual',
+        tokensBefore: 100,
+        estimatedTokensAfter: 10,
+        requestBytesBefore: 1000,
+        requestBytesAfter: 100,
+        modelProvider: 'test',
+        modelId: 'model',
+        promptVersion: SUMMARY_PROMPT_VERSION,
+        excludedMessageIds: [],
+        facts: { readFiles: [], modifiedFiles: [] },
+        createdAt: 2,
+      },
+    })
+    const currentManifest = runtimeManifest('model', '2')
+
+    await repository.commitMutationBatch(sessionId, {
+      id: 'mutation:dependencies-drop-checkpoint',
+      sessionId,
+      events: [{
+        type: 'runtime_dependencies_update',
+        previous: {
+          systemPrompt: 'system',
+          activeToolNames: ['discover_agent_tools'],
+          runtimeManifest: previous,
+        },
+        current: {
+          systemPrompt: 'system-after-skill-reload',
+          activeToolNames: ['discover_agent_tools', 'read'],
+          runtimeManifest: currentManifest,
+        },
+        source: 'set',
+        invalidateCheckpoint: true,
+      }],
+      createdAt: 3,
+    }, currentManifest)
+
+    // Skill reload：冻结快照变化，摘要与账本里的 loadedSkills 引用失效 → 一并作废。
+    expect((await repository.loadSession(sessionId)).checkpoint).toBeNull()
+    expect((await repository.getStats()).checkpointCount).toBe(0)
+  })
+
   it('rejects runtime_dependencies_update when previous does not match persisted state (CAS)', async () => {
     const repository = new MemorySessionRepository()
     const initialized = await repository.initialize(defaults)

@@ -76,21 +76,26 @@ export const buildBudgetNotices = (
   limits: AgentLimits,
   budgetThresholds: BudgetThresholds,
   tokenUsage: AgentRunTokenUsage,
+  stageBudget = false,
 ): string[] => {
   const notices: string[] = []
   const remainingTurns = limits.maxTurns - turns + 1
   const remainingToolCalls = limits.maxToolCalls - toolCalls
-  if (remainingTurns <= budgetThresholds.turnSoftNotice) {
+  if (stageBudget && (remainingTurns <= budgetThresholds.turnSoftNotice
+    || remainingToolCalls <= budgetThresholds.toolCallNotice)) {
+    notices.push(`运行时阶段预算提示：本阶段剩余 ${remainingTurns} 轮、${remainingToolCalls} 次工具调用。保留已完成事项、证据与剩余工作，避免重复操作；任务未完成时不要仅因阶段额度不足而宣布完成。宿主会根据进展和任务总保护决定是否继续。`)
+  }
+  if (!stageBudget && remainingTurns <= budgetThresholds.turnSoftNotice) {
     notices.push(
       `运行时轮次预算提示：当前是第 ${turns}/${limits.maxTurns} 轮（含本轮最多剩余 ${remainingTurns} 轮）。请在同一轮并行调用多个互不依赖的只读工具，停止逐文件串行浏览和重复读取，并开始规划收口。`,
     )
   }
-  if (remainingTurns <= budgetThresholds.turnHardNotice) {
+  if (!stageBudget && remainingTurns <= budgetThresholds.turnHardNotice) {
     notices.push(
       `运行时轮次预算硬约束：剩余轮次已不足 ${budgetThresholds.turnHardNotice} 轮，必须立即停止扩展探索范围，基于已有证据给出最终结论与交付。`,
     )
   }
-  if (remainingToolCalls <= budgetThresholds.toolCallNotice) {
+  if (!stageBudget && remainingToolCalls <= budgetThresholds.toolCallNotice) {
     notices.push(
       `运行时工具预算提示：本次任务还可调用 ${remainingToolCalls} 次工具。请合并搜索与读取范围；信息足够时立即总结结论并完成任务。`,
     )

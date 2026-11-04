@@ -66,6 +66,7 @@ const GROUP_LABEL_KEY: Record<DocsGroupRole, string> = {
   task: 'app.docs.group.task',
   plan: 'app.docs.group.plan',
   doc: 'app.docs.group.doc',
+  reference: 'app.docs.group.reference',
   'agents-nested': 'app.docs.group.agentsNested',
 }
 
@@ -77,6 +78,7 @@ const GROUP_PATH_KEY: Partial<Record<DocsGroupRole, string>> = {
   task: 'app.docs.groupPath.task',
   plan: 'app.docs.groupPath.plan',
   doc: 'app.docs.groupPath.doc',
+  reference: 'app.docs.groupPath.reference',
   'agents-nested': 'app.docs.groupPath.agentsNested',
 }
 
@@ -124,6 +126,8 @@ const WorkspaceDocsView = ({ workspacePath, workspaceName }: { workspacePath?: s
         return t('app.docs.nestedScanTruncated', { count: diagnostic.affectedCount })
       case 'file_read_failed':
         return t('app.docs.readFailed', { count: diagnostic.affectedCount })
+      case 'archive_marker_invalid':
+        return t('app.docs.archiveMarkerInvalid', { count: diagnostic.affectedCount })
     }
   }
 
@@ -178,12 +182,15 @@ const WorkspaceDocsView = ({ workspacePath, workspaceName }: { workspacePath?: s
     beginEdit,
     discardEdit,
     saveEdit,
+    restoreVersion,
   } = useDocEditor({
     workspacePath,
     requestAutoScan,
     apiRef: readerApiRef,
     loadErrorMessage: t('app.docs.loadError'),
     saveErrorMessage: t('app.docs.saveError'),
+    restoreErrorMessage: t('app.docs.historyRestoreError'),
+    restoreDirtyError: t('app.docs.historyDirty'),
   })
   const editing = edit !== null
   const {
@@ -284,6 +291,9 @@ const WorkspaceDocsView = ({ workspacePath, workspaceName }: { workspacePath?: s
   const indexedPaths = useMemo(() => new Set(
     index ? flattenEntries(index).map((entry) => entry.path) : [],
   ), [flattenEntries, index])
+  const selectedReadOnly = useMemo(() => index
+    ? flattenEntries(index).some((entry) => entry.path === selectedPath && entry.role === 'reference')
+    : false, [flattenEntries, index, selectedPath])
 
   const openMarkdownLink = useCallback(async (
     event: MouseEvent<HTMLAnchorElement>,
@@ -445,6 +455,33 @@ const WorkspaceDocsView = ({ workspacePath, workspaceName }: { workspacePath?: s
                 <button type="button" className="docs-view__topbar-secondary" onClick={() => { discardEdit(); if (selectedPath) void loadDoc(selectedPath, 0) }}>
                   {t('app.docs.discard')}
                 </button>
+                <details className="docs-view__history">
+                  <summary className="docs-view__topbar-secondary">{t('app.docs.history')}</summary>
+                  <ul className="docs-view__history-list">
+                    {edit.versions.length === 0 && (
+                      <li className="docs-view__history-empty">
+                        {edit.versionsLoading ? t('app.docs.loadingDoc') : t('app.docs.historyEmpty')}
+                      </li>
+                    )}
+                    {edit.versions.map((version) => (
+                      <li key={version.sha256} className="docs-view__history-item">
+                        <span className="docs-view__history-meta">
+                          {new Date(version.modifiedMs).toLocaleString()}
+                        </span>
+                        <button
+                          type="button"
+                          className="docs-view__topbar-secondary"
+                          disabled={dirty || edit.saving || edit.restoringSha256 !== null}
+                          onClick={() => void restoreVersion(version.sha256)}
+                        >
+                          {edit.restoringSha256 === version.sha256
+                            ? t('app.docs.historyRestoring')
+                            : t('app.docs.historyRestore')}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
               </>
             ) : (
               <>
@@ -452,7 +489,8 @@ const WorkspaceDocsView = ({ workspacePath, workspaceName }: { workspacePath?: s
                 <button
                   type="button"
                   className="docs-view__topbar-primary"
-                  disabled={!selectedPath || content?.loading === true || editLoading}
+                  disabled={!selectedPath || selectedReadOnly || content?.loading === true || editLoading}
+                  title={selectedReadOnly ? t('app.docs.readOnly') : undefined}
                   onClick={() => { if (selectedPath) void beginEdit(selectedPath) }}
                 >
                   {editLoading ? t('app.docs.loadingDoc') : t('app.docs.edit')}
@@ -614,13 +652,17 @@ const WorkspaceDocsView = ({ workspacePath, workspaceName }: { workspacePath?: s
                       {group.truncated && (
                         <div className="docs-view__group-note">
                           <AlertTriangle size={11} />
-                          <span>{t('app.docs.agentsTruncated')}</span>
+                          <span>{t(group.role === 'reference'
+                            ? 'app.docs.referencesTruncated'
+                            : 'app.docs.agentsTruncated')}</span>
                         </div>
                       )}
                       {group.scanFailed && (
                         <div className="docs-view__group-note docs-view__group-note--error">
                           <AlertTriangle size={11} />
-                          <span>{t('app.docs.agentsScanFailed')}</span>
+                          <span>{t(group.role === 'reference'
+                            ? 'app.docs.referencesScanFailed'
+                            : 'app.docs.agentsScanFailed')}</span>
                         </div>
                       )}
                       {[...group.entries, ...group.archivedEntries].map((entry) => {

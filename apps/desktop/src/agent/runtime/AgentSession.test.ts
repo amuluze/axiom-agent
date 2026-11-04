@@ -7,6 +7,7 @@ import type {
   ModelStreamEvent,
   ModelTransport,
 } from '@/agent/core/types'
+import type { ContextCheckpoint } from '@/agent/context/types'
 import { createBranchMessageCopies } from '@/agent/session/branch'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentSession } from './AgentSession'
@@ -333,6 +334,170 @@ const deferredRuntimeTool: AgentTool = {
   name: 'deferred_runtime_tool',
   label: 'Deferred runtime tool',
 }
+
+/** 依赖替换用例的压缩检查点夹具：摘要 + 确定性账本随会话存活与否由本次替换声明。 */
+const runtimeDepsCheckpoint = (sessionId: string): ContextCheckpoint => ({
+  id: `checkpoint-${sessionId}`,
+  sessionId,
+  throughMessageId: 'u-old',
+  summary: '## 目标\n保留旧目标',
+  summaryHash: 'hash',
+  reason: 'token_threshold',
+  tokensBefore: 100,
+  estimatedTokensAfter: 20,
+  requestBytesBefore: 1_000,
+  requestBytesAfter: 200,
+  modelProvider: 'test',
+  modelId: 'model',
+  promptVersion: 1,
+  excludedMessageIds: [],
+  facts: { readFiles: [], modifiedFiles: [] },
+  createdAt: 1,
+})
+
+describe('AgentSession 阶段触限续跑', () => {
+  const createSession = (repeated: boolean, enabled = true, endless = false, toolBudget = false, failTool = false) => {
+    let calls = 0
+    const events: AgentEvent[] = []
+    const execute = vi.fn(async () => {
+      if (failTool) throw new Error('真实工具执行失败')
+      return { content: repeated ? 'same' : `evidence-${calls}` }
+    })
+    const transport: ModelTransport = {
+      async *stream() {
+        calls += 1
+        yield { type: 'start' }
+        if (calls <= 2 || repeated || endless) {
+          yield { type: 'tool_call_start', index: 0, id: `call-${calls}`, name: 'runtime_tool' }
+          yield { type: 'tool_call_delta', index: 0, argumentsDelta: '{}' }
+          yield { type: 'tool_call_end', index: 0 }
+          yield { type: 'done', stopReason: 'tool_use', usage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 } }
+        } else {
+          yield { type: 'text_delta', delta: '完成' }
+          yield { type: 'done', stopReason: 'stop' }
+        }
+      },
+    }
+    const session = new AgentSession({
+      sessionId: 'continuation-test', systemPrompt: 'system',
+      model: { provider: 'test', model: 'model' }, transport,
+      tools: [{ ...runtimeTool, execute }], limits: toolBudget ? { maxTurns: 10, maxToolCalls: 1 } : { maxTurns: 1 },
+      autoContinueOnLimit: enabled,
+    })
+    session.subscribe((event) => { events.push(event) })
+    return { session, execute, events }
+  }
+
+  it('跨阶段保留结果，不重放工具且只最终结算一次', async () => {
+    const { session, execute, events } = createSession(false)
+    const result = await session.prompt('完成长任务')
+    expect(result.reason).toBe('completed')
+    expect(result.taskUsage).toMatchObject({
+      stages: 3, continuations: 2, turns: 3, toolCalls: 2,
+      continuationDecision: 'terminal',
+      tokenUsage: { inputTokens: 20, outputTokens: 4, billableTokens: 24, totalTokens: 24 },
+    })
+    expect(execute).toHaveBeenCalledTimes(2)
+    expect(session.messages.filter((message) => message.role === 'tool')).toHaveLength(2)
+    expect(events.filter((event) => event.type === 'agent_settled')).toHaveLength(1)
+    expect(events.filter((event) => event.type === 'agent_end')).toHaveLength(3)
+  })
+
+  it('重复结果不允许持续续跑', async () => {
+    const { session, execute, events } = createSession(true)
+    const result = await session.prompt('完成长任务')
+    expect(result.reason).toBe('turn_limit')
+    expect(result.taskUsage?.continuationDecision).toBe('no_progress')
+    expect(events.find((event) => event.type === 'agent_settled')).toMatchObject({
+      taskPauseMessage: expect.stringContaining('已暂停'),
+    })
+    expect(execute).toHaveBeenCalledTimes(2)
+  })
+
+  it('未启用时维持原有触限行为', async () => {
+    const { session, execute } = createSession(false, false)
+    expect((await session.prompt('完成长任务')).reason).toBe('turn_limit')
+    expect(execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('持续产生新结果也必须在三次续跑后暂停', async () => {
+    const { session, execute } = createSession(false, true, true)
+    const result = await session.prompt('长任务')
+    expect(result.taskUsage).toMatchObject({ stages: 4, continuations: 3, continuationDecision: 'continuation_limit' })
+    expect(execute).toHaveBeenCalledTimes(4)
+  })
+
+  it('工具预算拒绝不视为真实错误，继续时不会重放已执行调用', async () => {
+    const { session, execute, events } = createSession(false, true, false, true)
+    const result = await session.prompt('长任务')
+    expect(result.reason).toBe('completed')
+    expect(result.taskUsage).toMatchObject({ stages: 2, continuations: 1, toolCalls: 1 })
+    expect(execute).toHaveBeenCalledTimes(1)
+    const denied = events.filter((event) => event.type === 'tool_execution_end' && event.isError)
+    expect(denied).toHaveLength(1)
+    expect(session.messages.filter((message) => message.role === 'tool' && message.isError)).toHaveLength(1)
+  })
+
+  it('工具额度触限前出现真实错误时，不得自动续跑', async () => {
+    const { session, execute } = createSession(false, true, false, true, true)
+    const result = await session.prompt('长任务')
+    expect(result.reason).toBe('tool_limit')
+    expect(result.taskUsage).toMatchObject({ stages: 1, continuations: 0, continuationDecision: 'no_progress' })
+    expect(execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('阶段结束时用户取消，不能自动开启下一阶段', async () => {
+    const { session, execute, events } = createSession(false)
+    session.subscribe((event) => {
+      if (event.type === 'agent_end') session.requestAbort()
+    })
+    const result = await session.prompt('长任务')
+    expect(result.taskUsage?.continuationDecision).toBe('cancelled')
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(events.filter((event) => event.type === 'agent_start')).toHaveLength(1)
+  })
+
+  it('手动恢复预算暂停保留历史，不新增用户消息或重放旧调用', async () => {
+    const { session, execute } = createSession(false, true, true)
+    await session.prompt('长任务')
+    const before = structuredClone(session.messages)
+    const userCount = before.filter((message) => message.role === 'user').length
+    const result = await session.continue()
+    expect(result.reason).toBe('turn_limit')
+    expect(session.messages.slice(0, before.length)).toEqual(before)
+    expect(session.messages.filter((message) => message.role === 'user')).toHaveLength(userCount)
+    expect(execute).toHaveBeenCalledTimes(8)
+    const toolIds = session.messages.filter((message) => message.role === 'tool').map((message) => message.toolCallId)
+    expect(new Set(toolIds).size).toBe(toolIds.length)
+  })
+
+  it('阶段结算屏障期间取消也不能开启下一 Run', async () => {
+    const { session, events } = createSession(false, true, true)
+    session.subscribe((event) => {
+      if (event.type === 'agent_stage_settled') session.requestAbort()
+    })
+    const result = await session.prompt('长任务')
+    expect(result.taskUsage?.continuationDecision).toBe('cancelled')
+    expect(events.filter((event) => event.type === 'agent_start')).toHaveLength(1)
+    expect(events.filter((event) => event.type === 'agent_settled')).toHaveLength(1)
+  })
+
+  it('从保存的历史重建后等待手动恢复，结算摘要不发送给模型', async () => {
+    const { session } = createSession(false, true, true)
+    await session.prompt('长任务')
+    const transport = new ResumeTransport()
+    const restored = new AgentSession({
+      sessionId: session.id, systemPrompt: 'system',
+      model: { provider: 'test', model: 'model' },
+      transport, tools: [runtimeTool], messages: structuredClone(session.messages),
+      autoContinueOnLimit: true,
+    })
+    expect(transport.requests).toHaveLength(0)
+    expect((await restored.continue()).reason).toBe('completed')
+    expect(transport.requests[0]?.messages.some((message) => message.content.includes('任务累计：'))).toBe(false)
+    expect(restored.messages.filter((message) => message.role === 'user')).toHaveLength(1)
+  })
+})
 
 describe('AgentSession rich runtime input', () => {
   it('accepts an image-only prompt and keeps the content block in the model request and history', async () => {
@@ -1426,6 +1591,7 @@ describe('AgentSession runtime updates', () => {
         activeToolNames: ['runtime_tool'],
         runtimeManifest: { schemaVersion: 4, provider: {}, tools: [], hooks: [], skills: { schemaVersion: 1, skills: [] } },
       },
+      invalidateCheckpoint: true,
     })
 
     expect(commits).toHaveLength(1)
@@ -1434,6 +1600,81 @@ describe('AgentSession runtime updates', () => {
       systemPrompt: 'system-reloaded',
       activeToolNames: ['runtime_tool'],
     })
+  })
+
+  it('keeps the compaction checkpoint when the dependency replacement declares it', async () => {
+    const commits: Array<{ invalidateCheckpoint?: boolean }> = []
+    const session = new AgentSession({
+      sessionId: 'runtime-deps-keep',
+      systemPrompt: 'system',
+      model: { provider: 'test', model: 'model' },
+      transport: new ResumeTransport(),
+      tools: [runtimeTool],
+      activeToolNames: ['runtime_tool'],
+      messages: [{ id: 'u-old', role: 'user', content: 'old prompt', createdAt: 1 }],
+      checkpoint: runtimeDepsCheckpoint('runtime-deps-keep'),
+      commitMutationBatch: (batch) => {
+        const event = batch.events[0]
+        commits.push({
+          invalidateCheckpoint: event?.type === 'runtime_dependencies_update'
+            ? event.invalidateCheckpoint
+            : undefined,
+        })
+        return { batchId: batch.id, sessionId: batch.sessionId, committedAt: Date.now(), replayed: false }
+      },
+    })
+
+    await session.updateRuntimeDependencies({
+      previous: {
+        systemPrompt: 'system',
+        activeToolNames: ['runtime_tool'],
+        runtimeManifest: { schemaVersion: 4, provider: {}, tools: [], hooks: [], skills: { schemaVersion: 1, skills: [] } },
+      },
+      current: {
+        systemPrompt: 'system-after-model-switch',
+        activeToolNames: ['runtime_tool'],
+        runtimeManifest: { schemaVersion: 4, provider: {}, tools: [], hooks: [], skills: { schemaVersion: 1, skills: [] } },
+      },
+      invalidateCheckpoint: false,
+    })
+
+    expect(commits[0]?.invalidateCheckpoint).toBe(false)
+    expect(session.checkpoint?.id).toBe('checkpoint-runtime-deps-keep')
+  })
+
+  it('drops the compaction checkpoint when the dependency replacement declares invalidation', async () => {
+    const session = new AgentSession({
+      sessionId: 'runtime-deps-invalidate',
+      systemPrompt: 'system',
+      model: { provider: 'test', model: 'model' },
+      transport: new ResumeTransport(),
+      tools: [runtimeTool],
+      activeToolNames: ['runtime_tool'],
+      messages: [{ id: 'u-old', role: 'user', content: 'old prompt', createdAt: 1 }],
+      checkpoint: runtimeDepsCheckpoint('runtime-deps-invalidate'),
+      commitMutationBatch: (batch) => ({
+        batchId: batch.id,
+        sessionId: batch.sessionId,
+        committedAt: Date.now(),
+        replayed: false,
+      }),
+    })
+
+    await session.updateRuntimeDependencies({
+      previous: {
+        systemPrompt: 'system',
+        activeToolNames: ['runtime_tool'],
+        runtimeManifest: { schemaVersion: 4, provider: {}, tools: [], hooks: [], skills: { schemaVersion: 1, skills: [] } },
+      },
+      current: {
+        systemPrompt: 'system-after-skill-reload',
+        activeToolNames: ['runtime_tool'],
+        runtimeManifest: { schemaVersion: 4, provider: {}, tools: [], hooks: [], skills: { schemaVersion: 1, skills: [] } },
+      },
+      invalidateCheckpoint: true,
+    })
+
+    expect(session.checkpoint).toBeNull()
   })
 
   it('clears reasoning explicitly with null', () => {

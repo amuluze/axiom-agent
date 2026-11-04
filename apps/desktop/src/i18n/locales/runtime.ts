@@ -71,27 +71,27 @@ export const queueModesEn: Record<string, string> = {
 export const limitsZh = {
   'settings.limits.title': '运行预算',
   'settings.limits.state': '下次会话生效',
-  'settings.limits.maxTurns': '最大轮次',
-  'settings.limits.maxToolCalls': '最大工具调用数',
+  'settings.limits.maxTurns': '每阶段最大轮次',
+  'settings.limits.maxToolCalls': '每阶段最大工具调用数',
   'settings.limits.maxTotalTokens': 'Token 预算（billable）',
   'settings.limits.approvalTimeout': '审批等待上限（秒）',
   'settings.limits.saving': '保存中…',
   'settings.limits.save': '保存运行预算',
   'settings.limits.reset': '恢复安全默认值',
-  'settings.limits.note': 'Token 预算按计费量在 75%/90% 提示收口，不硬停；审批等待超时后自动拒绝。下次会话生效。',
+  'settings.limits.note': '阶段触限且有新增有效结果时最多自动续跑 3 次，任务累计时长上限为 15 分钟；无进展或真实工具错误时暂停。Token 预算按任务累计计费量在 75%/90% 提醒，不硬停；审批超时自动拒绝。下次会话生效。',
 } satisfies Record<string, string>
 
 export const limitsEn: Record<string, string> = {
   'settings.limits.title': 'Run budget',
   'settings.limits.state': 'Applies next session',
-  'settings.limits.maxTurns': 'Max turns',
-  'settings.limits.maxToolCalls': 'Max tool calls',
+  'settings.limits.maxTurns': 'Max turns per stage',
+  'settings.limits.maxToolCalls': 'Max tool calls per stage',
   'settings.limits.maxTotalTokens': 'Token budget (billable)',
   'settings.limits.approvalTimeout': 'Approval wait limit (seconds)',
   'settings.limits.saving': 'Saving…',
   'settings.limits.save': 'Save run budget',
   'settings.limits.reset': 'Restore safe defaults',
-  'settings.limits.note': 'The token budget nudges toward convergence at 75% / 90% without hard-stopping; unanswered approvals are auto-denied on timeout. Applies from the next session.',
+  'settings.limits.note': 'Stage limits allow up to 3 automatic continuations with new successful results, within a 15-minute task deadline. No progress or tool errors pause the task. Token reminders use cumulative task usage at 75% / 90% without hard-stopping. Approval timeouts are auto-denied. Applies next session.',
 }
 
 export const syntaxRepairZh = {

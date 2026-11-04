@@ -124,9 +124,16 @@ export class ContextWindowManager {
     this.forcedExcludedMessageIds = [excludedMessageId]
   }
 
-  reset(): void {
+  /**
+   * 依赖替换后的上下文状态复位。
+   *
+   * `invalidateCheckpoint=true` 时连同 checkpoint（压缩摘要 + 确定性账本）一并
+   * 作废；`false` 时保留 checkpoint——提示词正文 / 模型身份 / 访问模式的变化
+   * 不改变摘要与账本所记录的历史事实，投影继续基于既有 checkpoint 构建。
+   */
+  reset(invalidateCheckpoint = true): void {
     this.clearSpeculativeTask(true)
-    this.checkpoint = undefined
+    if (invalidateCheckpoint) this.checkpoint = undefined
     this.forcedReason = undefined
     this.forcedExcludedMessageIds = []
   }

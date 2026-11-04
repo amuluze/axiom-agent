@@ -559,6 +559,9 @@ const applyProjectSkillsToSession = async (
         activeToolNames,
         runtimeManifest: currentManifest,
       },
+      // Skill 冻结快照变化：load_skill 的 fail-closed 语义与账本里的 loadedSkills
+      // 引用随之失效，压缩摘要必须一并作废（docs/skills-extension.md §7.3）。
+      invalidateCheckpoint: true,
     })
     activeSessionBasePrompt = newBasePrompt
     setRuntimeBasePrompt(active.id, newBasePrompt)
@@ -594,7 +597,7 @@ const refreshSystemPromptForAccessMode = async (): Promise<void> => {
     workspacePath,
     accessMode: activeSessionAccessMode(),
   })
-  // 提示词未变时不做任何事：避免无谓的 manifest 写入与 checkpoint 失效。
+  // 提示词未变时不做任何事：避免无谓的 manifest 写入（本次替换不影响 checkpoint）。
   if (newBasePrompt === (getRuntimeBasePrompt(active.id) ?? activeSessionBasePrompt)) return
   setRuntimeBasePrompt(active.id, newBasePrompt)
   if (useAgentStore.getState().activeSessionId === active.id) {
@@ -626,6 +629,8 @@ const refreshSystemPromptForAccessMode = async (): Promise<void> => {
       activeToolNames,
       runtimeManifest: currentManifest,
     },
+    // 访问模式只改提示词正文，压缩摘要与确定性账本记录的是历史事实，仍然成立。
+    invalidateCheckpoint: false,
   })
   activeRuntimeManifest = currentManifest
 }
@@ -710,6 +715,8 @@ const applyProjectContextToSession = async (next: {
         activeToolNames,
         runtimeManifest: currentManifest,
       },
+      // 项目上下文只改提示词正文（AGENTS.md / 文档索引），历史事实不变。
+      invalidateCheckpoint: false,
     })
   } catch (error) {
     // 提交失败回滚三面镜像：维持旧提示词与镜像一致，下次 run 结束重扫会再尝试。
@@ -907,6 +914,8 @@ const refreshBackgroundProjectContext = async (
         activeToolNames,
         runtimeManifest: currentManifest,
       },
+      // 后台会话的项目上下文刷新只改提示词正文，历史事实不变。
+      invalidateCheckpoint: false,
     })
   } catch (error) {
     console.error(`[项目上下文] 后台会话 ${sessionId} 的 runtime_dependencies_update 提交失败`, error)
@@ -1159,6 +1168,7 @@ const createRuntimeSession = (
       maxToolCalls: agentLimitsSettings.maxToolCalls,
       maxTotalTokens: agentLimitsSettings.maxTotalTokens,
     },
+    autoContinueOnLimit: true,
     steeringMode: activeQueueModeSettings.steering,
     asideMode: activeQueueModeSettings.aside,
     followUpMode: activeQueueModeSettings.followUp,

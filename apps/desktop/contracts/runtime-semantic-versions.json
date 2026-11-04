@@ -17,7 +17,7 @@
         "src/agent/runtime/RuntimeHookRegistry.ts",
         "src/agent/runtime/AgentHarness.ts"
       ],
-      "semanticDigest": "8fd9f7c78fcdc5ab283c2751affbfb463fcf3a82a048f497031b78b96c4529be"
+      "semanticDigest": "1b559c890a52d247faba09b9bb92bb07414e0fede1c7878adb1a85297aee6413"
     },
     {
       "id": "provider:demo",
@@ -35,7 +35,7 @@
         "src/agent/transport/DemoModelTransport.ts",
         "src/agent/transport/generatedProviderData.ts"
       ],
-      "semanticDigest": "833f3762caa11fff813750248f0e02bc2514201cea38e1e4022be2a647d176db"
+      "semanticDigest": "4eb59850c5545735c1e242395bd8fcf1f56134625ba1fed7e7020780f78d6c14"
     },
     {
       "id": "provider:generic-openai-compatible",
@@ -55,7 +55,7 @@
         "src/agent/core/systemPromptLayout.ts",
         "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "99b045cfe31e692c459ef34624d7a6ba5fbcd16512e90f74aa15c6d48684441d"
+      "semanticDigest": "864c0d4b9e4639175349217c79a638da2e05b88d955fbddd6ee89a8bc065d1ee"
     },
     {
       "id": "provider:custom-openai-compatible",
@@ -75,7 +75,7 @@
         "src/agent/core/systemPromptLayout.ts",
         "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "99b045cfe31e692c459ef34624d7a6ba5fbcd16512e90f74aa15c6d48684441d"
+      "semanticDigest": "864c0d4b9e4639175349217c79a638da2e05b88d955fbddd6ee89a8bc065d1ee"
     },
     {
       "id": "provider:openai",
@@ -95,7 +95,7 @@
         "src/agent/core/systemPromptLayout.ts",
         "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "7275fdeaf8fe55d03947bcfd111185e9502c997c8d8c4ab0f7b871ba20b616ec"
+      "semanticDigest": "65ddef684259d2166ba95cf906887577017a1cbb8480be7f1084ff0da33c1428"
     },
     {
       "id": "provider:generic-anthropic-compatible",
@@ -115,7 +115,7 @@
         "src/agent/core/systemPromptLayout.ts",
         "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "aca49984c2073c5f9f4e2e4e671150b07397940c805a57ec2afd060d7df39f8e"
+      "semanticDigest": "99535773beef8b0a71390e51a4621f49dd10e33ff8c254d5ae0708856c251016"
     },
     {
       "id": "provider:custom-anthropic-compatible",
@@ -135,7 +135,7 @@
         "src/agent/core/systemPromptLayout.ts",
         "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "aca49984c2073c5f9f4e2e4e671150b07397940c805a57ec2afd060d7df39f8e"
+      "semanticDigest": "99535773beef8b0a71390e51a4621f49dd10e33ff8c254d5ae0708856c251016"
     },
     {
       "id": "provider:zhipu-glm",
@@ -155,7 +155,7 @@
         "src/agent/core/systemPromptLayout.ts",
         "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "99b045cfe31e692c459ef34624d7a6ba5fbcd16512e90f74aa15c6d48684441d"
+      "semanticDigest": "864c0d4b9e4639175349217c79a638da2e05b88d955fbddd6ee89a8bc065d1ee"
     },
     {
       "id": "provider:deepseek",
@@ -175,7 +175,7 @@
         "src/agent/core/systemPromptLayout.ts",
         "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "99b045cfe31e692c459ef34624d7a6ba5fbcd16512e90f74aa15c6d48684441d"
+      "semanticDigest": "864c0d4b9e4639175349217c79a638da2e05b88d955fbddd6ee89a8bc065d1ee"
     },
     {
       "id": "provider:minimax-chat",
@@ -195,7 +195,7 @@
         "src/agent/core/systemPromptLayout.ts",
         "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "99b045cfe31e692c459ef34624d7a6ba5fbcd16512e90f74aa15c6d48684441d"
+      "semanticDigest": "864c0d4b9e4639175349217c79a638da2e05b88d955fbddd6ee89a8bc065d1ee"
     },
     {
       "id": "provider:ollama",
@@ -215,7 +215,7 @@
         "src/agent/core/systemPromptLayout.ts",
         "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "99b045cfe31e692c459ef34624d7a6ba5fbcd16512e90f74aa15c6d48684441d"
+      "semanticDigest": "864c0d4b9e4639175349217c79a638da2e05b88d955fbddd6ee89a8bc065d1ee"
     },
     {
       "id": "provider:gemini",
@@ -235,7 +235,7 @@
         "src/agent/core/systemPromptLayout.ts",
         "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "99b045cfe31e692c459ef34624d7a6ba5fbcd16512e90f74aa15c6d48684441d"
+      "semanticDigest": "864c0d4b9e4639175349217c79a638da2e05b88d955fbddd6ee89a8bc065d1ee"
     },
     {
       "id": "provider:kimi",
@@ -255,7 +255,7 @@
         "src/agent/core/systemPromptLayout.ts",
         "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "99b045cfe31e692c459ef34624d7a6ba5fbcd16512e90f74aa15c6d48684441d"
+      "semanticDigest": "864c0d4b9e4639175349217c79a638da2e05b88d955fbddd6ee89a8bc065d1ee"
     },
     {
       "id": "provider:kimi-coding",
@@ -275,7 +275,7 @@
         "src/agent/core/systemPromptLayout.ts",
         "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "aca49984c2073c5f9f4e2e4e671150b07397940c805a57ec2afd060d7df39f8e"
+      "semanticDigest": "99535773beef8b0a71390e51a4621f49dd10e33ff8c254d5ae0708856c251016"
     },
     {
       "id": "provider:orcarouter",
@@ -295,7 +295,7 @@
         "src/agent/core/systemPromptLayout.ts",
         "src/agent/core/turnHelpers.ts"
       ],
-      "semanticDigest": "99b045cfe31e692c459ef34624d7a6ba5fbcd16512e90f74aa15c6d48684441d"
+      "semanticDigest": "864c0d4b9e4639175349217c79a638da2e05b88d955fbddd6ee89a8bc065d1ee"
     },
     {
       "id": "provider:opencode-go",
@@ -317,7 +317,7 @@
         "src/agent/transport/generatedProviderData.ts",
         "src/agent/transport/sse.ts"
       ],
-      "semanticDigest": "b3372eb2d18f0ae1d67be4f264a58cc7bb9bf45f1277c61fa3fa19a0a8522c85"
+      "semanticDigest": "1817c1954ae9a8a75d617c2c2fb38a4a1b07d12ac0257112ec14541ee3fd2788"
     },
     {
       "id": "tool:api_request",
@@ -431,7 +431,7 @@
         "src/agent/runtime/autoRetry.ts",
         "src/agent/runtime/sessionRuntimeUpdates.ts"
       ],
-      "semanticDigest": "c06b56c01a13eee7ce766a863a4cf2343dbd825753daf141f2a42de298b49f79"
+      "semanticDigest": "a156db1ed805b9fb6657566c140cc9dfa8ea587506a08a66eec6aef960900dd7"
     },
     {
       "id": "tool:explore_subagent",
@@ -460,7 +460,7 @@
         "src/agent/runtime/autoRetry.ts",
         "src/agent/runtime/sessionRuntimeUpdates.ts"
       ],
-      "semanticDigest": "37b46b40642e33dbce3df26c6df3ff75573523c33286cc5cd1a4530ab18ae6f9"
+      "semanticDigest": "436ca316d569cc95f50c239a3a45cf272813d9d0288c63a05ad3050eca8fbe3b"
     },
     {
       "id": "tool:design_query",
@@ -564,7 +564,7 @@
         "src/agent/runtime/autoRetry.ts",
         "src/agent/runtime/sessionRuntimeUpdates.ts"
       ],
-      "semanticDigest": "6de037e806632dd645fd64da16f54c9c07d3f08828c7862c4a20e68290686746"
+      "semanticDigest": "37d354692f12b232ff0984ab9d3263ae8f7e58f6f366c029d27078e4a2b12291"
     },
     {
       "id": "tool:load_skill",
@@ -644,7 +644,7 @@
         "src/agent/runtime/autoRetry.ts",
         "src/agent/runtime/sessionRuntimeUpdates.ts"
       ],
-      "semanticDigest": "15e3cea8f4015654a133c96ef7ac1d678bd03dd8f46c1e6d9353c23ef5e2f38e"
+      "semanticDigest": "4f9c05f3a6c40b141b4374ef46c62e42df56a2c37d93447a9f077d23ef18a8c6"
     },
     {
       "id": "tool:write",

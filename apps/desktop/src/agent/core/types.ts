@@ -222,6 +222,8 @@ export interface ToolResultMessage extends MessageBase {
 }
 
 export interface CustomAgentMessage extends MessageBase {
+  /** 宿主元数据不进入模型上下文；正文与 data 仍参与持久化。 */
+  excludeFromModelContext?: boolean
   role: 'custom'
   customType: string
   /** Human-readable fallback used by the desktop transcript. */
@@ -849,8 +851,16 @@ export type AgentMutationEvent =
       previous: RuntimeDependenciesSnapshot
       current: RuntimeDependenciesSnapshot
       source: 'set'
-      /** 该事件使当前 context checkpoint 失效（随 batch 原子持久化删除）。 */
-      invalidateCheckpoint: true
+      /**
+       * 该事件是否使当前 context checkpoint（压缩摘要 + 确定性账本）失效
+       * （随 batch 原子持久化删除，live 侧一并 reset）。
+       *
+       * 由调用方声明：checkpoint 记录的是**历史事实**，只依赖对话历史与 Skill
+       * 冻结快照；提示词正文、模型身份、访问模式、项目上下文的变更都不影响它
+       * 的有效性。只有 Skill reload（冻结快照变化 → load_skill 的 fail-closed
+       * 语义与账本里的 loadedSkills 引用随之失效）才声明为 true。
+       */
+      invalidateCheckpoint: boolean
     }
 
 /** Atomic persistence unit for appendMessage and Runtime state changes. */
@@ -980,7 +990,8 @@ export type AgentEvent =
       messages: AgentMessage[]
       errorMessage?: string
     }
-  | { type: 'agent_settled'; savePoint: AgentSavePoint }
+  | { type: 'agent_settled'; savePoint: AgentSavePoint; taskPauseMessage?: string }
+  | { type: 'agent_stage_settled'; savePoint: AgentSavePoint }
 
 export type AgentEventSink = (event: AgentEvent) => void | Promise<void>
 
@@ -995,6 +1006,18 @@ export interface AgentRunTokenUsage {
 }
 
 export interface AgentLoopResult {
+  /** 宿主因本阶段工具额度拒绝、且完全未执行的调用；不能由工具结果文本推断。 */
+  budgetRejectedToolCallIds?: string[]
+  /** 会话层累计事实；run 级字段仍仅描述最终一次 run，避免破坏审计语义。 */
+  taskUsage?: {
+    stages: number
+    continuations: number
+    turns: number
+    toolCalls: number
+    tokenUsage: AgentRunTokenUsage
+    elapsedMs: number
+    continuationDecision: string
+  }
   runId: string
   reason: AgentRunEndReason
   messages: AgentMessage[]

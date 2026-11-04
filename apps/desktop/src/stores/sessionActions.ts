@@ -1,4 +1,5 @@
 import type { AgentHarness } from '@/agent/runtime/AgentHarness'
+import { sessionWorkspacePath } from './services/sessionWorkspaceRegistry'
 import { isAgentHarnessAbortError } from '@/agent/runtime/AgentHarness'
 import type { AgentSessionJournalEntry } from '@/agent/runtime/mutationJournal'
 import type { AgentMessage, ImageContentBlock } from '@/agent/core/types'
@@ -319,9 +320,11 @@ export const send = async (
   deps: StoreRuntimeDeps,
   content: string,
   images?: ImageContentBlock[],
+  resumePaused = false,
 ): Promise<void> => {
   const initialState = get()
-  if (initialState.running || initialState.sessionBusy || (!content.trim() && !images?.length)) return
+  if (initialState.running || initialState.sessionBusy || (!resumePaused && !content.trim() && !images?.length)) return
+  if (resumePaused && initialState.runtimeLifecycle !== 'ready') return
   const blockedBy = idleRunStartBlocker(initialState)
   if (blockedBy) {
     set({ error: blockedBy })
@@ -330,6 +333,14 @@ export const send = async (
   const runSession = deps.getSession()
   const runRepository = deps.getRepository()
   const sessionId = initialState.activeSessionId
+  if (resumePaused) {
+    const workspace = initialState.sessions.find((stored) => stored.id === sessionId)?.workspace
+    if (!sessionId || runSession.id !== sessionId || !workspace
+      || sessionWorkspacePath(sessionId) !== workspace.path) {
+      set({ error: '会话工作区绑定已失效，请重新选择工作目录后继续' })
+      return
+    }
+  }
   const provider = { ...initialState.provider }
   const providerHasKey = initialState.providerHasKey
   const shouldGenerateTitle = Boolean(
@@ -342,7 +353,9 @@ export const send = async (
   let queuedRecoveryFailure: string | undefined
   set({ running: true, error: null, endReason: null })
   try {
-    const result = await runSession.prompt(content, images)
+    const result = resumePaused
+      ? await runSession.continue()
+      : await runSession.prompt(content, images)
     const assistant = [...result.newMessages]
       .reverse()
       .find((message) => message.role === 'assistant' && message.content.trim())
@@ -648,6 +661,10 @@ export const continueConversation = async (
   _deps: StoreRuntimeDeps,
 ): Promise<void> => {
   if (get().messages.length === 0) return
+  if (['turn_limit', 'tool_limit', 'time_limit'].includes(get().endReason ?? '')) {
+    await send(set, get, _deps, '', undefined, true)
+    return
+  }
   await send(set, get, _deps, '请继续。')
 }
 

@@ -2,6 +2,8 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SessionHeader } from './SessionHeader'
+import { createTaskSummary } from '@/agent/runtime/taskSummary'
+import type { AgentLoopResult } from '@/agent/core/types'
 
 const mocks = vi.hoisted(() => ({
   running: false,
@@ -100,6 +102,28 @@ describe('SessionHeader', () => {
     const html = renderToStaticMarkup(createElement(SessionHeader))
     expect(html).toContain('已完成')
     expect(html).toContain('session__status-tag--completed')
+  })
+
+  it('预算结束显示暂停，运行中的阶段仍显示运行中', () => {
+    for (const reason of ['turn_limit', 'tool_limit', 'time_limit']) {
+      mocks.endReason = reason
+      mocks.error = '预算已用尽'
+      expect(renderToStaticMarkup(createElement(SessionHeader))).toContain('session__status-tag--paused')
+    }
+    mocks.running = true
+    expect(renderToStaticMarkup(createElement(SessionHeader))).toContain('session__status-tag--running')
+  })
+
+  it('显示从消息历史恢复的任务累计用量', () => {
+    mocks.messages = [createTaskSummary({ reason: 'turn_limit', taskUsage: {
+      stages: 2, continuations: 1, turns: 10, toolCalls: 8, elapsedMs: 3000,
+      continuationDecision: 'no_progress',
+      tokenUsage: { inputTokens: 90, outputTokens: 10, billableTokens: 100, totalTokens: 100 },
+    } } as AgentLoopResult)]
+    const html = renderToStaticMarkup(createElement(SessionHeader))
+    expect(html).toContain('2 阶段')
+    expect(html).toContain('8 次工具')
+    expect(html).toContain('100 tokens')
   })
 
   it('shows 失败 when the session has an error', () => {

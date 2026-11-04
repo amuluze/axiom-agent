@@ -32,6 +32,10 @@ use crate::workspace_access::{
 /// `is_workspace_document_path` 内联匹配，与 TS 侧 `DOC_ROOTS` 同一目录集合。
 const ROOT_DOC_FILES: [&str; 2] = ["AGENTS.md", "DESIGN.md"];
 
+/// 孤儿历史目录的保留期（天）：文档删除/改名后仍保留这么久，
+/// 期间改回来还能拿回版本；超过且确认目标不存在才清理。
+const HISTORY_ORPHAN_RETENTION_DAYS: u64 = 30;
+
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -166,6 +170,10 @@ pub(crate) struct SavedWorkspaceDocument {
     pub(crate) workspace_path: String,
     pub(crate) sha256: String,
     pub(crate) size_bytes: u64,
+    /// 覆盖前的旧内容版本号——非 `None` 时 UI 可以「撤销本次保存」。
+    /// 为什么由保存命令返回而不是让 UI 再查一次：这份旧内容正是 CAS 校验
+    /// 已经读进内存的内容，返回它不需要额外磁盘读，也不会与并发写竞态。
+    pub(crate) previous_sha256: Option<String>,
 }
 
 /// 原子写：临时文件 + `persist`（rename），保留原文件权限位，落盘后同步父目录
@@ -197,6 +205,73 @@ fn write_document_bytes(canonical: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|error| format!("failed to save document: {}", error.error))?;
     crate::workspace_access::sync_parent_directory(canonical)?;
     Ok(())
+}
+
+fn history_directory(data_root: &Path, root: &Path, relative: &Path) -> PathBuf {
+    crate::document_history::directory(data_root, root, relative)
+}
+
+/// 保存的实质（锁、授权、白名单校验由调用方完成）：CAS 通过后先留档旧内容，
+/// 再原子覆盖。抽出成自由函数是为了能在临时工作区里直接验证「保存可撤销」，
+/// 而不必拉起 Tauri 宿主。
+fn save_document_at(
+    root: &Path,
+    relative: &Path,
+    data_root: &Path,
+    expected_sha256: &str,
+    bytes: &[u8],
+) -> Result<SavedWorkspaceDocument, String> {
+    let canonical = resolve_workspace_document_for_write(root, relative)?;
+    let current = read_capped(&canonical, "workspace document")?;
+    if sha256_hex(&current) != expected_sha256 {
+        return Err("document changed on disk since it was loaded; refresh and retry".into());
+    }
+    let bytes = preserve_document_line_endings(&current, bytes);
+    if bytes.len() as u64 > MAX_TEXT_FILE_BYTES {
+        return Err(format!(
+            "document exceeds the {} byte limit",
+            MAX_TEXT_FILE_BYTES
+        ));
+    }
+    // 覆盖前留档：`.plans/` 与 `.specs/tasks/` 被 gitignore，误保存后没有别的
+    // 恢复途径。留档失败即整体失败——「写成功但没有撤销材料」等于把不可恢复
+    // 的覆盖当成成功返回。
+    let history = history_directory(data_root, root, relative);
+    crate::document_history::remember_source(&history, root, relative)?;
+    let previous_sha256 = crate::document_history::record(&history, &current)?;
+    write_document_bytes(&canonical, &bytes)?;
+    Ok(SavedWorkspaceDocument {
+        workspace_path: root.to_string_lossy().into(),
+        sha256: sha256_hex(&bytes),
+        size_bytes: bytes.len() as u64,
+        previous_sha256: Some(previous_sha256),
+    })
+}
+
+/// 回滚的实质：CAS 通过后按原字节写回历史版本，并把当前内容也留档（回滚本身可撤销）。
+fn restore_document_at(
+    root: &Path,
+    relative: &Path,
+    data_root: &Path,
+    sha256: &str,
+    expected_sha256: &str,
+) -> Result<SavedWorkspaceDocument, String> {
+    let canonical = resolve_workspace_document_for_write(root, relative)?;
+    let current = read_capped(&canonical, "workspace document")?;
+    if sha256_hex(&current) != expected_sha256 {
+        return Err("document changed on disk since it was loaded; refresh and retry".into());
+    }
+    let history = history_directory(data_root, root, relative);
+    crate::document_history::remember_source(&history, root, relative)?;
+    let restored = crate::document_history::read(&history, sha256)?;
+    let previous_sha256 = crate::document_history::record(&history, &current)?;
+    write_document_bytes(&canonical, &restored)?;
+    Ok(SavedWorkspaceDocument {
+        workspace_path: root.to_string_lossy().into(),
+        sha256: sha256_hex(&restored),
+        size_bytes: restored.len() as u64,
+        previous_sha256: Some(previous_sha256),
+    })
 }
 
 #[tauri::command]
@@ -287,27 +362,97 @@ pub(crate) async fn save_workspace_document(
             .lock()
             .map_err(|_| "workspace write lock is poisoned".to_string())?;
         authorized_root_for(&state, Some(&root.to_string_lossy()))?;
-        let canonical = resolve_workspace_document_for_write(&root, &relative)?;
-        let current = read_capped(&canonical, "workspace document")?;
-        if sha256_hex(&current) != expected_sha256 {
-            return Err("document changed on disk since it was loaded; refresh and retry".into());
-        }
-        let bytes = preserve_document_line_endings(&current, &bytes);
-        if bytes.len() as u64 > MAX_TEXT_FILE_BYTES {
-            return Err(format!(
-                "document exceeds the {} byte limit",
-                MAX_TEXT_FILE_BYTES
-            ));
-        }
-        write_document_bytes(&canonical, &bytes)?;
-        Ok(SavedWorkspaceDocument {
-            workspace_path: root.to_string_lossy().into(),
-            sha256: sha256_hex(&bytes),
-            size_bytes: bytes.len() as u64,
-        })
+        let data_root = crate::storage_paths::axiom_data_root(&app)?;
+        save_document_at(&root, &relative, &data_root, &expected_sha256, &bytes)
     })
     .await
     .map_err(|error| format!("document save task failed: {error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn list_workspace_document_versions(
+    app: tauri::AppHandle,
+    path: String,
+    workspace_path: Option<String>,
+) -> Result<Vec<crate::document_history::DocumentVersion>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<WorkspaceAccessState>();
+        let root = authorized_root_for(&state, workspace_path.as_deref())?;
+        let relative = validate_relative_path(Some(&path))?;
+        if !is_workspace_document_path(&relative) {
+            return Err(
+                "document history only accepts SDD managed documents and AGENTS.md files".into(),
+            );
+        }
+        // 只读路径走读授权：列历史不改变工作区，不应要求写权限。
+        resolve_workspace_document_for_read(&root, &relative)?;
+        let data_root = crate::storage_paths::axiom_data_root(&app)?;
+        // 顺手清理本工作区的孤儿历史（文档已删除/改名且空闲超过保留期）。
+        // 失败不影响列举：清理是维护动作，不该挡住读历史。
+        let _ = crate::document_history::prune_orphans(
+            &data_root,
+            &root,
+            std::time::Duration::from_secs(HISTORY_ORPHAN_RETENTION_DAYS * 24 * 3600),
+        );
+        crate::document_history::list(&history_directory(&data_root, &root, &relative))
+    })
+    .await
+    .map_err(|error| format!("document history task failed: {error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn restore_workspace_document_version(
+    app: tauri::AppHandle,
+    gesture: tauri::State<'_, std::sync::Arc<UserGestureState>>,
+    path: String,
+    sha256: String,
+    expected_sha256: String,
+    workspace_path: Option<String>,
+) -> Result<SavedWorkspaceDocument, String> {
+    // 回滚是内容级写入，与保存同一道门：macOS 需真实原生手势，非 macOS 降级为
+    // 一次宿主原生确认。受陷渲染进程不能静默把项目文档改回旧版本。
+    let confirmed = require_user_confirmation(
+        &app,
+        gesture.inner().as_ref(),
+        current_operating_system(),
+        None,
+        ContentConfirm {
+            title: "确认恢复文档历史版本",
+            message: format!(
+                "即将把项目文档恢复为历史版本：\n\n文件：{}\n版本：{}\n\n确认恢复？",
+                path, sha256
+            ),
+            confirm_label: "恢复",
+        },
+    )
+    .await?;
+    if !confirmed {
+        return Err("用户取消了文档版本恢复".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<WorkspaceAccessState>();
+        let root = authorized_root_for(&state, workspace_path.as_deref())?;
+        let relative = validate_relative_path(Some(&path))?;
+        reject_reserved_write_components(&relative)?;
+        if !is_workspace_document_path(&relative) {
+            return Err(
+                "document restore only accepts SDD managed documents and AGENTS.md files".into(),
+            );
+        }
+        let _recovery = state
+            .recovery_gate
+            .read()
+            .map_err(|_| "workspace recovery gate lock is poisoned".to_string())?;
+        let write_lock = state.workspace_write_lock(&root);
+        let _write_lock = write_lock
+            .lock()
+            .map_err(|_| "workspace write lock is poisoned".to_string())?;
+        authorized_root_for(&state, Some(&root.to_string_lossy()))?;
+        let data_root = crate::storage_paths::axiom_data_root(&app)?;
+        restore_document_at(&root, &relative, &data_root, &sha256, &expected_sha256)
+    })
+    .await
+    .map_err(|error| format!("document restore task failed: {error}"))?
 }
 
 #[cfg(test)]
@@ -387,6 +532,153 @@ mod tests {
     }
 
     #[test]
+    fn document_save_keeps_previous_content_restorable() {
+        // 文档页保存是整文件覆盖，而 .plans/ 与 .specs/tasks/ 被 gitignore——
+        // 没有版本留档的话，一次误保存就是不可恢复的。这里锁死：
+        // 保存前的内容可枚举、可按原字节回滚，且回滚本身也可撤销。
+        let workspace = tempfile::tempdir().expect("workspace");
+        let data = tempfile::tempdir().expect("data");
+        let root = std::fs::canonicalize(workspace.path()).expect("canonical workspace");
+        std::fs::create_dir(root.join(".specs")).expect("create specs");
+        std::fs::create_dir(root.join(".specs/tasks")).expect("create tasks");
+        let original = "# 原始任务规格\n\n验收标准：v1\n";
+        std::fs::write(root.join(".specs/tasks/t.md"), original).expect("seed document");
+        let relative = Path::new(".specs/tasks/t.md");
+        let data_root = data.path();
+
+        let saved = save_document_at(
+            &root,
+            relative,
+            data_root,
+            &sha256_hex(original.as_bytes()),
+            "# 误改\n".as_bytes(),
+        )
+        .expect("save");
+        let previous = saved
+            .previous_sha256
+            .expect("save must archive the old content");
+        assert_eq!(
+            std::fs::read_to_string(root.join(".specs/tasks/t.md")).expect("read saved"),
+            "# 误改\n"
+        );
+        let versions =
+            crate::document_history::list(&history_directory(data_root, &root, relative))
+                .expect("list versions");
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].sha256, previous);
+
+        // 回滚：按原字节写回，并把「误改」那版留档。
+        let restored = restore_document_at(&root, relative, data_root, &previous, &saved.sha256)
+            .expect("restore");
+        assert_eq!(
+            std::fs::read_to_string(root.join(".specs/tasks/t.md")).expect("read restored"),
+            original
+        );
+        assert_eq!(restored.sha256, previous);
+        assert_eq!(
+            restored.previous_sha256.as_deref(),
+            Some(sha256_hex("# 误改\n".as_bytes()).as_str())
+        );
+        assert_eq!(
+            crate::document_history::list(&history_directory(data_root, &root, relative))
+                .expect("list versions")
+                .len(),
+            2,
+            "回滚本身也必须可撤销"
+        );
+
+        // CAS：盘上内容已变（这里等于「别人写过了」）时拒绝回滚。
+        assert!(
+            restore_document_at(&root, relative, data_root, &previous, &"0".repeat(64)).is_err()
+        );
+    }
+
+    #[test]
+    fn document_history_rejects_tampered_version_content() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let data = tempfile::tempdir().expect("data");
+        let root = std::fs::canonicalize(workspace.path()).expect("canonical workspace");
+        std::fs::create_dir(root.join(".docs")).expect("create docs");
+        let history = history_directory(data.path(), &root, Path::new(".docs/tamper.md"));
+        let sha = crate::document_history::record(&history, b"# original\n").expect("record");
+        std::fs::write(history.join(format!("{sha}.md")), b"# tampered\n").expect("tamper");
+        assert!(
+            crate::document_history::read(&history, &sha).is_err(),
+            "内容与 sha 不符的历史版本不得被当成可信版本写回"
+        );
+    }
+
+    #[test]
+    fn document_history_orphan_cleanup_is_scoped_and_delayed() {
+        use std::time::Duration;
+        // 清理必须同时满足：同一工作区 + 目标已不存在 + 超过保留期。
+        // 三个条件缺一都会误删——尤其是「未授权 ≠ 已删除」（授权是 per-process 的）。
+        let workspace = tempfile::tempdir().expect("workspace");
+        let other = tempfile::tempdir().expect("other workspace");
+        let data = tempfile::tempdir().expect("data");
+        let root = std::fs::canonicalize(workspace.path()).expect("canonical workspace");
+        let other_root = std::fs::canonicalize(other.path()).expect("canonical other");
+        let data_root = data.path();
+        std::fs::create_dir(root.join(".docs")).expect("create docs");
+        std::fs::write(root.join(".docs/live.md"), "# live\n").expect("seed live");
+        std::fs::write(root.join(".docs/renamed-away.md"), "# gone\n").expect("seed gone");
+
+        for relative in [".docs/live.md", ".docs/renamed-away.md"] {
+            let history = history_directory(data_root, &root, Path::new(relative));
+            crate::document_history::remember_source(&history, &root, Path::new(relative))
+                .expect("remember source");
+            crate::document_history::record(&history, b"# v1\n").expect("record");
+        }
+        // 另一工作区里「已不存在」的文档：不得被当前工作区的清理带走。
+        let foreign = history_directory(data_root, &other_root, Path::new(".docs/foreign.md"));
+        crate::document_history::remember_source(
+            &foreign,
+            &other_root,
+            Path::new(".docs/foreign.md"),
+        )
+        .expect("remember foreign");
+        crate::document_history::record(&foreign, b"# foreign\n").expect("record foreign");
+
+        std::fs::remove_file(root.join(".docs/renamed-away.md")).expect("remove doc");
+
+        // 保留期内：即使目标已不存在也不清理（改名后短期改回来还能拿回历史）。
+        assert_eq!(
+            crate::document_history::prune_orphans(data_root, &root, Duration::from_secs(3600))
+                .expect("prune"),
+            0
+        );
+        // 超过保留期：只清掉本工作区那份孤儿。
+        assert_eq!(
+            crate::document_history::prune_orphans(data_root, &root, Duration::ZERO)
+                .expect("prune"),
+            1
+        );
+        let live = history_directory(data_root, &root, Path::new(".docs/live.md"));
+        assert!(
+            live.join("source.json").exists(),
+            "目标仍存在的历史必须保留"
+        );
+        let orphan = history_directory(data_root, &root, Path::new(".docs/renamed-away.md"));
+        assert!(!orphan.exists(), "孤儿历史应被清理");
+        assert!(foreign.exists(), "其他工作区的历史不得被当前工作区清理");
+    }
+
+    #[test]
+    fn document_history_prunes_beyond_version_limit() {
+        let data = tempfile::tempdir().expect("data");
+        let history = data.path().join("document-history").join("prune");
+        for index in 0..25 {
+            crate::document_history::record(&history, format!("# v{index}\n").as_bytes())
+                .expect("record");
+        }
+        assert_eq!(
+            crate::document_history::list(&history).expect("list").len(),
+            20,
+            "历史版本上限 20，超出淘汰最旧"
+        );
+    }
+
+    #[test]
     fn document_save_preserves_uniform_crlf_line_endings() {
         assert_eq!(
             preserve_document_line_endings(b"# old\r\nbody\r\n", b"# new\nbody\n"),
@@ -396,6 +688,40 @@ mod tests {
             preserve_document_line_endings(b"# old\nbody\n", b"# new\nbody\n"),
             b"# new\nbody\n"
         );
+    }
+
+    #[test]
+    fn document_save_applies_cas_and_preserves_the_current_file_on_conflict() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let data = tempfile::tempdir().expect("data");
+        let root = std::fs::canonicalize(workspace.path()).expect("canonical workspace");
+        std::fs::create_dir(root.join(".docs")).expect("create docs");
+        let target = root.join(".docs/spec.md");
+        std::fs::write(&target, "# old\n").expect("seed document");
+
+        let original_sha = sha256_hex(b"# old\n");
+        let saved = save_document_at(
+            &root,
+            Path::new(".docs/spec.md"),
+            data.path(),
+            &original_sha,
+            b"# new\n",
+        )
+        .expect("save document");
+        assert_eq!(saved.sha256, sha256_hex(b"# new\n"));
+        assert_eq!(saved.size_bytes, 6);
+        assert_eq!(std::fs::read(&target).expect("read saved"), b"# new\n");
+
+        // CAS 冲突：盘上已被改动，旧快照不得覆盖它（覆盖会连带丢掉别人的新写入）。
+        assert!(save_document_at(
+            &root,
+            Path::new(".docs/spec.md"),
+            data.path(),
+            &original_sha,
+            b"# stale overwrite\n",
+        )
+        .is_err());
+        assert_eq!(std::fs::read(&target).expect("read conflict"), b"# new\n");
     }
 
     #[test]

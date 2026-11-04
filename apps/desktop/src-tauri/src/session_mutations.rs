@@ -42,6 +42,11 @@ pub struct CommitSessionMutationBatchRequest {
     runtime_manifest_json: Option<String>,
     #[serde(default)]
     runtime_dependencies_updated: bool,
+    /// runtime_dependencies_update 是否同时作废 context checkpoint（压缩摘要 +
+    /// 确定性账本）。None = 未声明（沿用旧语义：依赖替换即作废）；Some(false) =
+    /// 调用方显式保留——提示词 / 模型类替换不该让历史事实随会话丢失。
+    #[serde(default)]
+    invalidate_checkpoint: Option<bool>,
     #[serde(default)]
     journal_entry_ids: Vec<String>,
     created_at: i64,
@@ -65,6 +70,17 @@ pub struct SessionMutationReceipt {
 struct ValidatedMessage<'a> {
     request: &'a SessionMutationMessage,
     content: String,
+}
+
+/// 本次依赖替换是否作废 context checkpoint。
+///
+/// 未声明时沿用旧语义（依赖替换即作废）；调用方显式声明保留时返回 false。
+/// 与 TS 侧 `createSessionMutationRequest` 的编码一一对应：非依赖替换事件一律
+/// 编码为 false。
+fn resolves_invalidate_checkpoint(request: &CommitSessionMutationBatchRequest) -> bool {
+    request
+        .invalidate_checkpoint
+        .unwrap_or(request.runtime_dependencies_updated)
 }
 
 fn json_i64(value: &Value, field: &str) -> Result<i64, String> {
@@ -175,6 +191,11 @@ fn validate_request(
             );
         }
     }
+    if request.invalidate_checkpoint == Some(true) && !request.runtime_dependencies_updated {
+        // checkpoint 作废只随依赖替换发生：单独声明作废会让删除意图脱离
+        // 唯一的载体事件，属于调用方 bug，必须拒绝而不是静默忽略。
+        return Err("checkpoint 作废声明必须随 runtime_dependencies_update 提交".to_string());
+    }
     if let (Some(tool_names), Some(manifest)) =
         (&request.active_tool_names, &request.runtime_manifest_json)
     {
@@ -190,12 +211,18 @@ fn validate_request(
             return Err("Runtime mutation 包含重复 journal entry ID".to_string());
         }
     }
-    let operation_count = request.messages.len()
-        + usize::from(request.system_prompt.is_some())
-        + usize::from(request.model_provider.is_some())
-        + usize::from(request.reasoning_updated)
-        + usize::from(request.active_tool_names.is_some())
-        + usize::from(request.runtime_dependencies_updated);
+    // runtime_dependencies_update 是**一个**事件：提示词 + 活动工具 + manifest
+    // 原子同属它，因此只计一次操作。若把三者各计一次，依赖替换批次会被误判为
+    // 「事件计数与内容不一致」而整批拒绝（TS encoder 的 eventCount = 事件数）。
+    let operation_count = if request.runtime_dependencies_updated {
+        request.messages.len() + 1
+    } else {
+        request.messages.len()
+            + usize::from(request.system_prompt.is_some())
+            + usize::from(request.model_provider.is_some())
+            + usize::from(request.reasoning_updated)
+            + usize::from(request.active_tool_names.is_some())
+    };
     if operation_count == 0 || operation_count > request.event_count {
         return Err("Runtime mutation batch 事件计数与内容不一致".to_string());
     }
@@ -239,6 +266,7 @@ fn canonical_effect_hash(request: &CommitSessionMutationBatchRequest) -> Result<
         "activeToolNames": request.active_tool_names,
         "runtimeManifest": runtime_manifest,
         "runtimeDependenciesUpdated": request.runtime_dependencies_updated,
+        "invalidateCheckpoint": resolves_invalidate_checkpoint(request),
         "journalEntryIds": journal_entry_ids,
     });
     let encoded = serde_json::to_vec(&effect)
@@ -476,9 +504,11 @@ async fn commit_mutation_batch_locked(
         .await
         .map_err(|error| format!("无法更新 Runtime 活动工具：{error}"))?;
     }
-    if request.runtime_dependencies_updated {
+    if request.runtime_dependencies_updated && resolves_invalidate_checkpoint(request) {
         // runtime_dependencies_update：同一事务删除该会话的 context checkpoint，
-        // 使旧摘要投影不会在 reload 后继续复用。
+        // 使旧摘要投影不会在 Skill reload 后继续复用。调用方声明保留时
+        // （invalidate_checkpoint=false）不删除——提示词 / 模型类替换不该让
+        // 压缩摘要与确定性账本随会话丢失。
         sqlx::query("DELETE FROM context_checkpoints WHERE session_id = ?")
             .bind(&request.session_id)
             .execute(&mut *connection)
@@ -576,6 +606,16 @@ mod tests {
                  CREATE TABLE agent_session_journal (
                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, kind TEXT NOT NULL,
                    status TEXT NOT NULL, applied_at INTEGER
+                 );
+                 CREATE TABLE context_checkpoints (
+                   id TEXT PRIMARY KEY NOT NULL, session_id TEXT NOT NULL,
+                   through_message_id TEXT NOT NULL, summary TEXT NOT NULL, summary_hash TEXT NOT NULL,
+                   reason TEXT NOT NULL, tokens_before INTEGER NOT NULL,
+                   estimated_tokens_after INTEGER NOT NULL, request_bytes_before INTEGER NOT NULL,
+                   request_bytes_after INTEGER NOT NULL, model_provider TEXT NOT NULL,
+                   model_id TEXT NOT NULL, prompt_version INTEGER NOT NULL,
+                   excluded_message_ids_json TEXT NOT NULL, facts_json TEXT NOT NULL,
+                   created_at INTEGER NOT NULL
                  );",
             )
             .await
@@ -633,6 +673,7 @@ mod tests {
             active_tool_names: None,
             runtime_manifest_json: None,
             runtime_dependencies_updated: false,
+            invalidate_checkpoint: None,
             journal_entry_ids: Vec::new(),
             created_at: 2,
         }
@@ -702,6 +743,22 @@ mod tests {
         .unwrap();
         manifest["tools"][1]["version"] = Value::String(version.to_string());
         manifest.to_string()
+    }
+
+    /// 依赖替换请求（runtime_dependencies_update）：提示词 + 活动工具 + manifest 独占。
+    fn dependencies_request(
+        batch_id: &str,
+        invalidate_checkpoint: Option<bool>,
+    ) -> CommitSessionMutationBatchRequest {
+        let mut update = request(batch_id, Vec::new());
+        update.event_count = 1;
+        update.system_prompt = Some("system-reloaded".to_string());
+        update.active_tool_names =
+            Some(vec!["discover_agent_tools".to_string(), "read".to_string()]);
+        update.runtime_manifest_json = Some(runtime_manifest("2"));
+        update.runtime_dependencies_updated = true;
+        update.invalidate_checkpoint = invalidate_checkpoint;
+        update
     }
 
     #[test]
@@ -854,6 +911,87 @@ mod tests {
         assert_eq!(count(&path, "agent_messages").await, 0);
         assert_eq!(count(&path, "runtime_mutation_batches").await, 0);
         assert_eq!(journal_status(&path, "journal-valid").await, "pending");
+    }
+
+    #[tokio::test]
+    async fn keeps_the_context_checkpoint_when_the_dependencies_update_declares_retention() {
+        let (_directory, path) = test_database().await;
+        let mut connection = SqliteConnection::connect_with(&sqlite_options(&path, false))
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO context_checkpoints
+             (id, session_id, through_message_id, summary, summary_hash, reason,
+              tokens_before, estimated_tokens_after, request_bytes_before, request_bytes_after,
+              model_provider, model_id, prompt_version, excluded_message_ids_json, facts_json,
+              created_at)
+             VALUES ('checkpoint-1', 'session-1', 'message-1', 'summary', 'hash', 'manual',
+                     100, 10, 1000, 100, 'test', 'model', 1, '[]', '{}', 2)",
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        connection.close().await.unwrap();
+
+        let mut update = dependencies_request("mutation-dependencies-keep", Some(false));
+        commit_at(&path, &update).await.unwrap();
+        assert_eq!(count(&path, "context_checkpoints").await, 1);
+
+        // 声明作废（Skill reload）时同一事务删除检查点。
+        update.batch_id = "mutation-dependencies-drop".to_string();
+        update.invalidate_checkpoint = Some(true);
+        commit_at(&path, &update).await.unwrap();
+        assert_eq!(count(&path, "context_checkpoints").await, 0);
+    }
+
+    #[tokio::test]
+    async fn accepts_the_dependencies_batch_shape_encoded_by_the_ts_encoder() {
+        // TS encoder 对一次依赖替换只发一个事件（eventCount = 1），提示词、活动工具
+        // 与 manifest 都挂在同一事件上：Rust 侧必须按「一次操作」计数，否则整批被拒。
+        let (_directory, path) = test_database().await;
+        let mut update = dependencies_request("mutation-dependencies-shape", Some(false));
+        update.event_count = 1;
+
+        commit_at(&path, &update).await.unwrap();
+
+        let mut connection = SqliteConnection::connect_with(&sqlite_options(&path, true))
+            .await
+            .unwrap();
+        let row = sqlx::query(
+            "SELECT system_prompt, active_tool_names_json, runtime_manifest_json
+             FROM agent_sessions WHERE id = 'session-1'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        let prompt: String = row.get("system_prompt");
+        let active: String = row.get("active_tool_names_json");
+        let manifest: String = row.get("runtime_manifest_json");
+        connection.close().await.unwrap();
+
+        assert_eq!(prompt, "system-reloaded");
+        assert_eq!(
+            serde_json::from_str::<Value>(&active).unwrap(),
+            serde_json::json!(["discover_agent_tools", "read"])
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&manifest).unwrap()["tools"][1]["version"],
+            "2"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_a_checkpoint_invalidation_declared_without_a_dependencies_update() {
+        let (_directory, path) = test_database().await;
+        let mut update = request("mutation-stray-invalidation", Vec::new());
+        update.event_count = 1;
+        update.invalidate_checkpoint = Some(true);
+
+        let error = commit_at(&path, &update).await.unwrap_err();
+        assert_eq!(
+            error,
+            "checkpoint 作废声明必须随 runtime_dependencies_update 提交"
+        );
     }
 
     #[tokio::test]

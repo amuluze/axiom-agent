@@ -12,6 +12,7 @@ mod design_history;
 #[cfg(unix)]
 mod design_history_identity;
 mod docs_access;
+mod document_history;
 mod external_url;
 mod feedback;
 mod file_access;
@@ -84,7 +85,10 @@ use design_access::{
     unwatch_design_document, watch_design_document, DesignWatchState,
 };
 use design_export::export_design_png;
-use docs_access::{read_workspace_document, save_workspace_document};
+use docs_access::{
+    list_workspace_document_versions, read_workspace_document, restore_workspace_document_version,
+    save_workspace_document,
+};
 use external_url::open_external_url;
 use feedback::submit_feedback;
 use file_access::{
@@ -406,6 +410,8 @@ pub fn run() -> Result<(), String> {
                 export_design_png,
                 read_workspace_document,
                 save_workspace_document,
+                list_workspace_document_versions,
+                restore_workspace_document_version,
                 authorize_workspace,
                 pick_and_authorize_workspace,
                 activate_authorized_workspace,

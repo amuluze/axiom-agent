@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -136,6 +137,26 @@ const audit = ({
   return { ts, rust }
 }
 
+const assertPositionsSelfTest = () => {
+  assert.doesNotThrow(() => assertDocsPositioning([
+    { path: 'docs/ok.md', head: ['# x', '', '> **状态**：已实施'] },
+    { path: 'docs/ok2.md', head: ['> 定位：历史快照'] },
+  ]))
+  assert.throws(
+    () => assertDocsPositioning([{ path: 'docs/silent.md', head: ['# x', '', '正文'] }]),
+    /必须在前 8 行声明定位/u,
+    'audit must reject a docs/ file without a positioning declaration',
+  )
+  assert.throws(
+    () => assertDocsPositioning([{
+      path: 'docs/late.md',
+      head: ['# x', ...Array(8).fill('正文'), '> 定位：太晚了'],
+    }]),
+    /必须在前 8 行声明定位/u,
+    'audit must reject a positioning declaration beyond the head window',
+  )
+}
+
 const selfTest = (sources) => {
   assert.throws(
     () => audit({
@@ -164,7 +185,55 @@ const selfTest = (sources) => {
     /root document files drifted/u,
     'audit must reject a Rust root-document deletion',
   )
+  assertPositionsSelfTest()
   console.log('docs path audit self-test passed')
+}
+
+/**
+ * `docs/` 与 `.docs/` 的分工审计。
+ *
+ * 规则：`docs/` 只放面向人的历史快照、阶段实施方案、运维/录制手册；「当前系统
+ * 怎么运行」的活文档必须放 `.docs/`（进 `<available_docs>` 索引、可经文档页保存）。
+ * 这条分工靠自觉就会腐化——一个仍在描述现状的文档放在 `docs/` 里，模型永远看不到
+ * 它（索引只扫 `.docs/`），而人以为它是权威说明。
+ *
+ * 机器判据：`docs/` 下每个 Markdown 文件的前 8 行必须有一行定位声明
+ * （`> 定位：…` / `> **状态**：…` / `> Status:…`）。声明本身回答「这份文档是不是
+ * 现状」；缺声明即拒绝，逼迫作者显式分类，而不是让它沉默地留在错误目录。
+ */
+const POSITIONING_LINE = /^>\s*(?:\*\*)?\s*(?:定位|状态|Status)/u
+
+const assertDocsPositioning = (entries) => {
+  const missing = entries
+    .filter((entry) => !entry.head.slice(0, 8).some((line) => POSITIONING_LINE.test(line)))
+    .map((entry) => entry.path)
+  assert.deepEqual(
+    missing,
+    [],
+    `docs/ 下的文档必须在前 8 行声明定位（> 定位：… / > **状态**：…）；「当前系统怎么运行」的活文档应放 .docs/：${missing.join(', ')}`,
+  )
+}
+
+const collectDocsPositioning = async () => {
+  const docsRoot = path.join(root, 'docs')
+  // 公开导出仓不含 docs/（面向人的历史/运维记录不随源码分发）：没有目录即无事可查。
+  if (!existsSync(docsRoot)) return []
+  const walk = async (directory) => {
+    const entries = await readdir(directory, { withFileTypes: true })
+    const files = []
+    for (const entry of entries) {
+      const full = path.join(directory, entry.name)
+      if (entry.isDirectory()) {
+        files.push(...(await walk(full)))
+        continue
+      }
+      if (!entry.name.toLowerCase().endsWith('.md')) continue
+      const head = (await readFile(full, 'utf8')).split('\n').slice(0, 8)
+      files.push({ path: path.relative(root, full), head })
+    }
+    return files
+  }
+  return walk(docsRoot)
 }
 
 const sources = {
@@ -174,8 +243,10 @@ const sources = {
 }
 
 const { ts, rust } = audit(sources)
+const docsPositioning = await collectDocsPositioning()
+assertDocsPositioning(docsPositioning)
 console.log(
-  `docs path audit passed managed-roots=${ts.docRoots.length} root-files=${ts.rootFiles.length + 1} nested-agents=${ts.agentsRoot}`,
+  `docs path audit passed managed-roots=${ts.docRoots.length} root-files=${ts.rootFiles.length + 1} nested-agents=${ts.agentsRoot} docs-declared=${docsPositioning.length}`,
 )
 assert.equal(rust.docRoots.length, ts.docRoots.length)
 if (process.argv.includes('--self-test')) selfTest(sources)

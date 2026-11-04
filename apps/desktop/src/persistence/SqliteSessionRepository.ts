@@ -915,7 +915,7 @@ export class SqliteSessionRepository implements SessionRepository {
       return
     }
 
-    if (event.type === 'agent_settled') {
+    if (event.type === 'agent_settled' || event.type === 'agent_stage_settled') {
       if (event.savePoint.sessionId !== sessionId) {
         throw new Error('Agent Save Point 不属于当前会话')
       }

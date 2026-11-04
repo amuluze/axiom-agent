@@ -895,10 +895,15 @@ export class AgentHarness {
     return checkpoint
   }
 
-  /** 原子替换 Runtime dependencies（skills reload 用），委托底层 AgentSession。 */
+  /**
+   * 原子替换 Runtime dependencies（skills reload / 提示词对齐用），委托底层
+   * AgentSession。`invalidateCheckpoint` 由调用方声明本次替换是否作废当前
+   * context checkpoint（压缩摘要 + 确定性账本）。
+   */
   async updateRuntimeDependencies(input: {
     previous: RuntimeDependenciesSnapshot
     current: RuntimeDependenciesSnapshot
+    invalidateCheckpoint: boolean
   }): Promise<void> {
     this.assertActive('updateRuntimeDependencies')
     if (this.phase !== 'idle') {
@@ -1135,6 +1140,7 @@ export class AgentHarness {
   ): AgentHarnessCallbackContext {
     const phase = this.phase
     const settling = event.type === 'agent_end' || event.type === 'agent_settled'
+      || event.type === 'agent_stage_settled'
     const allowedOperations: AgentHarnessCallbackOperation[] = this.lifecycleState !== 'active'
       ? []
       : isRuntimeHookType(event.type)

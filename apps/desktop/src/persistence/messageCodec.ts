@@ -157,6 +157,7 @@ export const isAgentMessage = (value: unknown): value is AgentMessage => {
   }
   if (value.role === 'custom') {
     return typeof value.customType === 'string'
+      && (value.excludeFromModelContext === undefined || typeof value.excludeFromModelContext === 'boolean')
       && typeof value.content === 'string'
       && (value.data === undefined || isJsonValue(value.data))
   }

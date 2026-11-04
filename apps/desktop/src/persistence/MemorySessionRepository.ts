@@ -686,8 +686,9 @@ export class MemorySessionRepository implements SessionRepository {
         stagedSession.systemPrompt = event.current.systemPrompt
         stagedSession.activeToolNames = event.current.activeToolNames.slice()
         stagedSession.runtimeManifest = structuredClone(normalizedManifest)
-        // 该事件使 context checkpoint 失效：清空该会话持久化 checkpoint。
-        this.checkpoints.set(sessionId, [])
+        // checkpoint 是否失效由调用方声明：只有 Skill 冻结快照变化（reload）
+        // 才清空持久化 checkpoint；提示词 / 模型类替换保留摘要与确定性账本。
+        if (event.invalidateCheckpoint) this.checkpoints.set(sessionId, [])
         continue
       }
       const activeToolNames = event.current.activeToolNames
@@ -1164,7 +1165,7 @@ export class MemorySessionRepository implements SessionRepository {
       this.assertTurnSavePoint(sessionId, event.savePoint)
       this.runs.get(event.savePoint.runId)!.latestTurnSavePoint = structuredClone(event.savePoint)
     }
-    if (event.type === 'agent_settled') {
+    if (event.type === 'agent_settled' || event.type === 'agent_stage_settled') {
       if (event.savePoint.sessionId !== sessionId) {
         throw new Error('Agent Save Point 不属于当前会话')
       }

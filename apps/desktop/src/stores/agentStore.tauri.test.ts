@@ -11,6 +11,7 @@ import {
   saveSecret,
 } from '@/platform/secrets'
 import { defaultProviderProfile, PROVIDER_PROFILE_SCHEMA_VERSION } from '@/agent/transport/provider'
+import { hashContextSummary, SUMMARY_PROMPT_VERSION } from '@/agent/context/compaction'
 import { TEST_ANTHROPIC_PROFILE } from '@/agent/transport/__fixtures__/testAnthropicProfile'
 
 // 覆盖 agentStore 模块加载时绑定的 Rust 宿主：测试环境无 Tauri command，解析用
@@ -688,6 +689,77 @@ describe('agentStore Tauri Provider Secret lifecycle', () => {
       session: { context: { systemPrompt: string } }
     }).session.context.systemPrompt
     expect(runtimeSystemPrompt).toContain('DeepSeek Flash')
+  })
+
+  it('keeps the compaction checkpoint when switching the model', async () => {
+    localStorage.setItem('axiom.provider.config.v1', JSON.stringify(TEST_ANTHROPIC_PROFILE))
+    mocks.secrets.set('provider.generic-anthropic-compatible.api-key', 'anthropic-key')
+
+    const { useAgentStore } = await loadAgentStore()
+    await useAgentStore.getState().initialize()
+    // 授权工作区：会话提示词含工作区路径，切换模型时写入的裸提示词与激活
+    // 候选提示词之间必然产生漂移——正是真实使用中的情形。
+    mocks.workspaceSelection = { path: '/repo/alpha', name: 'alpha', gitBranch: 'main' }
+    await expect(useAgentStore.getState().addWorkspace()).resolves.toBe(true)
+    const activeSessionId = useAgentStore.getState().activeSessionId!
+
+    // 造一个已压缩的会话：一条用户消息 + 一次压缩检查点（摘要 + 确定性账本）。
+    await mocks.repository!.commitMutationBatch(activeSessionId, {
+      id: 'mutation:model-switch-user-message',
+      sessionId: activeSessionId,
+      events: [{
+        type: 'session_message_append',
+        sessionId: activeSessionId,
+        message: { id: 'u-switch', role: 'user', content: 'old prompt', createdAt: 1 },
+      }],
+      createdAt: 1,
+    })
+    await mocks.repository!.recordEvent(activeSessionId, {
+      type: 'compaction_end',
+      compactionId: 'compact-model-switch',
+      reason: 'manual',
+      aborted: false,
+      checkpoint: {
+        id: 'checkpoint-model-switch',
+        sessionId: activeSessionId,
+        throughMessageId: 'u-switch',
+        summary: '切换模型前的摘要',
+        summaryHash: await hashContextSummary('切换模型前的摘要'),
+        reason: 'manual',
+        tokensBefore: 100,
+        estimatedTokensAfter: 10,
+        requestBytesBefore: 1000,
+        requestBytesAfter: 100,
+        modelProvider: 'generic-anthropic-compatible',
+        modelId: 'claude-test',
+        promptVersion: SUMMARY_PROMPT_VERSION,
+        excludedMessageIds: [],
+        facts: { readFiles: [], modifiedFiles: [] },
+        createdAt: 2,
+      },
+    })
+    expect((await mocks.repository!.loadSession(activeSessionId)).checkpoint?.summary)
+      .toBe('切换模型前的摘要')
+
+    const deepseek = { ...defaultProviderProfile('deepseek') }
+    await expect(useAgentStore.getState().saveProvider(deepseek, 'deepseek-key')).resolves.toEqual({
+      saved: true,
+      ready: true,
+    })
+    await expect(useAgentStore.getState().switchProviderProfile(
+      deepseek.profileId,
+    )).resolves.toBe(true)
+
+    // 换模型只改提示词正文：压缩摘要与确定性账本记录的是历史事实，必须留在会话里。
+    const stored = await mocks.repository!.loadSession(useAgentStore.getState().activeSessionId!)
+    expect(stored.session.modelId).toBe('deepseek-flash')
+    expect(stored.checkpoint?.summary).toBe('切换模型前的摘要')
+
+    const { getRuntimeSession } = await import('@/stores/runtimeCaches')
+    const runtime = getRuntimeSession(useAgentStore.getState().activeSessionId!) as unknown as {
+      session: { checkpoint: { summary: string } | null }
+    }
+    expect(runtime.session.checkpoint?.summary).toBe('切换模型前的摘要')
   })
 
   it('adds independent sessions for multiple authorized workspaces', async () => {

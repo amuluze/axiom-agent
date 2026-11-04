@@ -1,3 +1,5 @@
+import { readTaskSummary } from '@/agent/runtime/taskSummary'
+import { taskPauseMessage } from '@/agent/runtime/taskContinuation'
 import type { AgentHarness } from '@/agent/runtime/AgentHarness'
 import type { QueuedMessageSnapshot } from '@/agent/runtime/AgentSession'
 import type { ProviderProfile } from '@/agent/transport/provider'
@@ -105,6 +107,7 @@ export const applySessionActivationState = (
   options: SessionActivationStateOverrides,
   bindings: CoreStoreBindings,
 ): void => {
+  const summary = readTaskSummary(prepared.snapshot.messages)
   bindings.setState({
     provider: prepared.config,
     providerProfiles: nextProviderProfiles,
@@ -116,8 +119,8 @@ export const applySessionActivationState = (
     accessMode: prepared.sessions.find((session) => session.id === prepared.snapshot.session.id)?.accessMode ?? 'standard',
     messages: prepared.snapshot.messages,
     activeTools: {},
-    endReason: null,
-    error: null,
+    endReason: summary?.reason ?? null,
+    error: summary ? taskPauseMessage(summary.usage.continuationDecision) ?? null : null,
     contextCheckpoint: prepared.snapshot.checkpoint,
     contextUsage,
     pendingSteeringCount: queuedMessageState.pendingSteeringCount,
@@ -242,6 +245,8 @@ export const applySessionEvent = (
       projection.activeTools = {}
       projection.endReason = event.reason
       projection.error = event.errorMessage ?? null
+    } else if (event.type === 'agent_settled' && event.taskPauseMessage) {
+      projection.error = event.taskPauseMessage
     } else if (event.type === 'compaction_start') {
       projection.compactionRunning = true
       projection.error = null
@@ -344,7 +349,7 @@ export const applySessionEvent = (
           error: event.errorMessage ?? null,
         }
       case 'agent_settled':
-        return { ...base, running: false }
+        return { ...base, running: false, ...(event.taskPauseMessage ? { error: event.taskPauseMessage } : {}) }
       case 'message_start': {
         // assistant 的 message_start 也写到 streamingDraft 而非 messages：
         // 后续 message_update 才能命中同一 id 的 draft，避免初次消息

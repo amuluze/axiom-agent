@@ -2090,6 +2090,7 @@ describe('runAgentLoop', () => {
     })
 
     expect(result.reason).toBe('tool_limit')
+    expect(result.budgetRejectedToolCallIds).toHaveLength(1)
     // 前两次执行，第三次超限不执行
     expect(execute).toHaveBeenCalledTimes(2)
     const failedTool = result.messages.find(

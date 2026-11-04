@@ -92,6 +92,8 @@
     "allow-restore-design-document-version",
     "allow-save-workspace-document",
     "allow-read-workspace-document",
+    "allow-list-workspace-document-versions",
+    "allow-restore-workspace-document-version",
     "allow-authorize-workspace",
     "allow-pick-and-authorize-workspace",
     "allow-activate-authorized-workspace",

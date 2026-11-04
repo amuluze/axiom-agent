@@ -77,6 +77,8 @@ const APP_COMMANDS: &[&str] = &[
     "export_design_png",
     "read_workspace_document",
     "save_workspace_document",
+    "list_workspace_document_versions",
+    "restore_workspace_document_version",
     "authorize_workspace",
     "pick_and_authorize_workspace",
     "activate_authorized_workspace",

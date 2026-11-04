@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react'
 import { useAgentStore } from '@/stores/agentStore'
-import { readWorkspaceDocument, saveWorkspaceDocument } from '@/platform/workspaceDocument'
+import {
+  listWorkspaceDocumentVersions,
+  readWorkspaceDocument,
+  restoreWorkspaceDocumentVersion,
+  saveWorkspaceDocument,
+  type WorkspaceDocumentVersion,
+} from '@/platform/workspaceDocument'
 import type { DocContentState, DocEditState } from './docsViewUtils'
 
 /**
@@ -20,6 +26,8 @@ export interface UseDocEditorOptions {
   } | null>
   loadErrorMessage: string
   saveErrorMessage: string
+  restoreErrorMessage: string
+  restoreDirtyError: string
 }
 
 export interface DocsEditor {
@@ -33,10 +41,31 @@ export interface DocsEditor {
   beginEdit: (path: string) => Promise<void>
   discardEdit: () => void
   saveEdit: () => Promise<void>
+  restoreVersion: (sha256: string) => Promise<void>
+}
+
+/**
+ * 把刚留档的版本提到列表头部（去重）。历史条目只是旧内容的引用，
+ * 时间戳在这里不重要——它下一次真读列表时会被真实时间替换。
+ */
+const rememberVersion = (
+  versions: WorkspaceDocumentVersion[],
+  sha256: string | null,
+): WorkspaceDocumentVersion[] => {
+  if (!sha256 || versions.some((version) => version.sha256 === sha256)) return versions
+  return [{ sha256, sizeBytes: 0, modifiedMs: Date.now() }, ...versions]
 }
 
 export const useDocEditor = (options: UseDocEditorOptions): DocsEditor => {
-  const { workspacePath, requestAutoScan, apiRef, loadErrorMessage, saveErrorMessage } = options
+  const {
+    workspacePath,
+    requestAutoScan,
+    apiRef,
+    loadErrorMessage,
+    saveErrorMessage,
+    restoreErrorMessage,
+    restoreDirtyError,
+  } = options
   const [edit, setEdit] = useState<DocEditState | null>(null)
   const [editLoading, setEditLoading] = useState(false)
   const editRef = useRef<DocEditState | null>(null)
@@ -59,9 +88,26 @@ export const useDocEditor = (options: UseDocEditorOptions): DocsEditor => {
         draft: text,
         baseline: text,
         baselineSha256: document.sha256,
+        versions: [],
+        versionsLoading: true,
+        restoringSha256: null,
         saving: false,
         error: null,
       })
+      // 历史列表与正文分开加载：历史读失败不应挡住编辑（正文已经拿到）。
+      void listWorkspaceDocumentVersions(path, workspacePath)
+        .then((versions) => {
+          if (editLoadSeqRef.current !== seq) return
+          setEdit((current) => current?.path === path
+            ? { ...current, versions, versionsLoading: false }
+            : current)
+        })
+        .catch(() => {
+          if (editLoadSeqRef.current !== seq) return
+          setEdit((current) => current?.path === path
+            ? { ...current, versions: [], versionsLoading: false }
+            : current)
+        })
     } catch {
       if (editLoadSeqRef.current === seq) {
         apiRef.current?.setContent((current) => current?.path === path
@@ -97,6 +143,9 @@ export const useDocEditor = (options: UseDocEditorOptions): DocsEditor => {
             ...current,
             baseline: submitted.draft,
             baselineSha256: saved.sha256,
+            // 保存刚留档的旧内容立刻出现在历史里：把 previousSha256 提到列表头部，
+            // 避免为了「撤销保存」再多读一次列表。
+            versions: rememberVersion(current.versions, saved.previousSha256),
             saving: false,
             error: null,
           }
@@ -114,6 +163,55 @@ export const useDocEditor = (options: UseDocEditorOptions): DocsEditor => {
         : current)
     }
   }, [apiRef, edit, requestAutoScan, saveErrorMessage, workspacePath])
+
+  const restoreVersion = useCallback(async (sha256: string): Promise<void> => {
+    if (!edit || edit.saving || edit.restoringSha256) return
+    const submitted = edit
+    // 有未保存草稿时先让用户自己决定：回滚会覆盖草稿，静默丢弃等于丢数据。
+    if (submitted.draft !== submitted.baseline) {
+      setEdit((current) => current?.path === submitted.path
+        ? { ...current, error: restoreDirtyError }
+        : current)
+      return
+    }
+    setEdit((current) => current?.path === submitted.path
+      ? { ...current, restoringSha256: sha256, error: null }
+      : current)
+    try {
+      const restored = await restoreWorkspaceDocumentVersion(
+        submitted.path,
+        sha256,
+        submitted.baselineSha256,
+        workspacePath,
+      )
+      setEdit((current) => current?.path === submitted.path
+        ? {
+            ...current,
+            baselineSha256: restored.sha256,
+            restoringSha256: null,
+            versions: rememberVersion(current.versions, restored.previousSha256),
+            error: null,
+          }
+        : current)
+      // 回滚后正文变了：重新读一次，让阅读态与草稿基线一致。
+      apiRef.current?.markSynced()
+      requestAutoScan()
+      await useAgentStore.getState().refreshActiveProjectContext().catch(() => undefined)
+      const document = await readWorkspaceDocument(submitted.path, workspacePath)
+      const text = document.content.replace(/\r\n?/g, '\n')
+      setEdit((current) => current?.path === submitted.path
+        ? { ...current, draft: text, baseline: text, baselineSha256: document.sha256 }
+        : current)
+    } catch (error) {
+      setEdit((current) => current?.path === submitted.path
+        ? {
+            ...current,
+            restoringSha256: null,
+            error: typeof error === 'string' ? error : restoreErrorMessage,
+          }
+        : current)
+    }
+  }, [apiRef, edit, requestAutoScan, restoreDirtyError, restoreErrorMessage, workspacePath])
 
   // ⌘S 属于编辑态而不是 textarea：焦点在目录树/顶部按钮时也应保存。
   const saveEditRef = useRef(saveEdit)
@@ -142,5 +240,6 @@ export const useDocEditor = (options: UseDocEditorOptions): DocsEditor => {
     beginEdit,
     discardEdit,
     saveEdit,
+    restoreVersion,
   }
 }

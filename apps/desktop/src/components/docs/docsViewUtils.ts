@@ -1,4 +1,5 @@
 import { isValidElement, type MouseEvent, type ReactNode } from 'react'
+import type { WorkspaceDocumentVersion } from '@/platform/workspaceDocument'
 
 /**
  * 文档页（DocsView）的纯数据形状与常量。
@@ -43,6 +44,11 @@ export interface DocEditState {
   draft: string
   baseline: string
   baselineSha256: string
+  /** 该文档的历史版本（保存时自动留档的旧内容，新→旧）。 */
+  versions: WorkspaceDocumentVersion[]
+  versionsLoading: boolean
+  /** 正在回滚的版本号；非 null 时禁用回滚按钮。 */
+  restoringSha256: string | null
   saving: boolean
   error: string | null
 }

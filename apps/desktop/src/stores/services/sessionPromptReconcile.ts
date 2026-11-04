@@ -10,10 +10,11 @@ import type { RuntimeDependencyManifest } from '@/agent/runtime/runtimeDependenc
  * （多会话并行时后台会话在自己 run 里写入的 Spec/Plan 就落在这个窗口里）。
  *
  * 深比较候选提示词，有漂移且会话空闲时经 runtime_dependencies_update 原子
- * 替换——与 run 结束刷新（applyProjectDocsToSession）同一机制与副作用
- * （checkpoint 失效由深比较门保证只在真实漂移时发生）。会话忙碌（后台运行
- * 中被切回）时不适用：prepare_next_turn 回流会在下一个 turn_end 用同一份
- * 新鲜 basePrompt 镜像自愈，无需此处介入。
+ * 替换——与 run 结束刷新（applyProjectDocsToSession）同一机制。对账只换提示词
+ * 正文，**不使 checkpoint 失效**：压缩摘要与确定性账本记录的是历史事实，与
+ * 提示词正文 / 模型身份无关（只有 Skill reload 才作废，见 docs/skills-extension.md
+ * §7.3）。会话忙碌（后台运行中被切回）时不适用：prepare_next_turn 回流会在下一个
+ * turn_end 用同一份新鲜 basePrompt 镜像自愈，无需此处介入。
  *
  * manifest 原样作为 previous/current 传递：对账只换提示词，不改写依赖指纹
  * （尤其不把 skills 冻结快照悄悄换成磁盘现状，那会削弱 load_skill 的
@@ -33,6 +34,9 @@ export const reconcileSessionPromptOnActivation = async (
   await harness.updateRuntimeDependencies({
     previous: { systemPrompt: harness.systemPrompt, activeToolNames, runtimeManifest: manifest },
     current: { systemPrompt: candidateSystemPrompt, activeToolNames, runtimeManifest: manifest },
+    // 对账只换提示词正文（模型身份 / 工作区 / 文档索引漂移）：压缩摘要与确定性
+    // 账本记录的是历史事实，仍然成立——切换模型不该让当前会话的上下文丢失。
+    invalidateCheckpoint: false,
   })
   return true
 }

@@ -200,6 +200,27 @@ describe('formatAvailableDocs', () => {
     expect(result.section).toContain('用 ls 复查目录实况')
   })
 
+  it('归档标记写错逐文件点名（模型据此修正标记）', () => {
+    const result = formatAvailableDocs({
+      entries: [doc({ role: 'task', title: 't', relativePath: '.specs/tasks/a.md' })],
+      diagnostics: [{
+        code: 'archive_marker_invalid',
+        root: '.specs/tasks',
+        role: 'task',
+        affectedCount: 2,
+        paths: ['.specs/tasks/a.md（status: DONE）', '.specs/tasks/b.md（Status: done）'],
+      }],
+      truncatedEntryCount: 0,
+      truncatedRootCount: 0,
+      archivedCount: 0,
+        nestedDirCount: 0, failedRootCount: 0,
+    })
+    expect(result.section).toContain('归档标记写法不被识别')
+    // 必须含具体路径：只给计数的话模型无从修正。
+    expect(result.section).toContain('.specs/tasks/a.md')
+    expect(result.section).toContain('.specs/tasks/b.md')
+  })
+
   it('宿主清单截断输出独立显式 note（条目计数只是下界）', () => {
     const result = formatAvailableDocs({
       entries: [doc({ role: 'task', title: 't', relativePath: '.specs/tasks/a.md' })],

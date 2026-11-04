@@ -313,6 +313,32 @@ describe('DocsView', () => {
     expect(screen.getByTitle('.specs/domain/b.md').classList.contains('is-active')).toBe(true)
   })
 
+  it('AGENTS.md 可打开 docs/ 参考文档，参考文档保持只读', async () => {
+    mocks.listWorkspace.mockRejectedValue(notFound())
+    mocks.findWorkspaceFiles.mockImplementation(async (request: { pattern: string }) => ({
+      matches: request.pattern === '**/AGENTS.md'
+        ? [{ path: 'AGENTS.md', name: 'AGENTS.md', kind: 'file', sizeBytes: 0 }]
+        : [{ path: 'docs/reference.md', name: 'reference.md', kind: 'file', sizeBytes: 0 }],
+      truncated: false,
+    }))
+    mocks.readWorkspaceText.mockImplementation(async (path: string) => {
+      if (path === 'AGENTS.md') return readResult(path, '# Guide\n\n[Reference](docs/reference.md)\n')
+      if (path === 'docs/reference.md') return readResult(path, '# Reference\n\nbody\n')
+      throw notFound()
+    })
+    render(<DocsView />)
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Guide' })).toBeTruthy())
+
+    await act(async () => {
+      screen.getByRole('link', { name: 'Reference' }).click()
+    })
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Reference' })).toBeTruthy())
+    const edit = screen.getByRole('button', { name: '编辑' })
+    expect(edit.hasAttribute('disabled')).toBe(true)
+    expect(edit.getAttribute('title')).toContain('参考文档只读')
+  })
+
   it('编辑态：编辑读全文，保存走 CAS 通道，放弃回到阅读态', async () => {
     mocks.listWorkspace.mockImplementation(async (path: string) => {
       if (path === '.specs/domain') {
@@ -668,10 +694,12 @@ describe('DocsView', () => {
       if (path === 'AGENTS.md') return readResult(path, disk)
       throw notFound()
     })
-    mocks.findWorkspaceFiles.mockResolvedValue({
-      matches: [{ path: 'AGENTS.md', name: 'AGENTS.md', kind: 'file', sizeBytes: 0 }],
+    mocks.findWorkspaceFiles.mockImplementation(async (request: { pattern: string }) => ({
+      matches: request.pattern === '**/AGENTS.md'
+        ? [{ path: 'AGENTS.md', name: 'AGENTS.md', kind: 'file', sizeBytes: 0 }]
+        : [],
       truncated: false,
-    })
+    }))
     const view = render(<DocsView />)
     await waitFor(() => expect(screen.getByText('old convention')).toBeTruthy())
 

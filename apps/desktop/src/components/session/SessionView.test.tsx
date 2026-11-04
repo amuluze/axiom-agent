@@ -1,7 +1,8 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { SessionView, shouldStickToOutput } from './SessionView'
+import { SessionView } from './SessionView'
+import { shouldStickToOutput } from './useStickyScroll'
 
 const mocks = vi.hoisted(() => ({
   messages: [] as Array<{ role: string; id: string; content: string; createdAt: number }>,

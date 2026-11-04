@@ -22,6 +22,9 @@ interface FakeWorkspace {
   agentsTruncated?: boolean
   /** AGENTS.md 发现失败（find 抛错）。 */
   agentsFindError?: Error
+  referencePaths?: string[]
+  referencesTruncated?: boolean
+  referencesFindError?: Error
   /** 指定路径（目录或文件）的失败；优先于上面的登记。 */
   failures?: Record<string, AgentEnvironmentError>
 }
@@ -52,6 +55,9 @@ const makeEnvironment = ({
   agentsPaths = [],
   agentsTruncated = false,
   agentsFindError,
+  referencePaths = [],
+  referencesTruncated = false,
+  referencesFindError,
   failures = {},
 }: FakeWorkspace): AgentEnvironment => createFakeAgentEnvironment({
   list: async (path) => {
@@ -73,11 +79,21 @@ const makeEnvironment = ({
     if (content === undefined) throw new AgentEnvironmentError('not_found', `file not found: ${path}`)
     return readResult(path, content)
   },
-  find: async () => {
+  find: async (request) => {
+    if (request.pattern === 'docs/**/*.md') {
+      if (referencesFindError) throw referencesFindError
+      return {
+        workspace: { path: '/ws', name: 'ws' },
+        pattern: request.pattern,
+        rootPath: '.',
+        matches: referencePaths.map((path) => ({ path, name: path.split('/').pop() ?? path, kind: 'file' as const, sizeBytes: 0 })),
+        truncated: referencesTruncated,
+      }
+    }
     if (agentsFindError) throw agentsFindError
     return {
       workspace: { path: '/ws', name: 'ws' },
-      pattern: '**/AGENTS.md',
+      pattern: request.pattern,
       rootPath: '.',
       matches: agentsPaths.map((path) => ({ path, name: 'AGENTS.md', kind: 'file' as const, sizeBytes: 0 })),
       truncated: agentsTruncated,
@@ -95,11 +111,26 @@ describe('scanWorkspaceDocs', () => {
   it('返回完整分组骨架（项目指南置首、子目录指南置尾）；空项目不产生诊断', async () => {
     const index = await scanWorkspaceDocs('/ws', makeEnvironment({}))
     expect(index.groups.map((group) => group.role)).toEqual(
-      ['agents-root', 'design', 'domain', 'task', 'plan', 'doc', 'agents-nested'],
+      ['agents-root', 'design', 'domain', 'task', 'plan', 'doc', 'reference', 'agents-nested'],
     )
     expect(index.groups.every((group) => group.entries.length === 0 && group.archivedEntries.length === 0)).toBe(true)
     expect(index.groups.every((group) => group.diagnostics.length === 0)).toBe(true)
     expect(docsIndexHasContent(index)).toBe(false)
+  })
+
+  it('docs/ 参考文档只进入页面分组，并按标题与路径排序', async () => {
+    const index = await scanWorkspaceDocs('/ws', makeEnvironment({
+      referencePaths: ['docs/z.md', 'docs/a.md'],
+      files: {
+        'docs/z.md': '# Zed\n',
+        'docs/a.md': '# Alpha\n',
+      },
+    }))
+    expect(groupOf(index, 'reference').entries).toMatchObject([
+      { path: 'docs/a.md', title: 'Alpha', role: 'reference' },
+      { path: 'docs/z.md', title: 'Zed', role: 'reference' },
+    ])
+    expect(groupOf(index, 'doc').entries).toHaveLength(0)
   })
 
   it('AGENTS.md 发现按根/嵌套分组：根进「项目指南」，其余按路径排序进「子目录指南」', async () => {

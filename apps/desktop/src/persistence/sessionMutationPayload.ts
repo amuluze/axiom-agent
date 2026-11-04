@@ -31,8 +31,14 @@ export interface CommitSessionMutationBatchRequest {
   reasoningJson?: string | null
   activeToolNames?: string[]
   runtimeManifestJson?: string
-  /** runtime_dependencies_update：原子替换 dependencies 并在同一事务删除 checkpoint。 */
+  /** runtime_dependencies_update：原子替换 dependencies（提示词 / 工具 / manifest）。 */
   runtimeDependenciesUpdated: boolean
+  /**
+   * runtime_dependencies_update 是否同时作废 context checkpoint（压缩摘要 +
+   * 确定性账本）：由调用方声明。只有 Skill 冻结快照变化（reload）才为 true；
+   * 提示词 / 模型类替换保留 checkpoint，摘要与账本继续随会话存活。
+   */
+  invalidateCheckpoint: boolean
   journalEntryIds: string[]
   createdAt: number
 }
@@ -49,6 +55,7 @@ export const createSessionMutationRequest = (
   let reasoningJson: string | null | undefined
   let activeToolNames: string[] | undefined
   let runtimeDependenciesUpdated = false
+  let invalidateCheckpoint = false
 
   for (const event of batch.events) {
     if (event.type === 'session_message_append') {
@@ -70,6 +77,7 @@ export const createSessionMutationRequest = (
       activeToolNames = event.current.activeToolNames.slice()
     } else if (event.type === 'runtime_dependencies_update') {
       runtimeDependenciesUpdated = true
+      invalidateCheckpoint = event.invalidateCheckpoint
       systemPrompt = event.current.systemPrompt
       activeToolNames = event.current.activeToolNames.slice()
     }
@@ -98,6 +106,7 @@ export const createSessionMutationRequest = (
     ...(activeToolNames ? { activeToolNames } : {}),
     ...(runtimeManifest ? { runtimeManifestJson: JSON.stringify(runtimeManifest) } : {}),
     runtimeDependenciesUpdated,
+    invalidateCheckpoint,
     journalEntryIds: batch.journalEntryIds?.slice() ?? [],
     createdAt: batch.createdAt,
   }
@@ -121,6 +130,7 @@ export const createSessionMutationEffectIdentity = (
       ? undefined
       : JSON.parse(request.runtimeManifestJson),
     runtimeDependenciesUpdated: request.runtimeDependenciesUpdated,
+    invalidateCheckpoint: request.invalidateCheckpoint,
     journalEntryIds: request.journalEntryIds.slice().sort(),
   })
 }

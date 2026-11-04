@@ -1,4 +1,7 @@
 import { createId } from '@/agent/core/id'
+import { DEFAULT_AGENT_LIMITS } from '@/agent/core/types'
+import { decideTaskContinuation, taskPauseMessage } from './taskContinuation'
+import { createTaskSummary, readTaskSummary } from './taskSummary'
 import {
   assertMessagePersistable,
   convertBuiltInCustomMessage,
@@ -147,6 +150,8 @@ export interface AgentSessionOptions {
   activeToolNames?: string[]
   messages?: AgentMessage[]
   limits?: Partial<AgentLimits>
+  /** 分阶段接入开关；产品入口完成暂停 UI 前不默认启用。 */
+  autoContinueOnLimit?: boolean
   toolExecution?: ToolExecutionMode
   steeringMode?: QueueDeliveryMode
   asideMode?: QueueDeliveryMode
@@ -259,6 +264,7 @@ export class AgentSession {
   private readonly nextTurnQueue: MessageQueue
   private transport: ModelTransport
   private readonly limits?: Partial<AgentLimits>
+  private readonly autoContinueOnLimit: boolean
   private readonly toolExecution?: ToolExecutionMode
   private readonly beforeToolCall?: BeforeToolCall
   private readonly afterToolCall?: AfterToolCall
@@ -349,6 +355,7 @@ export class AgentSession {
     })
     this.transport = options.transport
     this.limits = options.limits
+    this.autoContinueOnLimit = options.autoContinueOnLimit ?? false
     this.toolExecution = options.toolExecution
     this.beforeToolCall = options.beforeToolCall
     this.afterToolCall = options.afterToolCall
@@ -544,12 +551,17 @@ export class AgentSession {
    * 原子替换 Runtime dependencies（systemPrompt + activeToolNames + manifest），
    * 生成唯一的 `runtime_dependencies_update` mutation event（对齐
    * docs/skills-extension.md §7.4）。即使 systemPrompt/activeToolNames 未变化，
-   * 只要 canonical manifest 不同也由调用方保证生成该事件；事件使当前 context
-   * checkpoint 失效（持久化侧随 batch 同事务删除，live 侧 reset）。
+   * 只要 canonical manifest 不同也由调用方保证生成该事件。
+   *
+   * `invalidateCheckpoint` 由调用方声明本次替换是否作废当前 context checkpoint
+   * （压缩摘要 + 确定性账本）：持久化侧随 batch 同事务删除，live 侧一并 reset。
+   * checkpoint 记录的是历史事实，只有 Skill 冻结快照变化（reload）才需要作废；
+   * 提示词 / 模型 / 访问模式类替换保留它，摘要与账本继续随会话存活。
    */
   async updateRuntimeDependencies(input: {
     previous: RuntimeDependenciesSnapshot
     current: RuntimeDependenciesSnapshot
+    invalidateCheckpoint: boolean
   }): Promise<void> {
     if (this.activeRun) throw new Error('Agent 运行期间不能原子替换 Runtime dependencies')
     const event: AgentMutationEvent = {
@@ -557,7 +569,7 @@ export class AgentSession {
       previous: input.previous,
       current: input.current,
       source: 'set',
-      invalidateCheckpoint: true,
+      invalidateCheckpoint: input.invalidateCheckpoint,
     }
     const apply = async (): Promise<void> => {
       const previous = this.context
@@ -571,7 +583,7 @@ export class AgentSession {
       if (!stablePrefixInputsEqual(previous, next, this.transport, this.transport)) {
         this.stablePrefixCache.invalidate()
       }
-      this.contextWindowManager.reset()
+      this.contextWindowManager.reset(input.invalidateCheckpoint)
       this.context.messages = this.contextWindowManager.buildProjection(this.historyMessages)
       await this.emitExternal(event)
     }
@@ -671,14 +683,17 @@ export class AgentSession {
     return this.startPromptRun(snapshotAgentMessages(messages))
   }
 
-  /** Continue without adding a user message. Used by retry/branch recovery only. */
+  /** 保留已有事实恢复；预算暂停允许从无悬空调用的 Assistant 边界继续。 */
   async continue(): Promise<AgentLoopResult> {
     if (this.historyMessages.length === 0) throw new Error('空会话不能直接继续生成')
     const lastModelMessage = [...this.context.messages]
       .reverse()
       .find((message) => message.role !== 'custom')
     if (!lastModelMessage) throw new Error('当前上下文没有可继续的模型消息')
-    if (lastModelMessage.role === 'assistant') {
+    const previousReason = this.lastRunResult?.reason ?? readTaskSummary(this.historyMessages)?.reason
+    const budgetPaused = previousReason && ['turn_limit', 'tool_limit', 'time_limit'].includes(previousReason)
+    if (lastModelMessage.role === 'assistant'
+      && (!budgetPaused || lastModelMessage.toolCalls.length > 0)) {
       throw new Error('不能从 Assistant 消息直接继续；普通继续请发送新的 User 消息，重试请先恢复到安全边界')
     }
     return this.startRun([])
@@ -1325,6 +1340,14 @@ export class AgentSession {
     // 父 run 累计 Explore ledger：本次 prompt 调用内所有 runAgentLoop 尝试（含 retry）
     // 共享同一绝对预算，run finally 后自然释放（闭包捕获，无外部引用）。
     const runLedger = createParentRunLedger()
+    let continuationCount = 0
+    const taskDurationMs = this.limits?.maxDurationMs ?? DEFAULT_AGENT_LIMITS.maxDurationMs
+    const seenResults = new Set<string>()
+    const taskUsage: NonNullable<AgentLoopResult['taskUsage']> = {
+      stages: 0, continuations: 0, turns: 0, toolCalls: 0,
+      tokenUsage: { inputTokens: 0, outputTokens: 0, billableTokens: 0, totalTokens: 0 },
+      elapsedMs: 0, continuationDecision: 'terminal',
+    }
 
     try {
       while (true) {
@@ -1333,7 +1356,11 @@ export class AgentSession {
         prompts,
         transport: this.transport,
         signal,
-        limits: this.limits,
+        stageBudget: this.autoContinueOnLimit,
+        priorBillableTokens: this.autoContinueOnLimit ? taskUsage.tokenUsage.billableTokens : 0,
+        limits: this.autoContinueOnLimit
+          ? { ...this.limits, maxDurationMs: Math.max(1, taskDurationMs - (Date.now() - promptStartedAt)) }
+          : this.limits,
         toolExecution: this.toolExecution,
         getInitialMessages,
         beforeToolCall: this.beforeToolCall,
@@ -1372,6 +1399,48 @@ export class AgentSession {
             checkpointId: this.contextWindowManager.currentCheckpoint?.id,
           })
         },
+        prepareRunEnd: this.autoContinueOnLimit ? (ending) => {
+          const result = ending
+          taskUsage.stages += 1
+          taskUsage.turns += result.turns
+          taskUsage.toolCalls += result.toolCalls
+          for (const key of ['inputTokens', 'outputTokens', 'billableTokens', 'totalTokens'] as const) {
+            taskUsage.tokenUsage[key] += result.tokenUsage[key]
+          }
+
+          const budgetRejectedIds = new Set(result.budgetRejectedToolCallIds ?? [])
+          let hasProgress = false
+          for (const message of result.newMessages) {
+            if (message.role !== 'tool' || message.isError || !message.content.trim()) continue
+            // 限定窗口大小，避免进展检测账本随大工具结果无限增长。
+            const fingerprint = JSON.stringify([message.toolName, message.content.slice(0, 2048), message.artifact])
+            if (seenResults.size < 512 && !seenResults.has(fingerprint)) hasProgress = true
+            if (seenResults.size < 512) seenResults.add(fingerprint)
+          }
+          taskUsage.continuationDecision = decideTaskContinuation({
+            reason: result.reason,
+            aborted: signal.aborted,
+            continuationCount,
+            elapsedMs: Date.now() - promptStartedAt,
+            maxDurationMs: taskDurationMs,
+            // 只豁免宿主明确登记的未执行调用；审批拒绝和真实工具错误仍暂停。
+            hasProgress: hasProgress && !result.newMessages.some((message) => message.role === 'tool'
+              && message.isError && !budgetRejectedIds.has(message.toolCallId)),
+          })
+          taskUsage.elapsedMs = Date.now() - promptStartedAt
+          if (signal.aborted) taskUsage.continuationDecision = 'cancelled'
+          const last = result.newMessages[result.newMessages.length - 1]
+          const hasTime = Date.now() - promptStartedAt < taskDurationMs
+          if (taskUsage.continuationDecision === 'continue'
+            || (hasTime && !signal.aborted && !overflowRecoveryAttempted && isOverflowAssistant(last))
+            || (hasTime && !signal.aborted && this.autoRetry.enabled && retryAttempt < this.autoRetry.maxRetries
+              && isSafeAutoRetryFailure(last))) return []
+          const interrupted = result.turns > 0 && (result.reason === 'time_limit' || result.reason === 'aborted')
+          return [
+            ...(interrupted ? [createTurnAbortedMessage(result.reason === 'time_limit' ? 'time-limit' : 'user-abort')] : []),
+            createTaskSummary({ ...result, taskUsage }),
+          ]
+        } : undefined,
         emit: (event) => this.emit(event),
         getTurnBoundaryMessages: async (runId) => this.drainTurnBoundaryQueues(runId),
         getFollowUpMessages: async (runId) => this.drainQueue(this.followUpQueue, 'follow-up', runId),
@@ -1388,11 +1457,32 @@ export class AgentSession {
         this.baseActiveToolNames = this.context.activeToolNames?.slice()
           ?? this.context.tools.map((tool) => tool.name)
         finalResult = result
-
-        const lastMessage = result.newMessages[result.newMessages.length - 1]
+        const settleStage = async () => {
+          if (!this.autoContinueOnLimit) return
+          await this.emit({ type: 'agent_stage_settled', savePoint: {
+            sessionId: this.id, runId: result.runId,
+            messageCount: this.historyMessages.length,
+            lastMessageId: this.historyMessages.at(-1)?.id,
+            checkpointId: this.contextWindowManager.currentCheckpoint?.id,
+            createdAt: Date.now(),
+          } })
+        }
+        const lastMessage = [...result.newMessages].reverse().find((message) => message.role !== 'custom')
         if (signal.aborted) break
+        if (this.autoContinueOnLimit && taskUsage.continuationDecision === 'continue') {
+          await settleStage()
+          if (signal.aborted) break
+          continuationCount += 1
+          taskUsage.continuations = continuationCount
+          this.acceptingQueuedMessages = true
+          prompts = []
+          continue
+        }
 
-        if (!overflowRecoveryAttempted && isOverflowAssistant(lastMessage)) {
+        if (!overflowRecoveryAttempted && isOverflowAssistant(lastMessage)
+          && (!this.autoContinueOnLimit || Date.now() - promptStartedAt < taskDurationMs)) {
+          await settleStage()
+          if (signal.aborted) break
           overflowRecoveryAttempted = true
           this.context = {
             ...this.context,
@@ -1405,12 +1495,16 @@ export class AgentSession {
 
         if (isSafeAutoRetryFailure(lastMessage)
           && this.autoRetry.enabled
-          && retryAttempt < this.autoRetry.maxRetries) {
+          && retryAttempt < this.autoRetry.maxRetries
+          && (!this.autoContinueOnLimit || Date.now() - promptStartedAt < taskDurationMs)) {
+          await settleStage()
+          if (signal.aborted) break
           retryAttempt += 1
           this.currentRetryAttempt = retryAttempt
           const delayMs = Math.min(
             this.autoRetry.maxDelayMs,
             this.autoRetry.baseDelayMs * 2 ** (retryAttempt - 1),
+            this.autoContinueOnLimit ? Math.max(0, taskDurationMs - (Date.now() - promptStartedAt)) : Infinity,
           )
           await this.emit({
             type: 'auto_retry_start',
@@ -1462,11 +1556,16 @@ export class AgentSession {
       this.retryWaiting = false
     }
 
+    if (this.autoContinueOnLimit) {
+      taskUsage.elapsedMs = Date.now() - promptStartedAt
+      if (signal.aborted) taskUsage.continuationDecision = 'cancelled'
+      finalResult = { ...finalResult, taskUsage: structuredClone(taskUsage) }
+    }
     this.lastRunResult = finalResult
     // 中断仪式：被中断/超时的 run 在历史尾部写入 turn-aborted 标记。必须在
     // savePoint/agent_settled 之前直接提交——标记计入 savePoint 边界，终态事件
     // 发出前已落库（先落库后终态）；空闲压缩也基于含标记的上下文评估。
-    await this.appendTurnAbortedMarkerIfInterrupted(finalResult)
+    if (!readTaskSummary(this.historyMessages)) await this.appendTurnAbortedMarkerIfInterrupted(finalResult)
     this.scheduleSpeculativeCompactionIfDue(finalResult, promptStartedAt)
     await this.onRuntimeCheckpoint?.('agent_end_before_settled')
     const lastMessage = this.historyMessages[this.historyMessages.length - 1]
@@ -1480,7 +1579,12 @@ export class AgentSession {
         : {}),
       createdAt: Date.now(),
     }
-    await this.emit({ type: 'agent_settled', savePoint: this.lastSavePoint })
+    await this.emit({
+      type: 'agent_settled', savePoint: this.lastSavePoint,
+      ...(this.autoContinueOnLimit
+        ? { taskPauseMessage: taskPauseMessage(taskUsage.continuationDecision) }
+        : {}),
+    })
     return finalResult
   }
 

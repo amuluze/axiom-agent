@@ -34,6 +34,7 @@ export type ProjectDocDiagnosticCode =
   | 'nested_directories_omitted'
   | 'nested_scan_truncated'
   | 'file_read_failed'
+  | 'archive_marker_invalid'
 
 export interface ProjectDocDiagnostic {
   code: ProjectDocDiagnosticCode
@@ -41,6 +42,11 @@ export interface ProjectDocDiagnostic {
   role: ProjectDocRole
   affectedCount: number
   reason?: AgentEnvironmentErrorCode
+  /**
+   * 逐文件定位信息——只有「哪一份文档的归档标记写法不对」这类诊断需要：
+   * 计数型诊断按 root 聚合即可复查，逐文件诊断必须指名道姓，否则用户无从修正。
+   */
+  paths?: string[]
 }
 
 export interface ProjectDocInventory {
@@ -186,6 +192,8 @@ interface CachedDocHead {
   verifiedAt: number
   title: string
   archived: boolean
+  /** 归档标记写法有误时的定位信息（null = 标记合法或不存在）。 */
+  invalidMarker: InvalidArchiveMarker | null
   revision: string
 }
 
@@ -261,6 +269,49 @@ export const extractArchived = (content: string, role: ProjectDocRole): boolean 
   return false
 }
 
+/**
+ * 归档标记写错时的诊断内容：命中的 `status:` 行原文 + 它本该被认作的值。
+ *
+ * 为什么需要它：归档标记是**手写**的 frontmatter（finish 阶段由模型写入），
+ * 不是代码生成的。写成 `Status: done`（键大小写）、`status: DONE`（值大小写）、
+ * `status: "done"`（带引号）时，{@link extractArchived} 一律判为「未归档」——
+ * 文档继续占用活跃索引配额并出现在 `<available_docs>` 里，而作者以为它已归档。
+ * 这是**静默失败**：没有任何信号提示标记没生效。
+ *
+ * 判定口径是「**意图是 done，但实际没被认作归档**」——不列举写法形态，
+ * 而是比较结果本身。故 `status:done`（无空格）不被误报：它确实会被归档。
+ * 非归档语义的取值（`in_progress` / `draft`）同样不在命中范围内。
+ */
+const ARCHIVE_MARKER_LINE = /^\s*status\s*:\s*(.*?)\s*$/iu
+
+export interface InvalidArchiveMarker {
+  /** 命中的原始行（供用户定位）。 */
+  line: string
+  /** 该行意图表达的状态值（去引号、去首尾空白后，小写比较）。 */
+  intended: string
+}
+
+export const detectInvalidArchiveMarker = (
+  content: string,
+  role: ProjectDocRole,
+): InvalidArchiveMarker | null => {
+  if (!ARCHIVABLE_ROLES.has(role)) return null
+  if (extractArchived(content, role)) return null
+  const lines = content.split('\n')
+  if (lines[0]?.trim() !== '---') return null
+  const end = lines.findIndex((line, index) => index > 0 && line.trim() === '---')
+  if (end === -1) return null
+  for (let index = 1; index < end; index += 1) {
+    const raw = lines[index] ?? ''
+    const match = ARCHIVE_MARKER_LINE.exec(raw)
+    if (!match) continue
+    const intended = (match[1] ?? '').replace(/^['"]|['"]$/gu, '').trim()
+    if (intended.toLowerCase() !== ARCHIVED_STATUS_VALUE) continue
+    return { line: raw.trim(), intended }
+  }
+  return null
+}
+
 const readHead = async (
   workspace: AgentEnvironment['workspace'],
   candidate: DocFileCandidate,
@@ -269,6 +320,7 @@ const readHead = async (
 ): Promise<{
   entry: ProjectDocEntry | null
   archived: boolean
+  invalidMarker: InvalidArchiveMarker | null
   failureReason?: AgentEnvironmentErrorCode
 }> => {
   const cacheKey = candidate.modifiedMs === undefined
@@ -290,12 +342,14 @@ const readHead = async (
         revision: cached.revision,
       },
       archived: cached.archived,
+      invalidMarker: cached.invalidMarker,
     }
   }
   try {
     const read = await workspace.readText(candidate.relativePath, 1, TITLE_READ_LINES)
     const title = extractTitle(read.content, fallback)
     const archived = extractArchived(read.content, role)
+    const invalidMarker = detectInvalidArchiveMarker(read.content, role)
     if (cacheKey && candidate.modifiedMs !== undefined) {
       if (revisionCache.size >= MAX_REVISION_CACHE_ENTRIES) revisionCache.clear()
       revisionCache.set(cacheKey, {
@@ -304,6 +358,7 @@ const readHead = async (
         verifiedAt: Date.now(),
         title,
         archived,
+        invalidMarker,
         revision: read.sha256,
       })
     }
@@ -315,6 +370,7 @@ const readHead = async (
         revision: read.sha256,
       },
       archived,
+      invalidMarker,
     }
   } catch (error) {
     if (cacheKey) revisionCache.delete(cacheKey)
@@ -325,6 +381,7 @@ const readHead = async (
     return {
       entry: null,
       archived: false,
+      invalidMarker: null,
       failureReason: reason === 'not_found' ? undefined : reason,
     }
   }
@@ -590,6 +647,7 @@ export const scanProjectDocs = async (
   // 读头结果按扫描序下标回填：并发读取的完成顺序不得影响索引输出顺序。
   const headResults = new Array<{ entry: ProjectDocEntry; archived: boolean } | undefined>(pendingFiles.length)
   const readFailureReasons = new Array<AgentEnvironmentErrorCode | undefined>(pendingFiles.length)
+  const invalidMarkers = new Array<InvalidArchiveMarker | null>(pendingFiles.length)
   let cursor = 0
   const worker = async (): Promise<void> => {
     while (cursor < pendingFiles.length) {
@@ -598,13 +656,14 @@ export const scanProjectDocs = async (
       const pending = pendingFiles[index]
       if (!pending) continue
       const { relativePath, role } = pending
-      const { entry, archived, failureReason } = await readHead(
+      const { entry, archived, invalidMarker, failureReason } = await readHead(
         environment.workspace,
         pending,
         fileStem(relativePath),
         role,
       )
       readFailureReasons[index] = failureReason
+      invalidMarkers[index] = invalidMarker
       if (entry) headResults[index] = { entry, archived }
     }
   }
@@ -655,6 +714,28 @@ export const scanProjectDocs = async (
         })
   }
   diagnostics.push(...readFailures.values())
+  // 归档标记写错逐文件报告：这类失败不改变索引内容（文档照旧活跃），但作者
+  // 以为它已归档——必须指名道姓，否则「静默不生效」无人察觉。
+  const invalidMarkerByRoot = new Map<string, string[]>()
+  for (const [index, marker] of invalidMarkers.entries()) {
+    if (!marker) continue
+    const pending = pendingFiles[index]
+    if (!pending) continue
+    const paths = invalidMarkerByRoot.get(pending.root) ?? []
+    paths.push(`${pending.relativePath}（${marker.line}）`)
+    invalidMarkerByRoot.set(pending.root, paths)
+  }
+  for (const { dir: root, role } of scannedRoots) {
+    const paths = invalidMarkerByRoot.get(root)
+    if (!paths || paths.length === 0) continue
+    diagnostics.push({
+      code: 'archive_marker_invalid',
+      root,
+      role,
+      affectedCount: paths.length,
+      paths,
+    })
+  }
   const truncatedEntryCount = diagnostics
     .filter((item) => item.code === 'root_entry_limit')
     .reduce((total, item) => total + item.affectedCount, 0)
@@ -707,6 +788,7 @@ const projectDocInventoryMetadataEqual = (
       && diagnostic.role === other.role
       && diagnostic.affectedCount === other.affectedCount
       && diagnostic.reason === other.reason
+      && (diagnostic.paths?.join('\u0000') ?? '') === (other.paths?.join('\u0000') ?? '')
   })) return false
   return left.entries.every((entry, index) => {
     const other = right.entries[index]

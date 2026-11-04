@@ -23,17 +23,6 @@ import { buildSessionBlocks, type SessionBlock } from '@/components/session/mess
 import { getBranchMessageActions, type BranchMessageAction } from '@/agent/session/branch'
 import type { AssistantMessage, ImageContentBlock } from '@/agent/core/types'
 
-interface OutputScrollMetrics {
-  clientHeight: number
-  scrollHeight: number
-  scrollTop: number
-}
-
-export const shouldStickToOutput = (
-  metrics: OutputScrollMetrics,
-  threshold = 96,
-): boolean => metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight <= threshold
-
 /**
  * 消息操作行的角色维度：设计稿只定义用户消息（xBpxw）与 Agent 消息（sNxPn）
  * 两种操作集，工具调用卡与结果块不带操作行。
@@ -224,7 +213,7 @@ export const SessionMessageStream = ({ scrollResetKey }: { scrollResetKey?: stri
   const setSummaryRequest = preview?.setSummaryRequest ?? storeSetSummaryRequest
   const setMessageEditRequest = preview?.setMessageEditRequest ?? storeSetMessageEditRequest
   const messagesRef = useRef<HTMLDivElement | null>(null)
-  const outputAnchorRef = useRef<HTMLDivElement | null>(null)
+  const columnRef = useRef<HTMLDivElement | null>(null)
   const storeStreamingDraft = useAgentStore((state) => state.streamingDraft)
   const streamingDraft = preview ? preview.streamingDraft ?? null : storeStreamingDraft
   const blocks = useMemo(
@@ -232,14 +221,15 @@ export const SessionMessageStream = ({ scrollResetKey }: { scrollResetKey?: stri
     [contextCheckpoint, messages],
   )
   const busy = running || sessionBusy
-  const showPaused = !['completed', 'error'].includes(endReason ?? '') && messages.length > 0 && endReason === 'stopped'
+  const showPaused = !busy && messages.length > 0
+    && ['stopped', 'turn_limit', 'tool_limit', 'time_limit'].includes(endReason ?? '')
 
-  // IO 监听 anchor 决定贴底状态；内容变化时由 hook 在 rAF 内
-  // 直接写 scrollTop = scrollHeight（不再走 scrollIntoView）。
+  // 贴底跟随：内容高度变化（流式文本延迟提交、图片撑高）由 hook 内的
+  // ResizeObserver 覆盖，用户向上滚动才停止跟随。
   // streamingDraft 变化也触发贴底尝试（不依赖 messages 引用变化）。
   useStickyScroll({
     containerRef: messagesRef,
-    anchorRef: outputAnchorRef,
+    contentRef: columnRef,
     scrollTrigger: [messages, streamingDraft] as const,
     resetKey: scrollResetKey === undefined ? activeSessionId : scrollResetKey,
   })
@@ -290,13 +280,12 @@ export const SessionMessageStream = ({ scrollResetKey }: { scrollResetKey?: stri
         className="session__messages"
         ref={messagesRef}
       >
-        <div className="session__column">
+        <div className="session__column" ref={columnRef}>
           {historyNodes}
           {streamingDraft && <StreamingMessage draft={streamingDraft} />}
           {showPaused && <PausedBanner />}
           <ApprovalCard />
           <BackgroundApprovals />
-          <div aria-hidden="true" className="session__output-anchor" ref={outputAnchorRef} />
         </div>
       </div>
       {error && (

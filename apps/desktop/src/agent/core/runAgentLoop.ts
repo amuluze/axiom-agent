@@ -109,12 +109,17 @@ export interface PendingAgentLoopMutationBatch {
 }
 
 export interface RunAgentLoopOptions {
+  /** 在 Run 终结前生成宿主结算消息，仍走正常消息持久化屏障。 */
+  prepareRunEnd?: (result: AgentLoopResult) => AgentMessage[]
   context: AgentContext
   prompts: AgentMessage[]
   transport: ModelTransport
   emit?: AgentEventSink
   signal?: AbortSignal
   limits?: Partial<AgentLimits>
+  /** 阶段预算只要求交接，最终保护仍由会话层决定。 */
+  stageBudget?: boolean
+  priorBillableTokens?: number
   toolExecution?: ToolExecutionMode
   getInitialMessages?: (runId: string) => Promise<AgentMessage[]>
   getTurnBoundaryMessages?: (runId: string) => Promise<AgentMessage[]>
@@ -234,6 +239,7 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
     totalTokens: 0,
   }
   const runId = createId('run')
+  const budgetRejectedToolCallIds: string[] = []
   const controller = new AbortController()
   const runStartedAt = Date.now()
   let timeLimitReached = false
@@ -549,7 +555,10 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
       pendingMessages = []
 
       // 预算提示注入（纯函数，见 turnHelpers.ts）：按轮次/工具调用/token 累计量生成软/硬提醒。
-      const budgetNotices = buildBudgetNotices(turns, toolCalls, limits, budgetThresholds, tokenUsage)
+      const budgetNotices = buildBudgetNotices(turns, toolCalls, limits, budgetThresholds, {
+        ...tokenUsage,
+        billableTokens: tokenUsage.billableTokens + (options.priorBillableTokens ?? 0),
+      }, options.stageBudget)
       const budgetAwareSystemPrompt = appendBudgetNoticesToSystemPrompt(
         temporarySystemPrompt ?? context.systemPrompt,
         [...budgetNotices, ...pendingStopCorrectionNotices],
@@ -597,6 +606,7 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
         let batch: ToolBatchResult
         const activeNames = new Set(activeToolsForContext(context).map((tool) => tool.name))
         if (toolCalls + calls.length > limits.maxToolCalls) {
+          budgetRejectedToolCallIds.push(...calls.map((call) => call.id))
           batch = await failToolCalls(
             calls,
             `未执行工具：达到最大工具调用数 ${limits.maxToolCalls}`,
@@ -848,6 +858,7 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
   }
 
   const result: AgentLoopResult = {
+    ...(budgetRejectedToolCallIds.length > 0 ? { budgetRejectedToolCallIds } : {}),
     runId,
     reason,
     messages: snapshotAgentMessages(context.messages),
@@ -861,6 +872,12 @@ export const runAgentLoop = async (options: RunAgentLoopOptions): Promise<AgentL
     transport,
   }
   await options.onUnconsumedMessages?.(snapshotAgentMessages(pendingMessages))
+  for (const message of options.prepareRunEnd?.(result) ?? []) {
+    await appendMessage(message)
+  }
+  result.messages = snapshotAgentMessages(context.messages)
+  result.newMessages = snapshotAgentMessages(newMessages)
+  result.context = snapshotContext(context)
   await emit({
     type: 'agent_end',
     sessionId: context.sessionId,

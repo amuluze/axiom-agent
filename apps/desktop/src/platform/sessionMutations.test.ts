@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 
 import type { AgentMutationBatch } from '@/agent/core/types'
+import type { RuntimeDependencyManifest } from '@/agent/runtime/runtimeDependencyManifest'
 import { createSessionMutationRequest } from '@/persistence/sessionMutationPayload'
 import { commitSessionMutationBatch } from './sessionMutations'
 
@@ -28,6 +29,34 @@ const idleReasoningBatch = (): AgentMutationBatch => ({
   createdAt: 1_700_000_000_000,
 })
 
+const runtimeManifest = (): RuntimeDependencyManifest => ({
+  schemaVersion: 4,
+  provider: {
+    providerId: 'test',
+    apiFormat: 'openai-compatible',
+    modelId: 'model',
+    transportVersion: '1',
+  },
+  tools: [{ name: 'read', version: '1', recoveryPolicy: 'never' }],
+  hooks: [],
+  skills: { schemaVersion: 1, skills: [] },
+})
+
+const dependenciesBatch = (invalidateCheckpoint: boolean): AgentMutationBatch => ({
+  id: 'mutation_dependencies_test',
+  sessionId: 'session_receipt_test',
+  events: [
+    {
+      type: 'runtime_dependencies_update',
+      previous: { systemPrompt: '旧提示词', activeToolNames: ['read'], runtimeManifest: runtimeManifest() },
+      current: { systemPrompt: '新提示词', activeToolNames: ['read'], runtimeManifest: runtimeManifest() },
+      source: 'set',
+      invalidateCheckpoint,
+    },
+  ],
+  createdAt: 1_700_000_000_000,
+})
+
 describe('createSessionMutationRequest', () => {
   it('空闲 batch 的 request 编码缺省 runId/turn（无 Run ownership）', () => {
     const request = createSessionMutationRequest(idleReasoningBatch())
@@ -36,6 +65,21 @@ describe('createSessionMutationRequest', () => {
     expect(request.batchId).toBe('mutation_receipt_test')
     expect(request.eventCount).toBe(1)
     expect(request.reasoningUpdated).toBe(true)
+  })
+
+  it('依赖替换批次只发一个事件（Rust 侧按一次操作计数）', () => {
+    const request = createSessionMutationRequest(dependenciesBatch(false), runtimeManifest())
+    expect(request.eventCount).toBe(1)
+    expect(request.runtimeDependenciesUpdated).toBe(true)
+    expect(request.invalidateCheckpoint).toBe(false)
+    expect(request.systemPrompt).toBe('新提示词')
+    expect(request.activeToolNames).toEqual(['read'])
+    expect(request.runtimeManifestJson).toBeDefined()
+  })
+
+  it('依赖替换批次把 checkpoint 作废意图透传到 wire（Skill reload 声明作废）', () => {
+    const request = createSessionMutationRequest(dependenciesBatch(true), runtimeManifest())
+    expect(request.invalidateCheckpoint).toBe(true)
   })
 })
 
