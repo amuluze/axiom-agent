@@ -174,8 +174,19 @@ jobs:
             echo "notarytool 第 $ATTEMPT 次失败，60s 后重试"
             sleep 60
           done
-          xcrun stapler staple "$DMG"
-          xcrun stapler validate "$DMG"
+          # staple 也要重试：它取回执时走 Apple 公证回执服务（CloudKit lookup），
+          # 与公证提交是两次独立网络交互——v0.7.6 实跑公证已 Accepted，staple 却因
+          # 回执拉取的网络中断（NSURLError -1005）失败，整 job 因此判红。
+          # 回执已在服务端受理，重试即可取回；三次仍失败才判红。
+          for ATTEMPT in 1 2 3; do
+            if xcrun stapler staple "$DMG" && xcrun stapler validate "$DMG"; then
+              echo "staple 成功（第 $ATTEMPT 次尝试）"
+              break
+            fi
+            [ "$ATTEMPT" = "3" ] && { echo 'stapler 三次尝试均失败' >&2; exit 1; }
+            echo "stapler 第 $ATTEMPT 次失败，60s 后重试"
+            sleep 60
+          done
       - name: 汇集 macOS 资产（命名与本地发布链一致：bundler x64 归一为 x86_64）
         run: |
           set -euo pipefail
