@@ -72,9 +72,11 @@ export const SpecCaseTableRow = ({ row, status }: { row: SpecCaseRow; status: Te
       <span className="testing-view__row-main">
         <strong>{row.name}</strong>
         <span>
-          {row.assertSummary
-            ? t('testing.cases.assertPrefix', { text: row.assertSummary })
-            : t('testing.cases.stepCount', { count: row.stepCount })}
+          {row.testPointTitles.length > 0
+            ? t('testing.cases.verifies', { titles: row.testPointTitles.join(' / ') })
+            : row.assertSummary
+              ? t('testing.cases.assertPrefix', { text: row.assertSummary })
+              : t('testing.cases.stepCount', { count: row.stepCount })}
         </span>
       </span>
       {/* 表头右侧是「判定」：状态胶囊必须落在最右列，类型标签前移——
@@ -125,7 +127,11 @@ export const TestingEmptyState = ({
         {error && <div role="alert" className="testing-view__error">{error}</div>}
         {hasWorkspace ? (
           <>
-            <p>{t('testing.empty.description')}</p>
+            <ol className="testing-view__empty-steps">
+              <li>{t('testing.empty.step1')}</li>
+              <li>{t('testing.empty.step2')}</li>
+              <li>{t('testing.empty.step3')}</li>
+            </ol>
             <form
               className="testing-view__empty-add"
               onSubmit={(event) => {

@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { commands, type SaveSessionCheckpointRequest } from './bindings'
 
-export const DATABASE_VERSION = 22
+export const DATABASE_VERSION = 23
 
 export type SessionRepositoryQuery =
   | 'sessions'

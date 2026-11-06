@@ -155,6 +155,21 @@ pub struct TestStepLeaseIssued {
     ttl_ms: u64,
 }
 
+/// 该 UI 步骤是否可以按受信环境放行（免逐次原生确认）。
+///
+/// 作用域来自**本次运行的目标授权**（`TestTargetGrants::trusted_origins`）：授权时按
+/// 环境记录算一次并冻结，因此放行边界绑定本次运行，且受陷渲染进程无法指定。
+/// 标签页 origin 必须落在该集合内，否则照旧逐次审批。
+fn ui_step_trusted(grants: &TestTargetGrants, request: &TestStepLeaseRequest) -> bool {
+    let Ok(target) = reqwest::Url::parse(&request.origin) else {
+        return false;
+    };
+    grants
+        .trusted_origins(&request.run_id)
+        .iter()
+        .any(|origin| crate::api_test_policy::same_api_origin(origin, &target))
+}
+
 /// 签发步骤租约。签发前重新校验授权：origin 以当前 URL 为准，tab 与工作区须仍在授权内。
 #[tauri::command]
 pub async fn issue_test_step_lease(
@@ -178,26 +193,31 @@ pub async fn issue_test_step_lease(
         let root = crate::workspace_access::authorized_root(&workspace)?;
         workspace.generation_for(&root)
     };
-    // 校验全部通过后再要求在场证明：失败的操作不应消耗用户的批准点击。
-    // macOS 消费原生手势配额；非 macOS 没有等价信号，降级为一次宿主原生确认
-    // 对话框——受陷渲染进程无法自动确认对话框，因此不能静默签发租约。
-    let confirmed = require_user_confirmation(
-        &app,
-        gesture.inner().as_ref(),
-        current_operating_system(),
-        None,
-        ContentConfirm {
-            title: "确认执行 UI 测试步骤",
-            message: format!(
-                "即将在浏览器标签页执行测试步骤：\n\n步骤：{}\n目标：{}\n\n确认执行？",
-                request.step_id, request.origin
-            ),
-            confirm_label: "允许执行",
-        },
-    )
-    .await?;
-    if !confirmed {
-        return Err("用户取消了该测试步骤".to_string());
+    // 受信环境（`approval_mode = trusted`）：标签页 origin 落在本次运行的目标授权
+    // 作用域内时免逐次原生确认。作用域之外照旧逐次审批。
+    let trusted = ui_step_trusted(&grants, &request);
+    if !trusted {
+        // 校验全部通过后再要求在场证明：失败的操作不应消耗用户的批准点击。
+        // macOS 消费原生手势配额；非 macOS 没有等价信号，降级为一次宿主原生确认
+        // 对话框——受陷渲染进程无法自动确认对话框，因此不能静默签发租约。
+        let confirmed = require_user_confirmation(
+            &app,
+            gesture.inner().as_ref(),
+            current_operating_system(),
+            None,
+            ContentConfirm {
+                title: "确认执行 UI 测试步骤",
+                message: format!(
+                    "即将在浏览器标签页执行测试步骤：\n\n步骤：{}\n目标：{}\n\n确认执行？",
+                    request.step_id, request.origin
+                ),
+                confirm_label: "允许执行",
+            },
+        )
+        .await?;
+        if !confirmed {
+            return Err("用户取消了该测试步骤".to_string());
+        }
     }
     let lease_id = leases.issue(&request, generation, Instant::now())?;
     Ok(TestStepLeaseIssued {

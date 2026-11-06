@@ -704,6 +704,11 @@
   white-space: nowrap;
 }
 
+.session__output-anchor {
+  width: 100%;
+  height: 1px;
+}
+
 .session__message-group {
   /* 组内块间距；操作行带高 = 消息块间距带（两处都被负外边距按名引用）。 */
   --message-group-gap: 8px;

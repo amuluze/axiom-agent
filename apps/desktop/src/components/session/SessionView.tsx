@@ -6,8 +6,11 @@
  */
 import { Composer } from '@/components/composer/Composer'
 import { SessionHeader } from '@/components/session/SessionHeader'
-import { SessionMessageStream } from '@/components/session/SessionMessageStream'
+import { SessionMessageStream, shouldStickToOutput } from '@/components/session/SessionMessageStream'
 import { useT } from '@/i18n'
+
+// 兼容既有导入路径（测试与潜在消费者从 SessionView 取该纯函数）。
+export { shouldStickToOutput }
 
 export const SessionView = () => {
   const { t } = useT()

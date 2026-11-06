@@ -56,6 +56,8 @@ const environment: TestEnvironmentRecord = {
   secretIdsJson: '[]',
   extraVarsJson: '{}',
   secretOriginsJson: '[]',
+  tlsTrust: 'system',
+  approvalMode: 'per_step',
   createdAt: 1,
   updatedAt: 2,
 }

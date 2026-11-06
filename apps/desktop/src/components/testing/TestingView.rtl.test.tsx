@@ -263,13 +263,13 @@ describe('TestingView run flow', () => {
       if (path === 'tests/api.testspec.json') {
         return {
           name: 'API 用例', version: 1,
-          cases: [{ id: 'api-case', name: 'API', type: 'api', stepCount: 1, assertCount: 0, assertSummary: null }],
+          cases: [{ id: 'api-case', name: 'API', type: 'api', stepCount: 1, assertCount: 0, testPointTitles: [], assertSummary: null }],
           assertCount: 0, uiCaseCount: 0, apiCaseCount: 1, mixedCaseCount: 0,
         }
       }
       return {
         name: '结算流程', version: 1,
-        cases: [{ id: 'case-one', name: '结算', type: 'ui', stepCount: 1, assertCount: 1, assertSummary: 'URL 包含 /checkout' }],
+        cases: [{ id: 'case-one', name: '结算', type: 'ui', stepCount: 1, assertCount: 1, testPointTitles: [], assertSummary: 'URL 包含 /checkout' }],
         assertCount: 1, uiCaseCount: 1, apiCaseCount: 0, mixedCaseCount: 0,
       }
     })
@@ -368,7 +368,7 @@ describe('TestingView run flow', () => {
     })
     render(<TestingView />)
 
-    const filter = await screen.findByRole('combobox', { name: '类型' })
+    const filter = await screen.findByRole('combobox', { name: '运行范围' })
     fireEvent.change(filter, { target: { value: 'api' } })
     // 切换到 API 用例：标题行 h1 显示 spec name，UI 用例被过滤后不再渲染
     expect(await screen.findByRole('heading', { level: 1, name: 'API 用例' })).toBeInTheDocument()
@@ -483,9 +483,46 @@ describe('TestingView run flow', () => {
     fireEvent.click(run)
 
     await waitFor(() => expect(mocks.runTestSuite).toHaveBeenCalled())
-    // 纯 API 用例不需要目标标签页。
+    // 纯 API 用例不需要目标标签页，也不展示无关的浏览器控件。
     expect(mocks.runTestSuite.mock.calls.at(-1)?.[0]).not.toHaveProperty('tab')
+    expect(screen.queryByRole('combobox', { name: '目标标签页' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '打开浏览器' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the browser target for a mixed suite when the selected file is API-only', async () => {
+    mocks.scanTestSpecs.mockResolvedValue([
+      {
+        path: 'tests/api.testspec.json',
+        valid: true,
+        id: 'api',
+        name: 'API 用例',
+        caseCount: 1,
+        stepCount: 1,
+        uiStepCount: 0,
+        apiStepCount: 1,
+        issues: [],
+      },
+      {
+        path: 'tests/ui.testspec.json',
+        valid: true,
+        id: 'ui',
+        name: 'UI 用例',
+        caseCount: 1,
+        stepCount: 1,
+        uiStepCount: 1,
+        apiStepCount: 0,
+        issues: [],
+      },
+    ])
+    render(<TestingView />)
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'API 用例' })).toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: '目标标签页' })).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('运行范围'), { target: { value: 'all' } })
+    // 选中文件仍是纯 API，但批次含 UI 文件：目标标签页必须按整个批次显示。
+    expect(screen.getByRole('heading', { level: 1, name: 'API 用例' })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: '目标标签页' })).toBeInTheDocument()
   })
 
   it('solidifies the source session trajectory and sends the draft to the target session', async () => {
@@ -562,6 +599,8 @@ describe('TestingView run flow', () => {
   it('sends a structured authoring instruction for the described feature', async () => {
     render(<TestingView />)
 
+    expect(screen.getByText('测试创作与产物核对').closest('details')).not.toHaveAttribute('open')
+    fireEvent.click(screen.getByText('测试创作与产物核对'))
     const input = await screen.findByLabelText(/要测的功能/)
     fireEvent.change(input, { target: { value: '优惠券叠加规则' } })
     fireEvent.click(screen.getByRole('button', { name: '发送给测试助手' }))
@@ -571,7 +610,7 @@ describe('TestingView run flow', () => {
     expect(sessionId).toBe('session-1')
     expect(instruction).toContain('- 功能：优惠券叠加规则')
     // 纪律与文件名都由这条消息承载：提示词里不放瞬时意图。
-    expect(instruction).toContain('load_skill({ name: "test-design" })')
+    expect(instruction).toContain('load_skill({ name: "test-authoring" })')
     expect(instruction).toContain('只写 tests/ 目录下的用例文件')
     expect(instruction).toMatch(/- 目标用例文件：tests\/[a-z0-9-]+\.testspec\.json/)
     expect(await screen.findByText(/已发送/)).toBeInTheDocument()
@@ -579,6 +618,7 @@ describe('TestingView run flow', () => {
 
   it('keeps the authoring send disabled until a feature is described', async () => {
     render(<TestingView />)
+    fireEvent.click(screen.getByText('测试创作与产物核对'))
     expect(await screen.findByRole('button', { name: '发送给测试助手' })).toBeDisabled()
   })
 
@@ -596,6 +636,7 @@ describe('TestingView run flow', () => {
     })
     render(<TestingView />)
 
+    fireEvent.click(screen.getByText('测试创作与产物核对'))
     fireEvent.click(await screen.findByRole('button', { name: '检查会话产物' }))
 
     await waitFor(() => expect(mocks.checkSessionTestArtifacts).toHaveBeenCalledWith({
@@ -681,9 +722,7 @@ describe('TestingView run flow', () => {
     render(<TestingView />)
 
     fireEvent.change(await screen.findByLabelText('运行范围'), { target: { value: 'all' } })
-    fireEvent.change(screen.getByLabelText('类型'), { target: { value: 'ui' } })
-    // 有 3 个用例文件时「重放」在两处（顶栏 + 用例详情），取顶栏那个。
-    const run = (await screen.findAllByRole('button', { name: '重放' }))[0]!
+    const run = await screen.findByRole('button', { name: '重放' })
     await waitFor(() => expect(run).not.toBeDisabled())
     fireEvent.click(run)
 
@@ -758,7 +797,7 @@ describe('TestingView run flow', () => {
     expect(published).toContain('tests/api.testspec.json')
     expect(published).toContain('tests/broken.testspec.json：$.version 不支持的版本，当前支持 1 / 2 / 3')
     expect(published).toContain('- 本地开发环境（本地（Axiom 起停），有起停配方）')
-    expect(published).toContain('test-design')
+    expect(published).toContain('test-authoring')
 
     unmount()
     await waitFor(() => expect(mocks.setTestingPromptContext.mock.calls.at(-1)?.[0]).toBeNull())
@@ -1159,4 +1198,5 @@ describe('TestingView run flow', () => {
       '覆盖：设计 2 · 执行 2 · 通过 1 · 未运行 0（需要修复 0 · 不适用 0）',
     )
   })
+
 })

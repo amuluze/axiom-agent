@@ -1,5 +1,6 @@
 import type { TestStepApprover } from '@/agent/testing/approval/testStepApprover'
 import { describeApiTestStepApproval } from '@/agent/testing/approval/testStepApproval'
+import { normalizeTestOrigin } from '@/agent/testing/environment/trustScope'
 import type { ApiTestDriver, StepOutcome } from '@/agent/testing/runner/runTestPlan'
 import type { ApiDriverStep, ExtractedTestValue } from '@/agent/testing/spec/types'
 import { invoke } from '@tauri-apps/api/core'
@@ -7,6 +8,17 @@ import { invoke } from '@tauri-apps/api/core'
 export interface ApiTestTarget {
   runId: string
   environmentId?: string
+}
+
+/**
+ * 驱动层选项。
+ *
+ * `trustedOrigins` 非空表示当前环境是受信档：列出的 origin 内的步骤免弹 WebView
+ * 审批卡。**权威判定在 Rust 侧**（`api_test::within_trusted_scope` 读 SQLite 的
+ * 环境记录），这里只是让界面与实际放行行为一致。
+ */
+export interface ApiTestDriverOptions {
+  trustedOrigins?: readonly string[]
 }
 
 interface ApiTestLeaseIssued {
@@ -95,19 +107,26 @@ export const runApiTestStepWithLease = async (
 export const createApiTestDriver = (
   target: ApiTestTarget,
   approver: TestStepApprover,
+  options: ApiTestDriverOptions = {},
 ): ApiTestDriver => ({
   runStep: async (step, context): Promise<StepOutcome> => {
     if (context.signal.aborted) return { verdict: 'canceled', message: '运行已停止' }
-    context.markWaitingApproval()
-    const approved = await approver.approve(
-      {
-        actor: { kind: 'testStep', testRunId: target.runId, stepId: step.id },
-        card: describeApiTestStepApproval(step),
-      },
-      context.signal,
-    )
-    if (context.signal.aborted) return { verdict: 'canceled', message: '运行已停止' }
-    if (!approved) return { verdict: 'rejected', message: '用户拒绝了本步骤' }
+    // 受信环境：目标落在环境声明的 origin 集合内时不弹 WebView 审批卡。
+    // **Rust 侧独立判定**（读 SQLite 的环境记录）——这里的跳过只是界面与之一致，
+    // 越界目标照样会被 Rust 的原生确认拦下。
+    const trusted = (options.trustedOrigins ?? []).includes(normalizeTestOrigin(step.url) ?? '')
+    if (!trusted) {
+      context.markWaitingApproval()
+      const approved = await approver.approve(
+        {
+          actor: { kind: 'testStep', testRunId: target.runId, stepId: step.id },
+          card: describeApiTestStepApproval(step),
+        },
+        context.signal,
+      )
+      if (context.signal.aborted) return { verdict: 'canceled', message: '运行已停止' }
+      if (!approved) return { verdict: 'rejected', message: '用户拒绝了本步骤' }
+    }
     context.markRunning()
     let result: ApiTestStepResult
     try {

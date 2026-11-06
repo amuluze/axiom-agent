@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { TestEnvironmentRecord } from '@/platform/testEnvironments'
 import { testEnvironmentRuntimeConfig } from './testEnvironmentRuntime'
 
 describe('testEnvironmentRuntimeConfig', () => {
@@ -17,6 +18,8 @@ describe('testEnvironmentRuntimeConfig', () => {
       secretIdsJson: '["apitest.token"]',
       extraVarsJson: '{}',
       secretOriginsJson: '[]',
+      tlsTrust: 'system',
+      approvalMode: 'per_step',
       createdAt: 1,
       updatedAt: 2,
     })).toEqual({
@@ -33,7 +36,11 @@ describe('testEnvironmentRuntimeConfig', () => {
         allowPrivateNetwork: true,
         headers: { 'X-Test': 'yes' },
         secretIds: ['apitest.token'],
+        tlsTrust: 'system',
+        approvalMode: 'per_step',
+        secretOrigins: [],
       },
+      trustedOrigins: [],
     })
   })
 
@@ -41,13 +48,21 @@ describe('testEnvironmentRuntimeConfig', () => {
     expect(testEnvironmentRuntimeConfig(undefined)).toEqual({
       values: {},
       targetOverrides: {},
-      api: { allowPrivateNetwork: false, headers: {}, secretIds: [] },
+      api: {
+        allowPrivateNetwork: false,
+        headers: {},
+        secretIds: [],
+        tlsTrust: 'system',
+        approvalMode: 'per_step',
+        secretOrigins: [],
+      },
+      trustedOrigins: [],
     })
   })
 })
 
 describe('testEnvironmentRuntimeConfig v2（自定义服务变量）', () => {
-  const record = {
+  const record: TestEnvironmentRecord = {
     id: 'env-v2',
     name: '多服务',
     kind: 'remote' as const,
@@ -61,6 +76,8 @@ describe('testEnvironmentRuntimeConfig v2（自定义服务变量）', () => {
     secretIdsJson: '[]',
     extraVarsJson: '{}',
     secretOriginsJson: '[]',
+    tlsTrust: 'system',
+    approvalMode: 'per_step',
     createdAt: 1,
     updatedAt: 2,
   }

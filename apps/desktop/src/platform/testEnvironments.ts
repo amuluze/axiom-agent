@@ -1,6 +1,10 @@
 import { invoke } from '@tauri-apps/api/core'
 import { commands } from './bindings'
-import type { EnvironmentMode } from '@/agent/testing/environment/environmentFile'
+import type {
+  EnvironmentApprovalMode,
+  EnvironmentMode,
+  EnvironmentTlsTrust,
+} from '@/agent/testing/environment/environmentFile'
 
 export interface TestEnvironmentRecord {
   id: string
@@ -19,6 +23,10 @@ export interface TestEnvironmentRecord {
   /** v21：环境档 v2 的自定义大写变量（多服务端点）与 Secret 目标白名单（JSON 文本）。 */
   extraVarsJson: string
   secretOriginsJson: string
+  /** v23：证书校验策略（`system` / `insecure`）。 */
+  tlsTrust: EnvironmentTlsTrust
+  /** v23：审批档（`per_step` / `trusted`）。 */
+  approvalMode: EnvironmentApprovalMode
   createdAt: number
   updatedAt: number
 }
@@ -39,6 +47,9 @@ export interface SaveTestEnvironmentRecord {
   /** v21：缺省保持旧记录语义（无额外变量、Secret 仍只发往 API Base URL 同源）。 */
   extraVarsJson?: string
   secretOriginsJson?: string
+  /** v23：缺省保持旧记录语义（系统信任 + 逐次审批）。 */
+  tlsTrust?: EnvironmentTlsTrust
+  approvalMode?: EnvironmentApprovalMode
   updatedAt: number
 }
 
@@ -56,7 +67,12 @@ export const saveTestEnvironmentRecord = (environment: SaveTestEnvironmentRecord
 
 export const listTestEnvironmentRecords = async (): Promise<TestEnvironmentRecord[]> => {
   const records = await commands.listTestEnvironmentRecords()
-  return records.map((record) => ({ ...record, kind: record.kind as EnvironmentMode }))
+  return records.map((record) => ({
+    ...record,
+    kind: record.kind as EnvironmentMode,
+    tlsTrust: record.tlsTrust as EnvironmentTlsTrust,
+    approvalMode: record.approvalMode as EnvironmentApprovalMode,
+  }))
 }
 
 export const deleteTestEnvironmentRecord = (environmentId: string): Promise<boolean> =>

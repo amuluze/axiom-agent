@@ -44,7 +44,7 @@ import type { BuiltinSkillOverrideEntry } from '@/config/builtinPromptOverrides'
  * v29：design skill 补 slots 插槽写法——随 .ax 格式 1.5（decl.slots 具名插槽契约）：
  * mode=component 详单新增 slots 段、节点 slot 内容归属 default 插槽且需声明契约、
  * 未声明插槽写内容解析即拒（zh/en 同步）。
- * v31：新增 test-design skill（第 8 个内置正文 Skill）——为指定功能编写可重放的
+ * v31：新增测试创作 skill（初名 test-design，v41 更名 test-authoring；第 8 个内置正文 Skill）——为指定功能编写可重放的
  * tests/*.testspec.json：先测试点（kind=new_feature|regression）再用例（verifies 追溯）、
  * 真实接口构造数据、typed 断言、原生接口清理，并列出禁止项（mock 造环境、只看返回码、
  * 固化 ref/tabId/坐标/宿主路径/Secret 明文、直接动被测库、顺手改产品源码、sleep 求绿、
@@ -56,13 +56,15 @@ import type { BuiltinSkillOverrideEntry } from '@/config/builtinPromptOverrides'
  * pattern 库 / tokens.css）改为「若存在」的可选输入，不再假定用户项目里有这些路径；
  * ② design 明确无 .axiom/design/components.json 时清单属于 Axiom 宿主注册表，只能
  * symbol/part/原语；③ token 基调改为 DESIGN.md → 项目 tokens → Axiom 基线三档；
- * ④ test-design 内联协议最小字段集（原「不复制字段」在无 Axiom 源码的项目里等于没字段）。
+ * ④ test-authoring 内联协议最小字段集（原「不复制字段」在无 Axiom 源码的项目里等于没字段）。
  */
 /** v34：design skill 的内置模式库补可离线使用的「结构骨架」（9 个 pattern 的 props + body 节点骨架），
  * 并明确 pattern 目录属于 Axiom 应用源码、在用户项目里不可读属正常——否则完整度清单的
  * 「重复结构优先用 pattern」在最需要它的地方（新项目）无路可走。
  */
-export const BUILTIN_SKILL_BODIES_VERSION = 40
+/** v41：内置测试创作 Skill 由 test-design 更名为 test-authoring（名称与测试页「写用例」及文档「测试创作」对齐；协议与正文语义不变）。 */
+/** v43：证据规则一致性修复——diagnose 有界复现且不提前改代码/提交，implement 测试豁免与 INCONCLUSIVE 出口一致，test-authoring 禁止为制造失败改产品源码且 verify 引用环境档，domain 修正步骤引用，design 探索证据进入收口。 */
+export const BUILTIN_SKILL_BODIES_VERSION = 43
 
 export type BuiltinPromptLanguage = ResolvedLanguage
 
@@ -94,17 +96,18 @@ export const BUILTIN_SKILL_BODIES: readonly BuiltinSkillBody[] = [
 
 - 用户围绕特定功能的需求描述。
 - <available_docs> 中 role="domain" 的既有 Domain Spec。
-- .specs/domain/spec-authoring.md（Spec 书写规范）：**若存在则先读**；新项目通常没有这份规范（它属于项目自己的资产），此时直接按本 Skill 执行步骤 4 的维度组织产出，不要因为规范缺失而停步，也不要在正文里引用不存在的规范文件。
+- .specs/domain/spec-authoring.md（Spec 书写规范）：**若存在则先读**；新项目通常没有这份规范（它属于项目自己的资产），此时直接按本 Skill 执行步骤 5 的维度组织产出，不要因为规范缺失而停步，也不要在正文里引用不存在的规范文件。
 - 相关 .docs/ 实现现状与代码（区分「长期约束」与「当前实现事实」）。
 
 # 执行步骤
 
-1. 若 .specs/domain/spec-authoring.md 存在则先读；不存在时跳过（新项目冷启动的常态），直接按第 4 步的维度组织。随后读既有 Domain Spec，确认目标功能的领域边界是否已有文档覆盖；撞名或重叠时修订既有文档或改用更具体的主题词，不改写他人文件。
+1. 若 .specs/domain/spec-authoring.md 存在则先读；不存在时跳过（新项目冷启动的常态），直接按第 5 步的维度组织。随后读既有 Domain Spec，确认目标功能的领域边界是否已有文档覆盖；撞名或重叠时修订既有文档或改用更具体的主题词，不改写他人文件。
 2. 用只读工具核实 .docs/ 与代码，区分「已确认的领域事实」「需用户拍板的领域规则」；能查证的不问用户。
-3. 只问仓库回答不了的问题：领域概念边界、规则与不变量取舍、错误与失败语义、非功能性约束；每次一个问题，附推荐与权衡，不把实现工作混进提问轮。
-4. 按 spec-authoring.md 组织 Domain Spec：核心概念、规则与不变量、状态模型、错误条件与失败语义、结果约束（安全/兼容/迁移等）。
-5. 每条关键约束必须可客观判定满足/不满足；只描述「系统应该做什么、允许/不允许发生什么」，避免具体文件路径（受管目录引用除外）、技术选型、执行步骤等「怎么实现」内容——实现指导下沉到 Plan。
-6. 文件名用小写短横线主题词（如 sandbox-policy），输出到 .specs/domain/<topic>.md；如已有同名文档，修订而非覆盖。
+3. 写长期约束前先追溯来源：它来自业务意图、事故、外部约束，还是当前实现的偶然？最后一种不写成 Domain Spec 不变量；如必须保留，标为实现事实而不是领域规则。
+4. 只问仓库回答不了的问题：领域概念边界、规则与不变量取舍、错误与失败语义、非功能性约束；每次一个问题，附推荐与权衡，不把实现工作混进提问轮。
+5. 按 spec-authoring.md 组织 Domain Spec：核心概念、规则与不变量、状态模型、错误条件与失败语义、结果约束（安全/兼容/迁移等）。
+6. 每条关键约束必须可客观判定满足/不满足；只描述「系统应该做什么、允许/不允许发生什么」，避免具体文件路径（受管目录引用除外）、技术选型、执行步骤等「怎么实现」内容——实现指导下沉到 Plan。数值阈值必须写清测量方法、limiter 和适用范围；无法解释的阈值标为待验证假设，不伪装成领域不变量。
+7. 文件名用小写短横线主题词（如 sandbox-policy），输出到 .specs/domain/<topic>.md；如已有同名文档，修订而非覆盖。
 
 # 产出物
 
@@ -128,17 +131,18 @@ The user explicitly asks to generate or extend a Domain Spec; or the requirement
 
 - The user's requirement description for the specific feature.
 - Existing Domain Specs with role="domain" in <available_docs>.
-- .specs/domain/spec-authoring.md (authoring conventions): **read it when present**. New projects usually lack it (it is the project's own asset) — then organize the document by step 4's dimensions instead of stopping or citing a file that does not exist.
+- .specs/domain/spec-authoring.md (authoring conventions): **read it when present**. New projects usually lack it (it is the project's own asset) — then organize the document by step 5's dimensions instead of stopping or citing a file that does not exist.
 - Relevant .docs/ implementation notes and code (separate "long-term constraints" from "current implementation facts").
 
 # Execution steps
 
-1. Read .specs/domain/spec-authoring.md when it exists; skip it otherwise (the cold-start norm for new projects) and organize by step 4's dimensions. Then read the existing Domain Specs; check whether the feature's domain boundary is already covered. On name collisions or overlap, revise the existing document or pick a more specific topic; never rewrite files owned by other documents.
+1. Read .specs/domain/spec-authoring.md when it exists; skip it otherwise (the cold-start norm for new projects) and organize by step 5's dimensions. Then read the existing Domain Specs; check whether the feature's domain boundary is already covered. On name collisions or overlap, revise the existing document or pick a more specific topic; never rewrite files owned by other documents.
 2. Verify .docs/ and code with read-only tools; separate "confirmed domain facts" from "domain rules the user must decide". Anything verifiable should not be asked of the user.
-3. Only ask what the repository cannot answer: domain concept boundaries, rule and invariant trade-offs, error and failure semantics, non-functional constraints. One question at a time with a recommendation and trade-offs; never mix implementation work into a questioning round.
-4. Organize the Domain Spec per spec-authoring.md: core concepts, rules and invariants, state model, error conditions and failure semantics, result constraints (security/compatibility/migration etc.).
-5. Every key constraint must be objectively decidable (met / not met); describe only "what the system must do and what may or may not happen". Avoid implementation content such as concrete file paths (except managed-directory references), technology choices and execution steps—implementation guidance belongs in the Plan.
-6. Use lowercase kebab-case topic words for the file name (e.g. sandbox-policy) and write to .specs/domain/<topic>.md; if a document with the same name exists, revise it instead of overwriting.
+3. Before writing a long-lived constraint, trace its source: business intent, an incident, an external constraint, or an accident of the current implementation? Never encode the last one as a Domain Spec invariant; when it must stay, mark it as an implementation fact rather than a domain rule.
+4. Only ask what the repository cannot answer: domain concept boundaries, rule and invariant trade-offs, error and failure semantics, non-functional constraints. One question at a time with a recommendation and trade-offs; never mix implementation work into a questioning round.
+5. Organize the Domain Spec per spec-authoring.md: core concepts, rules and invariants, state model, error conditions and failure semantics, result constraints (security/compatibility/migration etc.).
+6. Every key constraint must be objectively decidable (met / not met); describe only "what the system must do and what may or may not happen". Avoid implementation content such as concrete file paths (except managed-directory references), technology choices and execution steps—implementation guidance belongs in the Plan. Numeric thresholds must state the measurement method, limiter and applicable range; a threshold you cannot explain is a hypothesis, not a domain invariant.
+7. Use lowercase kebab-case topic words for the file name (e.g. sandbox-policy) and write to .specs/domain/<topic>.md; if a document with the same name exists, revise it instead of overwriting.
 
 # Outputs
 
@@ -169,12 +173,14 @@ The Domain Spec fits the constraint space defined by spec-authoring.md, every ke
 
 # 执行步骤
 
-1. 先做证据收集：读相关 Domain Spec、.docs/ 与代码，区分「已确认的事实」「仍需用户拍板的产品意图」「范围/风险决策」「大概率不在范围内」。
-2. 若事实已能从仓库查证，就不要向用户提问；只问产品意图、偏好、范围边界、风险容忍度这类仓库回答不了的问题。
-3. 每次只问一个最高价值的问题，附上你的推荐与权衡，然后停下等回答；不把实现工作混进提问轮。
-4. 逐步把结论落进 .specs/tasks/ 的 Task Spec：目标、范围、验收标准（每条必须可客观判定满足/不满足）、边界与失败语义、排除项。task-id 用小写短横线主题词（如 fix-login-timeout）；同一任务的 Plan（.plans/<task-id>.md）与后续引用复用同一 id，与既有 Spec 撞名时改用更具体的 id、不改写他人文件。
-5. 若需求触及长期不变量或业务边界，同步修订 .specs/domain/ 的 Domain Spec，并让 Task Spec 引用它，而不是在 Task Spec 里重复发明领域规则。
-6. 收敛到无未决产品决策后，产出最终 Task Spec 并停止。
+1. 先复述：用三句话写清目标、要解决的问题、预期的最小改动。不要等确认，先复述再提问；复述暴露误读时先纠正，再进入证据收集。
+2. 先做证据收集：读相关 Domain Spec、.docs/ 与代码，区分「已确认的事实」「仍需用户拍板的产品意图」「范围/风险决策」「大概率不在范围内」。
+3. 若事实已能从仓库查证，就不要向用户提问；只问产品意图、偏好、范围边界、风险容忍度这类仓库回答不了的问题。
+4. 每次只问一个最高价值的问题，附上你的推荐与权衡，然后停下等回答；不把实现工作混进提问轮。
+5. 逐步把结论落进 .specs/tasks/ 的 Task Spec：目标、范围、验收标准（每条必须可客观判定满足/不满足）、边界与失败语义、排除项。task-id 用小写短横线主题词（如 fix-login-timeout）；同一任务的 Plan（.plans/<task-id>.md）与后续引用复用同一 id，与既有 Spec 撞名时改用更具体的 id、不改写他人文件。
+6. 验收草稿用四问自检：这个领域的专家会多做哪一步，而用户没要求？他们会从什么最原始的材料开始？他们会用什么具体方法或工具？除了你我，什么能证明结果是对的？只把答案落进验收标准或验证动作，不扩大范围。
+7. 若需求触及长期不变量或业务边界，同步修订 .specs/domain/ 的 Domain Spec，并让 Task Spec 引用它，而不是在 Task Spec 里重复发明领域规则。
+8. 收敛到无未决产品决策后，产出最终 Task Spec 并停止。
 
 # 产出物
 
@@ -203,12 +209,14 @@ New features, complex refactors, or requirements with unclear boundaries where "
 
 # Execution steps
 
-1. Gather evidence first: read the relevant Domain Specs, .docs/ and code; separate "confirmed facts", "product intent still requiring the user's decision", "scope/risk decisions", and "most likely out of scope".
-2. If a fact can be verified from the repository, do not ask the user; only ask about product intent, preferences, scope boundaries and risk tolerance—the questions a repository cannot answer.
-3. Ask exactly one highest-value question at a time with your recommendation and trade-offs, then stop and wait for the answer; never mix implementation work into a questioning round.
-4. Gradually land conclusions into the Task Spec under .specs/tasks/: goal, scope, acceptance criteria (each objectively decidable as met / not met), boundary and failure semantics, exclusions. Use lowercase kebab-case topic words for the task-id (e.g. fix-login-timeout); the Plan (.plans/<task-id>.md) and later references of the same task reuse the same id; on name collisions with existing Specs use a more specific id and never rewrite files owned by others.
-5. If the requirement touches long-lived invariants or business boundaries, revise the Domain Spec under .specs/domain/ in sync and have the Task Spec reference it, instead of re-inventing domain rules inside the Task Spec.
-6. Once no pending product decisions remain, produce the final Task Spec and stop.
+1. Restate first: state the goal, the problem and the expected smallest change in three sentences. Do not wait for confirmation; restate before asking. When the restatement exposes a misread, correct it before gathering evidence.
+2. Gather evidence first: read the relevant Domain Specs, .docs/ and code; separate "confirmed facts", "product intent still requiring the user's decision", "scope/risk decisions", and "most likely out of scope".
+3. If a fact can be verified from the repository, do not ask the user; only ask about product intent, preferences, scope boundaries and risk tolerance—the questions a repository cannot answer.
+4. Ask exactly one highest-value question at a time with your recommendation and trade-offs, then stop and wait for the answer; never mix implementation work into a questioning round.
+5. Gradually land conclusions into the Task Spec under .specs/tasks/: goal, scope, acceptance criteria (each objectively decidable as met / not met), boundary and failure semantics, exclusions. Use lowercase kebab-case topic words for the task-id (e.g. fix-login-timeout); the Plan (.plans/<task-id>.md) and later references of the same task reuse the same id; on name collisions with existing Specs use a more specific id and never rewrite files owned by others.
+6. Self-check the acceptance draft with four questions: what would a domain expert do that the user did not ask for? What rawest material would they start from? Which concrete methods or tools would they use? Apart from you and the user, what proves the result is right? Fold only the answers into acceptance or verification actions; do not expand scope.
+7. If the requirement touches long-lived invariants or business boundaries, revise the Domain Spec under .specs/domain/ in sync and have the Task Spec reference it, instead of re-inventing domain rules inside the Task Spec.
+8. Once no pending product decisions remain, produce the final Task Spec and stop.
 
 # Outputs
 
@@ -240,19 +248,23 @@ The Task Spec is complete with every acceptance criterion verifiable, and the Do
 
 # 执行步骤
 
-1. 复现：用只读工具（read/grep/find）确认现象可稳定复现，记录复现条件；若会话已授予命令执行能力，必要时运行相关测试辅助复现。
-2. 根因分析：沿调用链定位根因，说明「为什么错」而不只是「哪里错」；对照 Domain Spec 判断是否违反了既有不变量。
-3. 若根因暴露 Domain Spec 的结构性缺口（而非实现 bug），先在 .specs/domain/ 补约束，再让修复 Task Spec 引用它。
-4. 生成修复 Task Spec：目标（修复什么）、范围（只动必要的代码）、验收（用哪个测试/观测锁死修复）、回归风险。task-id 约定同 brainstorm（小写短横线主题词，撞名改用更具体的 id）。
+1. 在匹配表面复现：UI 走真实页面，CLI 跑真实命令，API 发真实请求。不能直接复现时，按候选假设合成触发条件、收紧条件或加插桩，并记录每轮观察；重复尝试已不再产生能区分假设的新信息时，停止复现循环，写明已尝试路径与最接近的可执行检查，不伪造证据。若会话已授予命令执行能力，用相关测试或命令辅助复现。
+2. 二分假设：列出候选机制，每轮选择能最大削减问题空间的观测；拿到运行证据后再排除。不要从最可疑的代码位置直接改。
+3. 若两个修复共享同一前提且都失败，停下：写下前提，找一个「前提为假就会不同」的观测，先测前提。
+4. 根因分析：沿调用链定位根因，说明「为什么错」而不只是「哪里错」；对照 Domain Spec 判断是否违反了既有不变量。小 diff 高风险时，找出「为什么安全」的唯一事实，并用脚本或测试运行证明；证明不了就标 unproven。
+5. 若根因暴露 Domain Spec 的结构性缺口（而非实现 bug），先在 .specs/domain/ 补约束，再让修复 Task Spec 引用它。
+6. 修复前保留可重跑的失败复现：能写成测试时，在修复 Task Spec 中记录测试位置、输入与预期失败断言，交由 implement 按 RED→GREEN 落地；本阶段不修改产品或测试代码、不提交 git。不能写成测试时保留可重跑命令、输入与输出。生成修复 Task Spec：目标、范围、验收（引用失败证据）、回归风险。task-id 约定同 brainstorm（小写短横线主题词，撞名改用更具体的 id）。
 
 # 产出物
 
+- 复现证据（命令/测试/日志/截图路径）。
 - .specs/tasks/<task-id>.md（修复 Task Spec）。
+- 修复 Task Spec 的验收引用失败复现；无法复现时写明原因与最接近的可执行检查。
 - 视情况修订 .specs/domain/*.md。
 
 # 退出条件
 
-根因明确、修复 Task Spec 完整且可验证。之后由主 Agent 决定调用 inspect_subagent 审查；不通过则回到本 Skill 继续完善。`,
+根因明确、修复 Task Spec 完整且可验证；未复现或根因未证实必须显式标为待验证，不得宣称已定位。之后由主 Agent 决定调用 inspect_subagent 审查；不通过则回到本 Skill 继续完善。`,
     },
     en: {
       description: 'Reproduce the problem, locate the root cause, and produce a fix Task Spec (with Domain Spec sync).',
@@ -272,19 +284,23 @@ Complex fixes: symptoms clear but root cause unknown, possibly involving cross-l
 
 # Execution steps
 
-1. Reproduce: use read-only tools (read/grep/find) to confirm the symptom reproduces stably and record the reproduction conditions; if the session has command execution granted, run the relevant tests to help reproduce when necessary.
-2. Root-cause analysis: trace the call chain to the root cause; explain "why it is wrong", not just "where it is wrong"; check against the Domain Spec whether an existing invariant was violated.
-3. If the root cause exposes a structural gap in the Domain Spec (rather than an implementation bug), add the constraint under .specs/domain/ first, then have the fix Task Spec reference it.
-4. Produce the fix Task Spec: goal (what is fixed), scope (only the necessary code), acceptance (which test/observation locks the fix down), regression risk. Follow the brainstorm task-id convention (lowercase kebab-case topic words; on collisions use a more specific id).
+1. Reproduce on the matching surface: UI on the real page, CLI with the real command, API with a real request. When direct reproduction fails, synthesize the trigger, tighten conditions or add instrumentation according to the candidate hypotheses, recording each observation. Stop the reproduction loop when repeated attempts no longer yield new information that distinguishes hypotheses; state what was tried and the closest executable check, and never fabricate evidence. If the session has command execution granted, use the relevant tests or commands to help reproduce.
+2. Binary-search the hypotheses: list candidate mechanisms; each round pick the observation that cuts the most remaining problem space; eliminate only after runtime evidence. Do not start from the most suspicious code location.
+3. When two fixes share one premise and both fail, stop: write the premise down and make an observation that would differ if the premise were false; test the premise first.
+4. Root-cause analysis: trace the call chain to the root cause; explain "why it is wrong", not just "where it is wrong"; check against the Domain Spec whether an existing invariant was violated. For a small but risky diff, identify the one safety fact and prove it by running code; mark it unproven when you cannot.
+5. If the root cause exposes a structural gap in the Domain Spec (rather than an implementation bug), add the constraint under .specs/domain/ first, then have the fix Task Spec reference it.
+6. Preserve a rerunnable failing reproduction before the fix: when it can become a test, record its location, inputs and expected failing assertion in the fix Task Spec for implement to land through RED→GREEN; do not modify product or test code and do not commit to git in this phase. Otherwise keep the rerunnable command, input and output. Produce the fix Task Spec: goal, scope, acceptance (referencing the failure evidence), regression risk. Follow the brainstorm task-id convention (lowercase kebab-case topic words; on collisions use a more specific id).
 
 # Outputs
 
+- Reproduction evidence (command/test/log/screenshot path).
 - .specs/tasks/<task-id>.md (fix Task Spec).
+- The fix Task Spec acceptance references the failing reproduction; when reproduction is impossible, state why and name the closest executable check.
 - Revised .specs/domain/*.md when applicable.
 
 # Exit criteria
 
-The root cause is clear and the fix Task Spec is complete and verifiable. Afterwards the main Agent decides to call inspect_subagent for review; if it fails, return to this Skill and keep refining.`,
+The root cause is clear and the fix Task Spec is complete and verifiable; an unreproduced symptom or unproven root cause must be explicitly marked as pending verification, never as located. Afterwards the main Agent decides to call inspect_subagent for review; if it fails, return to this Skill and keep refining.`,
     },
   },
   {
@@ -306,10 +322,12 @@ Task Spec 已通过审查（inspect_subagent 通过）之后、编码之前。
 
 # 执行步骤
 
-1. 逐条映射 Task Spec 的验收标准到具体实施步骤与验证动作（每个验收都能回答「由哪个改动 + 哪个测试/命令锁死」）。
-2. 拆解实施步骤，说明顺序与依赖；标注关键风险与回滚/幂等语义。
-3. 明确技术选型与边界，优先复用项目现有约定与已验证组件，不引入无必要的抽象。
-4. 若实施路径发现 Task Spec 或 Domain Spec 有歧义/冲突，停下并回报，不擅自改写 Spec。
+1. 设计闸门：改动跨函数、模块或服务边界时，先写调用方用法，再写类型、签名、模块图；有多个合理形状时列 2 个并说明取舍。开放问题用原型验证，计划记录观察结果，不写「待定」。
+2. 逐条映射 Task Spec 的验收标准到：证据类型（unit/live/perf）、验证命令或路径、通过判据。行为改动不能只有 unit 证据；没有 live 证据的验收标为「未覆盖」；性能验收写基线、测量方式和阈值来源。
+3. 拆解实施步骤，说明顺序与依赖；风险最高或未知最多的步骤先做；标注关键风险与回滚/幂等语义。
+4. 明确技术选型与边界，优先复用项目现有约定与已验证组件，不引入无必要的抽象。
+5. 计划自检：每条验收都有证据；每个步骤都有检查；没有 Spec 依据的抽象或兼容层不进入计划。
+6. 若实施路径发现 Task Spec 或 Domain Spec 有歧义/冲突，停下并回报，不擅自改写 Spec。
 
 # 产出物
 
@@ -336,10 +354,12 @@ After the Task Spec has passed review (inspect_subagent passed), before coding.
 
 # Execution steps
 
-1. Map each acceptance criterion of the Task Spec to concrete implementation steps and verification actions (every acceptance must answer "which change + which test/command locks it down").
-2. Decompose the implementation steps with ordering and dependencies; flag key risks and rollback/idempotency semantics.
-3. Make technology choices and boundaries explicit; prefer reusing the project's existing conventions and proven components; introduce no unnecessary abstraction.
-4. If the implementation path reveals ambiguity or conflicts in the Task Spec or Domain Spec, stop and report back; never rewrite Specs on your own authority.
+1. Design gate: when the change crosses a function, module or service boundary, write the caller's usage first, then the types, signatures and module map; when several shapes are valid, list two and state the trade-off. Settle open questions with prototypes and record the observed result in the Plan instead of "TBD".
+2. Map each acceptance criterion of the Task Spec to: evidence kind (unit/live/perf), verification command or path, and pass predicate. A behavior change cannot rely on unit evidence alone; an acceptance without live evidence is marked "not covered"; performance acceptance states its baseline, measurement method and threshold source.
+3. Decompose the implementation steps with ordering and dependencies; do the riskiest or most unknown step first; flag key risks and rollback/idempotency semantics.
+4. Make technology choices and boundaries explicit; prefer reusing the project's existing conventions and proven components; introduce no unnecessary abstraction.
+5. Plan self-check: every acceptance has evidence; every step has a check; abstractions or compatibility layers without a Spec basis do not enter the Plan.
+6. If the implementation path reveals ambiguity or conflicts in the Task Spec or Domain Spec, stop and report back; never rewrite Specs on your own authority.
 
 # Outputs
 
@@ -369,21 +389,23 @@ Plan 已通过检查（examine_subagent 通过）之后。
 
 # 执行步骤
 
-1. 先理解改动文件的现有约定（风格、导入、依赖），改动与周围代码一致。
-2. 按 Plan 顺序逐个子步骤推进；每个子步骤：先写失败测试（RED）→ 跑测试确认失败 → 写最小实现（GREEN）→ 重构（保持测试通过）。测试不适用的改动（配置、样式、纯文档）以类型检查、构建或逐项自查作为该子步骤的验证动作。
-3. 若实现中发现 Plan 有误、不可行或与实际代码结构冲突，停下回到 plan 修订，修订后重新通过 examine_subagent 检查再继续实现，不静默偏离 Plan；仅步骤顺序、命名这类无关紧要的微调可直接推进，并在验证证据中注明。
-4. 遵循项目自身的硬约束与编码约定（如不可变边界、错误处理、输入验证）；不硬编码、不留调试残留；写操作按宿主的审批约定执行，不要试图绕过。
-5. 每完成一个子步骤跑相关测试；声明完成前重读改动，检查遗留调试代码、未用导入与风格不一致。
-6. 记录验证证据（类型检查、测试、必要时的命令结果），供 finish 阶段引用。
+1. 多文件、多子任务或需要 fan-out 时，先写 throughput checkpoint：阻塞步骤、可并行工作流、共享可变状态、最小安全分解；共享写默认拆目标，不加锁；一个 worker 最好时写明原因。
+2. 先减法：删除死代码、遗留兼容层、未用导出和冗余 guard，再添加新代码。先理解改动文件的现有约定（风格、导入、依赖），改动与周围代码一致。
+3. 按 Plan 顺序逐个子步骤推进；每个子步骤：先写失败测试（RED）→ 跑测试确认失败 → 写最小实现（GREEN）→ 重构（保持测试通过）。测试不适用的改动（配置、样式、纯文档）以类型检查、构建或逐项自查作为该子步骤的验证动作。
+4. 测试双检：破坏行为（错值、漏副作用、重复副作用）→ 测试必须失败；只改内部实现、可观察结果不变 → 测试必须仍然通过。期望值从需求推导，不从被测代码的运行结果抄。不满足就重写或删除。
+5. 若实现中发现 Plan 有误、不可行或与实际代码结构冲突，停下回到 plan 修订，修订后重新通过 examine_subagent 检查再继续实现，不静默偏离 Plan；仅步骤顺序、命名这类无关紧要的微调可直接推进，并在验证证据中注明。
+6. 遵循项目自身的硬约束与编码约定（如不可变边界、错误处理、输入验证）；不硬编码、不留调试残留；写操作按宿主的审批约定执行，不要试图绕过。
+7. 完成证据用真实表面：UI 走真实流程，CLI 跑真实命令，API 读回写入值；typecheck/build 只是子步骤证据。无法验证时写 INCONCLUSIVE 并停止完成收口，由用户决定补充环境或调整验收；不写「应该没问题」。
+8. 每完成一个子步骤跑相关测试；声明完成前重读改动，检查遗留调试代码、未用导入与风格不一致。记录验证证据（类型检查、测试、命令结果、真实表面路径），供 finish 阶段引用。
 
 # 产出物
 
 - 实现代码 + 测试（同目录 *.test.*）。
-- 验证证据（测试/typecheck 结果）。
+- 验证证据（测试/typecheck 结果 + 真实表面证据）。
 
 # 退出条件
 
-Plan 覆盖的验收都有对应测试通过、typecheck 通过。之后由主 Agent 决定调用 review_subagent 审查；不通过则回到本 Skill 继续修改。`,
+Plan 覆盖的验收中，适用测试的均有对应测试通过；测试不适用项已有 Plan 指定的类型检查、构建或逐项自查证据；typecheck 通过，行为测试的测试双检通过，真实表面证据齐全。任一验收只能标为 INCONCLUSIVE 时不得以完成状态退出。之后由主 Agent 决定调用 review_subagent 审查；不通过则回到本 Skill 继续修改。`,
     },
     en: {
       description: 'Implement code plan-driven and test-first, producing verifiable code and tests.',
@@ -402,21 +424,23 @@ After the Plan has passed inspection (examine_subagent passed).
 
 # Execution steps
 
-1. Understand the existing conventions of the files being changed first (style, imports, dependencies); keep changes consistent with the surrounding code.
-2. Proceed sub-step by sub-step in Plan order; for each sub-step: write the failing test (RED) → run tests to confirm failure → write the minimal implementation (GREEN) → refactor (tests stay green). For changes where tests do not apply (config, styling, pure docs), use type checking, build, or item-by-item self-review as that sub-step's verification action.
-3. If implementation reveals the Plan to be wrong, infeasible, or conflicting with the actual code structure, stop and return to plan for revision, re-pass examine_subagent after revising, and only then continue implementing—never silently deviate from the Plan; only trivial adjustments (step ordering, naming) may proceed directly, noted in the verification evidence.
-4. Follow the project's own hard constraints and coding conventions (e.g. immutability boundaries, error handling, input validation); no hardcoding, no leftover debug code; perform write operations under the host's approval conventions and never attempt to bypass them.
-5. Run the relevant tests after each sub-step; before declaring completion re-read the changes checking for leftover debug code, unused imports, and style inconsistencies.
-6. Record verification evidence (typecheck, tests, command results when necessary) for the finish phase to reference.
+1. For multi-file or multi-subtask work, or any fan-out, write the throughput checkpoint first: blocking steps, parallel workstreams, shared mutable state, and the smallest safe decomposition. Split shared write targets by default instead of adding a lock; when one worker is best, name why.
+2. Subtract first: delete dead code, legacy compatibility layers, unused exports and redundant guards before adding code. Understand the existing conventions of the files being changed (style, imports, dependencies); keep changes consistent with the surrounding code.
+3. Proceed sub-step by sub-step in Plan order; for each sub-step: write the failing test (RED) → run tests to confirm failure → write the minimal implementation (GREEN) → refactor (tests stay green). For changes where tests do not apply (config, styling, pure docs), use type checking, build, or item-by-item self-review as that sub-step's verification action.
+4. Test the tests: break the behavior (wrong values, missing side effects, duplicated side effects) → the test must fail; change only the internals with the observable result unchanged → the test must still pass. Derive expected values from the requirement, never from a run of the code under test. Rewrite or delete a test that fails either check.
+5. If implementation reveals the Plan to be wrong, infeasible, or conflicting with the actual code structure, stop and return to plan for revision, re-pass examine_subagent after revising, and only then continue implementing—never silently deviate from the Plan; only trivial adjustments (step ordering, naming) may proceed directly, noted in the verification evidence.
+6. Follow the project's own hard constraints and coding conventions (e.g. immutability boundaries, error handling, input validation); no hardcoding, no leftover debug code; perform write operations under the host's approval conventions and never attempt to bypass them.
+7. Verify on the real surface: UI through the real flow, CLI with the real command, API by reading back the written value; typecheck/build are sub-step evidence only. When verification is impossible, write INCONCLUSIVE and stop completion closeout; let the user decide whether to provide an environment or adjust acceptance instead of writing "should be fine".
+8. Run the relevant tests after each sub-step; before declaring completion re-read the changes checking for leftover debug code, unused imports, and style inconsistencies. Record verification evidence (typecheck, tests, command results, real-surface paths) for the finish phase to reference.
 
 # Outputs
 
 - Implementation code + tests (*.test.* in the same directory).
-- Verification evidence (test/typecheck results).
+- Verification evidence (test/typecheck results plus real-surface evidence).
 
 # Exit criteria
 
-Every acceptance criterion covered by the Plan has a corresponding passing test, and typecheck passes. Afterwards the main Agent decides to call review_subagent for review; if it fails, return to this Skill and keep fixing.`,
+For every acceptance criterion covered by the Plan where tests apply, the corresponding test passes; where tests do not apply, the Plan's typecheck, build or item-by-item review evidence exists. Typecheck passes, the test-the-tests check passes for behavioral tests, and real-surface evidence exists. If any acceptance can only be marked INCONCLUSIVE, do not exit as complete. Afterwards the main Agent decides to call review_subagent for review; if it fails, return to this Skill and keep fixing.`,
     },
   },
   {
@@ -441,9 +465,12 @@ Every acceptance criterion covered by the Plan has a corresponding passing test,
 1. 刷新实现侧文档（.docs/）中因本次改动而过时的部分——它们记录「系统当前怎么运行」，不是长期设计意图（长期约束留在 Domain Spec）。
 2. 若本次改动改变了项目约定入口（AGENTS.md/CLAUDE.md 描述的命令、架构边界、交接清单），同步更新。
 3. 归档本次任务的 Task Spec 与 Plan：在 .specs/tasks/ 与 .plans/ 对应文档的 frontmatter 标记 status: done（已有 frontmatter 则更新其 status 字段，没有则在文件开头补一段）。归档文档会从 <available_docs> 活跃索引移出但保留追溯；Domain Spec 与 .docs/ 是长期/活文档，永不归档。简单路径（无 Task Spec/Plan）跳过本步。
-4. 汇总验证证据：typecheck、测试、必要命令结果，形成收口结论——全链路任务写明「依据哪份 Task Spec、受哪些 Domain Spec 约束、通过哪些验证」，简单任务写明「依据哪份用户请求、通过哪些验证」。
-5. 提交与推送：遵循系统提示词「# Git 分支规则」——先确认当前分支，严禁直接在 main 或 master 上提交推送；在任务分支上提交（分支前缀以该节为准、缺省 feat-，后缀用 task-id 或简短主题词；提交信息遵循项目自身的提交约定）并推送到远端同名分支，需要出站网络的命令按安全边界声明 network: true。除非用户明确要求不提交或另有分支安排。
-6. 列出遗留项（未覆盖的边缘、后续建议），不擅自扩大范围。全部写操作与命令都按宿主的审批约定执行，不要试图绕过。
+4. 汇总验证证据：typecheck、测试、必要命令结果，形成收口结论——全链路任务写明「依据哪份 Task Spec、受哪些 Domain Spec 约束、通过哪些验证」，简单任务写明「依据哪份用户请求、通过哪些验证」。收口摘要固定写：改了什么；已验证什么（命令/结果）；未验证或不确定什么；剩余风险；遗留项。
+5. 长任务、离开场景或跨会话任务，记录决策轨迹：phase / decision / why / evidence / result；写进现有 run artifact 或 docs，不新增 Skill；收口总结附路径或 artifact 引用。
+6. 若可用，review_subagent 对照「结论 vs 证据」审计收口摘要；没有运行证据的结论标为 inferred，不写成已验证。
+7. 若本次改动影响用户可见行为且 tests/verify.md 存在，更新其 feature map、启动/驱动/证据说明；不存在时建议用户用 test-authoring 建立，不在 finish 阶段自行发明第二套测试系统。
+8. 提交与推送：遵循系统提示词「# Git 分支规则」——先确认当前分支，严禁直接在 main 或 master 上提交推送；在任务分支上提交（分支前缀以该节为准、缺省 feat-，后缀用 task-id 或简短主题词；提交信息遵循项目自身的提交约定）并推送到远端同名分支，需要出站网络的命令按安全边界声明 network: true。除非用户明确要求不提交或另有分支安排。
+9. 列出遗留项（未覆盖的边缘、后续建议），不擅自扩大范围。全部写操作与命令都按宿主的审批约定执行，不要试图绕过。
 
 # 产出物
 
@@ -476,9 +503,12 @@ After the code changes have passed review (review_subagent passed).
 1. Refresh the parts of implementation-side docs (.docs/) made stale by this change—they record "how the system currently runs", not long-term design intent (long-term constraints stay in the Domain Spec).
 2. If this change altered the project's convention entry points (commands, architecture boundaries, handover lists described in AGENTS.md/CLAUDE.md), update them in sync.
 3. Archive this task's Task Spec and Plan: mark status: done in the frontmatter of the matching documents under .specs/tasks/ and .plans/ (update the status field if frontmatter exists, otherwise prepend a frontmatter block). Archived docs leave the <available_docs> active index but remain traceable; Domain Specs and .docs/ are long-term/living documents and are never archived. Skip this step on the simple path (no Task Spec/Plan).
-4. Summarize verification evidence: typecheck, tests, necessary command results, forming the closing conclusion—for full-chain tasks state "which Task Spec, constrained by which Domain Specs, verified by which checks"; for simple tasks state "which user request, verified by which checks".
-5. Commit and push: follow the system prompt's "# Git branch rules"—confirm the current branch first; committing/pushing directly on main or master is strictly forbidden; commit on the task branch (branch prefix per that section, default feat-, suffix the task-id or a short topic; commit messages follow the project's own conventions) and push to the remote branch of the same name; commands needing outbound network declare network: true per the security boundary. Unless the user explicitly asked not to commit or arranged branches differently.
-6. List leftover items (uncovered edges, follow-up suggestions) without expanding scope. All write operations and commands run under the host's approval conventions; never attempt to bypass them.
+4. Summarize verification evidence: typecheck, tests, necessary command results, forming the closing conclusion—for full-chain tasks state "which Task Spec, constrained by which Domain Specs, verified by which checks"; for simple tasks state "which user request, verified by which checks". The closing summary always states: what changed; what was verified (command/result); what was not verified or is uncertain; residual risk; leftover items.
+5. For long-running, unattended or cross-session tasks, keep a decision trail: phase / decision / why / evidence / result. Write it into the existing run artifact or docs, not a new Skill; link its path or artifact in the closing summary.
+6. When available, have review_subagent audit the closing summary against the evidence. Conclusions without runtime evidence are marked inferred, never as verified.
+7. When the change affects user-visible behavior and tests/verify.md exists, update its feature map, launch/drive/evidence notes. When it does not exist, suggest creating it through test-authoring instead of inventing a second test system inside finish.
+8. Commit and push: follow the system prompt's "# Git branch rules"—confirm the current branch first; committing/pushing directly on main or master is strictly forbidden; commit on the task branch (branch prefix per that section, default feat-, suffix the task-id or a short topic; commit messages follow the project's own conventions) and push to the remote branch of the same name; commands needing outbound network declare network: true per the security boundary. Unless the user explicitly asked not to commit or arranged branches differently.
+9. List leftover items (uncovered edges, follow-up suggestions) without expanding scope. All write operations and commands run under the host's approval conventions; never attempt to bypass them.
 
 # Outputs
 
@@ -577,6 +607,8 @@ KPI 行（不少于 3 张卡，每卡 label + value + delta/对比）→ 主图�
 - **Path A（从零生成）**：目标 .ax 不存在、pages 为空数组、或 design_query 解析失败——按下方 A 步骤产出**完整稿**，并对照 the Completeness rubric 收口。
 - **Path B（编辑模式）**：目标稿已有有效页面，进行定点修改/迭代——按下方 B 步骤。
 
+方案探索：方向未定时做 2–3 个独立 .ax 变体，保持页面 id/group/state/尺寸一致，截图或画布并列对比；每个元素必须服务核心流程。视觉验收用真实渲染截图，必要时像素对比，不只靠主观肉眼判断。
+
 ## Path A：从零生成
 
 1. **初始化 token 与版式基调**：基调按三档取值——① 项目根 DESIGN.md（若存在）的品牌/视觉意图；② 项目已有的 token 来源（styles/tokens.css、theme 文件等，存在则复用）；③ 都没有时才用 Axiom 基线兜底。自加 token 需在稿顶层 tokens 登记并写明暗两档。
@@ -605,11 +637,12 @@ KPI 行（不少于 3 张卡，每卡 label + value + delta/对比）→ 主图�
 # 产出物
 
 - 更新后的 .ax 设计稿。
+- 发生方案探索时：变体 .ax 路径、真实渲染截图或 compare 结果，以及采用/放弃理由；未发生时不产出。
 - 必要时同步 .docs/ 实现现状说明（如新增了影响实现的组件）。
 
 # 退出条件
 
-画布渲染结果与用户意图一致、无新增解析诊断；全部修改已合入一次批量补丁并写后自查通过；整稿级改动已通过 mode=scan 扫描（无 fail 页）。**Path A 从零生成的额外要求**：与 the Completeness rubric 对账——通用最低线达标、所属产品类型页面集/分区集无缺失、关键交互页含空/加载/错误三态。`,
+画布渲染结果与用户意图一致、无新增解析诊断；全部修改已合入一次批量补丁并写后自查通过；整稿级改动已通过 mode=scan 扫描（无 fail 页）。**发生方案探索时**：2–3 个变体均有真实渲染证据与选择结论，原稿未被覆盖；无法取得的视觉证据标为未验证，不得宣称验收通过。**Path A 从零生成的额外要求**：与 the Completeness rubric 对账——通用最低线达标、所属产品类型页面集/分区集无缺失、关键交互页含空/加载/错误三态。`,
     },
     en: {
       description: 'Author or edit workspace design documents (.ax is the only native format; .pen is migration input only) following design-as-code: from-zero generation follows Path A with the completeness rubric as the exit bar; edit mode follows Path B (locate subtrees, iterate styles via token references, self-check JSON after writes); the design canvas renders the live projection.',
@@ -694,6 +727,8 @@ Each line is the body skeleton; params go on text positions only (text/label/sup
 - **Path A (from-zero generation)**: target .ax is missing, has an empty pages array, or fails design_query parse — follow the A steps below to produce a **complete draft** aligned with the the Completeness rubric.
 - **Path B (edit mode)**: target has valid pages and you're making targeted edits — follow the B steps.
 
+Design exploration: when the direction is open, build 2–3 independent .ax variants with matching page id/group/state/size, then compare them side by side by screenshot or canvas; every element must serve the core flow. Verify visuals with real rendered screenshots, using pixel comparison when needed rather than relying only on subjective eyeballing.
+
 ## Path A: from-zero generation
 
 1. **Initialize tokens and visual baseline**: pick the baseline in three tiers — ① the root DESIGN.md brand/visual intent when present; ② existing project token sources (styles/tokens.css, theme files) when present; ③ the Axiom baseline only as the last resort. Newly added tokens must be declared in the doc's top-level tokens with light + dark values.
@@ -722,14 +757,15 @@ The ax-selection@1 context carries fileSha256, pageId, group/state and authored 
 # Outputs
 
 - The updated .ax design document.
+- When design exploration occurred: variant .ax paths, real rendered screenshots or compare results, and the reasons for adoption/rejection; none otherwise.
 - .docs/ implementation notes when needed (e.g. a new component that affects implementation).
 
 # Exit criteria
 
-The canvas render matches the user's intent with no new parse diagnostics; all modifications were merged into a single batch patch and passed the post-write self-check; document-wide changes passed the mode=scan scan (no failed pages). **Additional requirement for Path A from-zero generation**: reconcile against the the Completeness rubric — universal floor met, the chosen product-type page/section set has no missing entries, key interactive pages cover empty/loading/error.`,
+The canvas render matches the user's intent with no new parse diagnostics; all modifications were merged into a single batch patch and passed the post-write self-check; document-wide changes passed the mode=scan scan (no failed pages). **When design exploration occurred**: all 2–3 variants have real rendered evidence and a selection conclusion, and the original document was not overwritten; unavailable visual evidence is marked unverified and cannot be claimed as accepted. **Additional requirement for Path A from-zero generation**: reconcile against the the Completeness rubric — universal floor met, the chosen product-type page/section set has no missing entries, key interactive pages cover empty/loading/error.`,
     },
   },  {
-    name: 'test-design',
+    name: 'test-authoring',
     'zh-CN': {
       description: '为工作区内指定功能编写可重放的自动化测试用例（tests/*.testspec.json 的测试点与用例）：先定测试点再写用例，用真实环境与真实接口构造数据，写 typed 断言与清理步骤。',
       body: `# 目的
@@ -779,6 +815,41 @@ The canvas render matches the user's intent with no new parse diagnostics; all m
 6. **清理**：清理步骤走产品的原生接口删掉自己造的数据，不要直接动被测数据库。
 7. **收尾**：在测试页「重新扫描」确认校验通过；被判「需要修复」时按问题清单逐条改到通过，不要绕过。
 
+# 回归证明
+
+kind = regression 的用例必须交出失败证据；new_feature 用例至少要证明断言能区分对错。
+
+1. 先让缺陷可执行：在修复前用同一路径复现。能写成测试就写；不能时保留可重跑命令、输入和输出。
+2. 证明用例会失败：优先在已有的修复前环境或版本上运行同一路径，确认它因预期原因失败；恢复当前环境后重跑通过。不得为了制造失败而修改本会话的产品源码。没有可运行的修复前环境时，如实标记未证明，由用户决定提供环境或把该用例转为新增覆盖；不得宣称回归保护。
+3. 断言必须能区分对错：至少一条断言在错误值、缺失副作用或重复副作用下会失败。只看状态码、只看元素存在、只断言自己构造的数据，不算。
+4. 在会话回报中写清：失败证据（命令/日志/截图路径）、通过证据、无法证明的部分。
+
+# 测试质量自检
+
+- 破坏行为：返回错值、漏副作用、重复副作用 → 用例必须失败。
+- 只改内部实现：可观察结果不变 → 用例必须仍然通过。
+- 期望值从需求或验收标准推导，不从被测代码的运行结果抄。
+- 每个测试点至少覆盖一个边界或失败路径；只有 happy path 的测试点需要说明为什么。
+- verifies 必须与断言语义对应，不能只是形式上引用测试点。
+- 不满足以上任一项时，重写或删除该用例，不要用“先绿再说”绕过。
+
+# 项目验证契约（可选）
+
+当项目需要重复验证、且当前没有可执行的启动/驱动说明时，读 tests/verify.md；不存在时经用户确认后创建。它是一份项目文档，不是新的 Skill，也不替代 TestSpec Runner。
+
+Launch / Drive 优先引用 tests/environments/*.env.ax 等既有环境档与项目命令，不复制成第二份真相；只补充环境档没有的信息。
+
+契约保持短小，至少包含：
+
+- Launch：从空数据目录启动到可用，包含迁移与种子数据；CLI 则构建一次，每次独立会话。
+- Doctor：一个只读检查，确认进程、版本、端口、认证是否可用。
+- Drive：真实 UI/CLI/API 的驱动方式，优先稳定定位（testId、role+name、命令、路由）。
+- Evidence：截图、日志、响应、数据库读回值放在哪里；清理后证据必须保留。
+- Cleanup：只清理本次启动的进程与数据，不按进程名杀，不删除证据。
+- feature map：至少 3–5 个用户路径，每条写入入口、驱动方式、期望结果、Gotchas。
+
+正式重放仍走 tests/*.testspec.json；契约只回答“怎么把应用跑起来并证明行为”。
+
 # 每用例必备
 
 | 项 | 要求 |
@@ -809,6 +880,9 @@ The canvas render matches the user's intent with no new parse diagnostics; all m
 - 每个测试点都至少被一条用例认领，且用例的 verifies 指向存在的测试点。
 - 在测试页「重新扫描」后目标文件校验通过，没有「需要修复」项。
 - 会话里给出了测试点清单、对应用例 id 与无法客观判定的点。
+- kind = regression 的用例有失败前证据；无法取得时不得宣称回归保护，需由用户确认提供修复前环境或转为新增覆盖后再收口；新增/修改用例至少一条断言会在错误行为下失败。
+- 测试质量自检已执行，弱断言已重写或删除。
+- 若项目存在 tests/verify.md，本次改动涉及的 feature map 已更新。
 - 没有为求快而 mock 环境、跳过断言、固化瞬时定位，或顺手改产品源码。
 `,
     },
@@ -855,7 +929,42 @@ The full protocol lives in docs/ui-api-automation-usage.md (inside the Axiom rep
 4. **Build data through real endpoints**: setup belongs in case steps or hooks; never substitute mock/stub data for the environment.
 5. **Verify control-plane changes on the data plane**: state which address is hit, what request or page action is performed, and what result is expected.
 6. **Cleanup**: remove the data you created through the product own API, never by touching the database under test.
-7. **Finish**: rescan on the testing page and confirm validation passes; when a case is reported as needs repair, fix it item by item instead of working around it.
+7. **Finish**: rescan on the testing page and confirm validation passes; when a case is reported as needs repair, fix it item by item instead of working around.
+
+# Regression proof
+
+A kind = regression case must include failure evidence; a new_feature case must at least prove that its assertions can distinguish correct from incorrect behavior.
+
+1. Make the defect executable first: reproduce it on the same path before the fix. Write it as a test when possible; otherwise keep the rerunnable command, input and output.
+2. Prove the case can fail: prefer running the same path in an existing pre-fix environment or version and confirm it fails for the intended reason; restore the current environment and rerun to green. Never modify the product source in this session to manufacture a failure. When no runnable pre-fix environment exists, mark the proof as unavailable and let the user decide whether to provide one or downgrade the case to new coverage; never claim regression protection.
+3. Assertions must distinguish right from wrong: at least one assertion must fail on a wrong value, a missing side effect or a duplicated side effect. A status code alone, an element merely existing, or an assertion on data the test built itself does not count.
+4. In the session report, state the failure evidence (command/log/screenshot path), the passing evidence, and what could not be proven.
+
+# Test quality self-check
+
+- Break the behavior: wrong values, missing side effects, duplicated side effects → the case must fail.
+- Change only the internals with the observable result unchanged → the case must still pass.
+- Derive expected values from the requirement or acceptance criteria, never from a run of the code under test.
+- Each test point covers at least one boundary or failure path; a happy-path-only point must explain why.
+- The verifies entry must match the assertion semantics, not just reference the test point formally.
+- When any item fails, rewrite or delete the case instead of working around it to get green.
+
+# Project verification contract (optional)
+
+When the project needs repeatable verification and has no executable launch/drive instructions, read tests/verify.md; when it is missing, create it after user confirmation. It is a project document, not a new Skill, and does not replace the TestSpec Runner.
+
+For Launch / Drive, reference existing environment files such as tests/environments/*.env.ax and project commands instead of copying them into a second source of truth; add only information missing from those files.
+
+Keep the contract short and include at least:
+
+- Launch: start from an empty data directory to a usable state, including migrations and seed data; for a CLI, build once and use an isolated session per drive.
+- Doctor: one read-only check for process, version, port and auth usability.
+- Drive: the real UI/CLI/API driving method, preferring stable selectors (testId, role+name, command, route).
+- Evidence: where screenshots, logs, responses and database read-backs live; evidence must survive cleanup.
+- Cleanup: remove only the processes and data started by this run; never kill by process name and never delete evidence.
+- Feature map: at least 3–5 user paths, each with its entry point, driving method, expected result and Gotchas.
+
+Formal replay still goes through tests/*.testspec.json; the contract only answers how to run the app and prove behavior.
 
 # Every case needs
 
@@ -887,6 +996,9 @@ The full protocol lives in docs/ui-api-automation-usage.md (inside the Axiom rep
 - Every test point is claimed by at least one case, and each case verifies list points at declared test points.
 - Rescanning on the testing page reports the target file as valid, with no needs-repair items.
 - The session reports the test point list, the case ids, and any point that cannot be objectively judged.
+- Every regression case carries pre-fix failure evidence. When it is unavailable, never claim regression protection; close out only after the user chooses to provide a pre-fix environment or downgrade the case to new coverage. Every new or changed case has at least one assertion that fails on incorrect behavior.
+- The test quality self-check ran, and weak assertions were rewritten or deleted.
+- When the project has tests/verify.md, its feature map was updated for this change.
 - No shortcuts were taken: no mocked environment, no skipped assertions, no persisted transient locators, no product source edits.
 `,
     },

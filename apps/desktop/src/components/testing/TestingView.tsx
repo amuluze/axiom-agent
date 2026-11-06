@@ -4,12 +4,12 @@
  * tsRprt（运行报告）/ tsEmpt（空态）。
  *
  * 结构（自上而下）：
- * - 顶栏（Shared31）：用例文件标签页 + 已同步时间 + 刷新 + 重放
- * - 环境条（eNvBar）：运行环境 / 目标标签页 / 视口 / 校验状态；点环境名展开管理面板
+ * - 顶栏（Shared31）：用例文件标签页 + 运行范围 + 刷新 + 唯一主运行入口
+ * - 环境条（eNvBar）：运行环境 / 视口 / 校验状态；仅套件含 UI 步骤时显示目标标签页
  * - 主体按状态切换：用例表 + KPI（默认）｜进度 + 步骤流（运行中）｜KPI + 失败详情 +
  *   断言项表（报告）
- * - 固化面板（可折叠，「固化到用例文件」入口在标题行）
- * - 底栏：文件 · 用例数｜主题｜版本｜导出报告｜校验用例
+ * - 创作/产物核对默认折叠；固化面板保留独立入口
+ * - 底栏：文件 · 用例数｜协议版本｜导出报告
  *
  * 用例文件是测试的唯一事实来源：本页负责确定性重放与报告，起草/修改由左侧
  * 助手会话（或固化通道）完成——写 .testspec.json 仍走会话的写工具审批链。
@@ -25,7 +25,7 @@ import { useBrowserStore } from '@/stores/browserStore'
 import { useUiStore } from '@/stores/uiStore'
 import { downloadTestRunJUnit, downloadTestRunReport } from '@/stores/services/testReportExport'
 import { matchesTestSpecType, type TestSpecTypeFilter } from '@/stores/services/testSpecFilter'
-import { TestEnvironmentPanel } from './TestEnvironmentPanel'
+import { TestEnvironmentDialog } from './TestEnvironmentDialog'
 import { TestingEmptyState } from './testingViewRows'
 import { RunProgress } from './RunProgress'
 import { RunReport } from './RunReport'
@@ -61,12 +61,10 @@ export const TestingView = () => {
   const sendToSession = useAgentStore((state) => state.sendToSession)
   const tabs = useBrowserStore((state) => state.tabs)
   const { selectedTabId, setSelectedTabId } = useSelectedBrowserTab(tabs)
-  const theme = useUiStore((state) => state.theme)
   const openRuntimeRailPane = useUiStore((state) => state.openRuntimeRailPane)
   const setView = useUiStore((state) => state.setView)
   const approver = useMemo(() => createTestStepApprover(), [])
-  const [specTypeFilter, setSpecTypeFilter] = useState<TestSpecTypeFilter>('all')
-  const [envPanelOpen, setEnvPanelOpen] = useState(false)
+  const [envDialogOpen, setEnvDialogOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const {
@@ -87,10 +85,6 @@ export const TestingView = () => {
     rescan,
   } = useTestingViewData({ workspacePath: workspace?.path, setError })
 
-  const filteredSpecs = useMemo(
-    () => specs.filter((spec) => matchesTestSpecType(spec, specTypeFilter)),
-    [specs, specTypeFilter],
-  )
   /**
    * 最近一个批次。由 Rust 按 `batch_id` 直接回读（而不是从运行列表里猜），
    * 因此批次文件数不再受列表窗口限制；超过硬上限时 `truncated` 由宿主如实标出。
@@ -146,6 +140,7 @@ export const TestingView = () => {
   const {
     runScope,
     setRunScope,
+    suiteTargets,
     canRun,
     running,
     activeRun,
@@ -178,6 +173,13 @@ export const TestingView = () => {
   })
 
   const selectedSpec = specs.find((spec) => spec.path === selectedSpecPath)
+  const filteredSpecs = useMemo(
+    () => runScope === 'current'
+      ? specs
+      : specs.filter((spec) => matchesTestSpecType(spec, runScope)),
+    [runScope, specs],
+  )
+  const showBrowserTarget = suiteTargets.some((spec) => spec.uiStepCount > 0)
 
   const { suiteCoverage, suiteSummary } = useTestingSuiteSummary({
     suiteResult,
@@ -185,10 +187,11 @@ export const TestingView = () => {
     filteredSpecs,
   })
 
-  const changeSpecTypeFilter = (filter: TestSpecTypeFilter): void => {
-    setSpecTypeFilter(filter)
-    if (selectedSpecPath && specs.some((spec) => spec.path === selectedSpecPath && matchesTestSpecType(spec, filter))) return
-    setSelectedSpecPath(specs.find((spec) => spec.valid && matchesTestSpecType(spec, filter))?.path ?? null)
+  const changeRunScope = (scope: 'current' | TestSpecTypeFilter): void => {
+    setRunScope(scope)
+    if (scope === 'current') return
+    if (selectedSpecPath && specs.some((spec) => spec.path === selectedSpecPath && matchesTestSpecType(spec, scope))) return
+    setSelectedSpecPath(specs.find((spec) => spec.valid && matchesTestSpecType(spec, scope))?.path ?? null)
   }
 
   // G1-6：模型必须就绪（run/steer 与 sendToSession 同口径）且工作区与会话都可用。
@@ -250,12 +253,21 @@ export const TestingView = () => {
 
   // ── 派生展示数据 ──────────────────────────────────────────────
 
-  const { selectedEnvironment, selectedTab, syncedLabel, specIssueCount, activeRunSpec } =
+  /** 主运行入口不可用时给出**具体**原因，而不是一个沉默的 disabled 按钮。 */
+  const runBlockedReason = canRun
+    ? null
+    : !workspace
+      ? t('testing.topbar.blockedNoWorkspace')
+      : running
+        ? t('testing.topbar.blockedRunning')
+        : suiteTargets.length === 0
+          ? t('testing.topbar.blockedNoSpec')
+          : t('testing.topbar.blockedNoTab')
+
+  const { selectedEnvironment, syncedLabel, specIssueCount, activeRunSpec } =
     useTestingViewDerived({
       environments,
       selectedEnvironmentId,
-      tabs,
-      selectedTabId,
       syncedAt,
       selectedSpec,
       activeRun,
@@ -283,48 +295,45 @@ export const TestingView = () => {
         filteredSpecs={filteredSpecs}
         selectedSpecPath={selectedSpecPath}
         onSelectSpec={setSelectedSpecPath}
-        specTypeFilter={specTypeFilter}
-        onSpecTypeFilterChange={changeSpecTypeFilter}
         runScope={runScope}
-        onRunScopeChange={setRunScope}
+        onRunScopeChange={changeRunScope}
         syncedLabel={syncedLabel}
         loading={loading}
         workspaceReady={Boolean(workspace)}
         onRescan={rescan}
         canRun={canRun}
+        runBlockedReason={runBlockedReason}
         onRun={runSelected}
-      />
-
-      <TestingSuiteSummary
-        recentBatch={recentBatch}
-        showRecentBatch={!running && suiteResult === null}
-        batchLoading={batchLoading}
-        onLoadRecentBatch={() => void loadRecentBatch()}
-        suiteSummary={suiteSummary}
-        suiteCoverage={suiteCoverage}
       />
 
       <TestingEnvironmentBar
         selectedEnvironment={selectedEnvironment}
-        selectedTab={selectedTab}
+        showBrowserTarget={showBrowserTarget}
         selectedTabId={selectedTabId}
         onSelectTab={setSelectedTabId}
         tabs={tabs}
         selectedSpec={selectedSpec}
         specIssueCount={specIssueCount}
-        envPanelOpen={envPanelOpen}
-        onToggleEnvPanel={() => setEnvPanelOpen((current) => !current)}
+        onOpenEnvironment={() => setEnvDialogOpen(true)}
         onOpenBrowser={() => openRuntimeRailPane('browser')}
       />
 
-      {envPanelOpen && (
-        <TestEnvironmentPanel
-          environments={environments}
-          environmentFiles={environmentFiles}
-          selectedId={selectedEnvironmentId}
-          disabled={!workspace || running}
-          onSelect={setSelectedEnvironmentId}
-          onChanged={refreshEnvironments}
+      <TestEnvironmentDialog
+        open={envDialogOpen}
+        environments={environments}
+        environmentFiles={environmentFiles}
+        selectedId={selectedEnvironmentId}
+        disabled={!workspace || running}
+        onSelect={setSelectedEnvironmentId}
+        onChanged={refreshEnvironments}
+        onClose={() => setEnvDialogOpen(false)}
+      />
+
+      {/* 批次摘要只在套件运行出现过时才占位置：常驻的「最近批次」入口在运行历史卡里。 */}
+      {(running || suiteResult !== null) && (
+        <TestingSuiteSummary
+          suiteSummary={suiteSummary}
+          suiteCoverage={suiteCoverage}
         />
       )}
 
@@ -366,56 +375,63 @@ export const TestingView = () => {
               specDetail={specDetail}
               latestRun={latestRun}
               caseStatusById={caseStatusById}
-              canRun={canRun}
               running={running}
               approver={approver}
-              solidifyDisabledReason={solidifyDisabledReason}
-              solidifyOpen={solidifyOpen}
-              solidifyDraft={solidifyDraft}
-              onRun={runSelected}
               onStop={stop}
-              onToggleSolidify={toggleSolidify}
+              onOpenReport={(runId) => void openReport(runId)}
             />
 
-            <AuthoringPanel
-              feature={authoringFeature}
-              onFeatureChange={setAuthoringFeature}
-              sending={authoringSending}
-              sent={authoringSent}
-              canRequest={canRequestAuthoring}
-              onRequest={requestAuthoring}
-              checking={authoringChecking}
-              canCheck={canCheckArtifacts}
-              check={authoringCheck}
-              onCheck={checkArtifacts}
+            <RecentRunsPanel
+              runs={runs}
+              recentBatch={recentBatch}
+              batchLoading={batchLoading}
+              onLoadRecentBatch={() => void loadRecentBatch()}
+              onOpenReport={(runId) => void openReport(runId)}
             />
 
-            <SolidifyPanel
-              open={solidifyOpen}
-              draft={solidifyDraft}
-              status={solidifyStatus}
-              sourceSessionId={solidifySourceSessionId}
-              targetSessionId={solidifyTargetSessionId}
-              sessions={handoffSessions}
-              disabledReason={solidifyDisabledReason}
-              generating={solidifyGenerating}
-              sending={solidifySending}
-              canSolidify={canSolidify}
-              canSend={canSendSolidify}
-              stepCount={solidifyStepCount}
-              onToggle={toggleSolidify}
-              onSourceChange={setSolidifySourceSessionId}
-              onTargetChange={setSolidifyTargetSessionId}
-              onGenerate={generateSolidify}
-              onSend={sendSolidify}
-            />
+            {/* 创作只有一条主入口：会话里用 test-authoring 生成用例；固化与产物核对是同一流程的收尾。 */}
+            <details className="testing-view__secondary-tools">
+              <summary>{t('testing.authoring.section')}</summary>
+              <div className="testing-view__secondary-tools-content">
+                <AuthoringPanel
+                  feature={authoringFeature}
+                  onFeatureChange={setAuthoringFeature}
+                  sending={authoringSending}
+                  sent={authoringSent}
+                  canRequest={canRequestAuthoring}
+                  onRequest={requestAuthoring}
+                  checking={authoringChecking}
+                  canCheck={canCheckArtifacts}
+                  check={authoringCheck}
+                  onCheck={checkArtifacts}
+                />
 
-            <RecentRunsPanel runs={runs} onOpenReport={(runId) => void openReport(runId)} />
+                <SolidifyPanel
+                  open={solidifyOpen}
+                  draft={solidifyDraft}
+                  status={solidifyStatus}
+                  sourceSessionId={solidifySourceSessionId}
+                  targetSessionId={solidifyTargetSessionId}
+                  sessions={handoffSessions}
+                  disabledReason={solidifyDisabledReason}
+                  generating={solidifyGenerating}
+                  sending={solidifySending}
+                  canSolidify={canSolidify}
+                  canSend={canSendSolidify}
+                  stepCount={solidifyStepCount}
+                  onToggle={toggleSolidify}
+                  onSourceChange={setSolidifySourceSessionId}
+                  onTargetChange={setSolidifyTargetSessionId}
+                  onGenerate={generateSolidify}
+                  onSend={sendSolidify}
+                />
 
-            <div className="testing-view__hint-card testing-view__hint-card--warn">
-              <AlertCircle size={13} aria-hidden />
-              <span>{t('testing.cases.approvalHint')}</span>
-            </div>
+                <div className="testing-view__hint-card testing-view__hint-card--warn">
+                  <AlertCircle size={13} aria-hidden />
+                  <span>{t('testing.cases.approvalHint')}</span>
+                </div>
+              </div>
+            </details>
           </>
         )}
       </div>
@@ -423,13 +439,10 @@ export const TestingView = () => {
       <TestingFooter
         selectedSpec={selectedSpec}
         specDetail={specDetail}
-        theme={theme}
         selectedReport={selectedReport}
         latestRun={latestRun}
-        workspaceReady={Boolean(workspace)}
         onExportReport={(report) => downloadTestRunReport(report)}
         onOpenReport={(runId) => void openReport(runId)}
-        onValidate={rescan}
       />
     </section>
   )

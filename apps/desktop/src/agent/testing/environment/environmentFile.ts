@@ -23,9 +23,15 @@ import { TEST_SPEC_API_METHODS } from '../spec/types'
 import { containsPlaintextCredential } from '../credentialPolicy'
 
 export const ENVIRONMENT_FILE_KIND = 'axiom.test-env' as const
-/** v2 增量：自定义大写变量（多服务端点）、`secretOrigins` 白名单与多服务就绪探针。 */
-export const ENVIRONMENT_FILE_VERSION = 2 as const
-export const SUPPORTED_ENVIRONMENT_FILE_VERSIONS = [1, 2] as const
+/**
+ * 当前环境档版本。
+ *
+ * - v2：自定义大写变量（多服务端点）、`secretOrigins` 白名单与多服务就绪探针。
+ * - v3：`baseUrl` 快捷基址、`tlsTrust` 证书策略、`approvalMode` 审批档，
+ *   以及「私网访问」缺省按地址推导。
+ */
+export const ENVIRONMENT_FILE_VERSION = 3 as const
+export const SUPPORTED_ENVIRONMENT_FILE_VERSIONS = [1, 2, 3] as const
 export type EnvironmentFileVersion = (typeof SUPPORTED_ENVIRONMENT_FILE_VERSIONS)[number]
 
 /** v1 档仅允许的两个逻辑变量名；v2 起开放任意大写标识符（见 {@link ENV_VAR_NAME_PATTERN}）。 */
@@ -36,6 +42,25 @@ export type EnvironmentVariableName = (typeof ENVIRONMENT_VARIABLE_NAMES)[number
 const ENV_VAR_NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/
 
 export type EnvironmentMode = 'local' | 'remote'
+
+/**
+ * 证书校验策略。
+ *
+ * - `system`（默认）：走系统信任库。私有 CA 的测试环境需要把 CA 装进系统信任库。
+ * - `insecure`：跳过证书校验。只对**确定在私网/回环**的目标开放——跳过校验等于
+ *   放弃中间人防护，代价只有落在私有网络里的测试机才配得上（Rust 侧同判据）。
+ */
+export type EnvironmentTlsTrust = 'system' | 'insecure'
+
+/**
+ * 审批档。
+ *
+ * - `per_step`（默认）：每个测试步骤都逐次审批（WebView 审批卡 + 宿主原生确认）。
+ * - `trusted`：受信环境——步骤免逐次审批。作用域限定在该环境声明的 origin 集合内
+ *   （Web Base / API Base / secretOrigins），越界的步骤照旧逐次审批。只对 `remote`
+ *   档开放：本地档的步骤可能改本机代码。
+ */
+export type EnvironmentApprovalMode = 'per_step' | 'trusted'
 
 /**
  * 声明式就绪探针：**就绪必须由客观事实判定**，所以「什么算就绪」写在档里而不是代码里。
@@ -90,6 +115,16 @@ export interface EnvironmentFile {
   viewport?: { width: number; height: number }
   headers: Readonly<Record<string, string>>
   allowPrivateNetwork: boolean
+  /**
+   * v3 快捷基址：一个地址同时作为 `WEB_BASE_URL` 与 `API_BASE_URL` 的缺省值。
+   * `vars` 里显式声明的同名变量优先——「一个服务一套地址」的多服务拓扑仍然用
+   * `vars` 表达，`baseUrl` 只省掉「同一个地址写两遍」。
+   */
+  baseUrl?: string
+  /** v3：证书校验策略。缺省 `system`。 */
+  tlsTrust?: EnvironmentTlsTrust
+  /** v3：审批档。缺省 `per_step`。 */
+  approvalMode?: EnvironmentApprovalMode
   /** 允许引用的 Secret **名**（`apitest.*`），值不在这里。 */
   secretNames: readonly string[]
   /**
@@ -131,6 +166,49 @@ const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/
 const SENSITIVE_HEADER_NAMES = new Set(['authorization', 'proxy-authorization', 'cookie', 'set-cookie', 'x-api-key'])
 /** 宿主绝对路径：把「我这台机器」的位置写进可版本控制文件，换台机器就失效。 */
 const HOST_PATH_PATTERN = /^(?:\/Users\/|\/home\/|\/var\/folders\/|\/private\/var\/|[A-Za-z]:\\)/u
+
+/**
+ * 主机名是否**确定**落在私网/回环：字面量私网 IP，或 `localhost` 族名字。
+ *
+ * 与 Rust 侧 `network_policy::is_private_or_local_host` 同判据（逐字对齐，避免
+ * 「档里判私网、宿主判公网」的分叉）。DNS 名字一律**不算**私网：解析结果不受
+ * 本机控制，不能当作「确定在私网」。
+ */
+export const isPrivateOrLocalHost = (host: string): boolean => {
+  const normalized = host.trim().replace(/^\[/, '').replace(/\]$/, '').toLowerCase()
+  if (normalized === 'localhost' || normalized.endsWith('.localhost')) return true
+  if (normalized.includes(':')) {
+    // IPv6：::1、fc00::/7（唯一本地）、fe80::/10（链路本地）。
+    if (normalized === '::1') return true
+    if (/^f[cd][0-9a-f]{0,2}:/.test(normalized)) return true
+    if (/^fe[89ab][0-9a-f]?:/.test(normalized)) return true
+    return false
+  }
+  const parts = normalized.split('.')
+  if (parts.length !== 4) return false
+  const octets = parts.map((part) => Number(part))
+  if (!octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255)) return false
+  const [a, b] = octets
+  if (a === 127 || a === 10 || a === 0) return true
+  if (a === 172 && b >= 16 && b <= 31) return true
+  if (a === 192 && b === 168) return true
+  if (a === 169 && b === 254) return true
+  return false
+}
+
+/** 解析环境地址：只接受无凭据、无 fragment 的 http(s) 绝对地址。 */
+const parseEnvironmentUrl = (value: string): URL | null => {
+  let parsed: URL
+  try {
+    parsed = new URL(value)
+  } catch {
+    return null
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
+  if (parsed.username !== '' || parsed.password !== '') return null
+  if (parsed.hash !== '') return null
+  return parsed
+}
 
 interface Ctx {
   issues: EnvironmentFileIssue[]
@@ -297,6 +375,86 @@ const readHeaders: Reader<EnvironmentFile['headers']> = (ctx, value, path) => {
   return valid ? headers : undefined
 }
 
+/**
+ * v3：`baseUrl` 快捷基址。一个地址同时作为 `WEB_BASE_URL` 与 `API_BASE_URL` 的缺省值。
+ *
+ * 与 `vars` 的关系是「缺省」而非「覆盖」：`vars` 里显式声明的同名变量优先，
+ * 多服务拓扑仍然用 `vars` 表达。
+ */
+const readBaseUrl = (
+  ctx: Ctx,
+  value: unknown,
+  path: string,
+  version: EnvironmentFileVersion,
+): string | undefined => {
+  if (version < 3) {
+    return issue(ctx, path, 'baseUrl 是 v3 增量；请把 version 升到 3')
+  }
+  const text = readText(ctx, value, path, ENVIRONMENT_FILE_LIMITS.maxStringLength)
+  if (text === undefined) return undefined
+  if (parseEnvironmentUrl(text) === null) {
+    return issue(ctx, path, '必须是无凭据、无 fragment 的 http(s) 绝对地址')
+  }
+  return text
+}
+
+/** v3：证书校验策略。 */
+const readTlsTrust = (
+  ctx: Ctx,
+  value: unknown,
+  path: string,
+  version: EnvironmentFileVersion,
+): EnvironmentTlsTrust | undefined => {
+  if (version < 3) {
+    return issue(ctx, path, 'tlsTrust 是 v3 增量；请把 version 升到 3')
+  }
+  if (value === 'system' || value === 'insecure') return value
+  return issue(ctx, path, '只允许 system 或 insecure')
+}
+
+/** v3：审批档。 */
+const readApprovalMode = (
+  ctx: Ctx,
+  value: unknown,
+  path: string,
+  version: EnvironmentFileVersion,
+): EnvironmentApprovalMode | undefined => {
+  if (version < 3) {
+    return issue(ctx, path, 'approvalMode 是 v3 增量；请把 version 升到 3')
+  }
+  if (value === 'per_step' || value === 'trusted') return value
+  return issue(ctx, path, '只允许 per_step 或 trusted')
+}
+
+/**
+ * 收集环境档里出现过的**服务地址**主机名（`vars` 的 URL 值 + `baseUrl`）。
+ *
+ * 只收能解析成 http(s) 绝对地址的值：`vars` 里除了地址还可能有别的字符串，
+ * 不是地址的不参与私网/证书判定。
+ */
+const environmentHosts = (
+  vars: Readonly<Record<string, string>> | undefined,
+  baseUrl: string | undefined,
+): string[] => {
+  const hosts: string[] = []
+  const candidates = [
+    ...Object.values(vars ?? {}),
+    ...(baseUrl === undefined ? [] : [baseUrl]),
+  ]
+  for (const candidate of candidates) {
+    const parsed = parseEnvironmentUrl(candidate)
+    if (parsed === null) continue
+    hosts.push(parsed.hostname)
+  }
+  return hosts
+}
+
+/** 环境是否需要私网访问：任一服务地址落在确定私网/回环时为真。 */
+const varsNeedPrivateNetwork = (
+  vars: Readonly<Record<string, string>> | undefined,
+  baseUrl: string | undefined,
+): boolean => environmentHosts(vars, baseUrl).some(isPrivateOrLocalHost)
+
 const readSecretNames: Reader<EnvironmentFile['secretNames']> = (ctx, value, path) => {
   const names = readStringList(ctx, value, path, ENVIRONMENT_FILE_LIMITS.maxSecretNames, true)
   if (names === undefined) return undefined
@@ -431,9 +589,12 @@ const readRecipe: Reader<EnvironmentRecipe> = (ctx, value, path) => {
     record[name] === undefined
       ? []
       : readStringList(ctx, record[name], `${path}.${name}`, ENVIRONMENT_FILE_LIMITS.maxRecipeCommands, allowEmpty)
+  // `readiness` 允许为空数组：远程档只需要探针（「就绪命令」在首版并不由宿主执行，
+  // 逼远程档编一条永不执行的命令纯属噪音）。`local` 档必须给出就绪命令——那条要求
+  // 落在档位判定里，报错也更可执行。
   const start = readCommands('start', true)
   const stop = readCommands('stop', true)
-  const readiness = readCommands('readiness', false)
+  const readiness = readCommands('readiness', true)
   const timeoutMs = record.timeoutMs === undefined
     ? 120_000
     : readInteger(ctx, record.timeoutMs, `${path}.timeoutMs`, 1_000, ENVIRONMENT_FILE_LIMITS.maxTimeoutMs)
@@ -455,8 +616,13 @@ const readRecipe: Reader<EnvironmentRecipe> = (ctx, value, path) => {
   }
   if (record.probe !== undefined && probe === undefined) return undefined
   if (record.probes !== undefined && probes === undefined) return undefined
-  if (start.length === 0 && readiness.length === 0) {
-    return issue(ctx, path, '配方至少要给出启动命令或就绪命令')
+  if (start.length === 0 && readiness.length === 0 && probe === undefined && probes === undefined) {
+    // 配方必须声明点东西：起停命令、就绪命令、就绪探针至少有一个。
+    // 「remote 档也必须写一条永不执行的 readiness 命令」曾经是这里的要求——
+    // 远程测试环境只需要探针，逼用户编一条没用的命令纯属噪音（命令在首版
+    // 本来就不由宿主执行）。命令级的下限由档位决定：`local` 档必须有就绪命令
+    // （它在 `parseEnvironmentFile` 的档位判定里检查）。
+    return issue(ctx, path, '配方至少要给出启动命令、就绪命令或就绪探针')
   }
   return {
     start,
@@ -500,6 +666,7 @@ export const parseEnvironmentFile = (source: string): ParseEnvironmentFileResult
   const record = readRecord(ctx, document, '$', [
     'kind', 'version', 'id', 'name', 'mode', 'vars', 'viewport', 'headers',
     'allowPrivateNetwork', 'secretNames', 'secretOrigins', 'recipe',
+    'baseUrl', 'tlsTrust', 'approvalMode',
   ])
   const id = readId(ctx, document.id, '$.id')
   const name = readText(ctx, document.name, '$.name', ENVIRONMENT_FILE_LIMITS.maxNameLength)
@@ -509,11 +676,11 @@ export const parseEnvironmentFile = (source: string): ParseEnvironmentFileResult
   const vars = document.vars === undefined ? {} : readVariables(ctx, document.vars, '$.vars')
   const viewport = document.viewport === undefined ? undefined : readViewport(ctx, document.viewport, '$.viewport')
   const headers = document.headers === undefined ? {} : readHeaders(ctx, document.headers, '$.headers')
-  const allowPrivateNetwork = document.allowPrivateNetwork === undefined
-    ? false
-    : document.allowPrivateNetwork === true
-      ? true
-      : issue(ctx, '$.allowPrivateNetwork', '必须是布尔值')
+  const baseUrl = document.baseUrl === undefined ? undefined : readBaseUrl(ctx, document.baseUrl, '$.baseUrl', version)
+  const tlsTrust = document.tlsTrust === undefined ? undefined : readTlsTrust(ctx, document.tlsTrust, '$.tlsTrust', version)
+  const approvalMode = document.approvalMode === undefined
+    ? undefined
+    : readApprovalMode(ctx, document.approvalMode, '$.approvalMode', version)
   const secretNames = document.secretNames === undefined ? [] : readSecretNames(ctx, document.secretNames, '$.secretNames')
   let secretOrigins: readonly string[] | undefined
   if (document.secretOrigins !== undefined) {
@@ -524,6 +691,46 @@ export const parseEnvironmentFile = (source: string): ParseEnvironmentFileResult
     }
   }
   const recipe = document.recipe === undefined ? undefined : readRecipe(ctx, document.recipe, '$.recipe')
+
+  // v3：`baseUrl` 派生。`vars` 里显式声明的变量优先——多服务拓扑仍然用 `vars` 表达，
+  // `baseUrl` 只省掉「同一个地址写两遍」。
+  let effectiveVars = vars
+  if (vars !== undefined && baseUrl !== undefined) {
+    const derived: Record<string, string> = {}
+    if (vars.WEB_BASE_URL === undefined) derived.WEB_BASE_URL = baseUrl
+    if (vars.API_BASE_URL === undefined) derived.API_BASE_URL = baseUrl
+    effectiveVars = { ...derived, ...vars }
+  }
+
+  // v3：`allowPrivateNetwork` 缺省按地址推导。测试环境指向私网/回环是常态
+  // （共享测试机、内网服务、`localhost` 开发环境），让用户每次手勾一遍纯属噪音。
+  // 推导只看**确定**在私网的字面量地址；DNS 名字一律按「不是私网」处理。
+  // 显式写出的布尔值永远优先——用户可以主动关掉。
+  const declaredAllowPrivateNetwork = document.allowPrivateNetwork === undefined
+    ? undefined
+    : document.allowPrivateNetwork === true
+      ? true
+      : document.allowPrivateNetwork === false
+        ? false
+        : issue(ctx, '$.allowPrivateNetwork', '必须是布尔值')
+  const derivedAllowPrivateNetwork = varsNeedPrivateNetwork(effectiveVars, baseUrl)
+  const allowPrivateNetwork = declaredAllowPrivateNetwork ?? (
+    version >= 3 ? derivedAllowPrivateNetwork : false
+  )
+
+  // v3：证书策略与审批档的档位约束。判定与 Rust 侧保存校验同口径——
+  // 「跳过证书校验」只对确定在私网的目标开放，「受信（免逐次审批）」只对远程档开放。
+  if (tlsTrust === 'insecure') {
+    const hosts = environmentHosts(effectiveVars, baseUrl)
+    if (hosts.length === 0) {
+      issue(ctx, '$.tlsTrust', '关闭证书校验时必须给出 Web/API 地址')
+    } else if (hosts.some((host) => !isPrivateOrLocalHost(host))) {
+      issue(ctx, '$.tlsTrust', '关闭证书校验只允许用于回环或私网地址')
+    }
+  }
+  if (approvalMode === 'trusted' && mode === 'local') {
+    issue(ctx, '$.approvalMode', '本地档不支持受信（免逐次审批）模式')
+  }
 
   // 多服务探针的 var 必须指向本档已声明的变量：指向不存在的服务地址只能得到
   // 永远 not_ready 的探针，错误应在导入时暴露。同一个服务只允许一条探针——步骤 ID
@@ -547,7 +754,7 @@ export const parseEnvironmentFile = (source: string): ParseEnvironmentFileResult
     } else if (recipe !== undefined && recipe.readiness.length === 0) {
       issue(ctx, '$.recipe.readiness', 'local 档必须给出就绪命令')
     }
-    if (vars !== undefined && vars.API_BASE_URL === undefined) {
+    if (effectiveVars !== undefined && effectiveVars.API_BASE_URL === undefined) {
       issue(ctx, '$.vars.API_BASE_URL', 'local 档必须给出真实接口地址（第 3 级探针要真打一次接口）')
     }
   }
@@ -557,10 +764,13 @@ export const parseEnvironmentFile = (source: string): ParseEnvironmentFileResult
   }
 
   if (ctx.issues.length > 0 || record === undefined || id === undefined || name === undefined
-    || mode === undefined || vars === undefined || headers === undefined || secretNames === undefined
+    || mode === undefined || effectiveVars === undefined || headers === undefined || secretNames === undefined
     || allowPrivateNetwork === undefined || (document.viewport !== undefined && viewport === undefined)
     || (document.secretOrigins !== undefined && secretOrigins === undefined)
-    || (document.recipe !== undefined && recipe === undefined)) {
+    || (document.recipe !== undefined && recipe === undefined)
+    || (document.baseUrl !== undefined && baseUrl === undefined)
+    || (document.tlsTrust !== undefined && tlsTrust === undefined)
+    || (document.approvalMode !== undefined && approvalMode === undefined)) {
     return { ok: false, issues: ctx.issues }
   }
 
@@ -572,10 +782,13 @@ export const parseEnvironmentFile = (source: string): ParseEnvironmentFileResult
       id,
       name,
       mode,
-      vars,
+      vars: effectiveVars,
       ...(viewport ? { viewport } : {}),
       headers,
       allowPrivateNetwork,
+      ...(baseUrl === undefined ? {} : { baseUrl }),
+      ...(tlsTrust === undefined ? {} : { tlsTrust }),
+      ...(approvalMode === undefined ? {} : { approvalMode }),
       secretNames,
       ...(secretOrigins ? { secretOrigins } : {}),
       ...(recipe ? { recipe } : {}),
@@ -599,6 +812,10 @@ export interface EnvironmentRecordDraft {
   /** v2：自定义大写变量（排除两个保留名）与 Secret 额外 origin 白名单。 */
   extraVarsJson?: string
   secretOriginsJson?: string
+  /** v3：证书校验策略（`system` / `insecure`）。 */
+  tlsTrust?: EnvironmentTlsTrust
+  /** v3：审批档（`per_step` / `trusted`）。 */
+  approvalMode?: EnvironmentApprovalMode
 }
 
 export const environmentRecordDraftFromFile = (file: EnvironmentFile): EnvironmentRecordDraft => {
@@ -621,5 +838,7 @@ export const environmentRecordDraftFromFile = (file: EnvironmentFile): Environme
     ...(file.secretOrigins && file.secretOrigins.length > 0
       ? { secretOriginsJson: JSON.stringify(file.secretOrigins) }
       : {}),
+    ...(file.tlsTrust === undefined ? {} : { tlsTrust: file.tlsTrust }),
+    ...(file.approvalMode === undefined ? {} : { approvalMode: file.approvalMode }),
   }
 }

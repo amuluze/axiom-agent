@@ -7,7 +7,7 @@
  * 所以稳定事实归 `testingContextSection`，瞬时意图归这一轮消息——本模块只负责把它渲染清楚。
  *
  * 与 `docs/ui-api-automation-usage.md` 的分工：字段清单与取值以文档为准，本指令只写**流程与边界**，
- * 并明确要求模型先加载 `test-design` 技能（纪律在技能正文里，不在指令里重复一遍）。
+ * 并明确要求模型先加载 `test-authoring` 技能（纪律在技能正文里，不在指令里重复一遍）。
  */
 
 /** 单行化后的功能描述上限：指令要短，超长描述先让用户自己收敛。 */
@@ -48,11 +48,12 @@ export const buildTestAuthoringInstruction = (input: TestAuthoringInstructionInp
     `- 目标用例文件：${specPath}`,
     `- 相关既有用例：${related === '' ? '无' : related}`,
     '',
-    '请先加载内置技能 test-design（load_skill({ name: "test-design" })；若 load_skill 尚未激活，'
+    '请先加载内置技能 test-authoring（load_skill({ name: "test-authoring" })；若 load_skill 尚未激活，'
     + '先用 discover_agent_tools({ query: "load_skill" }) 激活），再按它的流程执行：',
     '1. 先定测试点（kind = new_feature / regression），再为每个测试点写用例，用例的 verifies 指向测试点；',
     '2. 用真实接口与页面操作构造数据，写 typed 断言，清理走产品原生接口；',
     '3. 只写 tests/ 目录下的用例文件，不要改产品源码；写文件时我会逐次批准。',
+    '4. 回归用例先给出失败前证据；新增/修改用例至少一条断言会在错误行为下失败。',
     '',
     '完成后在会话里回报：测试点清单、每个测试点对应的用例 id，以及无法客观判定、需要我确认的点。',
   ].join('\n')

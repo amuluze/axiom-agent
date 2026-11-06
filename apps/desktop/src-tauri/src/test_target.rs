@@ -15,6 +15,7 @@ use std::sync::Mutex;
 use tauri::State;
 
 use crate::browser_session::{apply_tab_viewport, current_tab_url, BrowserSessionState};
+use crate::session_state::SessionRepositoryState;
 use crate::workspace_access::{authorized_root, WorkspaceAccessState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +26,10 @@ pub(crate) struct TestTargetGrant {
     pub(crate) workspace_path: PathBuf,
     pub(crate) workspace_generation: u64,
     pub(crate) viewport: Option<TestViewport>,
+    /// 受信环境（`approvalMode = trusted`）的放行作用域：origin 集合。
+    /// 授权时按环境记录算一次并冻结在这里——放行边界因此**绑定本次运行**，
+    /// 而不是每一步回查数据库（环境中途被改也不影响已在跑的运行）。
+    pub(crate) trusted_origins: Vec<reqwest::Url>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +86,18 @@ impl TestTargetGrants {
         Ok(())
     }
 
+    /// 本次运行的受信放行作用域（origin 集合）。空集 = 不受信，逐次审批照旧。
+    pub(crate) fn trusted_origins(&self, run_id: &str) -> Vec<reqwest::Url> {
+        let Ok(active) = self.0.lock() else {
+            return Vec::new();
+        };
+        active
+            .as_ref()
+            .filter(|grant| grant.run_id == run_id)
+            .map(|grant| grant.trusted_origins.clone())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn revoke_run(&self, run_id: &str) -> Result<bool, String> {
         let mut active = self.0.lock().map_err(|_| poisoned())?;
         let matches = active.as_ref().is_some_and(|grant| grant.run_id == run_id);
@@ -132,6 +149,9 @@ pub struct IssueTestTargetGrantRequest {
     expected_origin: String,
     #[serde(default)]
     viewport: Option<TestViewport>,
+    /// 运行环境 ID（可选）：受信档的作用域按环境记录在**授权时**算一次并冻结。
+    #[serde(default)]
+    environment_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -144,11 +164,38 @@ pub struct TestTargetGrantInfo {
     viewport: Option<TestViewport>,
 }
 
+/// 受信环境的放行作用域：按环境记录算一次（授权时冻结）。
+///
+/// 非受信档、环境不存在或读取失败时一律返回空集——空集即「没有可免审批的目标」，
+/// 失败不静默放宽。
+async fn trusted_origins_for_run(
+    repository: &SessionRepositoryState,
+    workspace: &WorkspaceAccessState,
+    environment_id: Option<&str>,
+) -> Result<Vec<reqwest::Url>, String> {
+    let Some(environment_id) = environment_id else {
+        return Ok(Vec::new());
+    };
+    let root = authorized_root(workspace)?;
+    let mut connection = repository.acquire().await?;
+    let environment = crate::test_repository::load_test_environment_access(
+        &mut connection,
+        &root.to_string_lossy(),
+        Some(environment_id),
+    )
+    .await?;
+    if environment.approval_mode != "trusted" {
+        return Ok(Vec::new());
+    }
+    Ok(crate::api_test::trusted_scope_origins(&environment))
+}
+
 /// 授权前确认：tab 当前所在 origin 必须等于用户选定的预期 origin。授权范围绑定当前工作区代际。
 #[tauri::command]
 pub async fn issue_test_target_grant(
     workspace: State<'_, WorkspaceAccessState>,
     browser: State<'_, BrowserSessionState>,
+    repository: State<'_, SessionRepositoryState>,
     grants: State<'_, TestTargetGrants>,
     request: IssueTestTargetGrantRequest,
 ) -> Result<TestTargetGrantInfo, String> {
@@ -174,6 +221,12 @@ pub async fn issue_test_target_grant(
         workspace_path: root,
         workspace_generation: generation,
         viewport: request.viewport,
+        trusted_origins: trusted_origins_for_run(
+            &repository,
+            &workspace,
+            request.environment_id.as_deref(),
+        )
+        .await?,
     })?;
     let viewport_result = apply_tab_viewport(
         &browser,
@@ -225,6 +278,7 @@ mod tests {
                 width: 1280,
                 height: 800,
             }),
+            trusted_origins: Vec::new(),
         }
     }
 
@@ -248,6 +302,20 @@ mod tests {
         assert_eq!(
             grants.verify("run-1", "tab-1", "https://shop.test", Path::new("/ws"), 3),
             Err("没有有效的测试目标授权".to_string())
+        );
+    }
+
+    /// 受信作用域绑定**本次运行**：授权里冻结的 origin 集合只对同一个 runId 生效。
+    #[test]
+    fn trusted_origins_are_scoped_to_the_granted_run() {
+        let grants = TestTargetGrants::default();
+        let mut trusted = grant();
+        trusted.trusted_origins = vec![reqwest::Url::parse("https://10.9.35.5:1443").unwrap()];
+        grants.issue(trusted).unwrap();
+        assert_eq!(grants.trusted_origins("run-1").len(), 1);
+        assert!(
+            grants.trusted_origins("run-2").is_empty(),
+            "别的运行不得继承受信作用域"
         );
     }
 

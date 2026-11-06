@@ -713,6 +713,39 @@ fn validate_credential_destination(
     Err("凭据只能发送到测试环境 API Base URL 或 secretOrigins 声明的同源地址".to_string())
 }
 
+/// 受信环境（`approval_mode = trusted`）的放行作用域：**该环境自己声明的 origin 集合**。
+///
+/// 受信的含义只是「不再逐次弹原生确认」，不是「可以打任意地址」。作用域由环境记录
+/// 决定（Web Base / API Base / secretOrigins），越界的步骤照旧逐次审批。
+pub(crate) fn trusted_scope_origins(environment: &TestEnvironmentAccess) -> Vec<Url> {
+    let mut origins = Vec::new();
+    for value in [
+        environment.api_base_url.as_deref(),
+        environment.web_base_url.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .chain(environment.secret_origins.iter().map(String::as_str))
+    {
+        if let Ok(url) = parse_api_url(value) {
+            origins.push(url);
+        }
+    }
+    origins
+}
+
+/// 目标地址是否落在受信环境的放行作用域内。
+pub(crate) fn within_trusted_scope(environment: &TestEnvironmentAccess, target: &Url) -> bool {
+    trusted_scope_origins(environment)
+        .iter()
+        .any(|origin| same_api_origin(origin, target))
+}
+
+/// 该步骤是否可以按受信环境放行：环境是受信档，且目标 origin 在其作用域内。
+pub(crate) fn trusted_step_allowed(environment: &TestEnvironmentAccess, target: &Url) -> bool {
+    environment.approval_mode == "trusted" && within_trusted_scope(environment, target)
+}
+
 fn prepare_request(
     action: &ApiRequestAction,
     environment: &TestEnvironmentAccess,
@@ -880,6 +913,7 @@ async fn collect_response(
 async fn send_request(
     prepared: &PreparedRequest,
     allow_private_network: bool,
+    tls_trust: &str,
     cancel: &ApiTestCancel,
 ) -> Result<ReceivedResponse, String> {
     let mut current = prepared.url.clone();
@@ -896,6 +930,10 @@ async fn send_request(
             .no_proxy()
             .timeout(prepared.timeout)
             .resolve_to_addrs(host, &addresses)
+            // 私有 CA 的测试环境用系统信任库握手必然失败。环境显式声明 `insecure`
+            // 时才跳过校验——该声明只对确定在私网/回环的目标开放（保存侧校验），
+            // 且改变它必须经原生内容确认，用户看得见。
+            .danger_accept_invalid_certs(tls_trust == "insecure")
             .build()
             .map_err(|_| "无法创建 API 测试 HTTP Client".to_string())?;
         let response = tokio::select! {
@@ -1341,31 +1379,37 @@ pub(crate) async fn issue_api_test_step_lease(
         environment_access(&repository, &workspace, request.environment_id.as_deref()).await?;
     // 同源判定先行：跨源 Secret 请求在弹确认框之前就失败，不消耗用户点击。
     validate_credential_destination(&request.action, &environment)?;
-    // 与 UI 步骤同一条在场门：校验全部通过后再要求，失败不消耗用户点击。
-    // macOS 是「手势 + 内容确认」两层；非 macOS 没有等价手势信号，内容确认框的
-    // 那一次点击即充当在场证明（不重复弹框）；无 Secret 的步骤补一次通用确认框。
-    let content = secret_step_confirmation(&request.action).map(|message| ContentConfirm {
-        title: "确认发送 Secret 的测试步骤",
-        message,
-        confirm_label: "允许执行",
-    });
-    let confirmed = require_user_confirmation(
-        &app,
-        gesture.inner().as_ref(),
-        current_operating_system(),
-        content,
-        ContentConfirm {
-            title: "确认执行 API 测试步骤",
-            message: format!(
-                "即将执行 API 测试步骤：\n\n步骤：{}\n方法：{}\n目标：{}\n\n确认执行？",
-                request.step_id, request.action.method, request.action.url
-            ),
+    // 受信环境（`approval_mode = trusted`）：目标落在该环境声明的 origin 集合内时
+    // 免逐次原生确认。作用域之外的步骤照旧逐次审批——受信放行的边界是环境自己
+    // 声明的地址，不是「任意地址」。
+    let target_url = parse_api_url(&request.action.url)?;
+    if !trusted_step_allowed(&environment, &target_url) {
+        // 与 UI 步骤同一条在场门：校验全部通过后再要求，失败不消耗用户点击。
+        // macOS 是「手势 + 内容确认」两层；非 macOS 没有等价手势信号，内容确认框的
+        // 那一次点击即充当在场证明（不重复弹框）；无 Secret 的步骤补一次通用确认框。
+        let content = secret_step_confirmation(&request.action).map(|message| ContentConfirm {
+            title: "确认发送 Secret 的测试步骤",
+            message,
             confirm_label: "允许执行",
-        },
-    )
-    .await?;
-    if !confirmed {
-        return Ok(None);
+        });
+        let confirmed = require_user_confirmation(
+            &app,
+            gesture.inner().as_ref(),
+            current_operating_system(),
+            content,
+            ContentConfirm {
+                title: "确认执行 API 测试步骤",
+                message: format!(
+                    "即将执行 API 测试步骤：\n\n步骤：{}\n方法：{}\n目标：{}\n\n确认执行？",
+                    request.step_id, request.action.method, request.action.url
+                ),
+                confirm_label: "允许执行",
+            },
+        )
+        .await?;
+        if !confirmed {
+            return Ok(None);
+        }
     }
     let lease_id = issue_lease(
         &state,
@@ -1586,7 +1630,13 @@ async fn execute_attempt(
     attempt_started: Instant,
 ) -> Result<AttemptOutcome, String> {
     let cancel = register_request(state, &request.request.run_id, Instant::now())?;
-    let received = send_request(prepared, environment.allow_private_network, &cancel).await;
+    let received = send_request(
+        prepared,
+        environment.allow_private_network,
+        &environment.tls_trust,
+        &cancel,
+    )
+    .await;
     remove_request(state, &request.request.run_id)?;
     let elapsed_ms = u64::try_from(attempt_started.elapsed().as_millis()).unwrap_or(u64::MAX);
     match received {
@@ -1772,7 +1822,38 @@ mod tests {
             secret_ids: BTreeSet::new(),
             api_base_url: Some("https://example.com".to_string()),
             secret_origins: BTreeSet::new(),
+            tls_trust: "system".to_string(),
+            approval_mode: "per_step".to_string(),
+            web_base_url: None,
         }
+    }
+
+    /// 受信放行的作用域是环境自己声明的 origin 集合：环境内的目标免逐次确认，
+    /// 环境外的目标照旧逐次确认。
+    #[test]
+    fn trusted_scope_covers_only_the_declared_origins() {
+        let mut environment = access();
+        environment.approval_mode = "trusted".to_string();
+        environment.web_base_url = Some("https://shop.example.com".to_string());
+        environment.secret_origins = BTreeSet::from(["https://admin.example.com:8443".to_string()]);
+
+        let in_scope = parse_api_url("https://example.com/orders").unwrap();
+        assert!(trusted_step_allowed(&environment, &in_scope));
+        let web_in_scope = parse_api_url("https://shop.example.com/login").unwrap();
+        assert!(trusted_step_allowed(&environment, &web_in_scope));
+        let secret_origin = parse_api_url("https://admin.example.com:8443/console").unwrap();
+        assert!(trusted_step_allowed(&environment, &secret_origin));
+
+        let out_of_scope = parse_api_url("https://attacker.example/orders").unwrap();
+        assert!(!trusted_step_allowed(&environment, &out_of_scope));
+        // 同 host 不同端口不算同一 origin。
+        let other_port = parse_api_url("https://example.com:8443/orders").unwrap();
+        assert!(!trusted_step_allowed(&environment, &other_port));
+
+        // 未受信的环境：作用域判定为真，但放行判定为假。
+        environment.approval_mode = "per_step".to_string();
+        assert!(within_trusted_scope(&environment, &in_scope));
+        assert!(!trusted_step_allowed(&environment, &in_scope));
     }
 
     #[test]
@@ -1979,6 +2060,9 @@ mod tests {
             secret_ids: BTreeSet::from(["apitest.orders-token".to_string()]),
             api_base_url: None,
             secret_origins: BTreeSet::new(),
+            tls_trust: "system".to_string(),
+            approval_mode: "per_step".to_string(),
+            web_base_url: None,
         };
         assert_eq!(
             prepare_request(&value, &no_base, &secrets, &BTreeMap::new())
@@ -2136,6 +2220,7 @@ mod tests {
         let result = send_request(
             &prepared_for(url, Duration::from_secs(1), "manual"),
             true,
+            "system",
             &ApiTestCancel::default(),
         )
         .await
@@ -2151,6 +2236,7 @@ mod tests {
         let timed_out = send_request(
             &prepared_for(url, Duration::from_millis(20), "manual"),
             true,
+            "system",
             &ApiTestCancel::default(),
         )
         .await;
@@ -2168,6 +2254,7 @@ mod tests {
         let canceled = send_request(
             &prepared_for(url, Duration::from_secs(10), "manual"),
             true,
+            "system",
             &cancel,
         )
         .await;
@@ -2182,6 +2269,7 @@ mod tests {
         let error = send_request(
             &prepared_for(url, Duration::from_secs(1), "same-origin"),
             true,
+            "system",
             &ApiTestCancel::default(),
         )
         .await
@@ -2206,6 +2294,7 @@ mod tests {
         let result = send_request(
             &prepared_for(url, Duration::from_secs(2), "manual"),
             true,
+            "system",
             &ApiTestCancel::default(),
         )
         .await
@@ -2337,7 +2426,7 @@ ok",
             .build()
             .unwrap();
         let response = runtime
-            .block_on(send_request(&prepared, true, &cancel))
+            .block_on(send_request(&prepared, true, "system", &cancel))
             .unwrap();
         assert_eq!(response.status, 200);
         let request = server.join().unwrap();
@@ -2491,6 +2580,9 @@ ok",
             secret_ids: BTreeSet::new(),
             api_base_url: None,
             secret_origins: BTreeSet::new(),
+            tls_trust: "system".to_string(),
+            approval_mode: "per_step".to_string(),
+            web_base_url: None,
         };
         assert_eq!(
             prepare_request(&value, &no_destination, &secrets, &values)

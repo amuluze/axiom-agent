@@ -81,13 +81,13 @@ describe('parseEnvironmentFile', () => {
       { path: '$.recipe', message: 'local 档必须给出发起停与就绪配方' },
     ])
     expect(issuesOf({ recipe: { start: ['up'], readiness: [] } })).toEqual([
-      { path: '$.recipe.readiness', message: '至少需要 1 项' },
+      { path: '$.recipe.readiness', message: 'local 档必须给出就绪命令' },
     ])
     expect(issuesOf({ vars: { WEB_BASE_URL: 'http://127.0.0.1:5173' } })).toEqual([
       { path: '$.vars.API_BASE_URL', message: 'local 档必须给出真实接口地址（第 3 级探针要真打一次接口）' },
     ])
     expect(issuesOf({ recipe: { timeoutMs: 120_000 } })).toEqual([
-      { path: '$.recipe', message: '配方至少要给出启动命令或就绪命令' },
+      { path: '$.recipe', message: '配方至少要给出启动命令、就绪命令或就绪探针' },
     ])
   })
 
@@ -137,8 +137,8 @@ describe('parseEnvironmentFile', () => {
       ok: false,
       issues: [{ path: '$.kind', message: `必须为 "${ENVIRONMENT_FILE_KIND}"` }],
     })
-    expect(issuesOf({ version: 3 })).toEqual([
-      { path: '$.version', message: '不支持的版本，当前支持 1 / 2' },
+    expect(issuesOf({ version: 4 })).toEqual([
+      { path: '$.version', message: '不支持的版本，当前支持 1 / 2 / 3' },
     ])
   })
 
@@ -277,6 +277,135 @@ describe('parseEnvironmentFile v2（多服务拓扑）', () => {
     })).toContainEqual({
       path: '$.recipe.probes',
       message: '多服务探针是 v2 增量；请把 version 升到 2',
+    })
+  })
+
+  it('lets a remote file declare only a readiness probe', () => {
+    const result = parse({
+      mode: 'remote',
+      recipe: { probe: { method: 'GET', path: '/ready', expectStatus: [200] } },
+      vars: { API_BASE_URL: 'https://staging.test' },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.file.recipe?.probe).toEqual({ method: 'GET', path: '/ready', expectStatus: [200] })
+    expect(result.file.recipe?.readiness).toEqual([])
+  })
+})
+
+describe('parseEnvironmentFile v3（快捷基址 / 证书策略 / 审批档）', () => {
+  const v3Base = {
+    kind: ENVIRONMENT_FILE_KIND,
+    version: 3,
+    id: 'beacon-remote',
+    name: 'Beacon 远程环境',
+    mode: 'remote',
+    headers: {},
+    secretNames: [],
+  }
+
+  const v3 = (overrides: Record<string, unknown> = {}) =>
+    parseEnvironmentFile(JSON.stringify({ ...v3Base, ...overrides }))
+
+  const v3Issues = (overrides: Record<string, unknown> = {}) => {
+    const result = v3(overrides)
+    if (result.ok) throw new Error('预期解析失败')
+    return result.issues
+  }
+
+  it('derives WEB/API base URLs from a single baseUrl', () => {
+    const result = v3({ baseUrl: 'https://10.9.35.5:1443' })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.file.vars).toEqual({
+      WEB_BASE_URL: 'https://10.9.35.5:1443',
+      API_BASE_URL: 'https://10.9.35.5:1443',
+    })
+    expect(result.file.baseUrl).toBe('https://10.9.35.5:1443')
+  })
+
+  it('lets explicit vars win over the derived base URL', () => {
+    const result = v3({
+      baseUrl: 'https://10.9.35.5:1443',
+      vars: { API_BASE_URL: 'https://10.9.35.5:1443/api' },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.file.vars).toEqual({
+      WEB_BASE_URL: 'https://10.9.35.5:1443',
+      API_BASE_URL: 'https://10.9.35.5:1443/api',
+    })
+  })
+
+  it('derives private-network access from the declared address', () => {
+    const privateResult = v3({ baseUrl: 'https://10.9.35.5:1443' })
+    expect(privateResult.ok).toBe(true)
+    if (privateResult.ok) expect(privateResult.file.allowPrivateNetwork).toBe(true)
+
+    const publicResult = v3({ baseUrl: 'https://staging.example.com' })
+    expect(publicResult.ok).toBe(true)
+    if (publicResult.ok) expect(publicResult.file.allowPrivateNetwork).toBe(false)
+  })
+
+  it('keeps an explicit allowPrivateNetwork over the derived value', () => {
+    const result = v3({ baseUrl: 'https://10.9.35.5:1443', allowPrivateNetwork: false })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.file.allowPrivateNetwork).toBe(false)
+  })
+
+  it('keeps the legacy default for v1/v2 files', () => {
+    const result = parseEnvironmentFile(JSON.stringify({
+      ...base,
+      mode: 'remote',
+      recipe: undefined,
+      vars: { API_BASE_URL: 'http://127.0.0.1:8080' },
+    }))
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.file.allowPrivateNetwork).toBe(false)
+  })
+
+  it('allows skipping certificate verification only for private targets', () => {
+    const privateResult = v3({ baseUrl: 'https://10.9.35.5:1443', tlsTrust: 'insecure' })
+    expect(privateResult.ok).toBe(true)
+    if (privateResult.ok) expect(privateResult.file.tlsTrust).toBe('insecure')
+
+    expect(v3Issues({ baseUrl: 'https://staging.example.com', tlsTrust: 'insecure' })).toEqual([
+      { path: '$.tlsTrust', message: '关闭证书校验只允许用于回环或私网地址' },
+    ])
+    expect(v3Issues({ tlsTrust: 'whatever' })).toEqual([
+      { path: '$.tlsTrust', message: '只允许 system 或 insecure' },
+    ])
+  })
+
+  it('allows the trusted approval mode only for remote environments', () => {
+    const remoteResult = v3({ baseUrl: 'https://10.9.35.5:1443', approvalMode: 'trusted' })
+    expect(remoteResult.ok).toBe(true)
+    if (remoteResult.ok) expect(remoteResult.file.approvalMode).toBe('trusted')
+
+    expect(v3Issues({
+      baseUrl: 'https://10.9.35.5:1443',
+      approvalMode: 'trusted',
+      mode: 'local',
+      recipe: base.recipe,
+    })).toContainEqual({
+      path: '$.approvalMode',
+      message: '本地档不支持受信（免逐次审批）模式',
+    })
+  })
+
+  it('rejects v3 fields in older files and forwards them to the record draft', () => {
+    expect(issuesOf({ baseUrl: 'https://10.9.35.5:1443' })).toEqual([
+      { path: '$.baseUrl', message: 'baseUrl 是 v3 增量；请把 version 升到 3' },
+    ])
+    const result = v3({ baseUrl: 'https://10.9.35.5:1443', tlsTrust: 'insecure', approvalMode: 'trusted' })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(environmentRecordDraftFromFile(result.file)).toMatchObject({
+      webBaseUrl: 'https://10.9.35.5:1443',
+      apiBaseUrl: 'https://10.9.35.5:1443',
+      allowPrivateNetwork: true,
+      tlsTrust: 'insecure',
+      approvalMode: 'trusted',
     })
   })
 })

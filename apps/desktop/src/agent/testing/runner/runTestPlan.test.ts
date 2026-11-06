@@ -782,6 +782,48 @@ describe('runTestPlan v6（运行时凭据注入）', () => {
     // 敏感值仍进入脱敏名单。
     expect(calls[1]?.context).toMatchObject({ sensitiveValues: ['jwt-from-login'] })
   })
+  it('surfaces the concrete message when a plan references an unproduced credential variable', async () => {
+    // 绕过编译期校验的非法计划（headers 引用了从未产出的敏感变量）：Runner 是最后
+    // 一道防线，错误必须带出具体变量名，而不是折叠成驱动固定文案。
+    const brokenPlan: CompiledTestPlan = {
+      specId: 'quoin',
+      name: '凭据缺失',
+      specVersion: 6,
+      specHash: 'v6missing',
+      target: {},
+      environmentNames: [],
+      cases: [{
+        id: 'broken',
+        name: '引用未产出凭据',
+        steps: [
+          {
+            id: 'call',
+            action: 'api.request',
+            method: 'GET',
+            url: 'http://127.0.0.1:8090/me',
+            headers: { Authorization: { variable: 'token', prefix: 'Bearer ' } },
+            expect: [{ status: 200 }],
+          },
+          { id: 'after', action: 'api.delay', durationMs: 1 },
+        ],
+      }],
+    }
+    const apiRunStep = vi.fn(async (): Promise<StepOutcome> => ({ verdict: 'passed' }))
+    const report = await runTestPlan({
+      plan: brokenPlan,
+      ui: { runStep: vi.fn() },
+      api: { runStep: apiRunStep },
+      signal: new AbortController().signal,
+    })
+    expect(report.status).toBe('error')
+    expect(report.cases[0]?.steps[0]).toMatchObject({
+      status: 'error',
+      message: '运行时凭据变量「token」未产出',
+    })
+    // 失败后后续步骤记 skipped，驱动从未被调用。
+    expect(report.cases[0]?.steps[1]?.status).toBe('skipped')
+    expect(apiRunStep).not.toHaveBeenCalled()
+  })
 })
 
 describe('runTestPlan v7（条件执行守卫）', () => {

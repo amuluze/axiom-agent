@@ -440,7 +440,7 @@ export const createApiRequestTool = (
     '判定与证据都由宿主给出：非 2xx 不是工具错误（期望状态由测试文件里的断言决定），响应正文与 Secret 不回灌会话，不要凭摘要臆造响应内容。',
     '不要把密钥、令牌或用户隐私写进 url/query/body：它们会进入会话记录与审计。',
   ],
-  runtimeVersion: '6',
+  runtimeVersion: '7',
   recoveryPolicy: 'never',
   executionMode: 'sequential',
   requiresApproval: true,

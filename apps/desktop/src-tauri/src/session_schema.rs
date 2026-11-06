@@ -9,7 +9,7 @@ use sqlx::{ConnectOptions as _, Connection, Executor, Row, SqliteConnection};
 use std::path::Path;
 use std::time::Duration;
 
-pub(crate) const DATABASE_VERSION: i64 = 22;
+pub(crate) const DATABASE_VERSION: i64 = 23;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Provider / connect 凭据表（v15 起密钥由 macOS Keychain 迁入 SQLite，Rust 独占读写）。
@@ -376,6 +376,30 @@ const V21_COLUMNS: &[ColumnMigration] = &[
     },
 ];
 
+/// v23：测试环境的「信任档」列。
+///
+/// `tls_trust` = 证书校验策略（`system` 走系统信任库 / `insecure` 跳过校验）。
+/// 私有 CA 的测试环境（自签证书）用 `system` 一律握手失败——证书链不���系统信任库时
+/// 只有两条路：把 CA 装进系统，或让该环境显式声明「不校验」。后者只对**私网/回环**
+/// 目标开放（见 `validate_test_environment`），公网目标一律拒绝。
+///
+/// `approval_mode` = 审批档（`per_step` 逐次审批 / `trusted` 受信环境）。
+/// `trusted` 只对 `remote` 档开放：受信环境的测试步骤不再逐次弹原生确认，
+/// 但**作用域限定在该环境声明的 origin 集合内**（`validate_test_environment`）。
+/// 旧记录缺省 `system` + `per_step`，语义与升级前一致。
+const V23_COLUMNS: &[ColumnMigration] = &[
+    ColumnMigration {
+        table: "test_environments",
+        column: "tls_trust",
+        statement: "ALTER TABLE test_environments ADD COLUMN tls_trust TEXT NOT NULL DEFAULT 'system' CHECK (tls_trust IN ('system', 'insecure'))",
+    },
+    ColumnMigration {
+        table: "test_environments",
+        column: "approval_mode",
+        statement: "ALTER TABLE test_environments ADD COLUMN approval_mode TEXT NOT NULL DEFAULT 'per_step' CHECK (approval_mode IN ('per_step', 'trusted'))",
+    },
+];
+
 const V22_STATEMENTS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS agent_session_journal_v22 (
        id TEXT PRIMARY KEY NOT NULL, session_id TEXT NOT NULL,
@@ -535,6 +559,12 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         version: 22,
         statements: V22_STATEMENTS,
         columns: &[],
+        post_statements: &[],
+    },
+    Migration {
+        version: 23,
+        statements: &[],
+        columns: V23_COLUMNS,
         post_statements: &[],
     },
 ];

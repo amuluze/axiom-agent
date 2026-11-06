@@ -308,10 +308,27 @@ export const runTestPlan = async (options: RunTestPlanOptions): Promise<TestRunR
         continue
       }
       setStepStatus(caseIndex, stepIndex, 'running')
+      // 变量物化与凭据表解析先于驱动调用独立结算：这里的错误消息由本模块自产
+      //（只含计划内的变量名；坏基址在 materializeTestPlan 准备期已被拒），保留具体
+      // 原因便于排障。编译期校验保证正常计划不可达，真到达即「计划与运行时变量表
+      // 不一致」的内部错误——折叠成驱动固定文案会掩盖根因。
+      let step: TestStepSpec
+      let credentialVariables: Record<string, string> | undefined
+      try {
+        step = materializeTestStepVariables(sourceStep, variables, plan.target)
+        credentialVariables = credentialVariablesFor(step, variables)
+      } catch (error) {
+        setStepStatus(
+          caseIndex,
+          stepIndex,
+          'error',
+          error instanceof Error ? error.message : '测试计划变量物化失败',
+        )
+        result = 'failure'
+        continue
+      }
       let outcome: StepOutcome
       try {
-        const step = materializeTestStepVariables(sourceStep, variables, plan.target)
-        const credentialVariables = credentialVariablesFor(step, variables)
         const stepContext = credentialVariables
           ? { ...context(caseIndex, stepIndex), credentialVariables }
           : context(caseIndex, stepIndex)

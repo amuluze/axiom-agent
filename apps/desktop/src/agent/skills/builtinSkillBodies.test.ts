@@ -59,7 +59,83 @@ describe('builtinSkillBodies', () => {
 
   it('findBuiltinSkillBody 命中/未命中', () => {
     expect(findBuiltinSkillBody('brainstorm')?.name).toBe('brainstorm')
+    expect(findBuiltinSkillBody('test-authoring')?.name).toBe('test-authoring')
     expect(findBuiltinSkillBody('unknown')).toBeNull()
+  })
+
+  it('内置 Skill 包含证据链优化关键约束的中英文锚点', () => {
+    const zh = (name: string): string => findBuiltinSkillBody(name)!['zh-CN'].body
+    const en = (name: string): string => findBuiltinSkillBody(name)!.en.body
+
+    expect(zh('test-authoring')).toContain('回归证明')
+    expect(zh('test-authoring')).toContain('测试质量自检')
+    expect(zh('test-authoring')).toContain('tests/verify.md')
+    expect(en('test-authoring')).toContain('Regression proof')
+    expect(en('test-authoring')).toContain('Project verification contract')
+
+    expect(zh('diagnose')).toContain('匹配表面复现')
+    expect(zh('diagnose')).toContain('二分假设')
+    expect(zh('diagnose')).toContain('共享同一前提')
+    expect(en('diagnose')).toContain('Binary-search the hypotheses')
+
+    expect(zh('implement')).toContain('throughput checkpoint')
+    expect(zh('implement')).toContain('测试双检')
+    expect(zh('implement')).toContain('真实表面')
+    expect(en('implement')).toContain('Test the tests')
+
+    expect(zh('plan')).toContain('设计闸门')
+    expect(zh('plan')).toContain('证据类型')
+    expect(zh('plan')).toContain('计划自检')
+    expect(en('plan')).toContain('Design gate')
+
+    expect(zh('brainstorm')).toContain('先复述')
+    expect(zh('brainstorm')).toContain('验收草稿用四问')
+    expect(en('brainstorm')).toContain('Restate first')
+
+    expect(zh('finish')).toContain('决策轨迹')
+    expect(zh('finish')).toContain('未验证或不确定')
+    expect(en('finish')).toContain('decision trail')
+
+    expect(zh('domain')).toContain('追溯来源')
+    expect(zh('domain')).toContain('limiter')
+    expect(en('domain')).toContain('trace its source')
+
+    expect(zh('design')).toContain('方案探索')
+    expect(en('design')).toContain('Design exploration')
+  })
+
+  it('证据降级与阶段边界在退出条件中闭合（双语）', () => {
+    const zh = (name: string): string => findBuiltinSkillBody(name)!['zh-CN'].body
+    const en = (name: string): string => findBuiltinSkillBody(name)!.en.body
+
+    expect(zh('domain')).toContain('执行步骤 5 的维度')
+    expect(zh('domain')).not.toContain('执行步骤 4 的维度')
+    expect(en('domain')).toContain("step 5's dimensions")
+
+    expect(zh('diagnose')).toContain('停止复现循环')
+    expect(zh('diagnose')).toContain('本阶段不修改产品或测试代码、不提交 git')
+    expect(zh('diagnose')).toContain('不得宣称已定位')
+    expect(zh('diagnose')).not.toContain('直到它触发')
+    expect(zh('diagnose')).not.toContain('进入 git 历史')
+    expect(en('diagnose')).toContain('Stop the reproduction loop')
+    expect(en('diagnose')).toContain('do not commit to git in this phase')
+
+    expect(zh('implement')).toContain('测试不适用项已有 Plan 指定')
+    expect(zh('implement')).toContain('不得以完成状态退出')
+    expect(en('implement')).toContain('where tests do not apply')
+    expect(en('implement')).toContain('do not exit as complete')
+
+    expect(zh('test-authoring')).toContain('不得为了制造失败而修改本会话的产品源码')
+    expect(zh('test-authoring')).toContain('不复制成第二份真相')
+    expect(zh('test-authoring')).not.toContain('故意破坏的实现')
+    expect(en('test-authoring')).toContain('Never modify the product source in this session')
+    expect(en('test-authoring')).toContain('second source of truth')
+    expect(en('test-authoring')).not.toContain('deliberately broken implementation')
+
+    expect(zh('design')).toContain('发生方案探索时：变体 .ax 路径')
+    expect(zh('design')).toContain('不得宣称验收通过')
+    expect(en('design')).toContain('When design exploration occurred: variant .ax paths')
+    expect(en('design')).toContain('cannot be claimed as accepted')
   })
 
   it('resolveBuiltinSkillVariant：无覆写返回内置变体，覆写字段优先、未覆写字段回落', () => {

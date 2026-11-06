@@ -34,7 +34,8 @@ describe('buildTestingContextSection', () => {
     expect(section).toContain('- 本地开发（本地（Axiom 起停），有起停配方）')
     expect(section).toContain('- 预发（远程（只读校验））')
     // 技能与文档指向必须始终在：这是"模型知道自己该怎么做"的最小抓手。
-    expect(section).toContain('test-design')
+    expect(section).toContain('test-authoring')
+    expect(section).toContain('失败前证据')
     expect(section).toContain('docs/ui-api-automation-usage.md')
   })
 

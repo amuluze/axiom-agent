@@ -169,6 +169,9 @@ export const runTestSuite = async (input: TestSuiteRunInput): Promise<TestSuiteR
         approver: input.approver,
         signal: input.signal,
         ...(input.environment ? { environmentId: input.environment.id } : {}),
+        ...(runtimeEnvironment.trustedOrigins.length > 0
+          ? { trustedOrigins: runtimeEnvironment.trustedOrigins }
+          : {}),
         ...(environmentFacts ? { environmentFacts } : {}),
         batchId,
         ...(input.sourceSessionId ? { sourceSessionId: input.sourceSessionId } : {}),

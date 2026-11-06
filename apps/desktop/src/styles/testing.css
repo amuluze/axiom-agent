@@ -108,6 +108,13 @@
   white-space: nowrap;
 }
 
+/* 运行入口不可用时给出原因：沉默的 disabled 按钮等于没有反馈。 */
+.testing-view__run-blocked {
+  font-size: 11px;
+  color: var(--warn-text);
+  white-space: nowrap;
+}
+
 .testing-view__filter select {
   font-size: 11px;
   color: var(--text-secondary);
@@ -264,6 +271,28 @@
   color: var(--warn-text);
 }
 
+.testing-view__envbar-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+}
+
+.testing-view__envbar-dot.is-on {
+  background: var(--diff-green);
+}
+
+.testing-view__envbar-badge {
+  padding: 1px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  font-size: 10px;
+}
+
+.testing-view__envbar-spacer {
+  flex: 1;
+}
+
 .testing-view__error {
   margin: 8px 12px 0;
   padding: 8px 12px;
@@ -331,6 +360,24 @@
   text-overflow: ellipsis;
   overflow: hidden;
   white-space: nowrap;
+}
+
+/* 运行事实行：规模 + 断言 + 最近一次（链接到报告）合成一行。 */
+.testing-view__title-text p.testing-view__fact-line {
+  white-space: normal;
+}
+
+.testing-view__link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.testing-view__link:hover {
+  text-decoration: underline;
 }
 
 .testing-view__placeholder {
@@ -954,141 +1001,254 @@
   background: var(--danger-soft);
 }
 
-/* ── 运行环境面板（环境条展开）────────────────────────────────
-   卡片式容器 + 6 列字段网格：名称/两个 Base URL 各占两列，视口宽高各占一列，
-   回环开关补齐余量；JSON 两列并排、Secret 编辑单行 + 状态行。 */
+/* ── 环境配置弹窗（环境条「运行环境」入口）──────────────────────
+   基础区只回答「连哪儿、是谁」：名称 + 服务地址 + 由地址派生的事实；
+   视口 / 证书 / 审批档 / Headers / Secret / 配方 / 环境档导入都在「高级配置」里。 */
 
-.testing-view__environment {
+.testing-env-dialog {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin: 8px 12px 0;
-  padding: 10px 12px 12px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
+  width: min(920px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  overflow: hidden;
   background: var(--bg-card);
-  flex-shrink: 0;
-  /* 面板可折叠，展开时也不能把下方用例表挤出视口；上限留够一整张编辑表单的高度。 */
-  max-height: min(60vh, 560px);
-  overflow-y: auto;
-}
-
-.testing-view__environment-toolbar {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.testing-view__environment-toolbar > label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.testing-view__environment-toolbar select {
-  appearance: none;
-  -webkit-appearance: none;
-  height: 26px;
-  padding: 0 26px 0 8px;
   border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-  background-color: var(--bg-input);
-  background-image: var(--chevron-down);
-  background-repeat: no-repeat;
-  background-position: right 8px center;
-  background-size: 13px 13px;
-  color: var(--text-primary);
-  font-family: var(--font-ui);
-  font-size: 12px;
+  border-radius: 14px;
+  box-shadow: var(--shadow-popover);
 }
 
-.testing-view__environment-files {
+.testing-env-dialog:focus {
+  outline: 0;
+}
+
+.testing-env-dialog__header {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 8px 10px;
-  border: 1px dashed var(--border-subtle);
-  border-radius: 8px;
-  background: var(--bg-main);
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
-.testing-view__environment-files-title {
+.testing-env-dialog__header h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.testing-env-dialog__header p {
+  margin: 4px 0 0;
   font-size: 11px;
   color: var(--text-tertiary);
 }
 
-.testing-view__environment-files ul {
+.testing-env-dialog__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.testing-env-dialog__close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.testing-env-dialog__alert {
+  margin: 0;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--danger-soft);
+  color: var(--diff-red);
+  font-size: 12px;
+}
+
+.testing-env-dialog__body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* 环境列表：本地/远程与主机都在一行副标题里，切环境不离开弹窗。 */
+.testing-env-dialog__list {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  flex: none;
+  width: 232px;
+  padding: 12px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border-subtle);
 }
 
-.testing-view__environment-files li {
+.testing-env-dialog__list-item {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  font-size: 12px;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
   color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
 }
 
-.testing-view__environment-files li > code {
-  min-width: 0;
-  overflow: hidden;
-  font-family: var(--font-mono);
-  font-size: 11px;
+.testing-env-dialog__list-item:hover {
+  background: var(--bg-hover);
+}
+
+.testing-env-dialog__list-item.is-active {
+  background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+.testing-env-dialog__list-item strong,
+.testing-env-dialog__list-item span {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* 导入按钮靠右：路径长度参差时按钮仍对齐成一列。 */
-.testing-view__environment-files li > .testing-view__secondary {
-  margin-left: auto;
+.testing-env-dialog__list-item strong {
+  font-size: 12px;
+  font-weight: 500;
 }
 
-.testing-view__environment-form {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+.testing-env-dialog__list-item span {
+  font-size: 10px;
+  color: var(--text-tertiary);
 }
 
-.testing-view__environment-fields {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  align-items: end;
-  gap: 8px 10px;
+.testing-env-dialog__list-item--new {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--accent-text);
 }
 
-.testing-view__field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.testing-view__field > span {
+.testing-env-dialog__list-empty {
+  margin: 4px 0 0;
   font-size: 11px;
   color: var(--text-tertiary);
 }
 
-.testing-view__field--name,
-.testing-view__field--url {
-  grid-column: span 2;
+.testing-env-dialog__main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px 16px;
+  overflow-y: auto;
 }
 
-.testing-view__field--number {
-  grid-column: span 1;
+.testing-env-dialog__placeholder {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
 }
 
-.testing-view__environment input:not([type='checkbox']),
-.testing-view__environment textarea {
+/* 类型选择只在还没有地址时出现：之后的「本地/远程」由地址派生，不做第二个真相源。 */
+.testing-env-dialog__types {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.testing-env-dialog__type {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-main);
+  text-align: left;
+  cursor: pointer;
+}
+
+.testing-env-dialog__type strong {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.testing-env-dialog__type span {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.testing-env-dialog__type:hover {
+  background: var(--bg-hover);
+}
+
+.testing-env-dialog__type.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.testing-env-dialog__derived {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.testing-env-dialog__badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.testing-env-dialog__fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+  gap: 8px 10px;
+}
+
+.testing-env-dialog__field--wide {
+  grid-column: 1 / -1;
+}
+
+.testing-env-dialog__checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.testing-env-dialog__checkbox input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.testing-env-dialog input:not([type='checkbox']),
+.testing-env-dialog textarea,
+.testing-env-dialog select {
   width: 100%;
   min-width: 0;
   height: 28px;
@@ -1101,105 +1261,175 @@
   font-size: 12px;
 }
 
-.testing-view__environment textarea {
+.testing-env-dialog textarea {
   height: auto;
   min-height: 54px;
   line-height: 1.45;
   resize: vertical;
 }
 
-.testing-view__environment .testing-view__mono {
+.testing-env-dialog .testing-view__mono {
   font-family: var(--font-mono);
 }
 
-.testing-view__environment input:not([type='checkbox']):focus,
-.testing-view__environment textarea:focus {
+.testing-env-dialog input:not([type='checkbox']):focus,
+.testing-env-dialog textarea:focus,
+.testing-env-dialog select:focus {
   outline: 0;
   border-color: var(--accent);
 }
 
-/* 只读态（选中环境未进入编辑）用主背景压低对比，同时保持文本可读。 */
-.testing-view__environment input:disabled,
-.testing-view__environment textarea:disabled {
+.testing-env-dialog input:disabled,
+.testing-env-dialog textarea:disabled,
+.testing-env-dialog select:disabled {
   background: var(--bg-main);
   color: var(--text-secondary);
 }
 
-.testing-view__environment-json {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 8px 10px;
-}
-
-.testing-view__environment-checkbox {
-  display: inline-flex;
+.testing-env-dialog__actions {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  grid-column: span 4;
-  height: 28px;
-  padding: 0 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-  background: var(--bg-input);
-  font-size: 12px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  user-select: none;
+  gap: 8px;
 }
 
-.testing-view__environment-checkbox:has(input:disabled) {
-  cursor: not-allowed;
+/* 这三类按钮没有全局 :disabled 样式：禁用时外观不变，用户会以为「点了没反应」。 */
+.testing-env-dialog__actions button:disabled,
+.testing-env-dialog__advanced button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.testing-env-dialog__hint {
+  margin: 0;
+  font-size: 11px;
   color: var(--text-tertiary);
 }
 
-.testing-view__environment-checkbox input {
-  width: 13px;
-  height: 13px;
+/* 探针结论原样展示（ready / unreachable / not_ready / blocked / rejected / canceled / unusable）。 */
+.testing-env-dialog__probe {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin: 0;
-  accent-color: var(--accent);
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12px;
 }
 
-.testing-view__secret-editor {
+.testing-env-dialog__probe--ok {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.testing-env-dialog__probe--bad {
+  background: var(--danger-soft);
+  color: var(--diff-red);
+}
+
+.testing-env-dialog__advanced {
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.testing-env-dialog__advanced > summary {
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.testing-env-dialog__advanced[open] > summary {
+  margin-bottom: 8px;
+}
+
+.testing-env-dialog__advanced .testing-env-dialog__fields {
+  margin-top: 8px;
+}
+
+.testing-env-dialog__json {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 10px;
+  margin-top: 8px;
+}
+
+.testing-env-dialog__secret {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto auto;
   align-items: end;
   gap: 8px;
+  margin-top: 8px;
   padding-top: 10px;
   border-top: 1px dashed var(--border-subtle);
 }
 
-.testing-view__secret-editor > [role='status'] {
+.testing-env-dialog__secret > [role='status'] {
   grid-column: 1 / -1;
   font-size: 11px;
   color: var(--accent-text);
 }
 
-.testing-view__environment-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.testing-view__environment-mode {
+.testing-env-dialog__facts {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  margin: 0;
+  margin-top: 8px;
   font-size: 12px;
   color: var(--text-secondary);
 }
 
-.testing-view__environment-mode p {
+.testing-env-dialog__facts p {
   margin: 0;
   font-size: 11px;
   color: var(--text-tertiary);
 }
 
-.testing-view__environment-mode code {
+.testing-env-dialog__facts code {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--text-secondary);
   word-break: break-all;
+}
+
+.testing-env-dialog__recipe {
+  display: block;
+  padding: 4px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  background: var(--bg-input);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+}
+
+.testing-env-dialog__files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.testing-env-dialog__files li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.testing-env-dialog__files li > code {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.testing-env-dialog__files li > .testing-view__secondary {
+  margin-left: auto;
 }
 
 .testing-view__environment-error {
@@ -1307,6 +1537,21 @@
 }
 
 /* ── authoring 区（为本功能写用例 / 产物核对）────────────────── */
+
+.testing-view__secondary-tools > summary {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.testing-view__secondary-tools-content {
+  display: grid;
+  gap: 10px;
+  padding-top: 10px;
+}
 
 .testing-view__authoring {
   display: flex;
@@ -1451,6 +1696,26 @@
   color: var(--text-tertiary);
 }
 
+.testing-view__footer-path {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 运行历史：列表默认收起，卡头常驻「最近批次」入口。 */
+.testing-view__runs > summary {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.testing-view__runs[open] > summary {
+  padding-bottom: 4px;
+}
+
 .testing-view__footer-spacer {
   flex: 1;
 }
@@ -1489,6 +1754,20 @@
   font-size: 13px;
   color: var(--text-secondary);
   line-height: 1.35;
+}
+
+.testing-view__empty-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.testing-view__empty-steps li {
+  line-height: 1.5;
 }
 
 .testing-view__empty-add {

@@ -21,6 +21,7 @@ import {
   type EnvironmentProbePlan,
   type EnvironmentReadiness,
 } from '@/agent/testing/environment/readiness'
+import { normalizeTestOrigin, trustedScopeOrigins } from '@/agent/testing/environment/trustScope'
 import type { TestEnvironmentRecord } from './testEnvironments'
 import { runApiTestStepWithLease } from './apiTestAutomation'
 
@@ -50,6 +51,17 @@ const probeFact = (plan: EnvironmentProbePlan, readiness: EnvironmentReadiness):
   verdict: readiness.verdict,
 })
 
+/** Secret 目标白名单（JSON 文本）；损坏时按空集处理（展示层不抛错）。 */
+const parseStringArray = (json: string): string[] => {
+  try {
+    const parsed: unknown = JSON.parse(json || '[]')
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((value): value is string => typeof value === 'string')
+  } catch {
+    return []
+  }
+}
+
 export const probeEnvironmentReadiness = async (
   input: ProbeEnvironmentInput,
 ): Promise<ProbeEnvironmentResult> => {
@@ -66,6 +78,15 @@ export const probeEnvironmentReadiness = async (
   let firstProbe: { method: string; url: string } | null = null
   let observed = 0
   let lastStatus: number | null = null
+  // 受信环境：探针打的就是这个环境自己的地址，属于环境自身操作，不弹审批卡。
+  // 作用域之外的探针目标（自定义服务变量指向别处）照旧逐次审批。
+  const trustedOrigins = environment.approvalMode === 'trusted'
+    ? trustedScopeOrigins({
+      apiBaseUrl: environment.apiBaseUrl,
+      webBaseUrl: environment.webBaseUrl,
+      secretOrigins: parseStringArray(environment.secretOriginsJson),
+    })
+    : []
   for (const plan of plans.plans) {
     const probe = { method: plan.step.method, url: plan.step.url }
     if (firstProbe === null) firstProbe = probe
@@ -73,17 +94,20 @@ export const probeEnvironmentReadiness = async (
       return { readiness: canceledReadiness(), probe: firstProbe, probes: facts }
     }
 
-    const approved = await approver.approve(
-      {
-        actor: { kind: 'testStep', testRunId: runId, stepId: plan.step.id },
-        card: describeApiTestStepApproval(plan.step),
-      },
-      signal,
-    )
-    if (signal.aborted) {
-      return { readiness: canceledReadiness(), probe: firstProbe, probes: facts }
+    const trusted = trustedOrigins.includes(normalizeTestOrigin(plan.step.url) ?? '')
+    if (!trusted) {
+      const approved = await approver.approve(
+        {
+          actor: { kind: 'testStep', testRunId: runId, stepId: plan.step.id },
+          card: describeApiTestStepApproval(plan.step),
+        },
+        signal,
+      )
+      if (signal.aborted) {
+        return { readiness: canceledReadiness(), probe: firstProbe, probes: facts }
+      }
+      if (!approved) return { readiness: rejectedReadiness(), probe: firstProbe, probes: facts }
     }
-    if (!approved) return { readiness: rejectedReadiness(), probe: firstProbe, probes: facts }
 
     const result = await runApiTestStepWithLease(
       { runId, environmentId: environment.id },

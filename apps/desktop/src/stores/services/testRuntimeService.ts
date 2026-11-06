@@ -87,6 +87,11 @@ export interface StartUiTestRunInput {
   batchId?: string
   /** 发起运行的会话（报告来源追溯）。 */
   sourceSessionId?: string
+  /**
+   * v23：受信环境的放行作用域（origin 集合）。空数组 = 不受信，逐次审批照旧。
+   * 权威判定在 Rust 侧；这里只驱动界面是否弹审批卡。
+   */
+  trustedOrigins?: readonly string[]
   onStepStatusChange?: (change: StepStatusChange) => void
 }
 
@@ -107,6 +112,7 @@ export const startUiTestRun = async (input: StartUiTestRunInput): Promise<TestRu
       tabId: target.tabId,
       expectedOrigin: target.origin,
       ...(plan.target.viewport ? { viewport: plan.target.viewport } : {}),
+      ...(input.environmentId ? { environmentId: input.environmentId } : {}),
     })
   }
   let runStarted = false
@@ -170,11 +176,23 @@ export const startUiTestRun = async (input: StartUiTestRunInput): Promise<TestRu
 
     const report = await runTestPlan({
       plan,
-      ui: target ? createUiTestDriver(target, { approve: approver.approve }) : UNAVAILABLE_UI_DRIVER,
+      ui: target
+        ? createUiTestDriver(target, {
+          approve: approver.approve,
+          ...(input.trustedOrigins && input.trustedOrigins.length > 0
+            ? { trustedOrigins: input.trustedOrigins }
+            : {}),
+          ...(input.environmentId ? { environmentId: input.environmentId } : {}),
+        })
+        : UNAVAILABLE_UI_DRIVER,
       api: createApiTestDriver({
         runId,
         ...(input.environmentId ? { environmentId: input.environmentId } : {}),
-      }, approver),
+      }, approver, {
+        ...(input.trustedOrigins && input.trustedOrigins.length > 0
+          ? { trustedOrigins: input.trustedOrigins }
+          : {}),
+      }),
       signal,
       onStepStatusChange,
     })

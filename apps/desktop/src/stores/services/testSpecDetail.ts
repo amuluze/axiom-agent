@@ -19,7 +19,12 @@ export interface SpecCaseRow {
   type: SpecCaseType
   stepCount: number
   assertCount: number
-  /** 首个断言步骤的人话描述（表格副行「断言：…」）；无断言步骤为 null。 */
+  /** 该用例证明的测试点标题（表格副行的首选信息）；v1 文件没有追溯时为空。 */
+  testPointTitles: readonly string[]
+  /**
+   * **最后一个**断言步骤的人话描述：表格副行在无测试点追溯时退到这里。
+   * 取首个断言会在多个用例共享同一前置请求时变成同一行字（信息量为零）。
+   */
   assertSummary: string | null
 }
 
@@ -71,18 +76,19 @@ export const assertionCountOf = (step: TestStepSpec): number => {
   return 0
 }
 
-const toCaseRow = (testCase: TestCaseSpec): SpecCaseRow => {
+const toCaseRow = (testCase: TestCaseSpec, testPoints: ReadonlyMap<string, string>): SpecCaseRow => {
   const hasApi = testCase.steps.some(isApiTestStep)
   const hasUi = testCase.steps.some((step) => !isApiTestStep(step))
   const assertSteps = testCase.steps.filter((step) => assertionCountOf(step) > 0)
-  const firstAssert = assertSteps[0]
+  const lastAssert = assertSteps.at(-1)
   return {
     id: testCase.id,
     name: testCase.name,
     type: hasApi && hasUi ? 'mixed' : hasApi ? 'api' : 'ui',
     stepCount: testCase.steps.length,
     assertCount: assertSteps.reduce((total, step) => total + assertionCountOf(step), 0),
-    assertSummary: firstAssert ? describeStep(firstAssert) : null,
+    testPointTitles: (testCase.verifies ?? []).map((id) => testPoints.get(id) ?? id),
+    assertSummary: lastAssert ? describeStep(lastAssert) : null,
   }
 }
 
@@ -94,7 +100,8 @@ export const loadSpecDetail = async (
     const read = await readWorkspaceText(path, 0, 1_000, workspacePath)
     const parsed = parseTestSpec(read.content)
     if (!parsed.ok) return null
-    const cases = parsed.spec.cases.map(toCaseRow)
+    const testPoints = new Map((parsed.spec.testPoints ?? []).map((point) => [point.id, point.title] as const))
+    const cases = parsed.spec.cases.map((testCase) => toCaseRow(testCase, testPoints))
     return {
       name: parsed.spec.name,
       version: parsed.spec.version,

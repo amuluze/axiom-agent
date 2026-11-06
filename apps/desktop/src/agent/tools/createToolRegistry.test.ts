@@ -180,7 +180,7 @@ describe('tool registry', () => {
       expect(tool).toBeDefined()
       expect(tool?.requiresApproval).toBe(true)
       expect(tool?.executionMode).toBe('sequential')
-      expect(tool?.runtimeVersion).toBe('6')
+      expect(tool?.runtimeVersion).toBe('7')
       expect(typeof tool?.approvalPresentation).toBe('function')
       // 工具覆盖 GET…DELETE：POST/PUT/PATCH/DELETE 不允许自动重放（设计 §9.3），
       // 故整体取 never——never 工具不得声明幂等键（deferredTools 会直接拒绝）。

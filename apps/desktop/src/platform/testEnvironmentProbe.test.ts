@@ -28,6 +28,8 @@ const environment = (overrides: Partial<TestEnvironmentRecord> = {}): TestEnviro
   secretIdsJson: '[]',
   extraVarsJson: '{}',
   secretOriginsJson: '[]',
+  tlsTrust: 'system',
+  approvalMode: 'per_step',
   createdAt: 1,
   updatedAt: 2,
   ...overrides,
@@ -39,6 +41,23 @@ const approver = (approved: boolean): TestStepApprover => ({
   list: () => [],
   subscribe: () => () => undefined,
 })
+
+/** 记录是否弹过审批卡的 approver。 */
+const trackingApprover = (approved: boolean): TestStepApprover & { calls: number } => {
+  const calls = { value: 0 }
+  return {
+    approve: async () => {
+      calls.value += 1
+      return approved
+    },
+    respond: () => false,
+    list: () => [],
+    subscribe: () => () => undefined,
+    get calls() {
+      return calls.value
+    },
+  }
+}
 
 const result = (overrides: Partial<ApiTestStepResult> = {}): ApiTestStepResult => ({
   verdict: 'passed',
@@ -86,6 +105,44 @@ describe('probeEnvironmentReadiness', () => {
     const { readiness } = await probe({ approved: false })
     expect(readiness).toMatchObject({ ready: false, verdict: 'rejected' })
     expect(mocks.runApiTestStepWithLease).not.toHaveBeenCalled()
+  })
+
+  it('skips the approval card for a trusted environment probing its own address', async () => {
+    mocks.runApiTestStepWithLease.mockResolvedValue(result())
+    const trustedApprover = trackingApprover(true)
+    const { readiness } = await probeEnvironmentReadiness({
+      environment: environment({ approvalMode: 'trusted' }),
+      runId: 'run-trusted',
+      approver: trustedApprover,
+      signal: new AbortController().signal,
+    })
+    expect(readiness).toMatchObject({ ready: true, verdict: 'ready' })
+    expect(trustedApprover.calls).toBe(0)
+    expect(mocks.runApiTestStepWithLease).toHaveBeenCalledTimes(1)
+  })
+
+  it('still asks for approval when a trusted environment probes outside its scope', async () => {
+    mocks.runApiTestStepWithLease.mockResolvedValue(result())
+    const trustedApprover = trackingApprover(true)
+    await probeEnvironmentReadiness({
+      // 探针指向自定义服务变量（另一个 origin），不在环境声明的 origin 集合内。
+      environment: environment({
+        approvalMode: 'trusted',
+        recipeJson: JSON.stringify({
+          start: [],
+          stop: [],
+          readiness: [],
+          timeoutMs: 90_000,
+          probes: [{ var: 'DETECTOR_MGMT_URL', path: '/ready', expectStatus: [200] }],
+        }),
+        extraVarsJson: JSON.stringify({ DETECTOR_MGMT_URL: 'http://10.9.35.6:18081' }),
+      }),
+      vars: { DETECTOR_MGMT_URL: 'http://10.9.35.6:18081' },
+      runId: 'run-outside',
+      approver: trustedApprover,
+      signal: new AbortController().signal,
+    })
+    expect(trustedApprover.calls).toBe(1)
   })
 
   it('reports a stop as canceled instead of rejected', async () => {

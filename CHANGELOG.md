@@ -2,7 +2,24 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [0.7.5] - 未发布
+## [0.7.6] - 未发布
+
+### Added
+- **测试环境信任档与本地 dev container 打通**：远程测试环境的配置摩擦集中在四处——环境地址要写两遍、私有 CA 握手必失败、每步两次人工点击、远程档写不了「只探一下」的配方。环境档 v3（`axiom.test-env`）新增 `baseUrl`（一个地址同时作 `WEB_BASE_URL` 与 `API_BASE_URL` 缺省，`vars` 显式声明者优先）、`allowPrivateNetwork`（v3 起缺省按地址推导，显式值优先）、`tlsTrust`（`system` / `insecure`——跳过证书校验只对确定私网/回环开放，公网一律拒绝）、`approvalMode`（`per_step` / `trusted`，受信档只对 `remote` 开放）；远程档可只写就绪探针，命令级下限改由档位判定（`local` 档仍须有就绪命令）。环境信任档落 SQLite v23（`test_environments` 增 `tls_trust` / `approval_mode` 两列，带 CHECK 与缺省值，旧记录语义不变），受信放行的作用域是环境自己声明的 origin 集合（API Base ∪ Web Base ∪ `secretOrigins`）——集合内步骤免逐次审批、集合外照旧；UI 步骤的作用域在目标授权时算一次并冻结在本次运行里，API 步骤按环境记录逐次判定，判定权威在 Rust 侧（受陷渲染进程无法指定），WebView 侧只决定要不要弹卡。面板新增「快速创建」（填一个地址即建出可用环境，可一并勾「不校验（私有 CA）」与「受信」），配方命令此前一个字都看不到（只显示「已配置起停配方」），现在直接展示并提供「复制命令」——本地 dev container 场景下这是「怎么把环境起起来」的唯一事实来源。两处放宽都必经宿主原生内容确认，变更摘要逐条列出「证书校验」「审批档」前后差异。版本契约：`DATABASE_VERSION` 22→23；`tool:api_request` `runtimeVersion` 6→7（宿主语义变化、schema 未变）并补 `toolNameMigrations` 单跳迁移。
+
+### Changed
+- **内置测试创作 Skill 更名 `test-design` → `test-authoring`**：名称与测试页「为本功能写用例」及文档「测试创作」对齐；协议、正文语义与运行行为不变。`BUILTIN_SKILL_BODIES_VERSION` 40→41、`SYSTEM_PROMPT_VERSION` 52→53。旧名不再作为 `load_skill` 的内置名解析，历史会话与项目同名覆盖需改用新名。
+- **内置 Skill 证据链优化**：`test-authoring` 增加回归失败证据、测试质量双检与可选 `tests/verify.md` 项目验证契约；`diagnose` 增加匹配表面复现、二分假设、共享前提检验与失败复现；`implement` 增加 throughput checkpoint、测试双检与真实表面证据；`plan` 增加设计闸门与 unit/live/perf 证据映射；`brainstorm` 增加先复述与验收四问；`finish` 增加决策轨迹与证据摘要；`domain` 增加来源追溯与阈值解释；`design` 增加多变体与视觉证据。不新增内置 Skill，`BUILTIN_SKILL_BODIES_VERSION` 41→42。
+- **内置 Skill 证据规则一致性修复**：诊断复现改为无新信息即停止且不在诊断阶段改代码/提交 git；实现退出条件承认测试豁免并明确 INCONCLUSIVE 阻断完成；回归失败证据只来自已有修复前环境/版本，不再要求故意破坏产品源码；修正 Domain 步骤引用，design 方案探索证据进入产出与退出条件，`tests/verify.md` 的 Launch/Drive 改为引用既有环境档而非复制。`BUILTIN_SKILL_BODIES_VERSION` 42→43。
+- **测试环境配置收敛为两步弹窗并去重右栏信息**：环境配置改模态弹窗——本地/远程 → 名称 + 服务地址 → 保存即验证，探针七类结论原样展示；视口/证书/审批档/Headers/Secret/配方/环境档导入收进高级配置。私网授权按地址自动推导；环境条只展示环境事实与配置入口，用例文件校验不再伪装成环境结论。右栏去重：三张 KPI 卡并为一条事实行（可点开报告），批次条条件化，运行历史默认收起，页脚只留路径与版本；用例行副行优先展示 verifies 测试点，回退到最后一个断言（共享前置请求不再出现整列相同文本）。创作入口（写用例/产物核对/固化）合并为一个折叠区，空态改三步引导，运行入口不可用时给出具体原因。
+
+### Fixed
+- **长流式会话的窗口贴底跟随恢复稳定（回退 0.7.5 的贴底跟随重写）**：0.7.5 的贴底跟随改写（滚动意图 + 列级 ResizeObserver）在真实 WKWebView 的长流式会话里确定性失效——回合结束后最终回复停留在视口外、被 `content-visibility` 剪出可访问树，窗口停在旧输出且必须手动滚动，比它声称修复的「滞后 250px」更严重（原生 E2E「会话写用例」旅程的最终文案断言 3/3 确定性失败；provider 侧回合完成、文件落盘、消息持久化，仅渲染缺席）。0.7.6 回退到锚点 + IntersectionObserver 的既有实现——旧实现的手动滚动滞后温和且可自愈；意图式跟随待在可复现的 WKWebView 环境下定位失效机制后再重新落地。
+- **Runner 变量物化错误保留具体原因**：变量物化与凭据表解析原先落在驱动调用的 try/catch 内，其自产错误（如「运行时凭据变量未产出」）被折叠成驱动固定文案，掩盖根因。现将物化移出驱动 catch 独立结算：错误消息只含计划内变量名（坏基址在 `materializeTestPlan` 准备期已被拒），透传安全；驱动异常仍走固定文案防泄漏。
+- **环境弹窗的删除不再被保存探针锁死**：保存后立即释放 saving——探针挂在审批/租约上时不再禁用弹窗内全部按钮（表现为「只能新建，不能删除」）；probing 不再阻塞编辑与删除，删除会先中止在途探针；删除返回 false（环境已不存在或不属于当前工作区）时保留弹窗并给出原因，不再假装成功；关闭弹窗时复位 saving，动作与导入错误固定显示在头部下方（避免滚出视口后「点了没反应」），禁用态补上可见样式。
+- **Runtime Fault E2E 的 mutation_batch_committed 断言收窄到 journal 派生批次**：激活边界的提示词对账会正常提交无 journal 的 runless 批次（设计内行为，先于场景批次落库），场景重启断言的「全表总数 = 1」从此恒假。护栏收窄为「journal 派生的场景批次恰好一个 + journal 清空 + run 中断」，保留恢复去重语义、容忍合法对账批次。
+
+## [0.7.5] - 2026-11-04
 
 ### Added
 - **长任务触限续跑与安全恢复**：任务触及轮次/工具额度上限时不再直接终结——仍有有效进展即自动续跑（最多三次阶段续跑，共用原任务截止时间与子代理总账），用户停止、真实工具错误、无有效进展（重复结果指纹）或任务累计保护触发时暂停。每个阶段保留独立 Run 审计并经 `agent_stage_settled` 完成 save point，累计阶段/轮次/工具数/计费 token 在会话顶部展示；预算暂停时 UI 给出具体原因与「继续」按钮，手动继续复用原 harness——不新增用户消息、不重放已执行工具、不复用旧审批租约。阶段结算以版本化 `axiom.task-summary.v1` 消息在 Run 终结前落盘（排除于模型上下文），重启后恢复暂停状态但不自动执行。产品入口默认开启自动续跑（`autoContinueOnLimit: true`），子代理预算保持独立。

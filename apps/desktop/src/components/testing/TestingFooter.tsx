@@ -6,44 +6,33 @@ import type { SpecDetail } from '@/stores/services/testSpecDetail'
 import { useT } from '@/i18n'
 
 /**
- * 测试页底栏（F2/展示切片）：文件 · 用例数、主题、版本、导出报告、校验用例。
+ * 测试页底栏：文件 · 用例数、协议版本与报告导出。
  */
 
 export interface TestingFooterProps {
   selectedSpec: TestSpecIndexEntry | undefined
   specDetail: SpecDetail | null
-  theme: string
   selectedReport: TestRunDetailRecord | null
   latestRun: TestRunSummaryRecord | null
-  workspaceReady: boolean
   onExportReport: (report: TestRunDetailRecord) => void
   onOpenReport: (runId: string) => void
-  onValidate: () => void
 }
 
 export const TestingFooter = ({
   selectedSpec,
   specDetail,
-  theme,
   selectedReport,
   latestRun,
-  workspaceReady,
   onExportReport,
   onOpenReport,
-  onValidate,
 }: TestingFooterProps) => {
   const { t } = useT()
   return (
     <div className="testing-view__footer">
+      {/* 用例数已在标题事实行：页脚只留「这是哪个文件」这一条唯一信息。 */}
       {selectedSpec && (
-        <span className="testing-view__footer-item">
-          {t('testing.footer.specMeta', {
-            path: selectedSpec.path.split('/').at(-1) ?? selectedSpec.path,
-            cases: selectedSpec.caseCount,
-          })}
-        </span>
+        <span className="testing-view__footer-item testing-view__footer-path">{selectedSpec.path}</span>
       )}
-      <span className="testing-view__footer-item">{theme}</span>
       <span className="testing-view__footer-item">v{selectedSpec && specDetail ? specDetail.version : TEST_SPEC_VERSION}</span>
       <span className="testing-view__footer-spacer" />
       <button
@@ -57,9 +46,6 @@ export const TestingFooter = ({
       >
         <Download size={12} aria-hidden />
         {t('testing.footer.export')}
-      </button>
-      <button type="button" className="testing-view__chip" disabled={!workspaceReady} onClick={onValidate}>
-        {t('testing.footer.validate')}
       </button>
     </div>
   )

@@ -147,6 +147,12 @@ pub(crate) struct SaveTestEnvironment {
     /// 缺省空数组保持「Secret 只能发往 API Base URL 同源」的旧边界。
     #[serde(default)]
     pub(crate) secret_origins_json: Option<String>,
+    /// v23：证书校验策略（`system` / `insecure`）。缺省 `system`。
+    #[serde(default)]
+    pub(crate) tls_trust: Option<String>,
+    /// v23：审批档（`per_step` / `trusted`）。缺省 `per_step`。
+    #[serde(default)]
+    pub(crate) approval_mode: Option<String>,
     pub(crate) updated_at: i64,
 }
 
@@ -170,6 +176,10 @@ pub(crate) struct TestEnvironment {
     /// 语义校验在环境档解析器/保存校验侧）。
     pub(crate) extra_vars_json: String,
     pub(crate) secret_origins_json: String,
+    /// v23：证书校验策略（`system` / `insecure`）。
+    pub(crate) tls_trust: String,
+    /// v23：审批档（`per_step` / `trusted`）。
+    pub(crate) approval_mode: String,
     #[specta(type = specta_typescript::Number)]
     pub(crate) created_at: i64,
     #[specta(type = specta_typescript::Number)]
@@ -187,6 +197,14 @@ pub(crate) struct TestEnvironmentAccess {
     /// v21：多服务拓扑下 Secret 允许发往的额外 origin（`scheme://host[:port]`）；
     /// 空集保持「只能发往 API Base URL 同源」的旧边界。
     pub(crate) secret_origins: BTreeSet<String>,
+    /// v23：证书校验策略（`system` / `insecure`）。`insecure` 只对确定在私网/回环的
+    /// 目标开放（见 `validate_test_environment`）。
+    pub(crate) tls_trust: String,
+    /// v23：审批档（`per_step` / `trusted`）。`trusted` 时步骤免逐次原生确认，
+    /// 但作用域限定在本环境声明的 origin 集合内（见 `api_test::trusted_scope`）。
+    pub(crate) approval_mode: String,
+    /// v23：受信环境的作用域判定需要 Web Base URL 的 origin（UI 步骤的目标页）。
+    pub(crate) web_base_url: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, specta::Type)]
@@ -338,6 +356,61 @@ fn validate_optional_base_url(value: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+/// 证书校验策略的合法性。
+///
+/// `insecure`（跳过证书校验）只对**确定在私网/回环**的目标开放：跳过校验等于放弃
+/// 中间人防护，代价只有落在私有网络里的测试机才配得上。目标主机名不是字面量私网
+/// IP 时无法在保存期判定（DNS 结果会变），因此一律拒绝——用户可以改用系统信任库
+/// 里的证书，而不是把一个公网目标放进「不校验」档。
+fn validate_tls_trust(environment: &SaveTestEnvironment) -> Result<(), String> {
+    let tls_trust = environment.tls_trust.as_deref().unwrap_or("system");
+    if !matches!(tls_trust, "system" | "insecure") {
+        return Err("测试环境证书校验策略只支持 system 或 insecure".to_string());
+    }
+    if tls_trust == "system" {
+        return Ok(());
+    }
+    let mut targets = Vec::new();
+    for value in [
+        environment.web_base_url.as_deref(),
+        environment.api_base_url.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let parsed = reqwest::Url::parse(value).map_err(|_| "测试环境 URL 无法解析".to_string())?;
+        if let Some(host) = parsed.host_str() {
+            targets.push(host.to_string());
+        }
+    }
+    if targets.is_empty() {
+        return Err("测试环境关闭证书校验时必须给出 Web/API 地址".to_string());
+    }
+    if targets
+        .iter()
+        .any(|host| !crate::network_policy::is_private_or_local_host(host))
+    {
+        return Err("测试环境关闭证书校验只允许用于回环或私网地址".to_string());
+    }
+    Ok(())
+}
+
+/// 审批档的合法性。
+///
+/// `trusted`（免逐次审批）只对 `remote` 档开放：远程测试环境不会改动本机文件，
+/// 受信放行的副作用止于该环境声明的 origin；`local` 档的步骤可能改本机代码，
+/// 仍逐次审批。
+fn validate_approval_mode(environment: &SaveTestEnvironment) -> Result<(), String> {
+    let approval_mode = environment.approval_mode.as_deref().unwrap_or("per_step");
+    if !matches!(approval_mode, "per_step" | "trusted") {
+        return Err("测试环境审批档只支持 per_step 或 trusted".to_string());
+    }
+    if approval_mode == "trusted" && environment.kind.as_deref() == Some("local") {
+        return Err("本地档测试环境不支持受信（免逐次审批）模式".to_string());
+    }
+    Ok(())
+}
+
 fn validate_test_environment(environment: &SaveTestEnvironment) -> Result<(), String> {
     if environment.id.is_empty() || environment.id.len() > 256 {
         return Err("测试环境 ID 无效".to_string());
@@ -359,6 +432,8 @@ fn validate_test_environment(environment: &SaveTestEnvironment) -> Result<(), St
     }
     validate_optional_base_url(environment.web_base_url.as_deref())?;
     validate_optional_base_url(environment.api_base_url.as_deref())?;
+    validate_tls_trust(environment)?;
+    validate_approval_mode(environment)?;
     match (environment.viewport_width, environment.viewport_height) {
         (None, None) => {}
         (Some(width), Some(height))
@@ -480,8 +555,9 @@ pub(crate) async fn save_test_environment(
         sqlx::query(
             "INSERT INTO test_environments (
                id, logical_id, workspace_path, name, kind, recipe_json, web_base_url, api_base_url, viewport_width, viewport_height,
-               allow_private_network, headers_json, secret_ids_json, extra_vars_json, secret_origins_json, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               allow_private_network, headers_json, secret_ids_json, extra_vars_json, secret_origins_json,
+               tls_trust, approval_mode, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                name = excluded.name, kind = excluded.kind, recipe_json = excluded.recipe_json,
                web_base_url = excluded.web_base_url,
@@ -489,7 +565,9 @@ pub(crate) async fn save_test_environment(
                viewport_height = excluded.viewport_height,
                allow_private_network = excluded.allow_private_network, headers_json = excluded.headers_json,
                secret_ids_json = excluded.secret_ids_json, extra_vars_json = excluded.extra_vars_json,
-               secret_origins_json = excluded.secret_origins_json, updated_at = excluded.updated_at",
+               secret_origins_json = excluded.secret_origins_json,
+               tls_trust = excluded.tls_trust, approval_mode = excluded.approval_mode,
+               updated_at = excluded.updated_at",
         )
         .bind(storage_id)
         .bind(&environment.id)
@@ -506,6 +584,8 @@ pub(crate) async fn save_test_environment(
         .bind(&environment.secret_ids_json)
         .bind(environment.extra_vars_json.as_deref().unwrap_or("{}"))
         .bind(environment.secret_origins_json.as_deref().unwrap_or("[]"))
+        .bind(environment.tls_trust.as_deref().unwrap_or("system"))
+        .bind(environment.approval_mode.as_deref().unwrap_or("per_step"))
         .bind(environment.updated_at)
         .bind(environment.updated_at)
         .execute(&mut *connection)
@@ -523,7 +603,8 @@ pub(crate) async fn list_test_environments(
 ) -> Result<Vec<TestEnvironment>, String> {
     let rows = sqlx::query(
         "SELECT logical_id AS id, name, kind, recipe_json, web_base_url, api_base_url, viewport_width, viewport_height,
-         allow_private_network, headers_json, secret_ids_json, extra_vars_json, secret_origins_json, created_at, updated_at FROM test_environments
+         allow_private_network, headers_json, secret_ids_json, extra_vars_json, secret_origins_json,
+         tls_trust, approval_mode, created_at, updated_at FROM test_environments
          WHERE workspace_path = ? ORDER BY updated_at DESC, logical_id DESC",
     )
     .bind(workspace_path)
@@ -566,6 +647,12 @@ pub(crate) async fn list_test_environments(
                 secret_origins_json: row
                     .try_get("secret_origins_json")
                     .map_err(|error| error.to_string())?,
+                tls_trust: row
+                    .try_get("tls_trust")
+                    .map_err(|error| error.to_string())?,
+                approval_mode: row
+                    .try_get("approval_mode")
+                    .map_err(|error| error.to_string())?,
                 created_at: row
                     .try_get("created_at")
                     .map_err(|error| error.to_string())?,
@@ -589,10 +676,14 @@ pub(crate) async fn load_test_environment_access(
             secret_ids: BTreeSet::new(),
             api_base_url: None,
             secret_origins: BTreeSet::new(),
+            tls_trust: "system".to_string(),
+            approval_mode: "per_step".to_string(),
+            web_base_url: None,
         });
     };
     let row = sqlx::query(
-        "SELECT allow_private_network, headers_json, secret_ids_json, api_base_url, secret_origins_json FROM test_environments
+        "SELECT allow_private_network, headers_json, secret_ids_json, api_base_url, secret_origins_json,
+                tls_trust, approval_mode, web_base_url FROM test_environments
          WHERE logical_id = ? AND workspace_path = ?",
     )
     .bind(environment_id)
@@ -631,6 +722,15 @@ pub(crate) async fn load_test_environment_access(
         secret_ids,
         api_base_url,
         secret_origins,
+        tls_trust: row
+            .try_get("tls_trust")
+            .map_err(|error| error.to_string())?,
+        approval_mode: row
+            .try_get("approval_mode")
+            .map_err(|error| error.to_string())?,
+        web_base_url: row
+            .try_get("web_base_url")
+            .map_err(|error| error.to_string())?,
     })
 }
 
@@ -646,6 +746,9 @@ struct EnvironmentFields {
     /// v21：Secret 目标白名单与自定义变量也是运行边界——改变它们同样需要内容级确认。
     secret_origins: BTreeSet<String>,
     extra_vars: serde_json::Value,
+    /// v23：证书校验策略与审批档同样是边界——关掉证书校验或关掉逐次审批都要让用户看见。
+    tls_trust: String,
+    approval_mode: String,
 }
 
 async fn load_environment_fields(
@@ -654,7 +757,8 @@ async fn load_environment_fields(
     environment_id: &str,
 ) -> Result<Option<EnvironmentFields>, String> {
     let row = sqlx::query(
-        "SELECT api_base_url, web_base_url, secret_ids_json, allow_private_network, headers_json, secret_origins_json, extra_vars_json \
+        "SELECT api_base_url, web_base_url, secret_ids_json, allow_private_network, headers_json, secret_origins_json, extra_vars_json,
+                tls_trust, approval_mode \
          FROM test_environments WHERE workspace_path = ? AND logical_id = ?",
     )
     .bind(workspace_path)
@@ -699,6 +803,12 @@ async fn load_environment_fields(
             .collect(),
         extra_vars: serde_json::from_str(&extra_vars_json)
             .map_err(|_| "API 测试环境自定义变量已损坏".to_string())?,
+        tls_trust: row
+            .try_get("tls_trust")
+            .map_err(|error| error.to_string())?,
+        approval_mode: row
+            .try_get("approval_mode")
+            .map_err(|error| error.to_string())?,
     }))
 }
 
@@ -727,6 +837,8 @@ fn describe_environment_changes(
         serde_json::from_str(incoming.extra_vars_json.as_deref().unwrap_or("{}"))
             .map_err(|_| "测试环境自定义变量不是合法 JSON".to_string())?;
     let mut changes = Vec::new();
+    let incoming_tls_trust = incoming.tls_trust.as_deref().unwrap_or("system");
+    let incoming_approval_mode = incoming.approval_mode.as_deref().unwrap_or("per_step");
     let Some(existing) = existing else {
         if incoming.api_base_url.is_some() {
             changes.push(format!(
@@ -774,6 +886,12 @@ fn describe_environment_changes(
             .is_some_and(|headers| !headers.is_empty())
         {
             changes.push("非敏感 Headers：新增".to_string());
+        }
+        if incoming_tls_trust == "insecure" {
+            changes.push("证书校验：系统信任 → 不校验（仅私网/回环目标）".to_string());
+        }
+        if incoming_approval_mode == "trusted" {
+            changes.push("审批档：逐次审批 → 受信（本环境的测试步骤不再逐次弹确认）".to_string());
         }
         return Ok(changes);
     };
@@ -851,7 +969,35 @@ fn describe_environment_changes(
     if existing.extra_vars != incoming_extra_vars {
         changes.push("服务变量有变化".to_string());
     }
+    if existing.tls_trust != incoming_tls_trust {
+        changes.push(format!(
+            "证书校验：{} → {}",
+            display_tls_trust(&existing.tls_trust),
+            display_tls_trust(incoming_tls_trust),
+        ));
+    }
+    if existing.approval_mode != incoming_approval_mode {
+        changes.push(format!(
+            "审批档：{} → {}",
+            display_approval_mode(&existing.approval_mode),
+            display_approval_mode(incoming_approval_mode),
+        ));
+    }
     Ok(changes)
+}
+
+fn display_tls_trust(value: &str) -> &str {
+    match value {
+        "insecure" => "不校验",
+        _ => "系统信任",
+    }
+}
+
+fn display_approval_mode(value: &str) -> &str {
+    match value {
+        "trusted" => "受信",
+        _ => "逐次审批",
+    }
 }
 
 pub(crate) async fn delete_test_environment(
@@ -1754,6 +1900,8 @@ mod tests {
             secret_ids_json: "[]".to_string(),
             extra_vars_json: None,
             secret_origins_json: None,
+            tls_trust: None,
+            approval_mode: None,
             updated_at: 10,
         }
     }
@@ -1792,6 +1940,8 @@ mod tests {
             headers: serde_json::json!({"x-a": "1"}),
             secret_origins: BTreeSet::new(),
             extra_vars: serde_json::json!({}),
+            tls_trust: "system".to_string(),
+            approval_mode: "per_step".to_string(),
         };
         let mut incoming = sample_environment("env-1");
         incoming.api_base_url = Some("https://api.example.com".to_string());
@@ -1831,6 +1981,75 @@ mod tests {
         assert_eq!(
             describe_environment_changes(None, &fresh).unwrap(),
             vec!["API Base：未设置 → https://api.example.com"]
+        );
+    }
+
+    /// 信任档的两处放宽必须出现在原生确认的变更摘要里：用户看得见才等于授权。
+    #[test]
+    fn environment_change_summary_lists_trust_downgrades() {
+        let existing = EnvironmentFields {
+            api_base_url: Some("https://10.9.35.5:1443".to_string()),
+            web_base_url: Some("https://10.9.35.5:1443".to_string()),
+            secret_ids: BTreeSet::new(),
+            allow_private_network: true,
+            headers: serde_json::json!({}),
+            secret_origins: BTreeSet::new(),
+            extra_vars: serde_json::json!({}),
+            tls_trust: "system".to_string(),
+            approval_mode: "per_step".to_string(),
+        };
+        let mut incoming = sample_environment("env-1");
+        incoming.api_base_url = Some("https://10.9.35.5:1443".to_string());
+        incoming.web_base_url = Some("https://10.9.35.5:1443".to_string());
+        incoming.allow_private_network = true;
+        incoming.headers_json = "{}".to_string();
+        incoming.tls_trust = Some("insecure".to_string());
+        incoming.approval_mode = Some("trusted".to_string());
+        assert_eq!(
+            describe_environment_changes(Some(&existing), &incoming).unwrap(),
+            vec!["证书校验：系统信任 → 不校验", "审批档：逐次审批 → 受信",]
+        );
+    }
+
+    /// 「跳过证书校验」只对确定在私网/回环的目标开放；「受信」只对远程档开放。
+    #[test]
+    fn rejects_trust_downgrades_outside_their_scope() {
+        let mut public_target = sample_environment("env-1");
+        public_target.api_base_url = Some("https://staging.example.com".to_string());
+        public_target.tls_trust = Some("insecure".to_string());
+        assert_eq!(
+            validate_test_environment(&public_target).unwrap_err(),
+            "测试环境关闭证书校验只允许用于回环或私网地址"
+        );
+
+        let mut no_address = sample_environment("env-1");
+        no_address.api_base_url = None;
+        no_address.web_base_url = None;
+        no_address.tls_trust = Some("insecure".to_string());
+        assert_eq!(
+            validate_test_environment(&no_address).unwrap_err(),
+            "测试环境关闭证书校验时必须给出 Web/API 地址"
+        );
+
+        let mut private_target = sample_environment("env-1");
+        private_target.api_base_url = Some("https://10.9.35.5:1443".to_string());
+        private_target.web_base_url = Some("https://10.9.35.5:1443".to_string());
+        private_target.tls_trust = Some("insecure".to_string());
+        assert!(validate_test_environment(&private_target).is_ok());
+
+        let mut local_trusted = sample_environment("env-1");
+        local_trusted.kind = Some("local".to_string());
+        local_trusted.approval_mode = Some("trusted".to_string());
+        assert_eq!(
+            validate_test_environment(&local_trusted).unwrap_err(),
+            "本地档测试环境不支持受信（免逐次审批）模式"
+        );
+
+        let mut bogus = sample_environment("env-1");
+        bogus.approval_mode = Some("yolo".to_string());
+        assert_eq!(
+            validate_test_environment(&bogus).unwrap_err(),
+            "测试环境审批档只支持 per_step 或 trusted"
         );
     }
 

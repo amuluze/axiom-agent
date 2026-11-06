@@ -1,4 +1,5 @@
 import { AlertCircle, AppWindow, ChevronDown, RefreshCw } from 'lucide-react'
+import { isPrivateOrLocalHost } from '@/agent/testing/environment/environmentFile'
 import type { BrowserTabInfo } from '@/platform/browserSession'
 import type { TestEnvironmentRecord } from '@/platform/testEnvironments'
 import type { TestSpecIndexEntry } from '@/stores/services/testSpecIndex'
@@ -15,8 +16,6 @@ export interface TestingTopbarProps {
   filteredSpecs: readonly TestSpecIndexEntry[]
   selectedSpecPath: string | null
   onSelectSpec: (path: string) => void
-  specTypeFilter: TestSpecTypeFilter
-  onSpecTypeFilterChange: (filter: TestSpecTypeFilter) => void
   runScope: 'current' | TestSpecTypeFilter
   onRunScopeChange: (scope: 'current' | TestSpecTypeFilter) => void
   syncedLabel: string | null
@@ -24,6 +23,8 @@ export interface TestingTopbarProps {
   workspaceReady: boolean
   onRescan: () => void
   canRun: boolean
+  /** 主运行入口不可用的具体原因；可用时为 null。 */
+  runBlockedReason: string | null
   onRun: () => void
 }
 
@@ -31,8 +32,6 @@ export const TestingTopbar = ({
   filteredSpecs,
   selectedSpecPath,
   onSelectSpec,
-  specTypeFilter,
-  onSpecTypeFilterChange,
   runScope,
   onRunScopeChange,
   syncedLabel,
@@ -40,6 +39,7 @@ export const TestingTopbar = ({
   workspaceReady,
   onRescan,
   canRun,
+  runBlockedReason,
   onRun,
 }: TestingTopbarProps) => {
   const { t } = useT()
@@ -59,7 +59,7 @@ export const TestingTopbar = ({
               onClick={() => onSelectSpec(spec.path)}
             >
               {!spec.valid && <AlertCircle size={11} aria-hidden />}
-              {spec.path}
+              {spec.path.split('/').at(-1) ?? spec.path}
             </button>
           )
         })}
@@ -68,19 +68,6 @@ export const TestingTopbar = ({
         )}
       </div>
       <div className="testing-view__topbar-actions">
-        <label className="testing-view__filter">
-          <span className="testing-view__visually-hidden">{t('testing.index.typeFilter')}</span>
-          <select
-            aria-label={t('testing.index.typeFilter')}
-            value={specTypeFilter}
-            onChange={(event) => onSpecTypeFilterChange(event.target.value as TestSpecTypeFilter)}
-          >
-            <option value="all">{t('testing.index.typeAll')}</option>
-            <option value="ui">{t('testing.index.typeUi')}</option>
-            <option value="api">{t('testing.index.typeApi')}</option>
-            <option value="mixed">{t('testing.index.typeMixed')}</option>
-          </select>
-        </label>
         <label className="testing-view__filter">
           <span className="testing-view__visually-hidden">{t('testing.suite.scope')}</span>
           <select
@@ -100,10 +87,14 @@ export const TestingTopbar = ({
           <RefreshCw size={12} className={loading ? 'testing-view__spin' : undefined} aria-hidden />
           {loading ? t('testing.index.scanning') : t('testing.index.rescan')}
         </button>
+        {!canRun && runBlockedReason && (
+          <span className="testing-view__run-blocked">{runBlockedReason}</span>
+        )}
         <button
           type="button"
-          className="testing-view__chip"
+          className="testing-view__chip testing-view__chip--primary"
           disabled={!canRun}
+          title={runBlockedReason ?? undefined}
           onClick={onRun}
         >
           {t('testing.topbar.replay')}
@@ -115,59 +106,90 @@ export const TestingTopbar = ({
 
 export interface TestingEnvironmentBarProps {
   selectedEnvironment: TestEnvironmentRecord | undefined
-  selectedTab: BrowserTabInfo | undefined
+  showBrowserTarget: boolean
   selectedTabId: string | null
   onSelectTab: (tabId: string | null) => void
   tabs: readonly BrowserTabInfo[]
   selectedSpec: TestSpecIndexEntry | undefined
   specIssueCount: number
-  envPanelOpen: boolean
-  onToggleEnvPanel: () => void
+  onOpenEnvironment: () => void
   onOpenBrowser: () => void
+}
+
+/** 环境条只展示环境自身的运行事实（本地/远程、证书、受信）；配置在弹窗里。 */
+const hostOf = (value: string | null): string | null => {
+  if (value === null) return null
+  try {
+    return new URL(value).hostname
+  } catch {
+    return null
+  }
+}
+
+const isPrivateOrLocal = (value: string | null): boolean => {
+  const host = hostOf(value)
+  return host !== null && isPrivateOrLocalHost(host)
 }
 
 export const TestingEnvironmentBar = ({
   selectedEnvironment,
-  selectedTab,
+  showBrowserTarget,
   selectedTabId,
   onSelectTab,
   tabs,
   selectedSpec,
   specIssueCount,
-  envPanelOpen,
-  onToggleEnvPanel,
+  onOpenEnvironment,
   onOpenBrowser,
 }: TestingEnvironmentBarProps) => {
   const { t } = useT()
+  const local = isPrivateOrLocal(selectedEnvironment?.webBaseUrl ?? null)
+    || isPrivateOrLocal(selectedEnvironment?.apiBaseUrl ?? null)
   return (
     <div className="testing-view__envbar">
       <button
         type="button"
         className="testing-view__envbar-item testing-view__envbar-button"
-        aria-expanded={envPanelOpen}
-        onClick={onToggleEnvPanel}
+        title={t('testing.envbar.configure')}
+        onClick={onOpenEnvironment}
       >
-        {t('testing.environment.title')} · {selectedEnvironment?.name ?? t('testing.environment.none')}
-        <ChevronDown
-          size={12}
+        <span
+          className={`testing-view__envbar-dot${selectedEnvironment ? ' is-on' : ''}`}
           aria-hidden="true"
-          className={`testing-view__envbar-chevron${envPanelOpen ? ' is-open' : ''}`}
         />
+        {t('testing.environment.title')} · {selectedEnvironment?.name ?? t('testing.environment.none')}
+        <ChevronDown size={12} aria-hidden="true" className="testing-view__envbar-chevron" />
       </button>
-      <label className="testing-view__envbar-item testing-view__envbar-control">
-        <span className="testing-view__visually-hidden">{t('testing.run.tab')}</span>
-        <AppWindow size={12} aria-hidden="true" className="testing-view__envbar-control-icon" />
-        <select
-          aria-label={t('testing.run.tab')}
-          value={selectedTabId ?? ''}
-          onChange={(event) => onSelectTab(event.target.value || null)}
-        >
-          <option value="">{t('testing.run.selectTab')}</option>
-          {tabs.map((tab) => <option key={tab.tabId} value={tab.tabId}>{tab.title || tab.url}</option>)}
-        </select>
-      </label>
-      {selectedTab && (
-        <span className="testing-view__envbar-item">{t('testing.envbar.tab', { url: selectedTab.url })}</span>
+      {selectedEnvironment && (
+        <>
+          <span className="testing-view__envbar-item testing-view__envbar-badge">
+            {t(local ? 'testing.envbar.local' : 'testing.envbar.remote')}
+          </span>
+          {selectedEnvironment.tlsTrust === 'insecure' && (
+            <span className="testing-view__envbar-item testing-view__envbar-badge testing-view__envbar-bad">
+              {t('testing.envbar.insecure')}
+            </span>
+          )}
+          {selectedEnvironment.approvalMode === 'trusted' && (
+            <span className="testing-view__envbar-item testing-view__envbar-badge testing-view__envbar-bad">
+              {t('testing.envbar.trusted')}
+            </span>
+          )}
+        </>
+      )}
+      {showBrowserTarget && (
+        <label className="testing-view__envbar-item testing-view__envbar-control">
+          <span className="testing-view__visually-hidden">{t('testing.run.tab')}</span>
+          <AppWindow size={12} aria-hidden="true" className="testing-view__envbar-control-icon" />
+          <select
+            aria-label={t('testing.run.tab')}
+            value={selectedTabId ?? ''}
+            onChange={(event) => onSelectTab(event.target.value || null)}
+          >
+            <option value="">{t('testing.run.selectTab')}</option>
+            {tabs.map((tab) => <option key={tab.tabId} value={tab.tabId}>{tab.title || tab.url}</option>)}
+          </select>
+        </label>
       )}
       {selectedEnvironment?.viewportWidth && selectedEnvironment?.viewportHeight && (
         <span className="testing-view__envbar-item">
@@ -177,14 +199,16 @@ export const TestingEnvironmentBar = ({
           })}
         </span>
       )}
+      <span className="testing-view__envbar-spacer" />
+      {/* 这是**用例文件**的校验结论，不是环境结论：旧标签「校验通过」紧贴环境名，误导成环境可用。 */}
       {selectedSpec && (
         specIssueCount === 0 && selectedSpec.valid
-          ? <span className="testing-view__envbar-item testing-view__envbar-ok">{t('testing.index.valid')}</span>
+          ? <span className="testing-view__envbar-item testing-view__envbar-ok">{t('testing.envbar.fileValid')}</span>
           : <span className="testing-view__envbar-item testing-view__envbar-bad">
-              {t('testing.envbar.issues', { count: Math.max(specIssueCount, 1) })}
+              {t('testing.envbar.fileIssues', { count: Math.max(specIssueCount, 1) })}
             </span>
       )}
-      {tabs.length === 0 && selectedSpec && selectedSpec.uiStepCount > 0 && (
+      {tabs.length === 0 && showBrowserTarget && (
         <button type="button" className="testing-view__chip" onClick={onOpenBrowser}>
           {t('testing.run.openBrowser')}
         </button>

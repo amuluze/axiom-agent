@@ -85,6 +85,45 @@ describe('createApiTestDriver', () => {
     expect(mockedInvoke).not.toHaveBeenCalled()
   })
 
+  it('skips the approval card for a trusted environment target inside its scope', async () => {
+    mockedInvoke.mockImplementation(async (command: string) => {
+      if (command === 'issue_api_test_step_lease') return { leaseId: 'lease-1', ttlMs: 120000 }
+      if (command === 'run_api_test_step') {
+        return {
+          verdict: 'passed',
+          runnerVerdict: 'passed',
+          transport: 'received',
+          message: 'HTTP 200 · 18 ms',
+          evidenceContentHash: 'a'.repeat(64),
+          statusCode: 200,
+          elapsedMs: 18,
+          extracted: {},
+        }
+      }
+      return false
+    })
+    const approver = createTestStepApprover()
+    const execution = context()
+    const pending = createApiTestDriver({ runId: 'run-trusted' }, approver, {
+      trustedOrigins: ['https://api.example.test:443'],
+    }).runStep(step, execution)
+    // 受信作用域内的目标不弹审批卡，直接签发租约执行。
+    expect(approver.list()).toHaveLength(0)
+    await expect(pending).resolves.toMatchObject({ verdict: 'passed' })
+    expect(mockedInvoke).toHaveBeenCalledWith('issue_api_test_step_lease', expect.anything())
+  })
+
+  it('still asks for approval when the target is outside the trusted scope', async () => {
+    const approver = createTestStepApprover()
+    const pending = createApiTestDriver({ runId: 'run-outside' }, approver, {
+      trustedOrigins: ['https://other.example.test:443'],
+    }).runStep(step, context())
+    await vi.waitFor(() => expect(approver.list()).toHaveLength(1))
+    approver.respond('run-outside:load-orders', false)
+    await expect(pending).resolves.toEqual({ verdict: 'rejected', message: '用户拒绝了本步骤' })
+    expect(mockedInvoke).not.toHaveBeenCalled()
+  })
+
   it('maps a canceled native confirmation to rejected without running the request', async () => {
     mockedInvoke.mockResolvedValue(null)
     const approver = createTestStepApprover()

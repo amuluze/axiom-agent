@@ -14,6 +14,7 @@ import {
   foldHookFailuresIntoCaseStatuses,
   type CoverageSpecFile,
   type FrozenCoverageMetadata,
+  type TestCoverage,
 } from '@/stores/services/testCoverage'
 
 /**
@@ -82,7 +83,16 @@ export const durationLabel = (startedAt: number | null, finishedAt: number | nul
 }
 
 /** 批次摘要：通过/失败/其他 + 未通过的文件与原因。 */
-export const computeSuiteSummary = (entries: readonly TestSuiteRunEntry[]) => {
+export interface SuiteSummary {
+  passed: number
+  failed: number
+  other: number
+  total: number
+  problems: TestSuiteRunEntry[]
+}
+
+/** 批次摘要：通过/失败/其他 + 未通过的文件与原因。 */
+export const computeSuiteSummary = (entries: readonly TestSuiteRunEntry[]): SuiteSummary | null => {
   if (entries.length === 0) return null
   const counts = { passed: 0, failed: 0, other: 0 }
   for (const entry of entries) {
@@ -137,7 +147,7 @@ export const computeSuiteCoverage = (input: {
   entries: readonly TestSuiteRunEntry[]
   specs: readonly TestSpecIndexEntry[]
   filteredSpecs: readonly TestSpecIndexEntry[]
-}) => {
+}): TestCoverage | null => {
   if (input.entries.length === 0) return null
   const scopePaths = input.entries.map((entry) => entry.path)
   const byPath = new Map(input.specs.map((spec) => [spec.path, spec] as const))

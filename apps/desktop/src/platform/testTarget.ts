@@ -18,6 +18,11 @@ export const issueTestTargetGrant = (request: {
   tabId: string
   expectedOrigin: string
   viewport?: { width: number; height: number }
+  /**
+   * 运行环境 ID（可选）：受信档（`approvalMode = trusted`）的放行作用域由 Rust 按
+   * 环境记录在**授权时**算一次并冻结在本次运行的目标授权里。
+   */
+  environmentId?: string
 }): Promise<TestTargetGrantInfo> =>
   invoke<TestTargetGrantInfo>('issue_test_target_grant', { request })
 

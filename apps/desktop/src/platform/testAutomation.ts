@@ -5,6 +5,7 @@ import {
   type TestStepApprovalActor,
   type TestStepApprovalCard,
 } from '@/agent/testing/approval/testStepApproval'
+import { normalizeTestOrigin } from '@/agent/testing/environment/trustScope'
 import { revokeTestTargetGrant } from '@/platform/testTarget'
 import { invoke } from '@tauri-apps/api/core'
 
@@ -85,6 +86,12 @@ export interface UiTestDriverOptions {
     request: { actor: TestStepApprovalActor; card: TestStepApprovalCard },
     signal: AbortSignal,
   ) => Promise<boolean>
+  /**
+   * 受信环境的放行作用域（origin 集合）：标签页 origin 落在集合内时免弹 WebView
+   * 审批卡。**权威判定在 Rust 侧**（`test_approval::ui_step_trusted` 读 SQLite 的
+   * 环境记录），这里只是让界面与实际放行行为一致。
+   */
+  trustedOrigins?: readonly string[]
 }
 
 /**
@@ -117,16 +124,21 @@ export const createUiTestDriver = (
 
   const runWriteStep = async (step: UiStepSpec, context: StepExecutionContext): Promise<StepOutcome> => {
     if (!options.approve) return { verdict: 'error', message: '未配置审批入口，写步骤已拒绝执行' }
-    context.markWaitingApproval()
-    const approved = await options.approve(
-      {
-        actor: { kind: 'testStep', testRunId: target.runId, stepId: step.id },
-        card: describeTestStepApproval(step, target.origin),
-      },
-      context.signal,
-    )
-    if (context.signal.aborted) return { verdict: 'canceled', message: '运行已停止' }
-    if (!approved) return { verdict: 'rejected', message: '用户拒绝了本步骤' }
+    // 受信环境：标签页 origin 落在环境声明的 origin 集合内时不弹 WebView 审批卡。
+    // Rust 侧独立判定同一件事（读 SQLite 的环境记录），越界目标照旧会被原生确认拦下。
+    const trusted = (options.trustedOrigins ?? []).includes(normalizeTestOrigin(target.origin) ?? '')
+    if (!trusted) {
+      context.markWaitingApproval()
+      const approved = await options.approve(
+        {
+          actor: { kind: 'testStep', testRunId: target.runId, stepId: step.id },
+          card: describeTestStepApproval(step, target.origin),
+        },
+        context.signal,
+      )
+      if (context.signal.aborted) return { verdict: 'canceled', message: '运行已停止' }
+      if (!approved) return { verdict: 'rejected', message: '用户拒绝了本步骤' }
+    }
     context.markRunning()
     const verdict = await runWithCancellation(context.signal, async () => {
       const lease = await issueTestStepLease({

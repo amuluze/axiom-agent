@@ -365,6 +365,10 @@ export type TestEnvironment = {
 	 */
 	extraVarsJson: string,
 	secretOriginsJson: string,
+	/**  v23：证书校验策略（`system` / `insecure`）。 */
+	tlsTrust: string,
+	/**  v23：审批档（`per_step` / `trusted`）。 */
+	approvalMode: string,
 	createdAt: number,
 	updatedAt: number,
 };

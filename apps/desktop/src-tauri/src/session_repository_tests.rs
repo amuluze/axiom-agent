@@ -3855,6 +3855,53 @@ async fn v19_upgrade_defaults_test_automation_columns() {
     assert!(bogus.is_err(), "未知归因必须被 CHECK 拒绝");
 }
 
+/// v23 升级：测试环境的信任档列（证书校验策略 / 审批档）必须落到旧记录上，
+/// 且缺省语义与升级前一致——系统信任 + 逐次审批。
+#[tokio::test]
+async fn v23_upgrade_defaults_test_environment_trust_columns() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("upgrade-v23.db");
+    let mut connection = SqliteConnection::connect_with(&create_options(&path))
+        .await
+        .unwrap();
+    migrate_to(&mut connection, 22).await.unwrap();
+    sqlx::query(
+        "INSERT INTO test_environments \
+         (id, workspace_path, name, headers_json, secret_ids_json, created_at, updated_at) \
+         VALUES ('env-legacy', '/ws', '旧环境', '{}', '[]', 1, 1)",
+    )
+    .execute(&mut connection)
+    .await
+    .unwrap();
+
+    migrate(&mut connection).await.unwrap();
+
+    let tls_trust: String =
+        sqlx::query_scalar("SELECT tls_trust FROM test_environments WHERE id = 'env-legacy'")
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+    assert_eq!(tls_trust, "system", "旧环境必须继续走系统信任库");
+    let approval_mode: String =
+        sqlx::query_scalar("SELECT approval_mode FROM test_environments WHERE id = 'env-legacy'")
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+    assert_eq!(approval_mode, "per_step", "旧环境必须继续逐次审批");
+
+    // 两个列都受 CHECK 约束：未知取值写不进去。
+    let bogus =
+        sqlx::query("UPDATE test_environments SET tls_trust = 'whatever' WHERE id = 'env-legacy'")
+            .execute(&mut connection)
+            .await;
+    assert!(bogus.is_err(), "未知证书策略必须被 CHECK 拒绝");
+    let bogus =
+        sqlx::query("UPDATE test_environments SET approval_mode = 'yolo' WHERE id = 'env-legacy'")
+            .execute(&mut connection)
+            .await;
+    assert!(bogus.is_err(), "未知审批档必须被 CHECK 拒绝");
+}
+
 /// R1-4/H1-4 回归：自动清理路径（`UnreferencedArtifacts` 查询 → 移入回收区 + 删元数据）必须
 /// 与手动 `gc_artifacts` 命令同一权威引用集。测试运行的计划快照与步骤证据被 test_runs /
 /// test_step_runs 引用，**不得**被判为未引用——否则会留下「test_runs 指向已消失 artifact」

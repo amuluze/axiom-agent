@@ -70,6 +70,25 @@ pub(crate) fn is_allowed_plain_http_host(host: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// 主机名是否**确定**落在私网/回环：字面量私网 IP，或 `localhost` 族名字。
+///
+/// 与 {@link is_allowed_plain_http_host} 的区别：`.local`（mDNS）在这里**不算**——
+/// 那个判定用于「明文 HTTP 是否可接受」，而本判定用于「是否可以为该目标关闭证书
+/// 校验」。跳过证书校验意味着放弃中间人防护，只有确定在私有网络里的目标才配得上
+/// 这个代价；mDNS 名字的解析结果不受本机控制，不能当作「确定在私网」。
+pub(crate) fn is_private_or_local_host(host: &str) -> bool {
+    let normalized = host
+        .trim_matches(|character| character == '[' || character == ']')
+        .to_ascii_lowercase();
+    if normalized == "localhost" || normalized.ends_with(".localhost") {
+        return true;
+    }
+    normalized
+        .parse::<IpAddr>()
+        .map(is_private_or_local_ip)
+        .unwrap_or(false)
+}
+
 pub(crate) fn validate_model_url(raw_url: &str) -> Result<reqwest::Url, String> {
     if raw_url.len() > 4096 {
         return Err("model URL is too long".into());
