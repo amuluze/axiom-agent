@@ -70,10 +70,13 @@ jobs:
           npm run test:bash-policy
 
   # ── macOS：双架构 DMG + updater 工件（x86_64 在 arm64 runner 上交叉构建）──
+  # runner 标签：GitHub 已下线 macos-14 镜像（标签解析到不支持的
+  # macos-14-arm64-us-default，job 1 秒内被取消）；macos-15 实测仍是 arm64
+  # 主机（uname -m = arm64），与原 macos-14 同架构，交叉构建 x86_64 不变。
   build-macos:
     name: build:macos (${{ matrix.target }})
     needs: verify
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 90
     strategy:
       fail-fast: false
