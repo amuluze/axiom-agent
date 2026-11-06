@@ -1,0 +1,12 @@
+name: probe-os-labels
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-arm64, macos-26, macos-26-arm64]
+    steps:
+      - run: echo "runner=$(uname -m) label=${{ matrix.os }}"
