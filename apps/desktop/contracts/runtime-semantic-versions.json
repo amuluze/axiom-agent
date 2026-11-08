@@ -575,7 +575,7 @@
         "src/agent/skills/parseSkillFile.ts",
         "src/agent/skills/builtinSkillBodies.ts"
       ],
-      "semanticDigest": "5b82b55fb628feafaa3bd656a85e4e42539ccf23756eec38364ed7c2c8de4941"
+      "semanticDigest": "d5898f38628b3f8500fbc9d0140d07b55ce56da9190b47c656845c305270b00c"
     },
     {
       "id": "tool:ls",
