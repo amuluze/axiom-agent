@@ -77,7 +77,7 @@ export const buildTestingContextSection = (input: TestingContextSectionInput): s
   const tail = [
     '写用例前先加载内置技能 test-authoring（load_skill({ name: "test-authoring" })）：先定测试点再用例，用真实接口构造数据。',
     '回归用例需给出失败前证据；新增/修改用例至少一条断言应在错误行为下失败。',
-    '用例字段与取值以 docs/ui-api-automation-usage.md 为准，不要凭记忆写字段；运行环境档在 tests/environments/*.env.ax。',
+    '用例字段与取值以 docs/ui-api-automation-usage.md 为准，不要凭记忆写字段；运行环境档在 tests/environments/*.env.axiom。',
   ]
   const lines: string[] = [
     '# 测试会话上下文',

@@ -33,9 +33,11 @@ describe('scanEnvironmentFiles', () => {
   it('projects valid files into importable drafts and sorts by path', async () => {
     mocks.findWorkspaceFiles.mockResolvedValue({
       matches: [
-        { path: 'tests/environments/zeta.env.ax', kind: 'file' },
-        { path: 'tests/environments/alpha.env.ax', kind: 'file' },
+        { path: 'tests/environments/zeta.env.axiom', kind: 'file' },
+        { path: 'tests/environments/alpha.env.axiom', kind: 'file' },
         { path: 'tests/environments/notes.ax', kind: 'file' },
+        // 旧后缀已被 .env.axiom 取代（.ax 归设计稿专属）：不再进入扫描结果。
+        { path: 'tests/environments/legacy.env.ax', kind: 'file' },
       ],
     })
     mocks.readWorkspaceText.mockImplementation(async (path: string) => ({
@@ -45,8 +47,8 @@ describe('scanEnvironmentFiles', () => {
 
     const entries = await scan()
     expect(entries.map((entry) => entry.path)).toEqual([
-      'tests/environments/alpha.env.ax',
-      'tests/environments/zeta.env.ax',
+      'tests/environments/alpha.env.axiom',
+      'tests/environments/zeta.env.axiom',
     ])
     expect(entries[0]?.mode).toBe('local')
     expect(entries[0]?.draft).toMatchObject({
@@ -62,7 +64,7 @@ describe('scanEnvironmentFiles', () => {
 
   it('keeps invalid files out of the importable set with parser issues', async () => {
     mocks.findWorkspaceFiles.mockResolvedValue({
-      matches: [{ path: 'tests/environments/broken.env.ax', kind: 'file' }],
+      matches: [{ path: 'tests/environments/broken.env.axiom', kind: 'file' }],
     })
     mocks.readWorkspaceText.mockResolvedValue({ content: '{"kind":"axiom.test-env","version":1,"id":"x"}', truncated: false })
 
@@ -77,7 +79,7 @@ describe('scanEnvironmentFiles', () => {
     expect(await scan()).toEqual([])
 
     mocks.findWorkspaceFiles.mockResolvedValue({
-      matches: [{ path: 'tests/environments/huge.env.ax', kind: 'file' }],
+      matches: [{ path: 'tests/environments/huge.env.axiom', kind: 'file' }],
     })
     mocks.readWorkspaceText.mockResolvedValue({ content: '', truncated: true })
     const entries = await scan()
@@ -88,8 +90,8 @@ describe('scanEnvironmentFiles', () => {
   it('invalidates every file that declares the same environment id', async () => {
     mocks.findWorkspaceFiles.mockResolvedValue({
       matches: [
-        { path: 'tests/environments/a.env.ax', kind: 'file' },
-        { path: 'tests/environments/b.env.ax', kind: 'file' },
+        { path: 'tests/environments/a.env.axiom', kind: 'file' },
+        { path: 'tests/environments/b.env.axiom', kind: 'file' },
       ],
     })
     mocks.readWorkspaceText.mockResolvedValue({ content: environmentFile('shared'), truncated: false })

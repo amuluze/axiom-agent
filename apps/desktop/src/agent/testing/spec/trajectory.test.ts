@@ -124,7 +124,7 @@ describe('normalizeSpecPath', () => {
 
     // 只认用例文件：其它 .ax（设计稿 / 环境档）与产品源码都不算用例产物。
     expect(normalizeSpecPath('tests/notes.ax')).toBeNull()
-    expect(normalizeSpecPath('tests/environments/a.env.ax')).toBeNull()
+    expect(normalizeSpecPath('tests/environments/a.env.axiom')).toBeNull()
     expect(normalizeSpecPath('.pen/page.ax')).toBeNull()
     expect(normalizeSpecPath('src/foo.ts')).toBeNull()
     expect(normalizeSpecPath('tests/')).toBeNull()

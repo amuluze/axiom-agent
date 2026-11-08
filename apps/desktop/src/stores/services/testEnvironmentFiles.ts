@@ -1,5 +1,7 @@
 /**
- * 工作区环境档扫描：把 `tests/environments/*.env.ax` 读成「可导入的运行环境草稿」。
+ * 工作区环境档扫描：把 `tests/environments/*.env.axiom` 读成「可导入的运行环境草稿」。
+ * 后缀不再使用 `.ax`（设计稿专属）；历史 `.env.ax` 不在扫描面内，需要继续使用的项目
+ * 自行改名。
  *
  * 与 `testSpecIndex` 同构：只做 I/O 与投影，判定完全交给
  * `agent/testing/environment/environmentFile` 的解析器（不再实现第二套校验）。
@@ -50,7 +52,7 @@ export const scanEnvironmentFiles = async (
   try {
     const result = await findWorkspaceFiles({
       requestId: createId('env-index'),
-      pattern: '*.env.ax',
+      pattern: '*.env.axiom',
       path: 'tests/environments',
       limit: 100,
       signal,
@@ -60,7 +62,7 @@ export const scanEnvironmentFiles = async (
       throw new Error('测试环境档清单超过 100 个，扫描结果不完整')
     }
     paths = result.matches
-      .filter((entry) => entry.kind === 'file' && entry.path.endsWith('.env.ax'))
+      .filter((entry) => entry.kind === 'file' && entry.path.endsWith('.env.axiom'))
       .map((entry) => entry.path)
       .sort((left, right) => left.localeCompare(right))
   } catch (error) {

@@ -2,7 +2,21 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [0.7.6] - 未发布
+## [0.7.7] - 未发布
+
+### Changed
+
+- **测试环境档后缀 `.env.ax` 改为 `.env.axiom`**：`.ax` 后缀归还设计稿专属（`.ax` 格式是设计画布的稿件格式，测试环境档与它共用后缀会让「设计稿/环境档」的识别只能靠猜）。扫描器只认 `tests/environments/*.env.axiom`，旧 `.env.ax` 不再被发现（不兼容旧名，需要继续使用的项目自行改名），测试钉死该切换；内置 test-authoring Skill 正文（zh/en）与测试页上下文提示同步新后缀，`BUILTIN_SKILL_BODIES_VERSION` 43→44 并写回契约。
+- **公开仓 release 工作流的 macOS runner 升到 macos-15**：GitHub 已下线 macos-14 镜像（标签解析到不支持的 `macos-14-arm64-us-default`，build:macos 两个 job 在启动后 1 秒内被取消，publish job 因此永远等不到 macOS 产物——v0.7.6 的公开仓发布实际卡在这里，v0.7.5 同字节工作流可跑佐证是平台侧镜像下线而非代码回归）。实测可用标签 macos-15 / macos-26，取 macos-15（与被替代标签同代、uname 实测 arm64），x86_64 交叉构建不变；`docs/github-actions.md` 记录镜像下线事实与下次升级口径。
+
+### Fixed
+
+- **`.env.axiom` 环境档可读（文本白名单补 axiom 扩展名）**：后缀改名后 `read_workspace_text` 的扩展名白名单不含 `axiom`，测试页扫描把读取失败收敛成固定文案「读取文件失败」，环境档无法导入。补白名单并加断言钉死（发现面扫描后缀与读取面 `TEXT_EXTENSIONS` 必须成对）。使用说明补 Secret 值形态/会话 TTL/401 诊断、设计方案补发现面与读取面成对约束，交接清单同步。
+- **测试页顶栏常驻窗口操作入口，右栏打开后可收起**：右栏（创作区/报告）打开后顶栏的窗口操作入口（关闭/最小化等）不再被挤掉，且右栏可从顶栏直接收起。
+- **侧栏收起态的测试页与文档页顶栏为重开浮层按钮留位**：侧栏收起时测试页与文档页顶栏为「重开浮层」按钮预留位置，避免按钮与顶栏内容重叠。
+
+
+## [0.7.6] - 2026-11-06
 
 ### Added
 - **测试环境信任档与本地 dev container 打通**：远程测试环境的配置摩擦集中在四处——环境地址要写两遍、私有 CA 握手必失败、每步两次人工点击、远程档写不了「只探一下」的配方。环境档 v3（`axiom.test-env`）新增 `baseUrl`（一个地址同时作 `WEB_BASE_URL` 与 `API_BASE_URL` 缺省，`vars` 显式声明者优先）、`allowPrivateNetwork`（v3 起缺省按地址推导，显式值优先）、`tlsTrust`（`system` / `insecure`——跳过证书校验只对确定私网/回环开放，公网一律拒绝）、`approvalMode`（`per_step` / `trusted`，受信档只对 `remote` 开放）；远程档可只写就绪探针，命令级下限改由档位判定（`local` 档仍须有就绪命令）。环境信任档落 SQLite v23（`test_environments` 增 `tls_trust` / `approval_mode` 两列，带 CHECK 与缺省值，旧记录语义不变），受信放行的作用域是环境自己声明的 origin 集合（API Base ∪ Web Base ∪ `secretOrigins`）——集合内步骤免逐次审批、集合外照旧；UI 步骤的作用域在目标授权时算一次并冻结在本次运行里，API 步骤按环境记录逐次判定，判定权威在 Rust 侧（受陷渲染进程无法指定），WebView 侧只决定要不要弹卡。面板新增「快速创建」（填一个地址即建出可用环境，可一并勾「不校验（私有 CA）」与「受信」），配方命令此前一个字都看不到（只显示「已配置起停配方」），现在直接展示并提供「复制命令」——本地 dev container 场景下这是「怎么把环境起起来」的唯一事实来源。两处放宽都必经宿主原生内容确认，变更摘要逐条列出「证书校验」「审批档」前后差异。版本契约：`DATABASE_VERSION` 22→23；`tool:api_request` `runtimeVersion` 6→7（宿主语义变化、schema 未变）并补 `toolNameMigrations` 单跳迁移。

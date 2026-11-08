@@ -10,10 +10,10 @@ use crate::workspace_access::WorkspaceAccessState;
 
 pub(crate) const MAX_TEXT_FILE_BYTES: u64 = 1024 * 1024;
 const TEXT_EXTENSIONS: &[&str] = &[
-    "bash", "c", "cc", "cfg", "cjs", "conf", "cpp", "css", "csv", "cts", "env", "fish", "go",
-    "gql", "graphql", "h", "hpp", "html", "ini", "java", "js", "json", "jsonl", "jsx", "kt", "kts",
-    "log", "markdown", "md", "mjs", "mts", "py", "rb", "rs", "scss", "sh", "sql", "swift", "toml",
-    "ts", "tsv", "tsx", "txt", "vue", "xml", "yaml", "yml", "zsh",
+    "axiom", "bash", "c", "cc", "cfg", "cjs", "conf", "cpp", "css", "csv", "cts", "env", "fish",
+    "go", "gql", "graphql", "h", "hpp", "html", "ini", "java", "js", "json", "jsonl", "jsx", "kt",
+    "kts", "log", "markdown", "md", "mjs", "mts", "py", "rb", "rs", "scss", "sh", "sql", "swift",
+    "toml", "ts", "tsv", "tsx", "txt", "vue", "xml", "yaml", "yml", "zsh",
 ];
 const TEXT_FILE_NAMES: &[&str] = &[
     ".env",
@@ -478,6 +478,13 @@ mod tests {
 
         assert!(canonical_text_file(binary.to_str().unwrap()).is_err());
         assert!(canonical_text_file(oversized.to_str().unwrap()).is_err());
+
+        // 测试环境档后缀 `.env.axiom`（ext = axiom）必须在文本白名单内：
+        // Axiom 测试页的 tests/environments 扫描经 read_workspace_text 读取它，
+        // 白名单缺失会让环境档在 UI 里显示「读取文件失败」。
+        let env_file = directory.join("beacon-local.env.axiom");
+        std::fs::write(&env_file, b"{\"kind\":\"axiom.test-env\"}").unwrap();
+        assert!(canonical_text_file(env_file.to_str().unwrap()).is_ok());
 
         std::fs::remove_dir_all(directory).unwrap();
     }

@@ -232,7 +232,7 @@ describe('TestEnvironmentDialog', () => {
     }
     const { onChanged } = renderDialog({
       environmentFiles: [{
-        path: 'tests/environments/local.env.ax',
+        path: 'tests/environments/local.env.axiom',
         valid: true,
         fileId: 'local-shop',
         name: '本地开发环境',
@@ -337,7 +337,7 @@ describe('TestEnvironmentDialog', () => {
       environments: [RECORD],
       selectedId: RECORD.id,
       environmentFiles: [{
-        path: 'tests/environments/broken.env.ax',
+        path: 'tests/environments/broken.env.axiom',
         valid: false,
         fileId: null,
         name: null,

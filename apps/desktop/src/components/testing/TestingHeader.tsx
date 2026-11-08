@@ -5,6 +5,7 @@ import type { TestEnvironmentRecord } from '@/platform/testEnvironments'
 import type { TestSpecIndexEntry } from '@/stores/services/testSpecIndex'
 import type { TestSpecTypeFilter } from '@/stores/services/testSpecFilter'
 import { useT } from '@/i18n'
+import { WindowActions } from '@/components/session/WindowActions'
 
 /**
  * 测试页顶栏与环境条（F6 切片）。
@@ -99,6 +100,10 @@ export const TestingTopbar = ({
         >
           {t('testing.topbar.replay')}
         </button>
+        {/* 运行时面板（右栏）的收起/展开入口常驻视图右上角（与 SessionHeader /
+            NewTaskView 同一约定）：环境条能打开右栏，本页若没有这个入口，
+            右栏打开后就无处收起。 */}
+        <WindowActions />
       </div>
     </div>
   )

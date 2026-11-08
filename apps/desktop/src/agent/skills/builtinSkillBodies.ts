@@ -64,7 +64,8 @@ import type { BuiltinSkillOverrideEntry } from '@/config/builtinPromptOverrides'
  */
 /** v41：内置测试创作 Skill 由 test-design 更名为 test-authoring（名称与测试页「写用例」及文档「测试创作」对齐；协议与正文语义不变）。 */
 /** v43：证据规则一致性修复——diagnose 有界复现且不提前改代码/提交，implement 测试豁免与 INCONCLUSIVE 出口一致，test-authoring 禁止为制造失败改产品源码且 verify 引用环境档，domain 修正步骤引用，design 探索证据进入收口。 */
-export const BUILTIN_SKILL_BODIES_VERSION = 43
+/** v44：test-authoring 的环境档引用从 `*.env.ax` 改为 `*.env.axiom`——`.ax` 是设计稿专属后缀，测试档整体切走（扫描器同步只认新后缀，不兼容旧名）。 */
+export const BUILTIN_SKILL_BODIES_VERSION = 44
 
 export type BuiltinPromptLanguage = ResolvedLanguage
 
@@ -780,7 +781,7 @@ The canvas render matches the user's intent with no new parse diagnostics; all m
 
 - 目标功能的描述与**可客观判定的验收标准**（用户给的，或从需求文档与代码里读出的）。
 - docs/ui-api-automation-usage.md：用例协议、字段与拒绝面（**Axiom 项目内的完整文档**：在 Axiom 仓库工作时先读它；新项目里通常不存在，此时以下节「协议最小字段集」为准，并把解析器的「需要修复」原因当作最终口径）。
-- tests/environments/*.env.ax（若存在）：本地 / 远程档、就绪探针、允许引用的 Secret 名（明文只存在宿主 Secret 里）。
+- tests/environments/*.env.axiom（若存在）：本地 / 远程档、就绪探针、允许引用的 Secret 名（明文只存在宿主 Secret 里）。
 - 既有 tests/ 用例与命名习惯：补充优先，不要另起一套命名。
 
 # 协议最小字段集（离线可用）
@@ -837,7 +838,7 @@ kind = regression 的用例必须交出失败证据；new_feature 用例至少�
 
 当项目需要重复验证、且当前没有可执行的启动/驱动说明时，读 tests/verify.md；不存在时经用户确认后创建。它是一份项目文档，不是新的 Skill，也不替代 TestSpec Runner。
 
-Launch / Drive 优先引用 tests/environments/*.env.ax 等既有环境档与项目命令，不复制成第二份真相；只补充环境档没有的信息。
+Launch / Drive 优先引用 tests/environments/*.env.axiom 等既有环境档与项目命令，不复制成第二份真相；只补充环境档没有的信息。
 
 契约保持短小，至少包含：
 
@@ -900,7 +901,7 @@ When the user asks, in the testing page session, to write or extend cases for a 
 
 - The feature description and **objectively checkable acceptance criteria** (given by the user, or read from requirement docs and code).
 - docs/ui-api-automation-usage.md: the full case protocol, fields and rejection surface (**inside the Axiom repo**; read it when working there). New projects usually lack it — use the "Minimal protocol field set" section below, and treat the parser's needs-repair reasons as the final authority.
-- tests/environments/*.env.ax (if present): local / remote mode, readiness probe, allowed Secret names (plaintext lives only in host secrets).
+- tests/environments/*.env.axiom (if present): local / remote mode, readiness probe, allowed Secret names (plaintext lives only in host secrets).
 - Existing tests/ cases and naming habits: extend rather than invent a second convention.
 
 # Minimal protocol field set (works offline)
@@ -953,7 +954,7 @@ A kind = regression case must include failure evidence; a new_feature case must 
 
 When the project needs repeatable verification and has no executable launch/drive instructions, read tests/verify.md; when it is missing, create it after user confirmation. It is a project document, not a new Skill, and does not replace the TestSpec Runner.
 
-For Launch / Drive, reference existing environment files such as tests/environments/*.env.ax and project commands instead of copying them into a second source of truth; add only information missing from those files.
+For Launch / Drive, reference existing environment files such as tests/environments/*.env.axiom and project commands instead of copying them into a second source of truth; add only information missing from those files.
 
 Keep the contract short and include at least:
 

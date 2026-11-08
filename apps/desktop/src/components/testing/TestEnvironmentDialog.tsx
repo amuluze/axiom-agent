@@ -40,7 +40,7 @@ import { TestStepApprovalPanel } from './TestStepApprovalPanel'
 interface TestEnvironmentDialogProps {
   open: boolean
   environments: TestEnvironmentRecord[]
-  /** 工作区 `tests/environments/*.env.ax` 的扫描结果（环境档 → 运行环境的导入入口）。 */
+  /** 工作区 `tests/environments/*.env.axiom` 的扫描结果（环境档 → 运行环境的导入入口）。 */
   environmentFiles: readonly EnvironmentFileEntry[]
   selectedId: string | null
   disabled: boolean

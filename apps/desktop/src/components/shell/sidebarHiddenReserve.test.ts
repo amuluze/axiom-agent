@@ -22,6 +22,8 @@ const TOP_BAR_CONTAINERS = [
   '.session__header',
   '.new-task__drag-region',
   '.design-view__toolbar',
+  '.testing-view__topbar',
+  '.docs-view__topbar',
 ]
 
 describe('侧栏收起：浮层按钮让位约定', () => {

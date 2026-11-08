@@ -79,6 +79,14 @@
   padding-left: calc(var(--macos-traffic-light-safe-area) + 28px + var(--space-3));
 }
 
+.app-main--sidebar-hidden .testing-view__topbar {
+  padding-left: calc(var(--macos-traffic-light-safe-area) + 28px + var(--space-3));
+}
+
+.app-main--sidebar-hidden .docs-view__topbar {
+  padding-left: calc(var(--macos-traffic-light-safe-area) + 28px + var(--space-3));
+}
+
 @media (max-width: 760px) {
   :root {
     --sidebar-width: 0px;
