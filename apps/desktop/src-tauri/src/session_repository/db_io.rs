@@ -28,9 +28,9 @@ pub(super) fn validate_parameter_payload(
 }
 
 pub(super) fn bind_parameters<'q>(
-    mut query: Query<'q, Sqlite, SqliteArguments<'q>>,
+    mut query: Query<'q, Sqlite, SqliteArguments>,
     parameters: &[Value],
-) -> Result<Query<'q, Sqlite, SqliteArguments<'q>>, String> {
+) -> Result<Query<'q, Sqlite, SqliteArguments>, String> {
     for parameter in parameters {
         query = match parameter {
             Value::Null => query.bind(Option::<String>::None),

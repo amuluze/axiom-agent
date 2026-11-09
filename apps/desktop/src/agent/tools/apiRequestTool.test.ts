@@ -8,7 +8,7 @@ import { MAX_API_REQUEST_BODY_BYTES, MAX_API_TIMEOUT_MS, createApiRequestTool } 
 const createTool = (
   environment: AgentEnvironment = createFakeAgentEnvironment(),
   externalTargets = true,
-) => createApiRequestTool(environment, { externalTargets, agentGeneration: true })
+) => createApiRequestTool(environment, { externalTargets })
 
 const context = (overrides: Partial<AgentToolExecutionContext> = {}): AgentToolExecutionContext => ({
   sessionId: 'session-1',

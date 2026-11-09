@@ -1,5 +1,5 @@
 use super::*;
-use sqlx::{Either, Statement};
+use sqlx::{AssertSqlSafe, Either, SqlSafeStr as _, Statement};
 use tempfile::TempDir;
 
 async fn migrated_database() -> (TempDir, SqliteConnection) {
@@ -69,7 +69,8 @@ async fn session_fact_count(connection: &mut SqliteConnection, table: &str) -> i
         "tool_executions" => "SELECT COUNT(*) FROM tool_executions WHERE run_id = 'run-1'".into(),
         _ => panic!("unsupported test table"),
     };
-    sqlx::query_scalar(&statement)
+    // 测试 helper：表名白名单 + 固定模板拼出的计数语句，无注入面
+    sqlx::query_scalar(AssertSqlSafe(statement))
         .fetch_one(connection)
         .await
         .unwrap()
@@ -650,7 +651,7 @@ async fn prepares_every_named_statement_with_its_declared_parameter_count() {
         }))
     {
         let prepared = connection
-            .prepare(statement)
+            .prepare(AssertSqlSafe(statement).into_sql_str())
             .await
             .unwrap_or_else(|error| panic!("failed to prepare {label}: {error}"));
         let actual = match prepared.parameters() {

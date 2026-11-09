@@ -12,29 +12,29 @@ describe('runtime policy', () => {
     })
   })
 
-  it('开发档只留本地 loopback：外部目标与 Agent 生成都关闭，但探索能力仍授予', () => {
+  it('开发档只留本地 loopback：外部目标关闭，但探索能力仍授予', () => {
     // H1-5 分阶段发布第 1 档（开发 feature flag）：收窄发生在工具门
     // （api_request 的 externalTargets），不是能力裁剪——本地开发仍要能 discover 并使用工具。
     expect(createRuntimePolicy({ development: true, desktop: true })).toMatchObject({
       mode: 'development',
-      testAutomation: { externalTargets: false, agentGeneration: false },
+      testAutomation: { externalTargets: false },
     })
     expect(createRuntimePolicy({ development: true, desktop: true }).toolCapabilities)
       .toContain('api-test:request')
   })
 
-  it('生产档按内测/Beta 语义放开外部目标与 Agent 生成（与历史行为一致）', () => {
+  it('生产档按内测语义放开外部目标（与历史行为一致）', () => {
     expect(createRuntimePolicy({ development: false, desktop: true })).toMatchObject({
       mode: 'production',
-      testAutomation: { externalTargets: true, agentGeneration: true },
+      testAutomation: { externalTargets: true },
     })
   })
 
   it('非桌面运行时同样按档位派生策略（与能力表无关）', () => {
     expect(createRuntimePolicy({ development: true, desktop: false }).testAutomation)
-      .toEqual({ externalTargets: false, agentGeneration: false })
+      .toEqual({ externalTargets: false })
     expect(createRuntimePolicy({ development: false, desktop: false }).testAutomation)
-      .toEqual({ externalTargets: true, agentGeneration: true })
+      .toEqual({ externalTargets: true })
   })
 
   it.each([true, false])('starts desktop with coding read/write plus UI/API exploration and sub-agents, before native probing (development=%s)', (development) => {

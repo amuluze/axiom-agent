@@ -7,9 +7,13 @@ import { createFakeAgentEnvironment } from '@/agent/tools/__fixtures__/fakeAgent
 import type { WorkspaceReadResult } from '@/platform/workspace'
 import {
   AGENTS_MD_FILENAME,
+  DESIGN_MD_FILENAME,
   PROJECT_CONTEXT_MAX_BYTES,
+  PROJECT_DESIGN_CONTEXT_MAX_BYTES,
   buildProjectContextSection,
+  buildProjectDesignSection,
   loadProjectContext,
+  loadProjectDesignContext,
 } from './projectContext'
 
 const workspace = { path: '/repo', name: 'repo' }
@@ -143,6 +147,42 @@ describe('loadProjectContext', () => {
   })
 })
 
+describe('loadProjectDesignContext', () => {
+  it('读取工作区根 DESIGN.md 并返回正文', async () => {
+    const calls: string[] = []
+    const environment = envWith(async (path, offset, limit) => {
+      calls.push(path)
+      return pagedRead('# 设计基调\n奶油色底', 200)(path, offset, limit)
+    })
+    await expect(loadProjectDesignContext(environment)).resolves.toEqual({
+      kind: 'content',
+      content: '# 设计基调\n奶油色底',
+    })
+    expect(calls).toEqual([DESIGN_MD_FILENAME])
+  })
+
+  it('文件不存在返回 absent、读取失败返回 unavailable（与 AGENTS.md 同三态）', async () => {
+    const absent = envWith(async () => {
+      throw new AgentEnvironmentError('not_found', 'missing')
+    })
+    await expect(loadProjectDesignContext(absent)).resolves.toEqual({ kind: 'absent' })
+    const unavailable = envWith(async () => { throw new Error('transient ipc failure') })
+    await expect(loadProjectDesignContext(unavailable)).resolves.toEqual({ kind: 'unavailable' })
+  })
+
+  it('超出 16 KiB 预算时按行边界截断并注明省略量', async () => {
+    const line = 'x'.repeat(1024)
+    const content = Array.from({ length: 200 }, () => line).join('\n')
+    const result = await loadProjectDesignContext(envWith(pagedRead(content, 200)))
+    const body = result.kind === 'content' ? result.content : ''
+    expect(body).toContain('DESIGN.md 已截断：省略了约')
+    expect(new TextEncoder().encode(body).byteLength).toBeLessThanOrEqual(
+      PROJECT_DESIGN_CONTEXT_MAX_BYTES + 256,
+    )
+    expect(body).toMatch(/x{1024}/u)
+  })
+})
+
 describe('buildProjectContextSection', () => {
   it('有内容时包成 # 项目上下文 分节', () => {
     expect(buildProjectContextSection('正文')).toBe('# 项目上下文\n正文')
@@ -151,5 +191,18 @@ describe('buildProjectContextSection', () => {
   it('无内容返回 null（由调用方过滤，避免空壳标题）', () => {
     expect(buildProjectContextSection(null)).toBeNull()
     expect(buildProjectContextSection('')).toBeNull()
+  })
+})
+
+describe('buildProjectDesignSection', () => {
+  it('包成带来源与使用范围的 <project_design> 子块', () => {
+    expect(buildProjectDesignSection('# 基调')).toBe(
+      '<project_design src="DESIGN.md" note="项目设计意图；仅在设计任务（design skill）中使用，非设计任务忽略">\n# 基调\n</project_design>',
+    )
+  })
+
+  it('无内容返回 null', () => {
+    expect(buildProjectDesignSection(null)).toBeNull()
+    expect(buildProjectDesignSection('')).toBeNull()
   })
 })

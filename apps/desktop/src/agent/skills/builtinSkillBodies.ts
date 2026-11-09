@@ -62,10 +62,15 @@ import type { BuiltinSkillOverrideEntry } from '@/config/builtinPromptOverrides'
  * 并明确 pattern 目录属于 Axiom 应用源码、在用户项目里不可读属正常——否则完整度清单的
  * 「重复结构优先用 pattern」在最需要它的地方（新项目）无路可走。
  */
-/** v41：内置测试创作 Skill 由 test-design 更名为 test-authoring（名称与测试页「写用例」及文档「测试创作」对齐；协议与正文语义不变）。 */
+/** v41：内置测试创作 Skill 由 test-design 更名为 test-authoring（名称与文档「测试创作」对齐；协议与正文语义不变）。 */
 /** v43：证据规则一致性修复——diagnose 有界复现且不提前改代码/提交，implement 测试豁免与 INCONCLUSIVE 出口一致，test-authoring 禁止为制造失败改产品源码且 verify 引用环境档，domain 修正步骤引用，design 探索证据进入收口。 */
 /** v44：test-authoring 的环境档引用从 `*.env.ax` 改为 `*.env.axiom`——`.ax` 是设计稿专属后缀，测试档整体切走（扫描器同步只认新后缀，不兼容旧名）。 */
-export const BUILTIN_SKILL_BODIES_VERSION = 44
+/** v45：design skill 补审美层——新增「审美定位」节（主题锚定、设计计划与相似需求自审、反默认清单、
+ * 排版/结构/动效/文案规则、克制），并把项目根 DESIGN.md 升级为带最小结构契约的基调输入
+ * （缺失时提案后回写，已存在只补缺）。补丁定位：完整度清单只管覆盖度下限，pattern 只管结构底座。 */
+/** v46：DESIGN.md 正文改由系统提示词以 `<project_design>` 注入（16 KiB 上限），design skill 的
+ * 「必须先 read」口径改为「以注入块为准，仅在未注入或被截断时 read」，避免每轮重复整读。 */
+export const BUILTIN_SKILL_BODIES_VERSION = 46
 
 export type BuiltinPromptLanguage = ResolvedLanguage
 
@@ -541,12 +546,37 @@ The explanation system is aligned with the implementation, verification evidence
 - 用户对设计的意图描述；有设计画布时可要求用户描述看到的实际渲染。
 - 以下 Axiom 内部资料**只作背景参考，读不到属正常**（新项目工作区通常没有）：docs/design-canvas.md（渲染子集与语义说明）、apps/desktop/src/agent/design/__fixtures__/patterns/（pattern 库）、apps/desktop/src/styles/tokens.css（Axiom 自身 token）。读不到就按本 Skill 的规则继续，不要停步，也不要在稿件或生成代码里引用这些路径。
 - 工作区没有 .axiom/design/components.json 时，design_query 返回的组件清单来自 **Axiom 宿主注册表**（sourcePath 指向 Axiom 自身源码，不是本项目实现）：不得把其中的组件写进本项目稿件与 codegen；此时节点只用 symbol / part / 原语，重复结构抽 symbol 表达。
-- 项目根 DESIGN.md（若存在；在 <available_docs> 索引中以 role=design 出现）：品牌/视觉/交互基调与设计意图——从零生成前先读它，页面清单与 token 基调以其为准。
+- 项目根 DESIGN.md（若存在）：品牌/视觉/交互基调与设计意图，**正文已注入 # 项目上下文 段的 <project_design> 块**（16 KiB 上限，超限带截断注记；索引条目仍以 role=design 出现）。直接以注入块为准，不要为获取基调重复整读；块被截断或需核对完整版本时再 read。缺失且用户未给基调时，按下述最小结构自拟，并随设计计划一起交用户确认——确认后可新建（写工具逐次审批）：① 受众与核心任务；② 视觉语言（4–6 个命名色含明暗、字体栈与 type scale、圆角/阴影层级、间距节奏）；③ 语气与文案规则；④ 本项目禁用的默认套路；⑤ 唯一视觉主角。已存在时只补缺、不覆盖用户既有内容；确认的新基调回写它。
 
 # 唯一设计稿格式与迁移
 
 - **.ax**（Axiom 自有格式，**新稿一律用它**）：节点是四级闭集——优先 component（真组件实例：name 必须命中组件清单、props 过契约校验），其次 symbol（**本稿局部组件**（1.4）：顶层 symbols 声明 props 契约与 body 原语子树，页内用普通 component 节点实例化——body 的文案位（text/label/supporting）与枚举位（icon.name，1.6）写 {$param: 参数名} 引用参数，实例用 props 传值——参数**全必填**：文案位参数契约写 string，枚举位参数契约写 { enum: [值域] }；body 只写 part/原语（禁 component 与 overlay，无嵌套 symbol）；body 节点 id 需全稿唯一且不含保留分隔符 ~s:；symbol 名不得与组件清单或注册表重名。画布按实例展开渲染、codegen 发射为真实局部组件——复用边界直达实现），再次 part（语义部件：只写语义与变体，尺寸与内边距由实现侧决定；部件走词表——statusTag / divider / bubble / banner / actionButton / mentionBadge，字段越界与非法变体都会报错），最后才是 frame / text / icon / rect / ellipse / path / image 原语。**重复结构（表格行、导航项、卡片、定价档）先抽 symbol 再逐实例传参——同型结构逐份重写原语会在完善度与一致性上双输**。硬规则：组件必须来自清单；文案用字符串或 {$mock}（展示）/ {$bind}（数据源），组件的 json 型 props（工具调用的 call/result、消息对象等）用**结构化** {$mock}——直接把对象/数组写进绑定，不要包成 JSON 字符串；页用 group / state 表达同一 UI 的多状态；除 overlay 外**禁止绝对定位**（位置用 flex 与锚点语义）；弹窗/抽屉背后的整页遮罩用 overlay 的 scrim: {fill}（如半透明色，遮罩铺满父级、由实现渲染成 backdrop，不要用半透明矩形手搭，同一页可叠多个带 scrim 的 overlay）；卡片/弹层的投影用 shadow: {color, offsetX, offsetY, blur}（color 是 token 或字面色，偏移与 blur 是 px 数值，blur 不为负），不要用叠加半透明矩形模拟；lineHeight 必须写 {unit:'multiplier'|'px', value}；尺寸只接受数值(px) / token / fill_container / fit_content；token 用 $名称 引用顶层已声明项；未知字段一律报错（校验 fail-closed，错稿不会进画布）。组件节点的 name 与 props 会额外与组件注册表核对（组件不在注册表、props 键/必填/值型与契约不符都会在读取时报错并列出可用项）——写稿当场暴露，不必等画布渲染红框。
 - **.pen**（pen.dev 格式，**存量与互操作**）：仅作为一次性迁移输入，不进入画布与 design_query。要在这份稿上长期迭代时，先用 design_import 把它迁移成 .ax（一次性、需审批；目标已存在会被拒绝），此后以 .ax 为准。
+
+# 审美定位
+
+**三层分工**：用户 brief 与项目根 DESIGN.md 是审美的最高约束——其中指定的方向必须照做；下方「完整度清单」只保证覆盖度下限，不是视觉答案；「内置模式库」只提供结构底座——复制 pattern 后必须用本稿 token 重写视觉语言（圆角层级、阴影、色阶、字体），沿用其视觉常量会得到整齐的卡片模板相。
+
+**先锚定主题，再谈视觉**：写稿前明确三件事——目标用户、这个界面要完成的主任务、所属行业与语汇。brief 与 DESIGN.md 都没给出时，先按这三项自拟一个具体提案交用户确认；不自拟就会落到默认模板。视觉选择从主题来（给孩子的工具与给分析师的仪表盘不共享同一套色/字/密度），不从「我常用的那套」来。
+
+**先出设计计划，再写稿（Path A 强制）**：先给用户一段计划（或写入 DESIGN.md）——4–6 个命名色（含明暗两档）、字体角色与 type scale（1–2 个字族）、版式概念（对齐/密度/首屏结构）、一条差异原则（本稿相对同类产品不同的那一件事）。然后对照 brief/DESIGN.md 自审：换一个同行业的相似需求，这份计划会不会原样成立？会，说明它是默认而不是选择——改掉并说明改了什么。计划确认后才登记 tokens、写页面。
+
+**反默认清单**：下列组合本身不是错，但它们是「不假思索的默认」；出现时必须说出为这个 brief 服务的具体理由，否则替换：
+- 奶油色底 + 高对比衬线大标题 + 陶土/暖橙强调色；
+- 近黑底 + 单一酸性绿或朱红点缀；
+- 全大写 eyebrow 标签、A · B · C 中点串、WORD — fragment 破折号标签、等宽小字数据标签、链接/按钮尾部加 →；
+- SaaS 卡片套件：内容全部切成同款圆角卡片、无视层级同一圆角与同一 soft shadow、渐变当装饰；
+- 大数字 + 小标签 + 指标支撑 + 渐变强调的 Hero（除非指标本身就是主体内容）。
+
+**排版**：1–2 个字族且角色清晰；字号/字重/行高走 $token 形成明确 type scale；正文行宽控制在 80 字符以内（衬线可略长、行高略大）；标题强调靠字号/字重/位置，不靠单词斜体、局部换色或全大写标签；不加无信息的 eyebrow。
+
+**结构即信息**：编号、分隔线、边框、标签只在编码真实序列或分组时使用；完整度清单的数量下限是覆盖度要求，不是装饰许可。
+
+**动效**：.ax 1.6 不表达动效；实现侧（mode=code）至多一个编排时刻（首屏载入或单次揭示），不做每段 fade-up、每卡 hover，尊重 reduced motion。
+
+**文案**：用用户能理解的语言命名（「通知设置」，不是「webhook 配置」）；主动语态，CTA 写明结果（「保存更改」，不是「提交」）；同一动作全流程同名；错误说清发生了什么与怎么修，不道歉、不模糊；空态给出下一步动作而不是一句「暂无数据」；一句话只做一件事。
+
+**克制**：全稿只保留一个视觉主角，其余保持安静；删到不影响理解为界。大胆只花在一个地方。
 
 # 完整度清单
 
@@ -576,7 +606,8 @@ KPI 行（不少于 3 张卡，每卡 label + value + delta/对比）→ 主图�
 
 该目录位于 Axiom 应用源码内，在用户项目工作区里通常不可读——**不可读属正常**：按下方「结构骨架」自建 symbol，不要因缺失而退回逐份手写原语。完整度清单中**重复结构的具体形态**优先用对应 pattern（目录可读时直接复制文件，否则按骨架自建；两种路径都必须抽 symbol，不得重复原语）：
 
-- **KpiCard**：数据仪表盘的 KPI 行 / 落地页 Hero 下的指标。props: label / value / delta
+- **pattern 只定义结构，不定义视觉**：半径、阴影、色阶、字体必须重新落成本稿 token；直接沿用 pattern 的视觉常量会得到「审美定位」里点名的同款卡片套件。
+- **KpiCard**：数据仪表盘的 KPI 行 / 落地页 Hero 下的指标（仅当指标本身是主体内容时使用）。props: label / value / delta
 - **TableRow**：列表页 / 订单管理 / 审计日志的标准行。props: col1 / col2 / col3 / col4
 - **NavItem**：侧栏 / 顶栏导航项（「≥ 8 nav items」由此 pattern 实例凑齐）。props: label（图标为固定占位）
 - **FilterChip**：列表页的筛选栏 / 顶栏标签切换。props: label
@@ -612,11 +643,11 @@ KPI 行（不少于 3 张卡，每卡 label + value + delta/对比）→ 主图�
 
 ## Path A：从零生成
 
-1. **初始化 token 与版式基调**：基调按三档取值——① 项目根 DESIGN.md（若存在）的品牌/视觉意图；② 项目已有的 token 来源（styles/tokens.css、theme 文件等，存在则复用）；③ 都没有时才用 Axiom 基线兜底。自加 token 需在稿顶层 tokens 登记并写明暗两档。
-2. **产出页面清单**：每页给出 name、用途、对应的 the Completeness rubric 条目（管理后台 / 落地页 / 仪表盘三类之一，或自定）、关键分区列表。先把清单交给用户确认或直接继续。
+1. **读基调、出设计计划、登记 tokens**：先核对 <project_design> 注入块（即根 DESIGN.md 正文；未注入但文件存在、或块被截断时再 read；无则按「前置输入」的最小结构自拟，随计划交用户确认）；再按「审美定位」产出设计计划——4–6 个命名色、字体角色与 type scale、版式概念、一条差异原则，并对照 brief/DESIGN.md 自审、说明差异或改了什么；最后按三档登记 token——① DESIGN.md / 用户 brief 的视觉意图；② 项目已有的 token 来源（styles/tokens.css、theme 文件等，存在则复用）；③ 都没有时才用 Axiom 基线兜底。计划确认后才写页面；自加 token 需在稿顶层 tokens 登记并写明暗两档。
+2. **产出页面清单**：每页给出 name、用途、对应的 the Completeness rubric 条目（管理后台 / 落地页 / 仪表盘三类之一，或自定）、关键分区列表、差异点（本页相对同类产品不同的那一件事，取自设计计划的差异原则）。先把清单交给用户确认或直接继续。
 3. **逐页写 + 单页自查**：每写完一页（component / symbol / part / 原语 四级节点；重复结构先抽 symbol 再逐实例传参），立即 design_query mode=render 视觉自查——通过再下一页。**完整稿 300-800KB 单次写入必撞模型单轮预算，本路径明确豁免「合并为一次 apply_changes」的编辑路径限制**：一页一页写是预期行为，不是碎片化。
 4. **整稿收口**：全部页面写完后 design_query mode=scan 全稿扫描（结构 + 离屏渲染 + 空白检测），按 fail/warn 修复重扫至全绿。
-5. **对照 the Completeness rubric 自检**：通用最低线达标、所选产品类型页面集/分区集无缺失、关键交互页含三态；缺页/缺分区/密度不足显式补齐后再交付。
+5. **对照 the Completeness rubric 自检**：通用最低线达标、所选产品类型页面集/分区集无缺失、关键交互页含三态；缺页/缺分区/密度不足显式补齐后再交付。同时对照「审美定位」的反默认清单逐项给出理由或替换，确认全稿只有一个视觉主角（其余保持安静）。
 
 ## Path B：编辑模式
 
@@ -635,15 +666,18 @@ KPI 行（不少于 3 张卡，每卡 label + value + delta/对比）→ 主图�
 5. 需要实现代码时用 mode=code 生成骨架，fixture 属性会合并进组件；按 unresolved 接线数据源、回调与真实 store，再对生成代码执行类型检查。
 6. 一轮迭代的验证以设计画布刷新后的渲染结果为准（画布监听文件变更实时刷新，10 秒慢轮询兜底）；画布报出解析诊断时按诊断信息修复。
 
+Path B 的视觉取舍同样受「审美定位」约束：新增或改样式不得引入第二套视觉体系——字体、圆角层级、阴影、色阶继续取稿级 token；不得顺手引入反默认清单里的默认组合；每页仍只保留一个视觉主角。
+
 # 产出物
 
 - 更新后的 .ax 设计稿。
+- Path A 时先产出设计计划（基调来源 + 4–6 个命名色 + 字体角色与 type scale + 版式概念 + 差异原则）；经用户确认后回写项目根 DESIGN.md（无则按最小结构新建；写工具逐次审批）。
 - 发生方案探索时：变体 .ax 路径、真实渲染截图或 compare 结果，以及采用/放弃理由；未发生时不产出。
 - 必要时同步 .docs/ 实现现状说明（如新增了影响实现的组件）。
 
 # 退出条件
 
-画布渲染结果与用户意图一致、无新增解析诊断；全部修改已合入一次批量补丁并写后自查通过；整稿级改动已通过 mode=scan 扫描（无 fail 页）。**发生方案探索时**：2–3 个变体均有真实渲染证据与选择结论，原稿未被覆盖；无法取得的视觉证据标为未验证，不得宣称验收通过。**Path A 从零生成的额外要求**：与 the Completeness rubric 对账——通用最低线达标、所属产品类型页面集/分区集无缺失、关键交互页含空/加载/错误三态。`,
+画布渲染结果与用户意图一致、无新增解析诊断；全部修改已合入一次批量补丁并写后自查通过；整稿级改动已通过 mode=scan 扫描（无 fail 页）。**发生方案探索时**：2–3 个变体均有真实渲染证据与选择结论，原稿未被覆盖；无法取得的视觉证据标为未验证，不得宣称验收通过。**Path A 从零生成的额外要求**：与 the Completeness rubric 对账——通用最低线达标、所属产品类型页面集/分区集无缺失、关键交互页含空/加载/错误三态；设计计划已对照 brief/DESIGN.md 自审并说明差异原则或改了什么，基调来源已声明，反默认清单逐项有理由或已替换，全稿只有一个视觉主角。`,
     },
     en: {
       description: 'Author or edit workspace design documents (.ax is the only native format; .pen is migration input only) following design-as-code: from-zero generation follows Path A with the completeness rubric as the exit bar; edit mode follows Path B (locate subtrees, iterate styles via token references, self-check JSON after writes); the design canvas renders the live projection.',
@@ -661,12 +695,37 @@ The user asks to add or modify design pages/components, iterate styles or layout
 - The user's design intent; when the canvas is open, ask the user to describe what is actually rendered.
 - The following Axiom-internal references are **background only — absence is normal** (new project workspaces usually lack them): docs/design-canvas.md, apps/desktop/src/agent/design/__fixtures__/patterns/ (pattern library), apps/desktop/src/styles/tokens.css. When unreadable, continue under this skill's rules; never cite those paths in the document or generated code.
 - When the workspace has no .axiom/design/components.json, the component inventory returned by design_query comes from the **Axiom host registry** (sourcePath points at Axiom's own sources, not this project): do not use those components in this project's documents or codegen; use symbol / part / primitives only, and extract a symbol for repeated structures.
-- Root DESIGN.md when present (shown in the <available_docs> index with role=design): brand/visual/interaction baseline and design intent — read it before from-zero generation; the page inventory and token baseline follow it.
+- Root DESIGN.md when present: brand/visual/interaction baseline and design intent. **Its body is already injected as the <project_design> block under the # 项目上下文 section** (16 KiB cap with an explicit truncation note; the index entry remains under role=design). Use the injected block directly — do not re-read the whole file just to obtain the baseline; read it only when the block was truncated or you need to verify the full version. When it is absent and the user gave no baseline, draft the minimal structure below, present it with the design plan, and create the file after confirmation (write tools are approval-gated): ① audience and primary job; ② visual language (4–6 named colors with light/dark, type stack and scale, radius/shadow hierarchy, spacing rhythm); ③ tone and copy rules; ④ default patterns banned in this project; ⑤ the single visual protagonist. When it exists, fill gaps only — never overwrite the user's content; write confirmed baseline changes back to it.
 
 # Sole design format and migration
 
 - **.ax** (Axiom's native format — use it for all new work): nodes are a closed four-tier set — prefer component (real component instance: name must be in the component inventory, props must satisfy its contract), then symbol (**document-local component** (1.4): the top-level symbols map declares a props contract plus a primitive body subtree, instantiated in pages by ordinary component nodes — body text positions (text/label/supporting) and enum positions (icon.name, 1.6) reference params as {$param: name}, instances pass values via props, every param is **required**: text positions take string, enum positions take { enum: [domain] }; bodies carry parts/primitives only (no component, no overlay, no nesting); body node ids must be unique document-wide and free of the reserved separator ~s:; symbol names must not collide with the inventory or registry. The canvas renders instances by expansion and codegen emits real local components — the reuse boundary reaches the implementation), then part (semantic part: semantics and variant only, metrics live in the implementation; parts come from a vocabulary — statusTag / divider / bubble / banner / actionButton / mentionBadge — and unknown kinds, invalid variants or out-of-contract fields are errors), and only then the frame / text / icon / rect / ellipse / path / image primitives. **Repeated structures (table rows, nav items, cards, pricing tiers): author a symbol once and pass params per instance — rewriting identical primitive blocks by hand loses on both completeness and consistency.** Hard rules: components must come from the inventory; text is a literal or {$mock} (display) / {$bind} (data source), and a component's json-typed props (tool-call call/result, message objects, …) take a **structured** {$mock} — write the object/array into the binding, never as a JSON string; pages express multi-state UI via group / state; absolute positioning is forbidden outside overlay (use flex plus anchor semantics); the full-page scrim behind a modal or drawer is expressed as overlay scrim: {fill} (e.g. a translucent color — the scrim fills the parent and the implementation renders it as a backdrop; never hand-build it from a translucent rectangle, and multiple scrim overlays may stack on one page); card/modal elevation uses shadow: {color, offsetX, offsetY, blur} (color is a token or literal, offsets and blur are px numbers, blur is never negative) — never fake it with stacked translucent rectangles; lineHeight must be {unit:'multiplier'|'px', value}; sizes accept a number (px), a token, fill_container, or fit_content; tokens are referenced as $name and must be declared at the top level; unknown fields are errors (validation is fail-closed — an invalid document never reaches the canvas). Component nodes are additionally cross-checked against the component registry (unknown component, props keys, required props, literal value types): mismatches fail at read time with the available options listed — exposure happens while authoring, not at canvas render.
 - **.pen** (pen.dev format, legacy and interop): one-time migration input, excluded from the canvas and design_query. To keep iterating on such a document, first migrate it with design_import (one-off, approval-gated; existing targets are refused), then work on the .ax. New design intent goes into .ax.
+
+# Aesthetic direction
+
+**Three layers**: the user brief and the root DESIGN.md are the highest aesthetic authority — a direction they specify must be executed as written; the completeness rubric below only sets a coverage floor, not a visual answer; the built-in pattern library supplies structure only — after copying a pattern, rewrite its visual language (radius hierarchy, shadow, color scale, type) from this document's tokens. Reusing pattern visual constants verbatim yields the uniform-card template look.
+
+**Anchor the subject before discussing visuals**: before writing, settle three things — the target audience, the primary job this interface does, and the industry/vernacular. When neither the brief nor DESIGN.md provides them, propose a concrete subject/audience/job to the user for confirmation; without that proposal you will fall back to the template. Visual choices come from the subject (a tool for children and a dashboard for analysts share no palette, type, or density), not from "the set I always reach for".
+
+**Plan before building (mandatory on Path A)**: first give the user a compact plan (or record it in DESIGN.md) — 4–6 named colors (light + dark), typeface roles and a type scale (one or two families), a layout concept (alignment/density/first-screen structure), and one differentiation principle (the one thing this design does differently from similar products). Then review the plan against the brief/DESIGN.md: would it hold unchanged for a similar brief in the same industry? If so it is a default rather than a choice — revise it and say what changed. Register tokens and write pages only after the plan is confirmed.
+
+**Anti-default list**: these combinations are not wrong per se, but they are reflexive defaults; when one appears, either state the concrete reason it serves this brief or replace it:
+- cream background + high-contrast serif display + terracotta/warm-clay accent;
+- near-black background + a single acid-green or vermilion accent;
+- tracked-out ALL-CAPS eyebrow labels, A · B · C middle-dot strings, WORD — fragment em-dash labels, monospace micro-labels, → appended to links/buttons;
+- the SaaS-card kit: every chunk of content in an identical rounded card, one radius and one soft shadow regardless of hierarchy, gradient washes as decoration;
+- a big number + small label + supporting stats + gradient-accent hero (unless the metric itself is the subject).
+
+**Typography**: one or two families with clearly distinct roles; sizes, weights, and line-heights through $tokens with an explicit type scale; body line length under 80 characters (serifs may run slightly longer with more line-height); emphasize headlines by size, weight, and position — never by italicizing one word, recoloring a phrase, or ALL-CAPS labels; no uninformative eyebrows.
+
+**Structure is information**: numbering, rules, borders, and labels only when they encode a real sequence or grouping; the quantity floors in the completeness rubric are coverage requirements, not a license to decorate.
+
+**Motion**: .ax 1.6 does not express motion; on the implementation side (mode=code) allow at most one orchestrated moment (first load or a single reveal), no per-section fade-up or per-card hover, and respect reduced motion.
+
+**Copy**: name things in the user's language ("notification settings", not "webhook config"); active voice; CTAs state the outcome ("Save changes", not "Submit"); one action keeps one name through the flow; errors say what happened and how to fix it, never apologize or stay vague; empty states offer the next step instead of "no data"; each element does one job.
+
+**Restraint**: keep one visual protagonist per document and let everything else stay quiet; cut until removal would hurt comprehension. Spend boldness in one place.
 
 # Completeness rubric
 
@@ -696,7 +755,8 @@ KPI row (at least 3 cards, each with label + value + delta/comparison) → main 
 
 That directory lives inside the Axiom application sources and is usually unreadable from a user project workspace — **absence is normal**: build the symbol from the skeleton below instead of hand-authoring primitive subtrees. When the **completeness rubric** calls for repeated structure, reach for the matching pattern (copy the file when readable, otherwise build from the skeleton — both paths must extract a symbol, never duplicate primitives):
 
-- **KpiCard**: data-dashboard KPI row / hero-side metrics. props: label / value / delta
+- **Patterns define structure, not visuals**: radius, shadow, color scale, and type must be re-derived from this document's tokens; reusing pattern visual constants verbatim yields the uniform-card kit named in Aesthetic direction.
+- **KpiCard**: data-dashboard KPI row / hero-side metrics (use only when the metric itself is the subject). props: label / value / delta
 - **TableRow**: standard row for list pages / order management / audit log. props: col1 / col2 / col3 / col4
 - **NavItem**: sidebar or top-bar nav entry (the "≥ 8 nav items" floor is hit by 8 instances of this). props: label (icon is a fixed placeholder)
 - **FilterChip**: list-page filter bar / top-bar tab switcher. props: label
@@ -732,11 +792,11 @@ Design exploration: when the direction is open, build 2–3 independent .ax vari
 
 ## Path A: from-zero generation
 
-1. **Initialize tokens and visual baseline**: pick the baseline in three tiers — ① the root DESIGN.md brand/visual intent when present; ② existing project token sources (styles/tokens.css, theme files) when present; ③ the Axiom baseline only as the last resort. Newly added tokens must be declared in the doc's top-level tokens with light + dark values.
-2. **Draft a page inventory**: for each page provide name, purpose, the matching the Completeness rubric entry (admin console / landing / dashboard, or your own), and key sections. Either confirm the inventory with the user first or proceed directly.
+1. **Read the baseline, produce a design plan, register tokens**: start from the injected <project_design> block (the root DESIGN.md body; read the file only when it was not injected, was truncated, or you need the full version — if it is missing, draft the minimal structure from Required inputs and confirm it with the user together with the plan); then produce the plan required by Aesthetic direction — 4–6 named colors, typeface roles and scale, layout concept, one differentiation principle — review it against the brief/DESIGN.md, and state the difference or what changed; finally register tokens in three tiers — ① the DESIGN.md / user-brief intent; ② existing project token sources (styles/tokens.css, theme files) when present; ③ the Axiom baseline only as the last resort. Write pages only after the plan is confirmed; newly added tokens must be declared in the doc's top-level tokens with light + dark values.
+2. **Draft a page inventory**: for each page provide name, purpose, the matching the Completeness rubric entry (admin console / landing / dashboard, or your own), key sections, and a differentiation point (the one thing this page does differently, taken from the plan's differentiation principle). Either confirm the inventory with the user first or proceed directly.
 3. **Write per page + single-page self-check**: each page uses the four-tier node set (component / symbol / part / primitive; extract a symbol for repeated structures and pass params per instance); after each page, run design_query mode=render for a visual self-check — only move on once it passes. **A complete draft is 300-800 KB; a single write would blow the model's per-turn output budget, so this path explicitly opts out of the "merge into one apply_changes" rule from the edit path**: writing one page at a time is the expected behavior, not fragmentation.
 4. **Document-level close**: once all pages are written, run design_query mode=scan across the whole doc (structure + offscreen render + blank detection); fix fail/warn issues and re-scan until green.
-5. **Self-check against the Completeness rubric**: universal floor met, the chosen product-type page/section set has no missing entries, and key interactive pages cover the three states. Missing pages / sections / density gaps must be filled explicitly before delivery.
+5. **Self-check against the Completeness rubric**: universal floor met, the chosen product-type page/section set has no missing entries, and key interactive pages cover the three states. Missing pages / sections / density gaps must be filled explicitly before delivery. Also walk the anti-default list in Aesthetic direction — justify or replace each hit — and confirm the document has exactly one visual protagonist while everything else stays quiet.
 
 ## Path B: edit mode
 
@@ -755,15 +815,18 @@ The ax-selection@1 context carries fileSha256, pageId, group/state and authored 
 5. For implementation, generate the scaffold via mode=code. Fixture props are merged into components; connect data sources, callbacks and real stores listed in unresolved, then typecheck the generated code.
 6. Validate each iteration against the canvas refresh result (the canvas re-renders automatically on sha256 change via file-change events with a 10-second polling fallback); when the canvas reports parse diagnostics, fix the document according to them.
 
+Path B is bound by Aesthetic direction too: new or changed styles must not introduce a second visual system — type, radius hierarchy, shadow, and color scale keep coming from document-level tokens; do not drift into a default from the anti-default list; each page keeps one visual protagonist.
+
 # Outputs
 
 - The updated .ax design document.
+- On Path A, a design plan first (baseline source + 4–6 named colors + typeface roles and scale + layout concept + differentiation principle); after user confirmation, write it back to the root DESIGN.md (create it with the minimal structure when absent; write tools are approval-gated).
 - When design exploration occurred: variant .ax paths, real rendered screenshots or compare results, and the reasons for adoption/rejection; none otherwise.
 - .docs/ implementation notes when needed (e.g. a new component that affects implementation).
 
 # Exit criteria
 
-The canvas render matches the user's intent with no new parse diagnostics; all modifications were merged into a single batch patch and passed the post-write self-check; document-wide changes passed the mode=scan scan (no failed pages). **When design exploration occurred**: all 2–3 variants have real rendered evidence and a selection conclusion, and the original document was not overwritten; unavailable visual evidence is marked unverified and cannot be claimed as accepted. **Additional requirement for Path A from-zero generation**: reconcile against the the Completeness rubric — universal floor met, the chosen product-type page/section set has no missing entries, key interactive pages cover empty/loading/error.`,
+The canvas render matches the user's intent with no new parse diagnostics; all modifications were merged into a single batch patch and passed the post-write self-check; document-wide changes passed the mode=scan scan (no failed pages). **When design exploration occurred**: all 2–3 variants have real rendered evidence and a selection conclusion, and the original document was not overwritten; unavailable visual evidence is marked unverified and cannot be claimed as accepted. **Additional requirement for Path A from-zero generation**: reconcile against the the Completeness rubric — universal floor met, the chosen product-type page/section set has no missing entries, key interactive pages cover empty/loading/error; the design plan was reviewed against the brief/DESIGN.md with the differentiation principle or changes stated, the baseline source is declared, every anti-default hit is justified or replaced, and the document has one visual protagonist.`,
     },
   },  {
     name: 'test-authoring',

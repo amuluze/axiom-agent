@@ -2,7 +2,28 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [0.7.7] - 未发布
+## [0.7.8] - 未发布
+
+### Added
+
+- **`DESIGN.md` 正文注入系统提示词**：根 `DESIGN.md` 从「只进 `<available_docs>` 索引、由模型自愿 read」改为**正文直接注入 `# 项目上下文` 的 `<project_design>` 子块**（16 KiB 上限，超限按行截断并显式注记；与 AGENTS.md 同三态加载、同批次刷新/回滚），块 note 声明仅设计任务使用、非设计任务忽略；索引条目保留用于文档页与追溯。会话激活、后台 run 结束、前台 run 结束三条上下文刷新路径与 `runtime_dependencies_update` 失败回滚全部同步该镜像，`# 项目上下文` 顺序更新为 AGENTS.md 正文 → agents → skills → docs → project_design；design skill 的读取口径同步改为「以注入块为准，仅在未注入/被截断时 read」，`BUILTIN_SKILL_BODIES_VERSION` 45→46 并写回契约。
+- **设计功能补审美层，DESIGN.md 升级为带契约的基调输入**：design skill 新增「审美定位」节——主题锚定（受众/主任务/行业语汇）、写稿前的设计计划（4–6 个命名色、字体角色与 type scale、版式概念、差异原则）与「换一个相似需求会不会原样成立」自审、反默认清单（奶油底/近黑底/eyebrow 与中点串/SaaS 卡片套件/大数字 Hero）、排版与文案规则、单一视觉主角与克制；Path A 第 1 步改为「读 DESIGN.md → 出设计计划并自审 → 登记 tokens」，页面清单增加差异点，Path B 与退出条件增加视觉体系一致性、反默认与基调来源对账；pattern 库明确「只定义结构，不定义视觉」。项目根 DESIGN.md 从可选「有就读」升级为最小结构契约（受众与核心任务 / 视觉语言 / 文案规则 / 禁用默认套路 / 唯一视觉主角），缺失时提案后经用户确认回写、已存在只补缺。`BUILTIN_SKILL_BODIES_VERSION` 44→45 并写回契约，设计画布空态提示与 `docs/sdd-workflow.md` 同步。
+- **测试页用例文件改由环境条下拉框选择，切换即重渲染**：顶栏不再把所有用例文件铺成横向标签页（文件一多就挤成滚动条），选择器移到环境条 Browser Tab 之后；切换文件会清掉属于旧文件的报告、立即渲染新文件的用例总览，不再等下一次回放结束才更新下方内容。使用说明与模块清单同步。
+
+### Changed
+
+- **测试页创作区整体下线：写用例只剩左侧会话一条路径**：折叠区「测试创作与产物核对」连同其下三块内容一并删除——「为本功能写用例」表单（功能描述输入 + 发送按钮）、「会话产物核对」面板、「固化到用例文件」面板（源/目标会话选择、草稿生成、发送回会话）。理由是同一条路径被实现三遍且都弱于现役路径：表单给中文描述派生的目标文件名只会退化成会话 id 尾段的随机名、把模型诱导去另起一套命名；固化通道把探索轨迹编译成草稿再回灌会话写盘，中间产物无法脱离模型重放，实质仍是让模型自己写；产物核对则重复列举测试页扫描已经给出的清单与校验结论，却只覆盖本会话。写用例纪律在 `test-authoring` 技能正文里，不依赖任何面板；「文件到底写了没有、能不能解析」由测试页扫描（顶栏文件标签 + 环境条）回答，模型正文里的「我写好了」是自然语言断言而非落盘事实。随之删除 `agent/testing/spec/{authoringInstruction,trajectory,solidify}.ts`、`stores/services/{testAuthoringCheck,testSolidify}.ts` 与对应 UI/动作 hook、i18n 键与 CSS 类；`RUNTIME_POLICY.testAutomation` 去掉唯一消费点已消失的 `agentGeneration` 旗标（`externalTargets` 保持）。原生 E2E 的 G1-6 固化旅程与折叠区展开助手同步移除。
+- **测试页去掉「运行范围」下拉框：重放只跑选中文件，整批执行改为显式「运行全部」；批次摘要结构化展示**：顶栏不再有「当前用例文件 / 全部 / UI / API / 混合」选择。环境条的「用例文件」下拉框同时决定重放目标与下方展示；主按钮「重放」只跑这一份（title 标出目标路径），只有工作区存在多个校验通过文件时才出现次按钮「运行全部」——按 `batch_id` 串行跑完整批（一个失败不阻断后续），不再让一次重放隐式扩大执行面（`testSpecFilter` 及其单测删除）。运行环境下方的批次条从一行 flex-wrap 长句改为：结论胶囊（全绿 / 未全绿 / 无测试点，解释移入 title）+ 文件计数 + 测试点覆盖（`测试点 1/2 通过 · 失败 1 · 未运行 5`，零值项不显示，「需要修复 / 不适用」按需出现），未通过文件在下方逐条成行（状态胶囊 | 路径 | 原因），不再把路径与原因混进句子折行。使用说明与原生 E2E 同步。
+
+### Fixed
+
+- **sqlx 0.8 → 0.9（依赖审计拦下 RUSTSEC-2026-0459）**：RustSec 新通告（libsqlite3-sys 捆绑 SQLite CVE-2026-119375，medium 6.8）触发 `audit:dependencies` 的 fail-closed 门禁——libsqlite3-sys 0.30.1 由 sqlx 0.8.6 锁定，且 0.8.x 内无升级。升级到 sqlx 0.9.0 顺带把捆绑 SQLite 推进到 0.37（3.53.x），并适配 0.9 的两处接口变化：动态 SQL 语句现需显式 `AssertSqlSafe` 审计标记（migration 语句、PRAGMA、测试计数查询共 5 处，均为编译期常量/内部整数拼接，无注入面）、`SqliteArguments` 不再带生命周期参数、`prepare` 接受 `SqlStr`。捆绑 SQLite 3.54.0 的修复版（libsqlite3-sys >=0.39）上游 sqlx 尚未携带（sqlite feature 隐含 bundled 且依赖上限 <0.38），审计脚本新增带依据与移除条件的豁免机制（触发前提——本地攻击者构造恶意 db+wal 且应用打开——对只打开自有库的 Axiom 不成立）；sqlx 发布携带 0.39 的版本后升级并删除豁免。696 项 Rust 测试与迁移冒烟全绿。
+- **重算 `tool:load_skill` 语义 digest**：内置 Skill 正文变化（后缀改名）漏跑 `sync:semantic-digests`，`builtinSkillBodies.ts` 是 `tool:load_skill` 审计面的一员，公开仓 Actions 的 verify 门禁把它拦下（私仓 `check:fast` 与 `release:local` 的门禁面均不含这条 vitest 断言）。digest 已重算写回，组件版本保持 v12（正文变化由 `BUILTIN_SKILL_BODIES_VERSION` 管辖，工具 schema/返回语义未变）。
+
+### Security
+
+
+## [0.7.7] - 2026-11-09
 
 ### Changed
 
@@ -22,10 +43,10 @@
 - **测试环境信任档与本地 dev container 打通**：远程测试环境的配置摩擦集中在四处——环境地址要写两遍、私有 CA 握手必失败、每步两次人工点击、远程档写不了「只探一下」的配方。环境档 v3（`axiom.test-env`）新增 `baseUrl`（一个地址同时作 `WEB_BASE_URL` 与 `API_BASE_URL` 缺省，`vars` 显式声明者优先）、`allowPrivateNetwork`（v3 起缺省按地址推导，显式值优先）、`tlsTrust`（`system` / `insecure`——跳过证书校验只对确定私网/回环开放，公网一律拒绝）、`approvalMode`（`per_step` / `trusted`，受信档只对 `remote` 开放）；远程档可只写就绪探针，命令级下限改由档位判定（`local` 档仍须有就绪命令）。环境信任档落 SQLite v23（`test_environments` 增 `tls_trust` / `approval_mode` 两列，带 CHECK 与缺省值，旧记录语义不变），受信放行的作用域是环境自己声明的 origin 集合（API Base ∪ Web Base ∪ `secretOrigins`）——集合内步骤免逐次审批、集合外照旧；UI 步骤的作用域在目标授权时算一次并冻结在本次运行里，API 步骤按环境记录逐次判定，判定权威在 Rust 侧（受陷渲染进程无法指定），WebView 侧只决定要不要弹卡。面板新增「快速创建」（填一个地址即建出可用环境，可一并勾「不校验（私有 CA）」与「受信」），配方命令此前一个字都看不到（只显示「已配置起停配方」），现在直接展示并提供「复制命令」——本地 dev container 场景下这是「怎么把环境起起来」的唯一事实来源。两处放宽都必经宿主原生内容确认，变更摘要逐条列出「证书校验」「审批档」前后差异。版本契约：`DATABASE_VERSION` 22→23；`tool:api_request` `runtimeVersion` 6→7（宿主语义变化、schema 未变）并补 `toolNameMigrations` 单跳迁移。
 
 ### Changed
-- **内置测试创作 Skill 更名 `test-design` → `test-authoring`**：名称与测试页「为本功能写用例」及文档「测试创作」对齐；协议、正文语义与运行行为不变。`BUILTIN_SKILL_BODIES_VERSION` 40→41、`SYSTEM_PROMPT_VERSION` 52→53。旧名不再作为 `load_skill` 的内置名解析，历史会话与项目同名覆盖需改用新名。
+- **内置测试创作 Skill 更名 `test-design` → `test-authoring`**：名称与文档「测试创作」对齐；协议、正文语义与运行行为不变。`BUILTIN_SKILL_BODIES_VERSION` 40→41、`SYSTEM_PROMPT_VERSION` 52→53。旧名不再作为 `load_skill` 的内置名解析，历史会话与项目同名覆盖需改用新名。
 - **内置 Skill 证据链优化**：`test-authoring` 增加回归失败证据、测试质量双检与可选 `tests/verify.md` 项目验证契约；`diagnose` 增加匹配表面复现、二分假设、共享前提检验与失败复现；`implement` 增加 throughput checkpoint、测试双检与真实表面证据；`plan` 增加设计闸门与 unit/live/perf 证据映射；`brainstorm` 增加先复述与验收四问；`finish` 增加决策轨迹与证据摘要；`domain` 增加来源追溯与阈值解释；`design` 增加多变体与视觉证据。不新增内置 Skill，`BUILTIN_SKILL_BODIES_VERSION` 41→42。
 - **内置 Skill 证据规则一致性修复**：诊断复现改为无新信息即停止且不在诊断阶段改代码/提交 git；实现退出条件承认测试豁免并明确 INCONCLUSIVE 阻断完成；回归失败证据只来自已有修复前环境/版本，不再要求故意破坏产品源码；修正 Domain 步骤引用，design 方案探索证据进入产出与退出条件，`tests/verify.md` 的 Launch/Drive 改为引用既有环境档而非复制。`BUILTIN_SKILL_BODIES_VERSION` 42→43。
-- **测试环境配置收敛为两步弹窗并去重右栏信息**：环境配置改模态弹窗——本地/远程 → 名称 + 服务地址 → 保存即验证，探针七类结论原样展示；视口/证书/审批档/Headers/Secret/配方/环境档导入收进高级配置。私网授权按地址自动推导；环境条只展示环境事实与配置入口，用例文件校验不再伪装成环境结论。右栏去重：三张 KPI 卡并为一条事实行（可点开报告），批次条条件化，运行历史默认收起，页脚只留路径与版本；用例行副行优先展示 verifies 测试点，回退到最后一个断言（共享前置请求不再出现整列相同文本）。创作入口（写用例/产物核对/固化）合并为一个折叠区，空态改三步引导，运行入口不可用时给出具体原因。
+- **测试环境配置收敛为两步弹窗并去重右栏信息**：环境配置改模态弹窗——本地/远程 → 名称 + 服务地址 → 保存即验证，探针七类结论原样展示；视口/证书/审批档/Headers/Secret/配方/环境档导入收进高级配置。私网授权按地址自动推导；环境条只展示环境事实与配置入口，用例文件校验不再伪装成环境结论。右栏去重：三张 KPI 卡并为一条事实行（可点开报告），批次条条件化，运行历史默认收起，页脚只留路径与版本；用例行副行优先展示 verifies 测试点，回退到最后一个断言（共享前置请求不再出现整列相同文本）。创作入口（写用例/产物核对/固化）合并为一个折叠区（summary 为「测试创作与产物核对」），空态改三步引导，运行入口不可用时给出具体原因。
 
 ### Fixed
 - **长流式会话的窗口贴底跟随恢复稳定（回退 0.7.5 的贴底跟随重写）**：0.7.5 的贴底跟随改写（滚动意图 + 列级 ResizeObserver）在真实 WKWebView 的长流式会话里确定性失效——回合结束后最终回复停留在视口外、被 `content-visibility` 剪出可访问树，窗口停在旧输出且必须手动滚动，比它声称修复的「滞后 250px」更严重（原生 E2E「会话写用例」旅程的最终文案断言 3/3 确定性失败；provider 侧回合完成、文件落盘、消息持久化，仅渲染缺席）。0.7.6 回退到锚点 + IntersectionObserver 的既有实现——旧实现的手动滚动滞后温和且可自愈；意图式跟随待在可复现的 WKWebView 环境下定位失效机制后再重新落地。

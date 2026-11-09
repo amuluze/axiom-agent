@@ -459,6 +459,36 @@ describe('systemPromptSections', () => {
       expect(prompt).toContain('<doc role="domain" path=".specs/domain/a.md">领域约束</doc>')
     })
 
+    it('injects <project_design> as the last 项目上下文 sub-block', () => {
+      const prompt = buildSessionBasePrompt({
+        capabilities: ['workspace:read'],
+        projectContext: '## 约定\n使用 pnpm',
+        projectSkills: projectSkillsSnapshot(),
+        projectDocs: {
+          entries: [{ role: 'domain', title: '领域约束', relativePath: '.specs/domain/a.md', revision: 'a'.repeat(64) }],
+          diagnostics: [],
+          truncatedEntryCount: 0, truncatedRootCount: 0, archivedCount: 0, nestedDirCount: 0,
+      failedRootCount: 0,
+        },
+        projectDesignContext: '# 设计基调\n奶油色底',
+      })
+      const docsBlock = prompt.indexOf('<available_docs>')
+      const designBlock = prompt.indexOf('<project_design')
+      expect(docsBlock).toBeGreaterThan(-1)
+      expect(designBlock).toBeGreaterThan(docsBlock)
+      expect(prompt).toContain('note="项目设计意图；仅在设计任务（design skill）中使用，非设计任务忽略"')
+      expect(prompt).toContain('# 设计基调\n奶油色底\n</project_design>')
+    })
+
+    it('renders 项目上下文 with <project_design> even when AGENTS.md is absent', () => {
+      const prompt = buildSessionBasePrompt({
+        capabilities: ['workspace:read'],
+        projectDesignContext: '# 设计基调',
+      })
+      expect(prompt).toContain('# 项目上下文')
+      expect(prompt).toContain('<project_design src="DESIGN.md"')
+    })
+
     it('renders 项目上下文 with docs even when AGENTS.md is absent', () => {
       const prompt = buildSessionBasePrompt({
         capabilities: ['workspace:read'],

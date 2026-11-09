@@ -31,7 +31,7 @@ export const RecentRunsPanel = ({
         <span>{runs.length}</span>
       </div>
       {recentBatch && (
-        <div className="testing-view__suite-summary" role="status">
+        <div className="testing-view__suite-summary testing-view__suite-summary--inline" role="status">
           <span>{t('testing.batch.latest', { count: recentBatch.runs.length })}</span>
           <button
             type="button"
@@ -42,7 +42,7 @@ export const RecentRunsPanel = ({
             {batchLoading ? t('testing.batch.loading') : t('testing.batch.open')}
           </button>
           {recentBatch.truncated && (
-            <span className="testing-view__suite-problem">{t('testing.batch.truncated')}</span>
+            <span className="testing-view__suite-note">{t('testing.batch.truncated')}</span>
           )}
         </div>
       )}

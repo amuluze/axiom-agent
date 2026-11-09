@@ -5,7 +5,7 @@ import { EMPTY_PROJECT_SKILL_INVENTORY } from '@/agent/skills/types'
 import type { ProjectSkillInventorySnapshot } from '@/agent/skills/types'
 import { formatAvailableSkills } from '@/agent/skills/formatAvailableSkills'
 import { getBuiltinPromptOverrides, resolvePromptLanguage } from './promptLocalizationHost'
-import { buildProjectContextSection } from './projectContext'
+import { buildProjectContextSection, buildProjectDesignSection } from './projectContext'
 import { formatAvailableAgents } from './formatAvailableAgents'
 import type { ProjectAgentsInventory } from './projectAgents'
 import type { ProjectDocInventory } from './projectDocs'
@@ -358,20 +358,23 @@ export const buildAuthorizationContextSection = ({
  */
 /**
  * 把 AGENTS.md 正文段与 `<available_agents>` / `<available_skills>` /
- * `<available_docs>` 三个子块合并为 `# 项目上下文` 段。
+ * `<available_docs>` / `<project_design>` 四个子块合并为 `# 项目上下文` 段。
  *
- * 顺序为 **正文 → agents → skills → docs**：agents 紧贴正文，因为它是根
- * `AGENTS.md`「子目录索引」一节的机器可读形态，两者相邻读才不割裂；skills 与
- * docs 是另两类独立通道，排在后面不打断这条阅读线。任一为空时保留其余；
- * 全部为空时返回 null。子块不含 H2 标题（是项目上下文段的子块，非独立分节）。
+ * 顺序为 **正文 → agents → skills → docs → project_design**：agents 紧贴正文，
+ * 因为它是根 `AGENTS.md`「子目录索引」一节的机器可读形态，两者相邻读才不割裂；
+ * skills 与 docs 是另两类独立通道；`<project_design>` 是设计任务的专项输入，
+ * 排在最后以免大体量设计稿基调压过通用索引，其 note 已声明使用范围。任一为空
+ * 时保留其余；全部为空时返回 null。子块不含 H2 标题（是项目上下文段的子块，
+ * 非独立分节）。
  */
 const combineProjectContextWithSections = (
   projectContextSection: string | null,
   agentsSection: string | null,
   skillsSection: string | null,
   docsSection: string | null,
+  designSection: string | null,
 ): string | null => {
-  const subSections = [agentsSection, skillsSection, docsSection].filter(
+  const subSections = [agentsSection, skillsSection, docsSection, designSection].filter(
     (section): section is string => section !== null,
   )
   if (!projectContextSection && subSections.length === 0) return null
@@ -410,6 +413,7 @@ export const buildSessionBasePrompt = ({
   projectAgents,
   projectSkills,
   projectDocs,
+  projectDesignContext = null,
   testingContext = null,
   modelName,
 }: AuthorizationContext & {
@@ -425,9 +429,16 @@ export const buildSessionBasePrompt = ({
   /** 当前工作区的项目文档索引；空/缺省时不注入 <available_docs>。 */
   projectDocs?: ProjectDocInventory | null
   /**
+   * 根 DESIGN.md 正文（全文注入，16 KiB 上限）；空/缺省时不注入 `<project_design>`。
+   *
+   * 为什么是正文而不是索引：设计意图必须对模型可见，靠「模型自愿 read」无法约束
+   * 设计任务按项目基调执行。注入块自带 note 声明仅在设计任务中使用。
+   */
+  projectDesignContext?: string | null
+  /**
    * 测试页会话上下文段（用例清单 / 待修项 / 运行环境摘要）；缺省不注入。
    *
-   * 与 projectContext 同属**动态注入**：不属于 `# 项目上下文` 的四块，也不进 SPV 指纹
+   * 与 projectContext 同属**动态注入**：不属于 `# 项目上下文` 的子块，也不进 SPV 指纹
    * （指纹只覆盖静态正文）。值由 stores 侧按「是否在测试页」发布，agent 层只接收字符串。
    */
   testingContext?: string | null
@@ -456,6 +467,7 @@ export const buildSessionBasePrompt = ({
       agentsSection,
       skillsSection,
       docsSection,
+      buildProjectDesignSection(projectDesignContext),
     ),
   ].filter((section): section is string => typeof section === 'string' && section.length > 0)
     .join('\n\n')

@@ -45,7 +45,7 @@ export interface ToolRegistryOptions {
 }
 
 /** 未注入发布档策略时的 fail-closed 默认：等同开发 feature flag 档。 */
-const LOCKED_TEST_AUTOMATION: TestAutomationPolicy = { externalTargets: false, agentGeneration: false }
+const LOCKED_TEST_AUTOMATION: TestAutomationPolicy = { externalTargets: false }
 
 export const createToolRegistry = ({
   capabilities,

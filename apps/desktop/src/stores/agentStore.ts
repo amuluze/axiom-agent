@@ -35,7 +35,7 @@ import { backgroundRunCapacityError } from './services/backgroundRunPolicy'
 import { revokeSessionAuthorization } from '@/platform/sessionAuthorization'
 import { setSendManifestSink } from '@/platform/sendManifest'
 import { buildSessionBasePrompt } from '@/agent/prompt/systemPromptSections'
-import { loadProjectContext } from '@/agent/prompt/projectContext'
+import { loadProjectContext, loadProjectDesignContext } from '@/agent/prompt/projectContext'
 import {
   loadProjectAgents,
   projectAgentsInventoryEqual,
@@ -281,6 +281,9 @@ let activeProjectContext: string | null = null
 // 同批次刷新、同批次回滚——三者合成同一个 `# 项目上下文` 段，任何一面掉队都会
 // 让提示词内部出现新鲜度不一致的拼装。
 let activeProjectAgents: ProjectAgentsInventory = EMPTY_PROJECT_AGENTS_INVENTORY
+// 根 DESIGN.md 正文镜像：与 AGENTS.md 同批次加载、同批次刷新/回滚。16 KiB 上限
+// 由加载层强制；无文件时为 null，提示词省略 <project_design>。
+let activeProjectDesignContext: string | null = null
 
 /** 工作区扫描结果（嵌套索引 / Skills）的复用窗口，见 services/workspaceScanCache。 */
 const WORKSPACE_SCAN_CACHE_TTL_MS = 5 * 60_000
@@ -315,7 +318,7 @@ const notifyProjectDocsChanged = (workspacePath?: string): void => {
 }
 
 // 测试页会话上下文段镜像：仅在测试页激活时由页面发布（`setTestingPromptContext`），
-// 离开测试页或切换会话即清空。与项目上下文三面镜像同级、同生命周期，
+// 离开测试页或切换会话即清空。与项目上下文其它镜像同级、同生命周期，
 // 因此会话提示词重建（激活/刷新/回流）能拿到同一份值。
 let activeTestingContext: string | null = null
 // 当前活动会话的 session-scoped 基准提示词（不含工具段）：createRuntimeSession
@@ -332,6 +335,7 @@ const activeProjectContextSnapshot = () => ({
   projectContext: activeProjectContext,
   projectAgents: activeProjectAgents,
   projectDocs: activeProjectDocs,
+  projectDesignContext: activeProjectDesignContext,
   testingContext: activeTestingContext,
 })
 
@@ -353,17 +357,19 @@ const activeSessionAccessMode = (): AccessMode => {
 /**
  * 按给定工作区根目录异步加载 AGENTS.md 并扫描 SDD 文档索引，更新模块级镜像。
  * 必须在 bindSession → createRuntimeSession 重建会话提示词前调用，
- * 使 # 项目上下文 段（AGENTS.md 正文 + <available_docs>）反映当前会话绑定的
- * 工作区。无工作区时清空两镜像。仅 Tauri 运行时读取；浏览器开发模式静默降级。
+ * 使 # 项目上下文 段（AGENTS.md 正文 + DESIGN.md 正文 + <available_docs>）反映
+ * 当前会话绑定的工作区。无工作区时清空全部镜像。仅 Tauri 运行时读取；浏览器开发
+ * 模式静默降级。
  *
- * 两条读取共用同一个 environment（无状态闭包，安全共享）且互无数据依赖，
+ * 四条读取共用同一个 environment（无状态闭包，安全共享）且互无数据依赖，
  * 并发发起——文档扫描最坏要发 4 次目录列举加数十次读头，串行 await 会让单次
- * readText 的 AGENTS.md 读取被整趟扫描挡在后面。
+ * readText 的 AGENTS.md / DESIGN.md 读取被整趟扫描挡在后面。
  */
 /**
  * 活动会话基准提示词的**唯一**构造点。
  *
- * 三面项目上下文镜像（AGENTS.md 正文 / 嵌套索引 / 文档索引）必须齐备传入：
+ * 五面项目上下文镜像（AGENTS.md 正文 / 嵌套索引 / 文档索引 / DESIGN.md 正文 /
+ * 测试页上下文）必须齐备传入：
  * 漏传一面等于把那一块从 live 提示词里删掉——接入嵌套索引时，技能重载与访问
  * 模式切换两处就漏传过，整块 `<available_agents>` 在用户切一次权限档后消失。
  * 收成一个函数后「齐备」由构造保证，而不是靠四个调用点各自自觉。
@@ -380,6 +386,7 @@ const buildSessionBasePromptFromContext = ({
   projectContext,
   projectAgents,
   projectDocs,
+  projectDesignContext,
   testingContext,
 }: {
   config: ProviderProfile
@@ -389,6 +396,7 @@ const buildSessionBasePromptFromContext = ({
   projectContext: string | null
   projectAgents: ProjectAgentsInventory
   projectDocs: ProjectDocInventory
+  projectDesignContext: string | null
   testingContext: string | null
 }): string => buildSessionBasePrompt({
   capabilities: runtimeCapabilities,
@@ -399,6 +407,7 @@ const buildSessionBasePromptFromContext = ({
   projectAgents,
   projectSkills: projectSkills ?? getActiveProjectSkillSnapshot(),
   projectDocs,
+  projectDesignContext,
   testingContext,
   modelName: resolvePromptModelName(config),
 })
@@ -406,7 +415,7 @@ const buildSessionBasePromptFromContext = ({
 const buildActiveSessionBasePrompt = (
   input: Omit<
     Parameters<typeof buildSessionBasePromptFromContext>[0],
-    'projectContext' | 'projectAgents' | 'projectDocs' | 'testingContext'
+    'projectContext' | 'projectAgents' | 'projectDocs' | 'projectDesignContext' | 'testingContext'
   >,
 ): string => buildSessionBasePromptFromContext({ ...input, ...activeProjectContextSnapshot() })
 
@@ -419,14 +428,16 @@ const refreshProjectContext = async (workspacePath?: string): Promise<void> => {
     activeProjectContext = null
     activeProjectAgents = EMPTY_PROJECT_AGENTS_INVENTORY
     activeProjectDocs = EMPTY_PROJECT_DOC_INVENTORY
+    activeProjectDesignContext = null
     activeTestingContext = null
     useAgentStore.setState({ projectDocs: EMPTY_PROJECT_DOC_INVENTORY })
     if (docsChanged) notifyProjectDocsChanged()
     return
   }
   const cachedAgents = workspacePath ? projectAgentsCache.get(workspacePath) : undefined
-  const [contextLoad, scannedAgents, inventory] = await Promise.all([
+  const [contextLoad, designLoad, scannedAgents, inventory] = await Promise.all([
     loadProjectContext(environment),
+    loadProjectDesignContext(environment),
     cachedAgents !== undefined ? Promise.resolve(cachedAgents) : loadProjectAgents(environment),
     loadProjectDocs(environment),
   ])
@@ -439,7 +450,11 @@ const refreshProjectContext = async (workspacePath?: string): Promise<void> => {
   if (contextLoad.kind === 'unavailable') {
     console.error('[项目上下文] 根 AGENTS.md 读取失败，激活时按无正文处理（不得沿用上一工作区的正文）')
   }
+  if (designLoad.kind === 'unavailable') {
+    console.error('[项目上下文] 根 DESIGN.md 读取失败，激活时按无正文处理（不得沿用上一工作区的正文）')
+  }
   activeProjectContext = contextLoad.kind === 'content' ? contextLoad.content : null
+  activeProjectDesignContext = designLoad.kind === 'content' ? designLoad.content : null
   if (scannedAgents === null) {
     console.error('[项目上下文] 嵌套 AGENTS.md 扫描失败，激活时按空清单处理（不得沿用上一工作区的索引）')
     activeProjectAgents = EMPTY_PROJECT_AGENTS_INVENTORY
@@ -656,25 +671,28 @@ const refreshSystemPromptAfterIdle = async (): Promise<void> => {
  * 后续会话构建生效），差别在于上下文不进技能 snapshot——manifest 只依赖 skills，
  * systemPrompt 才消费上下文。
  *
- * 两面镜像必须在同一个动作里提交：只更新其中一面会让下一次提示词重建把
+ * 五面镜像必须在同一个动作里提交：只更新其中一面会让下一次提示词重建把
  * 「新的文档索引 + 陈旧的 AGENTS.md」混装进同一次提交——finish 阶段要求模型
  * 同步 AGENTS.md，若该改动要等到下次会话激活才可见，模型自己看不到自己刚写的
- * 内容。回滚同理两面一起回，否则提交失败后镜像与 live 提示词分叉。
+ * 内容。回滚同理整组一起回，否则提交失败后镜像与 live 提示词分叉。
  */
 const applyProjectContextToSession = async (next: {
   projectContext: string | null
   projectAgents: ProjectAgentsInventory
   projectDocs: ProjectDocInventory
+  projectDesignContext: string | null
   testingContext: string | null
 }): Promise<void> => {
   const previousContext = activeProjectContext
   const previousAgents = activeProjectAgents
   const previousDocs = activeProjectDocs
+  const previousDesign = activeProjectDesignContext
   const previousTesting = activeTestingContext
   const docsChanged = !projectDocInventoryEqual(previousDocs, next.projectDocs)
   activeProjectContext = next.projectContext
   activeProjectAgents = next.projectAgents
   activeProjectDocs = next.projectDocs
+  activeProjectDesignContext = next.projectDesignContext
   activeTestingContext = next.testingContext
   useAgentStore.setState({ projectDocs: next.projectDocs })
   if (docsChanged) notifyProjectDocsChanged()
@@ -685,7 +703,7 @@ const applyProjectContextToSession = async (next: {
   const config = useAgentStore.getState().provider
   const workspacePath = useAgentStore.getState().authorizedWorkspace?.path
   const activeToolNames = Array.from(active.activeToolNames)
-  // 镜像已在函数开头写入，故此处读到的就是 next 的三面值。
+  // 镜像已在函数开头写入，故此处读到的就是 next 的五面值。
   const newBasePrompt = buildActiveSessionBasePrompt({
     config,
     workspacePath,
@@ -719,13 +737,14 @@ const applyProjectContextToSession = async (next: {
       invalidateCheckpoint: false,
     })
   } catch (error) {
-    // 提交失败回滚三面镜像：维持旧提示词与镜像一致，下次 run 结束重扫会再尝试。
+    // 提交失败回滚五面镜像：维持旧提示词与镜像一致，下次 run 结束重扫会再尝试。
     // 调度器会吞掉异常（单轮失败不中断补扫轮），故此处必须自行记日志，
     // 否则「上下文正在退化」在 UI 与日志里都无从发现。
-    console.error('[项目上下文] runtime_dependencies_update 提交失败，已回滚三面镜像', error)
+    console.error('[项目上下文] runtime_dependencies_update 提交失败，已回滚五面镜像', error)
     activeProjectContext = previousContext
     activeProjectAgents = previousAgents
     activeProjectDocs = previousDocs
+    activeProjectDesignContext = previousDesign
     activeTestingContext = previousTesting
     useAgentStore.setState({ projectDocs: previousDocs })
     throw error
@@ -751,6 +770,7 @@ export const setTestingPromptContext = async (text: string | null): Promise<void
       projectContext: activeProjectContext,
       projectAgents: activeProjectAgents,
       projectDocs: activeProjectDocs,
+      projectDesignContext: activeProjectDesignContext,
       testingContext: text,
     })
   } catch (error) {
@@ -843,14 +863,18 @@ const refreshBackgroundProjectContext = async (
   const environment = createDesktopAgentEnvironment(workspacePath)
   // run 结束必须读磁盘现状：先失效缓存，扫描成功后写回供随后激活复用。
   projectAgentsCache.invalidate(workspacePath)
-  const [contextLoad, scannedAgents, inventory] = await Promise.all([
+  const [contextLoad, designLoad, scannedAgents, inventory] = await Promise.all([
     loadProjectContext(environment),
+    loadProjectDesignContext(environment),
     loadProjectAgents(environment),
     loadProjectDocs(environment),
   ])
   if (scannedAgents !== null) projectAgentsCache.set(workspacePath, scannedAgents)
   if (contextLoad.kind === 'unavailable') {
     console.error(`[项目上下文] 后台会话 ${sessionId} 的根 AGENTS.md 读取失败，保留上一份正文`)
+  }
+  if (designLoad.kind === 'unavailable') {
+    console.error(`[项目上下文] 后台会话 ${sessionId} 的根 DESIGN.md 读取失败，保留上一份正文`)
   }
   if (scannedAgents === null) {
     console.error(`[项目上下文] 后台会话 ${sessionId} 的嵌套 AGENTS.md 扫描失败，保留上一份索引`)
@@ -860,9 +884,15 @@ const refreshBackgroundProjectContext = async (
     : contextLoad.kind === 'absent'
       ? null
       : previous.projectContext
+  const projectDesignContext = designLoad.kind === 'content'
+    ? designLoad.content
+    : designLoad.kind === 'absent'
+      ? null
+      : previous.projectDesignContext
   const projectAgents = scannedAgents ?? previous.projectAgents
   const docsChanged = !projectDocInventoryEqual(inventory, previous.projectDocs)
   const promptUnchanged = projectContext === previous.projectContext
+    && projectDesignContext === previous.projectDesignContext
     && projectAgentsInventoryEqual(projectAgents, previous.projectAgents)
     && projectDocPromptInventoryEqual(inventory, previous.projectDocs)
   if (target.isDisposed || target.isRunning) return
@@ -881,6 +911,7 @@ const refreshBackgroundProjectContext = async (
     projectContext,
     projectAgents,
     projectDocs: inventory,
+    projectDesignContext,
     testingContext: previous.testingContext,
   }
   const activeToolNames = Array.from(target.activeToolNames)
@@ -943,8 +974,9 @@ const refreshProjectContextOnce = async (sessionId: string): Promise<void> => {
   const environment = createDesktopAgentEnvironment(workspacePath)
   // run 结束必须读磁盘现状：先失效缓存，扫描成功后写回供随后激活复用。
   projectAgentsCache.invalidate(workspacePath)
-  const [contextLoad, scannedAgents, inventory] = await Promise.all([
+  const [contextLoad, designLoad, scannedAgents, inventory] = await Promise.all([
     loadProjectContext(environment),
+    loadProjectDesignContext(environment),
     loadProjectAgents(environment),
     loadProjectDocs(environment),
   ])
@@ -955,6 +987,9 @@ const refreshProjectContextOnce = async (sessionId: string): Promise<void> => {
   if (contextLoad.kind === 'unavailable') {
     console.error('[项目上下文] 根 AGENTS.md 读取失败，保留上一份正文；下一个 run 结束会重试')
   }
+  if (designLoad.kind === 'unavailable') {
+    console.error('[项目上下文] 根 DESIGN.md 读取失败，保留上一份正文；下一个 run 结束会重试')
+  }
   if (scannedAgents === null) {
     console.error('[项目上下文] 嵌套 AGENTS.md 扫描失败，保留上一份索引；下一个 run 结束会重试')
   }
@@ -963,9 +998,15 @@ const refreshProjectContextOnce = async (sessionId: string): Promise<void> => {
     : contextLoad.kind === 'absent'
       ? null
       : activeProjectContext
+  const projectDesignContext = designLoad.kind === 'content'
+    ? designLoad.content
+    : designLoad.kind === 'absent'
+      ? null
+      : activeProjectDesignContext
   const projectAgents = scannedAgents ?? activeProjectAgents
   const docsChanged = !projectDocInventoryEqual(inventory, activeProjectDocs)
   const promptUnchanged = projectContext === activeProjectContext
+    && projectDesignContext === activeProjectDesignContext
     && projectAgentsInventoryEqual(projectAgents, activeProjectAgents)
     && projectDocPromptInventoryEqual(inventory, activeProjectDocs)
   if (promptUnchanged) {
@@ -978,6 +1019,7 @@ const refreshProjectContextOnce = async (sessionId: string): Promise<void> => {
       projectContext,
       projectAgents,
       projectDocs: inventory,
+      projectDesignContext,
       testingContext: activeTestingContext,
     })
     notifyProjectDocsChanged()
@@ -987,6 +1029,7 @@ const refreshProjectContextOnce = async (sessionId: string): Promise<void> => {
     projectContext,
     projectAgents,
     projectDocs: inventory,
+    projectDesignContext,
     testingContext: activeTestingContext,
   }
   await applyProjectContextToSession(nextSnapshot)

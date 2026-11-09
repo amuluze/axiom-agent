@@ -1,24 +1,18 @@
-import { AlertCircle, AppWindow, ChevronDown, RefreshCw } from 'lucide-react'
+import { AppWindow, ChevronDown, FileCode, RefreshCw } from 'lucide-react'
 import { isPrivateOrLocalHost } from '@/agent/testing/environment/environmentFile'
 import type { BrowserTabInfo } from '@/platform/browserSession'
 import type { TestEnvironmentRecord } from '@/platform/testEnvironments'
 import type { TestSpecIndexEntry } from '@/stores/services/testSpecIndex'
-import type { TestSpecTypeFilter } from '@/stores/services/testSpecFilter'
 import { useT } from '@/i18n'
 import { WindowActions } from '@/components/session/WindowActions'
 
 /**
  * 测试页顶栏与环境条（F6 切片）。
  *
- * 只消费当前筛选/选择与回调；扫描、运行、环境面板的副作用仍由 TestingView 持有。
+ * 只消费当前选择与回调；扫描、运行、环境面板的副作用仍由 TestingView 持有。
  */
 
 export interface TestingTopbarProps {
-  filteredSpecs: readonly TestSpecIndexEntry[]
-  selectedSpecPath: string | null
-  onSelectSpec: (path: string) => void
-  runScope: 'current' | TestSpecTypeFilter
-  onRunScopeChange: (scope: 'current' | TestSpecTypeFilter) => void
   syncedLabel: string | null
   loading: boolean
   workspaceReady: boolean
@@ -27,14 +21,16 @@ export interface TestingTopbarProps {
   /** 主运行入口不可用的具体原因；可用时为 null。 */
   runBlockedReason: string | null
   onRun: () => void
+  /** 主按钮重放的目标文件（用于 title，避免「重放」被误解为整批）。 */
+  replayTarget: string | null
+  showRunAll: boolean
+  runAllCount: number
+  canRunAll: boolean
+  runAllBlockedReason: string | null
+  onRunAll: () => void
 }
 
 export const TestingTopbar = ({
-  filteredSpecs,
-  selectedSpecPath,
-  onSelectSpec,
-  runScope,
-  onRunScopeChange,
   syncedLabel,
   loading,
   workspaceReady,
@@ -42,47 +38,18 @@ export const TestingTopbar = ({
   canRun,
   runBlockedReason,
   onRun,
+  replayTarget,
+  showRunAll,
+  runAllCount,
+  canRunAll,
+  runAllBlockedReason,
+  onRunAll,
 }: TestingTopbarProps) => {
   const { t } = useT()
   return (
     <div className="testing-view__topbar">
-      <div className="testing-view__tabs" role="tablist" aria-label={t('testing.topbar.tabsAria')}>
-        {filteredSpecs.map((spec) => {
-          const active = spec.path === selectedSpecPath
-          return (
-            <button
-              key={spec.path}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              title={spec.valid ? spec.path : `${spec.path} · ${spec.issues[0]?.message ?? ''}`}
-              className={`testing-view__tab${active ? ' is-active' : ''}${spec.valid ? '' : ' is-invalid'}`}
-              onClick={() => onSelectSpec(spec.path)}
-            >
-              {!spec.valid && <AlertCircle size={11} aria-hidden />}
-              {spec.path.split('/').at(-1) ?? spec.path}
-            </button>
-          )
-        })}
-        {filteredSpecs.length === 0 && (
-          <span className="testing-view__tabs-empty">{t('testing.index.noMatchingSpecs')}</span>
-        )}
-      </div>
+      {/* 顶栏不再有运行范围选择：主按钮只重放环境条选中的文件；整批执行是显式的第二动作。 */}
       <div className="testing-view__topbar-actions">
-        <label className="testing-view__filter">
-          <span className="testing-view__visually-hidden">{t('testing.suite.scope')}</span>
-          <select
-            aria-label={t('testing.suite.scope')}
-            value={runScope}
-            onChange={(event) => onRunScopeChange(event.target.value as 'current' | TestSpecTypeFilter)}
-          >
-            <option value="current">{t('testing.suite.scopeCurrent')}</option>
-            <option value="all">{t('testing.index.typeAll')}</option>
-            <option value="ui">{t('testing.index.typeUi')}</option>
-            <option value="api">{t('testing.index.typeApi')}</option>
-            <option value="mixed">{t('testing.index.typeMixed')}</option>
-          </select>
-        </label>
         {syncedLabel && <span className="testing-view__synced">{t('testing.topbar.syncedAt', { time: syncedLabel })}</span>}
         <button type="button" className="testing-view__chip" disabled={loading || !workspaceReady} onClick={onRescan}>
           <RefreshCw size={12} className={loading ? 'testing-view__spin' : undefined} aria-hidden />
@@ -91,11 +58,22 @@ export const TestingTopbar = ({
         {!canRun && runBlockedReason && (
           <span className="testing-view__run-blocked">{runBlockedReason}</span>
         )}
+        {showRunAll && (
+          <button
+            type="button"
+            className="testing-view__chip"
+            disabled={!canRunAll}
+            title={runAllBlockedReason ?? t('testing.topbar.runAllHint', { count: runAllCount })}
+            onClick={onRunAll}
+          >
+            {t('testing.topbar.runAll')}
+          </button>
+        )}
         <button
           type="button"
           className="testing-view__chip testing-view__chip--primary"
           disabled={!canRun}
-          title={runBlockedReason ?? undefined}
+          title={runBlockedReason ?? (replayTarget ? t('testing.topbar.replayHint', { path: replayTarget }) : undefined)}
           onClick={onRun}
         >
           {t('testing.topbar.replay')}
@@ -115,6 +93,9 @@ export interface TestingEnvironmentBarProps {
   selectedTabId: string | null
   onSelectTab: (tabId: string | null) => void
   tabs: readonly BrowserTabInfo[]
+  specs: readonly TestSpecIndexEntry[]
+  selectedSpecPath: string | null
+  onSelectSpec: (path: string) => void
   selectedSpec: TestSpecIndexEntry | undefined
   specIssueCount: number
   onOpenEnvironment: () => void
@@ -142,6 +123,9 @@ export const TestingEnvironmentBar = ({
   selectedTabId,
   onSelectTab,
   tabs,
+  specs,
+  selectedSpecPath,
+  onSelectSpec,
   selectedSpec,
   specIssueCount,
   onOpenEnvironment,
@@ -196,6 +180,32 @@ export const TestingEnvironmentBar = ({
           </select>
         </label>
       )}
+      {/* 用例文件选择：与 Browser Tab 并列的环境条控件。同时决定**重放目标**与下方展示；
+          「运行全部」覆盖整批文件。切换即重渲染下方用例视图。 */}
+      <label className="testing-view__envbar-item testing-view__envbar-control">
+        <span className="testing-view__visually-hidden">{t('testing.run.spec')}</span>
+        <FileCode size={12} aria-hidden="true" className="testing-view__envbar-control-icon" />
+        <select
+          aria-label={t('testing.run.spec')}
+          value={selectedSpecPath ?? ''}
+          onChange={(event) => onSelectSpec(event.target.value)}
+        >
+          {specs.length === 0 && (
+            <option value="">{t('testing.index.noMatchingSpecs')}</option>
+          )}
+          {specs.length > 0 && !specs.some((spec) => spec.path === selectedSpecPath) && (
+            <option value="">{t('testing.run.selectSpec')}</option>
+          )}
+          {specs.map((spec) => {
+            const name = spec.path.split('/').at(-1) ?? spec.path
+            return (
+              <option key={spec.path} value={spec.path} title={spec.path}>
+                {spec.valid ? name : `${name} · ${t('testing.index.invalid')}`}
+              </option>
+            )
+          })}
+        </select>
+      </label>
       {selectedEnvironment?.viewportWidth && selectedEnvironment?.viewportHeight && (
         <span className="testing-view__envbar-item">
           {t('testing.envbar.viewport', {

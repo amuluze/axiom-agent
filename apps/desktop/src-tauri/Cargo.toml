@@ -1,6 +1,6 @@
 [package]
 name = "axiom"
-version = "0.7.7"
+version = "0.7.8"
 description = "Local-first desktop agent"
 authors = ["Axiom contributors"]
 edition = "2021"
@@ -48,7 +48,7 @@ base64 = "0.22"
 # .pen 设计稿文件监听（FSEvents/inotify 抽象）：替换前端 1.5s 轮询的全量读。
 notify = "8"
 sha2 = "0.10"
-sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite"] }
 unicode-normalization = "0.1"
 # connect 微信扫码登录的二维码点阵生成（零依赖实现，Rust 侧生成、前端 SVG 渲染）。
 qrcodegen = "1.8"

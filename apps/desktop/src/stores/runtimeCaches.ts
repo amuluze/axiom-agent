@@ -40,6 +40,8 @@ export interface RuntimeProjectContextSnapshot {
   projectContext: string | null
   projectAgents: ProjectAgentsInventory
   projectDocs: ProjectDocInventory
+  /** 根 DESIGN.md 正文（16 KiB 上限）；与 projectContext 同批次刷新/回滚。 */
+  projectDesignContext: string | null
   /** 测试页会话上下文段（仅测试页激活时由页面发布）；镜像一致才能让回流重拼同值。 */
   testingContext: string | null
 }

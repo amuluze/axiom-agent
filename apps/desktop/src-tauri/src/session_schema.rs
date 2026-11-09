@@ -5,7 +5,7 @@
 //! `session_repository` 持有,本模块不接触业务逻辑。
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
-use sqlx::{ConnectOptions as _, Connection, Executor, Row, SqliteConnection};
+use sqlx::{AssertSqlSafe, ConnectOptions as _, Connection, Executor, Row, SqliteConnection};
 use std::path::Path;
 use std::time::Duration;
 
@@ -600,7 +600,8 @@ async fn has_column(
     column: &str,
 ) -> Result<bool, String> {
     let statement = format!("PRAGMA table_info({table})");
-    let rows = sqlx::query(&statement)
+    // 表名/列名来自编译期 migration 表与 schema 常量，非用户输入，无注入面
+    let rows = sqlx::query(AssertSqlSafe(statement))
         .fetch_all(connection)
         .await
         .map_err(|error| format!("无法读取 SQLite 表结构：{error}"))?;
@@ -663,8 +664,9 @@ pub(crate) async fn migrate_to(
                 format!("无法执行 SQLite migration v{}：{error}", migration.version)
             })?;
         }
+        let version_statement = format!("PRAGMA user_version = {}", migration.version);
         transaction
-            .execute(format!("PRAGMA user_version = {}", migration.version).as_str())
+            .execute(AssertSqlSafe(version_statement))
             .await
             .map_err(|error| format!("无法更新 SQLite schema 版本：{error}"))?;
         transaction.commit().await.map_err(|error| {

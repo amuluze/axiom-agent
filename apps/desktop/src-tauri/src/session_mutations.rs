@@ -562,7 +562,7 @@ pub async fn commit_session_mutation_batch(
 mod tests {
     use super::*;
     use crate::session_schema::sqlite_options;
-    use sqlx::{Connection, Executor};
+    use sqlx::{AssertSqlSafe, Connection, Executor};
     use std::path::Path;
     use tempfile::TempDir;
 
@@ -684,7 +684,8 @@ mod tests {
             .await
             .unwrap();
         let query = format!("SELECT COUNT(*) FROM {table}");
-        let count = sqlx::query_scalar(&query)
+        // 测试 helper：表名来自调用点字面量，无注入面
+        let count = sqlx::query_scalar(AssertSqlSafe(query))
             .fetch_one(&mut connection)
             .await
             .unwrap();

@@ -60,6 +60,7 @@ describe('runtimeCaches', () => {
         nestedDirCount: 0,
         failedRootCount: 0,
       },
+      projectDesignContext: null,
       testingContext: null,
     })
     const removed = mod.dropRuntimeCachesForSession('a')
@@ -85,6 +86,7 @@ describe('runtimeCaches', () => {
         nestedDirCount: 0,
         failedRootCount: 0,
       },
+      projectDesignContext: null,
       testingContext: null,
     }
     mod.setRuntimeProjectContext('a', snapshot)

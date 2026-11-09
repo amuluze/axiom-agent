@@ -20,6 +20,19 @@ export const PROJECT_CONTEXT_MAX_BYTES = 128 * 1024
 export const AGENTS_MD_FILENAME = 'AGENTS.md'
 
 /**
+ * 项目根 `DESIGN.md` 正文注入的字节上限。
+ *
+ * 比 AGENTS.md 的 128 KiB 紧得多：AGENTS.md 是项目索引（指向全部领域规范），
+ * DESIGN.md 是单一设计意图文档。16 KiB 足够容纳受众/视觉语言/文案规则/禁用套路/
+ * 视觉主角五节，同时避免每个会话（不只设计任务）都被一份长文计入 token。
+ * 截断按行边界并显式注记，不静默缩短。
+ */
+export const PROJECT_DESIGN_CONTEXT_MAX_BYTES = 16 * 1024
+
+/** 项目设计意图文件名（工作区根，固定名）。 */
+export const DESIGN_MD_FILENAME = 'DESIGN.md'
+
+/**
  * 单次 read 的行数上限（对齐宿主 `MAX_READ_LIMIT`）。不传 limit 时宿主会退回
  * `DEFAULT_READ_LIMIT = 200` 行并静默截断——索引文件在 200 行之后的内容
  * （本仓恰是「版本契约」「交接风险清单」两节）会无声消失，故显式按页读完。
@@ -40,6 +53,7 @@ const byteLength = (value: string): number => new TextEncoder().encode(value).by
  */
 const readWholeFile = async (
   environment: Pick<AgentEnvironment, 'workspace'>,
+  fileName: string,
 ): Promise<{ content: string; readLines: number; totalLines: number | null; complete: boolean }> => {
   const pages: string[] = []
   let offset = 1
@@ -47,7 +61,7 @@ const readWholeFile = async (
   let totalLines: number | null = null
   let complete = false
   for (let page = 0; page < MAX_READ_PAGES; page += 1) {
-    const result = await environment.workspace.readText(AGENTS_MD_FILENAME, offset, READ_PAGE_LINES)
+    const result = await environment.workspace.readText(fileName, offset, READ_PAGE_LINES)
     totalLines = result.totalLines
     // 宿主对「请求范围的首行就超出输出字节预算」返回引导文案而非正文；它同样
     // 会报 truncated/next_offset，不额外识别，靠页数上限兜住。
@@ -62,20 +76,20 @@ const readWholeFile = async (
   return { content: pages.join('\n'), readLines, totalLines, complete }
 }
 
-const truncate = (content: string): string => {
-  if (byteLength(content) <= PROJECT_CONTEXT_MAX_BYTES) return content
+const truncate = (content: string, maxBytes: number, fileName: string): string => {
+  if (byteLength(content) <= maxBytes) return content
   // 按行边界贪心裁剪到字节预算内，避免在多字节字符中间截断产生乱码。
   let kept = ''
   for (const slice of content.split(/(?<=\n)/u)) {
-    if (byteLength(kept + slice) > PROJECT_CONTEXT_MAX_BYTES) break
+    if (byteLength(kept + slice) > maxBytes) break
     kept += slice
   }
   const omitted = Math.max(0, content.length - kept.length)
-  return `${kept}\n\n[AGENTS.md 已截断：省略了约 ${omitted} 个字符，完整内容见工作区根目录 AGENTS.md]`
+  return `${kept}\n\n[${fileName} 已截断：省略了约 ${omitted} 个字符，完整内容见工作区根目录 ${fileName}]`
 }
 
 /**
- * 根 `AGENTS.md` 的加载结果——三态而非二态。
+ * 根级单文件（`AGENTS.md` / `DESIGN.md`）的加载结果——三态而非二态。
  *
  * `absent` 与 `unavailable` 分开是刻意的：前者是「项目确实没有这份文件」，
  * 调用方据此清空镜像；后者是「原因不明，没读成」，调用方据此**保留上一份**，
@@ -107,7 +121,7 @@ export const loadProjectContext = async (
   environment: Pick<AgentEnvironment, 'workspace'>,
 ): Promise<ProjectContextLoad> => {
   try {
-    const { content, readLines, totalLines, complete } = await readWholeFile(environment)
+    const { content, readLines, totalLines, complete } = await readWholeFile(environment, AGENTS_MD_FILENAME)
     const trimmed = content.trim()
     if (trimmed.length === 0) return { kind: 'absent' }
     // 宿主输出字节上限等异常情形下可能仍读不满：与字节截断一样显式告知，
@@ -116,10 +130,10 @@ export const loadProjectContext = async (
       const scope = totalLines === null ? `${readLines} 行` : `${readLines}/${totalLines} 行`
       return {
         kind: 'content',
-        content: `${truncate(trimmed)}\n\n[AGENTS.md 未完整加载：本次只读到 ${scope}，完整内容见工作区根目录 AGENTS.md]`,
+        content: `${truncate(trimmed, PROJECT_CONTEXT_MAX_BYTES, AGENTS_MD_FILENAME)}\n\n[AGENTS.md 未完整加载：本次只读到 ${scope}，完整内容见工作区根目录 AGENTS.md]`,
       }
     }
-    return { kind: 'content', content: truncate(trimmed) }
+    return { kind: 'content', content: truncate(trimmed, PROJECT_CONTEXT_MAX_BYTES, AGENTS_MD_FILENAME) }
   } catch (error) {
     // 「文件确实不存在」与「读取失败」必须区分：前者是正常状态（项目没写
     // AGENTS.md），后者若也当成不存在，一次偶发的 IPC/权限错误就会把整段正文
@@ -136,3 +150,46 @@ export const loadProjectContext = async (
  */
 export const buildProjectContextSection = (content: string | null): string | null =>
   content && content.length > 0 ? `${PROJECT_CONTEXT_HEADING}\n${content}` : null
+
+/**
+ * 读取授权工作区根目录下的 `DESIGN.md` 正文，返回（可能截断后的）内容。
+ *
+ * 与 {@link loadProjectContext} 同语义：三态、读到 EOF、fail-soft。差别只在预算
+ * ——DESIGN.md 是单一设计意图文档，16 KiB 足够且不把每个会话的 token 成本拖高。
+ *
+ * 为什么全文注入而不只给索引：索引只能让模型「知道它存在」，是否读取仍靠自觉；
+ * 设计任务必须按项目既定基调执行，因此正文直接进 `# 项目上下文`，并在注入块上
+ * 标注「仅设计任务使用」。非设计任务可忽略该块。
+ */
+export const loadProjectDesignContext = async (
+  environment: Pick<AgentEnvironment, 'workspace'>,
+): Promise<ProjectContextLoad> => {
+  try {
+    const { content, readLines, totalLines, complete } = await readWholeFile(environment, DESIGN_MD_FILENAME)
+    const trimmed = content.trim()
+    if (trimmed.length === 0) return { kind: 'absent' }
+    if (!complete) {
+      const scope = totalLines === null ? `${readLines} 行` : `${readLines}/${totalLines} 行`
+      return {
+        kind: 'content',
+        content: `${truncate(trimmed, PROJECT_DESIGN_CONTEXT_MAX_BYTES, DESIGN_MD_FILENAME)}\n\n[DESIGN.md 未完整加载：本次只读到 ${scope}，完整内容见工作区根目录 DESIGN.md]`,
+      }
+    }
+    return { kind: 'content', content: truncate(trimmed, PROJECT_DESIGN_CONTEXT_MAX_BYTES, DESIGN_MD_FILENAME) }
+  } catch (error) {
+    return error instanceof AgentEnvironmentError && error.code === 'not_found'
+      ? { kind: 'absent' }
+      : { kind: 'unavailable' }
+  }
+}
+
+/**
+ * 把 DESIGN.md 正文包装成 `# 项目上下文` 的 `<project_design>` 子块。
+ *
+ * `note` 明写使用范围：设计任务以它为准，非设计任务忽略——注入是全局的（会话没有
+ * 「设计会话」标记），但相关性是局部的。无内容时返回 null，保持提示词最小化。
+ */
+export const buildProjectDesignSection = (content: string | null): string | null =>
+  content && content.length > 0
+    ? `<project_design src="${DESIGN_MD_FILENAME}" note="项目设计意图；仅在设计任务（design skill）中使用，非设计任务忽略">\n${content}\n</project_design>`
+    : null

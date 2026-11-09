@@ -104,6 +104,26 @@ describe('builtinSkillBodies', () => {
     expect(en('design')).toContain('Design exploration')
   })
 
+  it('design skill 含审美定位与 DESIGN.md 最小结构契约（双语）', () => {
+    const zh = findBuiltinSkillBody('design')!['zh-CN'].body
+    const en = findBuiltinSkillBody('design')!.en.body
+
+    // 审美层是 v45 的交付物：覆盖度下限（rubric）与结构底座（pattern）之外的选择与自审。
+    expect(zh).toContain('# 审美定位')
+    expect(zh).toContain('反默认清单')
+    expect(zh).toContain('相似需求')
+    expect(zh).toContain('唯一视觉主角')
+    expect(zh).toContain('受众与核心任务')
+    expect(zh).toContain('pattern 只定义结构，不定义视觉')
+
+    expect(en).toContain('# Aesthetic direction')
+    expect(en).toContain('Anti-default list')
+    expect(en).toContain('similar brief')
+    expect(en).toContain('single visual protagonist')
+    expect(en).toContain('audience and primary job')
+    expect(en).toContain('Patterns define structure, not visuals')
+  })
+
   it('证据降级与阶段边界在退出条件中闭合（双语）', () => {
     const zh = (name: string): string => findBuiltinSkillBody(name)!['zh-CN'].body
     const en = (name: string): string => findBuiltinSkillBody(name)!.en.body

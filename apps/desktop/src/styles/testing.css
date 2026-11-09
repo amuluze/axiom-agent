@@ -26,80 +26,13 @@
   min-height: 34px;
 }
 
-.testing-view__tabs {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  overflow-x: auto;
-  flex: 1;
-  /* 文件标签页横向滚动：滚动条只在悬停时显形，避免常态一条实心横条压住顶栏。 */
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-
-.testing-view__tabs:hover {
-  scrollbar-color: var(--border-subtle) transparent;
-}
-
-.testing-view__tabs::-webkit-scrollbar {
-  height: 4px;
-}
-
-.testing-view__tabs::-webkit-scrollbar-thumb {
-  background: transparent;
-}
-
-.testing-view__tabs:hover::-webkit-scrollbar-thumb {
-  background: var(--border-subtle);
-}
-
-.testing-view__tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-  max-width: 280px;
-  padding: 4px 10px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  cursor: pointer;
-  text-overflow: ellipsis;
-  overflow: hidden;
-  white-space: nowrap;
-  transition: background 0.12s ease, color 0.12s ease;
-}
-
-.testing-view__tab:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.testing-view__tab.is-active {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-  font-weight: 500;
-}
-
-.testing-view__tab.is-invalid {
-  color: var(--warn-text);
-}
-
-.testing-view__tabs-empty {
-  padding: 0 4px;
-  font-size: 12px;
-  color: var(--text-tertiary);
-}
-
 .testing-view__topbar-actions {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+  /* 顶栏不再铺用例文件标签页，动作组是唯一内容，靠右对齐。 */
+  margin-left: auto;
 }
 
 .testing-view__synced {
@@ -113,15 +46,6 @@
   font-size: 11px;
   color: var(--warn-text);
   white-space: nowrap;
-}
-
-.testing-view__filter select {
-  font-size: 11px;
-  color: var(--text-secondary);
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: 4px;
-  padding: 2px 6px;
 }
 
 .testing-view__visually-hidden {
@@ -796,129 +720,15 @@
   flex: 1;
 }
 
-.testing-view__hint-card--warn {
-  background: var(--warn-soft);
-  color: var(--warn-text);
-}
-
-/* ── 固化面板（tsCases 折叠卡） ──────────────────────────────── */
-
-.testing-view__solidify {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  background: var(--bg-card);
-  border-radius: 12px;
-}
-
-.testing-view__solidify-collapsed {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.testing-view__solidify-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.testing-view__solidify-controls label {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.testing-view__solidify-controls select {
-  font-size: 11px;
-  color: var(--text-secondary);
-  background: var(--bg-input);
-  border: 1px solid var(--border-subtle);
-  border-radius: 4px;
-  padding: 2px 6px;
-}
-
-.testing-view__solidify-note {
-  margin: 0;
-  font-size: 11px;
-  color: var(--text-tertiary);
-}
-
-.testing-view__solidify-draft {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-top: 6px;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.testing-view__solidify-target {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.testing-view__solidify-target code {
-  font-family: var(--font-mono);
-  color: var(--text-primary);
-}
-
-.testing-view__solidify-review {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 6px 0;
-}
-
-.testing-view__solidify-review > strong {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.testing-view__panel-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.testing-view__panel-title h2 {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.testing-view__panel-title code {
-  display: block;
-  font-size: 11px;
-  color: var(--text-tertiary);
-}
-
-.testing-view__badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 6px;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 600;
-  background: var(--warn-soft);
-  color: var(--warn-text);
-}
-
 /* ── 批次/套件摘要条 ────────────────────────────────────────── */
 
+/* 结论 + 文件计数 + 测试点覆盖占一行；未通过文件在下方逐条成行。
+   旧版把两者混在同一个 flex-wrap 里，长句与路径交替折行，读不出一行对应哪个文件。 */
 .testing-view__suite-summary {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 5px 12px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-card);
   flex-shrink: 0;
@@ -926,29 +736,106 @@
   color: var(--text-secondary);
 }
 
-.testing-view__suite-coverage {
-  color: var(--text-tertiary);
+/* 运行历史卡的「最近批次」入口是单行摘要，不套用纵向结构。 */
+.testing-view__suite-summary--inline {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.testing-view__suite-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  min-width: 0;
 }
 
 .testing-view__suite-verdict {
   padding: 1px 8px;
   border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent-text);
-  font-weight: 500;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
-.testing-view__suite-problem {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.testing-view__suite-verdict--pass {
+  background: var(--success-soft);
+  color: var(--diff-green);
+}
+
+.testing-view__suite-verdict--warn {
+  background: var(--warn-soft);
   color: var(--warn-text);
 }
 
-.testing-view__suite-problem code {
+.testing-view__suite-verdict--idle {
+  background: var(--bg-hover);
+  color: var(--text-tertiary);
+}
+
+.testing-view__suite-batch {
+  color: var(--text-secondary);
+}
+
+.testing-view__suite-coverage {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+  color: var(--text-tertiary);
+}
+
+.testing-view__suite-coverage-part--warn {
+  color: var(--warn-text);
+}
+
+.testing-view__suite-coverage-part--muted {
+  color: var(--text-tertiary);
+}
+
+.testing-view__suite-sep {
+  padding: 0 6px;
+  color: var(--border-subtle);
+}
+
+.testing-view__suite-problems {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.testing-view__suite-problem {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1.4fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.testing-view__suite-problem-path,
+.testing-view__suite-problem-reason {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.testing-view__suite-problem-path {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+.testing-view__suite-problem-reason {
+  color: var(--text-tertiary);
+}
+
+.testing-view__suite-note {
+  color: var(--warn-text);
 }
 
 /* ── 通用按钮（环境面板 / Secret 编辑）──────────────────────── */
@@ -1534,78 +1421,6 @@
   gap: 6px;
   flex: none;
   margin-left: auto;
-}
-
-/* ── authoring 区（为本功能写用例 / 产物核对）────────────────── */
-
-.testing-view__secondary-tools > summary {
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: var(--bg-card);
-  color: var(--text-secondary);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.testing-view__secondary-tools-content {
-  display: grid;
-  gap: 10px;
-  padding-top: 10px;
-}
-
-.testing-view__authoring {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: var(--bg-card);
-}
-
-.testing-view__authoring-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.testing-view__authoring-controls input {
-  flex: 1;
-  min-width: 0;
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-  background: var(--bg-input);
-  color: var(--text-primary);
-  font-size: 12px;
-}
-
-.testing-view__authoring-controls input:focus {
-  outline: 0;
-  border-color: var(--accent);
-}
-
-.testing-view__authoring > p[role='status'] {
-  margin: 0;
-  font-size: 11px;
-  color: var(--accent-text);
-}
-
-.testing-view__authoring-result {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.testing-view__authoring-result p {
-  margin: 0;
-}
-
-.testing-view__authoring-result code {
-  font-family: var(--font-mono);
-  font-size: 11px;
 }
 
 /* 报告里的运行环境事实行（低权重，跟在标题行下方）。 */

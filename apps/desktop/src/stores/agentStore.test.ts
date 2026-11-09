@@ -945,7 +945,7 @@ describe('agentStore session activation', () => {
 })
 
 /**
- * 三面项目上下文镜像的防回归守卫。
+ * 五面项目上下文镜像的防回归守卫。
  *
  * 这些镜像合成同一个 `# 项目上下文` 提示词段，因此**每个重建提示词的调用点都
  * 必须齐备传入**：漏传一面等于把那一块从 live 提示词里删掉。接入嵌套索引时已经
@@ -961,12 +961,12 @@ describe('项目上下文镜像的调用点齐备性', () => {
 
   it('除 DB 播种路径外，所有 buildSessionBasePrompt 调用都经由唯一构造点', () => {
     // buildSessionBasePrompt 的直接调用应只剩两处：构造点自身 + DB 播种
-    // （后者无工作区，三面镜像皆空，属预期）。
+    // （后者无工作区，五面镜像皆空，属预期）。
     const directCalls = source.match(/(?<!\))buildSessionBasePrompt\(\{/g) ?? []
     expect(directCalls.length).toBe(2)
   })
 
-  it('构造点齐备传入四面镜像', () => {
+  it('构造点齐备传入五面镜像', () => {
     const constructorBody = source.slice(
       source.indexOf('const buildSessionBasePromptFromContext'),
       source.indexOf('const refreshProjectContext = async'),
@@ -974,10 +974,13 @@ describe('项目上下文镜像的调用点齐备性', () => {
     expect(constructorBody).toContain('projectContext,')
     expect(constructorBody).toContain('projectAgents,')
     expect(constructorBody).toContain('projectDocs,')
+    expect(constructorBody).toContain('projectDesignContext,')
     expect(constructorBody).toContain('testingContext,')
     expect(constructorBody).toContain('...activeProjectContextSnapshot()')
-    // 第四面（测试页上下文）同样经快照传入：漏传等于把该段从 live 提示词里删掉。
+    // 第五面（测试页上下文）同样经快照传入：漏传等于把该段从 live 提示词里删掉。
     expect(source).toContain('testingContext: activeTestingContext,')
+    // DESIGN.md 正文与 AGENTS.md 同批次刷新/回滚，漏传会让设计意图从 live 提示词消失。
+    expect(source).toContain('projectDesignContext: activeProjectDesignContext,')
   })
 
   it('四个生产重建点全部走该构造点', () => {

@@ -16,7 +16,6 @@ import {
 import type { TestEnvironmentRecord } from '@/platform/testEnvironments'
 import { listTestEnvironmentRecords } from '@/platform/testEnvironments'
 import type { TestSpecIndexEntry } from '@/stores/services/testSpecIndex'
-import { matchesTestSpecType, type TestSpecTypeFilter } from '@/stores/services/testSpecFilter'
 import type { TestSuiteRunEntry, TestSuiteRunResult } from '@/stores/services/testSuiteRunner'
 import { runTestSuite } from '@/stores/services/testSuiteRunner'
 import { useT } from '@/i18n'
@@ -36,10 +35,12 @@ export interface ActiveRunView {
 }
 
 export interface RunActions {
-  runScope: 'current' | TestSpecTypeFilter
-  setRunScope: (scope: 'current' | TestSpecTypeFilter) => void
-  suiteTargets: TestSpecIndexEntry[]
+  /** 全部校验通过的用例文件（「运行全部」的目标，也是批次能力的存在依据）。 */
+  allTargets: TestSpecIndexEntry[]
+  /** 环境条当前选中的用例文件；无效或未选中时为 null。 */
+  selectedTarget: TestSpecIndexEntry | null
   canRun: boolean
+  canRunAll: boolean
   running: boolean
   activeRun: ActiveRunView | null
   suiteResult: TestSuiteRunResult | null
@@ -47,6 +48,7 @@ export interface RunActions {
   batchLoading: boolean
   clock: number
   runSelected: () => void
+  runAll: () => void
   runSpecs: (targets: readonly TestSpecIndexEntry[], environmentId: string | null) => Promise<void>
   stop: () => void
   loadRecentBatch: () => void
@@ -90,7 +92,6 @@ export const useRunActions = ({
 }): RunActions => {
   const { t } = useT()
   const runControllerRef = useRef<AbortController | null>(null)
-  const [runScope, setRunScope] = useState<'current' | TestSpecTypeFilter>('current')
   const [suiteResult, setSuiteResult] = useState<TestSuiteRunResult | null>(null)
   const [suiteProgress, setSuiteProgress] = useState<{ index: number; total: number; path: string } | null>(null)
   const [activeRun, setActiveRun] = useState<ActiveRunView | null>(null)
@@ -98,17 +99,28 @@ export const useRunActions = ({
   const [batchLoading, setBatchLoading] = useState(false)
   const [clock, setClock] = useState(Date.now())
 
-  const selectedSpec = specs.find((spec) => spec.path === selectedSpecPath)
-  const suiteTargets = useMemo(() => {
-    if (runScope === 'current') return selectedSpec?.valid ? [selectedSpec] : []
-    return specs.filter((spec) => spec.valid && matchesTestSpecType(spec, runScope))
-  }, [runScope, selectedSpec, specs])
+  // 主按钮只跑**环境条选中的用例文件**；「运行全部」是显式的第二动作，不默认扩大执行面。
+  // 一个文件失败不阻断后续：批次能力仍在，只是不再由「重放」隐式触发。
+  const allTargets = useMemo(
+    () => specs.filter((spec) => spec.valid),
+    [specs],
+  )
+  const selectedTarget = useMemo(
+    () => specs.find((spec) => spec.path === selectedSpecPath && spec.valid) ?? null,
+    [selectedSpecPath, specs],
+  )
 
   const canRun = Boolean(
     workspacePath
     && !running
-    && suiteTargets.length > 0
-    && (suiteTargets.every((spec) => spec.uiStepCount === 0) || selectedTabId),
+    && selectedTarget !== null
+    && (selectedTarget.uiStepCount === 0 || selectedTabId),
+  )
+  const canRunAll = Boolean(
+    workspacePath
+    && !running
+    && allTargets.length > 0
+    && (allTargets.every((spec) => spec.uiStepCount === 0) || selectedTabId),
   )
 
   useEffect(() => () => runControllerRef.current?.abort(), [])
@@ -210,7 +222,11 @@ export const useRunActions = ({
   }
 
   const runSelected = (): void => {
-    void runSpecs(suiteTargets, selectedEnvironmentId)
+    void runSpecs(selectedTarget ? [selectedTarget] : [], selectedEnvironmentId)
+  }
+
+  const runAll = (): void => {
+    void runSpecs(allTargets, selectedEnvironmentId)
   }
 
   const stop = (): void => {
@@ -275,10 +291,10 @@ export const useRunActions = ({
   }
 
   return {
-    runScope,
-    setRunScope,
-    suiteTargets,
+    allTargets,
+    selectedTarget,
     canRun,
+    canRunAll,
     running,
     activeRun,
     suiteResult,
@@ -286,6 +302,7 @@ export const useRunActions = ({
     batchLoading,
     clock,
     runSelected,
+    runAll,
     runSpecs,
     stop,
     loadRecentBatch,

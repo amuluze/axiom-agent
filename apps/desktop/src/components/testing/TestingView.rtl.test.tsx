@@ -36,18 +36,9 @@ const mocks = vi.hoisted(() => ({
   setView: vi.fn(),
   openRuntimeRailPane: vi.fn(),
   requestComposerInsertion: vi.fn(),
-  prepareSolidifyDraft: vi.fn(),
-  buildSolidifyPayload: vi.fn(() => 'SOLIDIFY-PAYLOAD'),
-  loadSessionMessages: vi.fn(async () => []),
-  solidifySpecId: vi.fn(() => 'checkout'),
-  countDraftSteps: vi.fn(() => 2),
   loadSpecDetail: vi.fn(),
   readArtifactText: vi.fn(),
   useUiStoreHook: vi.fn(),
-  // H1-5 档位门可变体：默认按生产档放行固化，档位门用例里翻回 false。
-  runtimePolicy: {
-    testAutomation: { externalTargets: true, agentGeneration: true },
-  },
 }))
 
 vi.mock('@/stores/agentStore', () => ({
@@ -92,7 +83,6 @@ vi.mock('@/stores/uiStore', () => {
 vi.mock('@/stores/services/testSpecIndex', () => ({ scanTestSpecs: mocks.scanTestSpecs }))
 vi.mock('@/stores/services/testEnvironmentFiles', () => ({ scanEnvironmentFiles: mocks.scanEnvironmentFiles }))
 vi.mock('@/stores/services/testEnvironmentReadiness', () => ({ ensureEnvironmentReady: mocks.ensureEnvironmentReady }))
-vi.mock('@/stores/services/testAuthoringCheck', () => ({ checkSessionTestArtifacts: mocks.checkSessionTestArtifacts }))
 vi.mock('@/stores/services/testSpecDetail', () => ({ loadSpecDetail: mocks.loadSpecDetail }))
 vi.mock('@/platform/artifacts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/platform/artifacts')>()
@@ -114,14 +104,6 @@ vi.mock('@/stores/services/testRunPreparation', () => ({
 }))
 vi.mock('@/stores/services/testRuntimeService', () => ({ startUiTestRun: mocks.startUiTestRun }))
 vi.mock('@/stores/services/testSuiteRunner', () => ({ runTestSuite: mocks.runTestSuite }))
-vi.mock('@/config/runtimePolicy', () => ({ RUNTIME_POLICY: mocks.runtimePolicy }))
-vi.mock('@/stores/services/testSolidify', () => ({
-  prepareSolidifyDraft: mocks.prepareSolidifyDraft,
-  buildSolidifyPayload: mocks.buildSolidifyPayload,
-  loadSessionMessages: mocks.loadSessionMessages,
-  solidifySpecId: mocks.solidifySpecId,
-  countDraftSteps: mocks.countDraftSteps,
-}))
 
 import { TestingView } from './TestingView'
 
@@ -186,8 +168,6 @@ const persistedReport: TestRunDetailRecord = {
 describe('TestingView run flow', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    // 档位门默认按生产档放行；需要验证 H1-5 门的用例自行翻回 false。
-    mocks.runtimePolicy.testAutomation.agentGeneration = true
     useBrowserStore.setState({
       tabs: [{
         tabId: 'tab-1',
@@ -280,6 +260,7 @@ describe('TestingView run flow', () => {
 
     const run = await screen.findByRole('button', { name: '重放' })
     await waitFor(() => expect(run).not.toBeDisabled())
+    expect(screen.queryByRole('button', { name: '运行全部' })).not.toBeInTheDocument()
     fireEvent.click(run)
 
     await waitFor(() => expect(mocks.runTestSuite).toHaveBeenCalled())
@@ -295,6 +276,50 @@ describe('TestingView run flow', () => {
     // 重放（同源：selectedSpecPath 已与报告 specPath 同步）
     fireEvent.click((await screen.findAllByRole('button', { name: '重放' }))[0])
     await waitFor(() => expect(mocks.runTestSuite).toHaveBeenCalledTimes(2))
+  })
+
+  it('switches the displayed spec from the environment-bar selector without waiting for a replay', async () => {
+    mocks.scanTestSpecs.mockResolvedValue([
+      {
+        path: 'tests/checkout.testspec.json',
+        valid: true,
+        id: 'checkout',
+        name: '结算流程',
+        caseCount: 1,
+        stepCount: 1,
+        uiStepCount: 1,
+        apiStepCount: 0,
+        issues: [],
+      },
+      {
+        path: 'tests/api.testspec.json',
+        valid: true,
+        id: 'api',
+        name: 'API 用例',
+        caseCount: 1,
+        stepCount: 1,
+        uiStepCount: 0,
+        apiStepCount: 1,
+        issues: [],
+      },
+    ])
+    render(<TestingView />)
+
+    // 用例文件不再以标签页铺在顶栏。
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
+
+    const run = (await screen.findAllByRole('button', { name: '重放' }))[0]!
+    await waitFor(() => expect(run).not.toBeDisabled())
+    fireEvent.click(run)
+    expect(await screen.findByRole('heading', { name: '运行报告' })).toBeInTheDocument()
+
+    fireEvent.change(screen.getByRole('combobox', { name: '用例文件' }), {
+      target: { value: 'tests/api.testspec.json' },
+    })
+
+    // 切换文件即刻换成该文件的用例总览；旧报告不能留在下方直到下一次回放结束。
+    expect(await screen.findByRole('heading', { level: 1, name: 'API 用例' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '运行报告' })).not.toBeInTheDocument()
   })
 
   it('transitions overview → running progress → persisted report in one run', async () => {
@@ -337,7 +362,7 @@ describe('TestingView run flow', () => {
     expect(screen.getAllByText('通过').length).toBeGreaterThan(0)
   })
 
-  it('filters specs and sends a structured failure summary to the selected session', async () => {
+  it('switches the displayed spec and sends a structured failure summary to the selected session', async () => {
     mocks.scanTestSpecs.mockResolvedValue([
       ...await mocks.scanTestSpecs(),
       {
@@ -368,14 +393,21 @@ describe('TestingView run flow', () => {
     })
     render(<TestingView />)
 
-    const filter = await screen.findByRole('combobox', { name: '运行范围' })
-    fireEvent.change(filter, { target: { value: 'api' } })
-    // 切换到 API 用例：标题行 h1 显示 spec name，UI 用例被过滤后不再渲染
+    const specSelect = await screen.findByRole('combobox', { name: '用例文件' })
+    fireEvent.change(specSelect, { target: { value: 'tests/api.testspec.json' } })
+    // 切换到 API 用例：标题行 h1 显示 spec name，UI 用例不再渲染。
     expect(await screen.findByRole('heading', { level: 1, name: 'API 用例' })).toBeInTheDocument()
     expect(screen.queryByText('结算流程')).not.toBeInTheDocument()
 
-    fireEvent.change(filter, { target: { value: 'ui' } })
+    fireEvent.change(specSelect, { target: { value: 'tests/checkout.testspec.json' } })
+    expect(await screen.findByRole('heading', { level: 1, name: '结算流程' })).toBeInTheDocument()
+    // 页面不再有「运行范围」下拉框：重放只跑环境条选中的那份。
+    expect(screen.queryByRole('combobox', { name: '运行范围' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '运行全部' })).toBeEnabled()
     fireEvent.click((await screen.findAllByRole('button', { name: '重放' }))[0])
+    await waitFor(() => expect(mocks.runTestSuite.mock.calls[0]?.[0]).toMatchObject({
+      specs: [{ path: 'tests/checkout.testspec.json' }],
+    }))
     expect(await screen.findByRole('button', { name: '发送并打开会话' })).toBeEnabled()
     // 宿主归因直接决定这张卡片的下一步提示：环境问题先修环境，而不是去改断言。
     expect(await screen.findByTestId('test-report-origin')).toHaveTextContent('环境（传输层或探针）')
@@ -489,7 +521,8 @@ describe('TestingView run flow', () => {
     expect(screen.queryByRole('button', { name: '打开浏览器' })).not.toBeInTheDocument()
   })
 
-  it('keeps the browser target for a mixed suite when the selected file is API-only', async () => {
+  it('keeps the browser target for a mixed batch when the selected file is API-only', async () => {
+    useBrowserStore.setState({ tabs: [] })
     mocks.scanTestSpecs.mockResolvedValue([
       {
         path: 'tests/api.testspec.json',
@@ -516,138 +549,14 @@ describe('TestingView run flow', () => {
     ])
     render(<TestingView />)
 
+    // 选中文件是纯 API，但批次含 UI 文件：目标标签页必须按整个批次显示。
     expect(await screen.findByRole('heading', { level: 1, name: 'API 用例' })).toBeInTheDocument()
-    expect(screen.queryByRole('combobox', { name: '目标标签页' })).not.toBeInTheDocument()
-
-    fireEvent.change(screen.getByLabelText('运行范围'), { target: { value: 'all' } })
-    // 选中文件仍是纯 API，但批次含 UI 文件：目标标签页必须按整个批次显示。
-    expect(screen.getByRole('heading', { level: 1, name: 'API 用例' })).toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: '目标标签页' })).toBeInTheDocument()
-  })
-
-  it('solidifies the source session trajectory and sends the draft to the target session', async () => {
-    mocks.prepareSolidifyDraft.mockResolvedValue({
-      status: 'ok',
-      stepCount: 2,
-      draft: {
-        spec: {
-          kind: 'axiom.test',
-          version: 1,
-          id: 'checkout',
-          name: '结算流程',
-          target: {},
-          cases: [{
-            id: 'main',
-            name: '探索固化',
-            steps: [
-              { id: 'step-1-ui-navigate', action: 'ui.navigate', url: 'https://shop.test/' },
-              { id: 'step-2-ui-click', action: 'ui.click', locator: { role: 'unknown', name: '待补充定位器' } },
-            ],
-          }],
-        },
-        issues: [{
-          stepIndex: 1,
-          toolName: 'ui_click',
-          code: 'locator-unavailable',
-          message: '需要补充稳定定位器',
-        }],
-      },
-    })
-    render(<TestingView />)
-
-    const generate = await screen.findByRole('button', { name: '固化到用例文件' })
-    await waitFor(() => expect(generate).not.toBeDisabled())
-    fireEvent.click(generate)
-
-    await waitFor(() => expect(mocks.prepareSolidifyDraft).toHaveBeenCalled())
-    // 源会话即激活会话时直接用 store 投影，不再回读仓库。
-    expect(mocks.prepareSolidifyDraft).toHaveBeenCalledWith([], expect.objectContaining({ id: 'checkout' }))
-    expect((await screen.findAllByText('tests/checkout.testspec.json')).length).toBeGreaterThan(0)
-    expect(screen.getAllByText('needsReview').length).toBeGreaterThan(0)
-
-    fireEvent.click(screen.getByRole('button', { name: '发送到会话' }))
-    await waitFor(() => expect(mocks.sendToSession).toHaveBeenCalledWith('session-1', 'SOLIDIFY-PAYLOAD'))
-  })
-
-  it('surfaces an explicit message when the source session has no explorable steps', async () => {
-    mocks.prepareSolidifyDraft.mockResolvedValue({ status: 'no-explorer-steps', stepCount: 0 })
-    render(<TestingView />)
-
-    const generate = await screen.findByRole('button', { name: '固化到用例文件' })
-    await waitFor(() => expect(generate).not.toBeDisabled())
-    fireEvent.click(generate)
-
-    expect(await screen.findByText('源会话没有可固化的探索步骤（未调用 ui_* / api_request 工具）。'))
-      .toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '发送到会话' })).not.toBeInTheDocument()
-  })
-
-  it('disables the solidify panel with a tier explanation when agentGeneration is off', async () => {
-    mocks.runtimePolicy.testAutomation.agentGeneration = false
-    render(<TestingView />)
-
-    const generate = await screen.findByRole('button', { name: '固化到用例文件' })
-    expect(generate).toBeDisabled()
-    expect(await screen.findByText('Agent 固化生成需在 Beta 发布档启用，当前构建未开放。'))
-      .toBeInTheDocument()
-    // 档位门在链首：即便工作区/会话/模型齐备，也不进入下游空态文案。
-    expect(screen.queryByText('尚未选择工作区，无法固化。')).not.toBeInTheDocument()
-    fireEvent.click(generate)
-    expect(mocks.prepareSolidifyDraft).not.toHaveBeenCalled()
-  })
-
-  it('sends a structured authoring instruction for the described feature', async () => {
-    render(<TestingView />)
-
-    expect(screen.getByText('测试创作与产物核对').closest('details')).not.toHaveAttribute('open')
-    fireEvent.click(screen.getByText('测试创作与产物核对'))
-    const input = await screen.findByLabelText(/要测的功能/)
-    fireEvent.change(input, { target: { value: '优惠券叠加规则' } })
-    fireEvent.click(screen.getByRole('button', { name: '发送给测试助手' }))
-
-    await waitFor(() => expect(mocks.sendToSession).toHaveBeenCalledTimes(1))
-    const [sessionId, instruction] = mocks.sendToSession.mock.calls[0] ?? []
-    expect(sessionId).toBe('session-1')
-    expect(instruction).toContain('- 功能：优惠券叠加规则')
-    // 纪律与文件名都由这条消息承载：提示词里不放瞬时意图。
-    expect(instruction).toContain('load_skill({ name: "test-authoring" })')
-    expect(instruction).toContain('只写 tests/ 目录下的用例文件')
-    expect(instruction).toMatch(/- 目标用例文件：tests\/[a-z0-9-]+\.testspec\.json/)
-    expect(await screen.findByText(/已发送/)).toBeInTheDocument()
-  })
-
-  it('keeps the authoring send disabled until a feature is described', async () => {
-    render(<TestingView />)
-    fireEvent.click(screen.getByText('测试创作与产物核对'))
-    expect(await screen.findByRole('button', { name: '发送给测试助手' })).toBeDisabled()
-  })
-
-  it('reports what the session actually produced instead of trusting its summary', async () => {
-    mocks.checkSessionTestArtifacts.mockResolvedValue({
-      declared: ['tests/checkout.testspec.json', 'tests/ghost.testspec.json'],
-      missing: ['tests/ghost.testspec.json'],
-      invalid: [{
-        path: 'tests/broken.testspec.json',
-        issues: [{ path: '$.version', message: '不支持的版本，当前支持 1 / 2 / 3' }],
-      }],
-      valid: [{ path: 'tests/checkout.testspec.json', caseCount: 3 }],
-      failed: [],
-      untouched: ['tests/preexisting.testspec.json'],
-    })
-    render(<TestingView />)
-
-    fireEvent.click(screen.getByText('测试创作与产物核对'))
-    fireEvent.click(await screen.findByRole('button', { name: '检查会话产物' }))
-
-    await waitFor(() => expect(mocks.checkSessionTestArtifacts).toHaveBeenCalledWith({
-      sessionId: 'session-1',
-      workspacePath: '/repo',
-    }))
-    expect(await screen.findByText(/本会话写入 2 个用例文件/)).toBeInTheDocument()
-    // 「声称写了但没落盘」必须点名到文件，而不是给一句"看起来没问题"。
-    expect(screen.getByText('tests/ghost.testspec.json')).toBeInTheDocument()
-    expect(screen.getByText(/\$\.version 不支持的版本，当前支持 1 \/ 2/)).toBeInTheDocument()
-    expect(screen.getByText(/另有 1 个既有用例文件未被本会话改动/)).toBeInTheDocument()
+    // 单文件重放不依赖标签页；整批覆盖含 UI 步骤，没有标签页就不能启动。
+    expect(screen.getByRole('button', { name: '重放' })).toBeEnabled()
+    const runAll = screen.getByRole('button', { name: '运行全部' })
+    expect(runAll).toBeDisabled()
+    expect(runAll).toHaveAttribute('title', '先选择浏览器目标标签页')
   })
 
   it('blocks the run when the selected environment is not ready and shows the probe reason', async () => {
@@ -721,8 +630,7 @@ describe('TestingView run flow', () => {
     })
     render(<TestingView />)
 
-    fireEvent.change(await screen.findByLabelText('运行范围'), { target: { value: 'all' } })
-    const run = await screen.findByRole('button', { name: '重放' })
+    const run = await screen.findByRole('button', { name: '运行全部' })
     await waitFor(() => expect(run).not.toBeDisabled())
     fireEvent.click(run)
 
@@ -735,16 +643,17 @@ describe('TestingView run flow', () => {
         { path: 'tests/c.testspec.json' },
       ],
     })
-    expect(await screen.findByText(/本批次 3 个用例文件：通过 2、失败 1、其他 0/)).toBeInTheDocument()
+    expect(await screen.findByText(/本批次 3 个用例文件：通过 2 · 失败 1 · 其他 0/)).toBeInTheDocument()
     // 未通过的文件在摘要里逐条点名（被拒绝的那个仍被列出，说明后续没有被短路丢弃）。
-    const summary = screen.getByText(/本批次 3 个用例文件/).closest('div')!
+    const summary = screen.getByTestId('testing-suite-summary')
     expect(within(summary).getByText('tests/b.testspec.json')).toBeInTheDocument()
     expect(within(summary).getByText('已拒绝')).toBeInTheDocument()
-    // 覆盖三数按测试点算，分母只取本次运行范围；被拒绝的那个测试点算「已执行未通过」。
+    // 覆盖三数按测试点算，分母只取本批次实际尝试的文件；被拒绝的那个测试点算「已执行未通过」。
     expect(await screen.findByTestId('testing-coverage')).toHaveTextContent(
-      '覆盖：设计 3 · 执行 3 · 通过 2 · 未运行 0（需要修复 0 · 不适用 0）',
+      /测试点 2\/3 通过/,
     )
-    expect(screen.getByTestId('testing-coverage-verdict')).toHaveTextContent('本轮范围内未全绿')
+    expect(screen.getByTestId('testing-coverage')).toHaveTextContent(/失败 1/)
+    expect(screen.getByTestId('testing-coverage-verdict')).toHaveTextContent('未全绿')
   })
 
   it('publishes the testing context for the active session and clears it on unmount', async () => {
@@ -848,7 +757,7 @@ describe('TestingView run flow', () => {
     })
   })
 
-  it('runs only valid specs under the all scope and passes the source session', async () => {
+  it('runs only valid specs and passes the source session', async () => {
     mocks.scanTestSpecs.mockResolvedValue([
       {
         path: 'tests/a.testspec.json',
@@ -887,7 +796,6 @@ describe('TestingView run flow', () => {
     mocks.getTestRunRecord.mockResolvedValue(null)
     render(<TestingView />)
 
-    fireEvent.change(await screen.findByLabelText('运行范围'), { target: { value: 'all' } })
     const run = (await screen.findAllByRole('button', { name: '重放' }))[0]!
     await waitFor(() => expect(run).not.toBeDisabled())
     fireEvent.click(run)
@@ -899,7 +807,7 @@ describe('TestingView run flow', () => {
     })
   })
 
-  it('counts invalid files outside the run scope in coverage columns', async () => {
+  it('counts invalid files in coverage columns', async () => {
     mocks.scanTestSpecs.mockResolvedValue([
       {
         path: 'tests/a.testspec.json',
@@ -951,8 +859,9 @@ describe('TestingView run flow', () => {
     fireEvent.click(run)
 
     await waitFor(() => expect(screen.getByTestId('testing-coverage')).toHaveTextContent(
-      '覆盖：设计 1 · 执行 1 · 通过 1 · 未运行 0（需要修复 1 · 不适用 0）',
+      /测试点 1\/1 通过/,
     ))
+    expect(screen.getByTestId('testing-coverage')).toHaveTextContent(/需要修复 1/)
   })
 
   it('uses frozen plan metadata for batch coverage instead of the current scan', async () => {
@@ -991,7 +900,7 @@ describe('TestingView run flow', () => {
     fireEvent.click(run)
 
     await waitFor(() => expect(screen.getByTestId('testing-coverage')).toHaveTextContent(
-      '覆盖：设计 1 · 执行 1 · 通过 1 · 未运行 0',
+      /测试点 1\/1 通过/,
     ))
   })
 
@@ -1061,8 +970,7 @@ describe('TestingView run flow', () => {
     mocks.getTestRunRecord.mockResolvedValue(null)
     render(<TestingView />)
 
-    fireEvent.change(await screen.findByLabelText('运行范围'), { target: { value: 'all' } })
-    const run = (await screen.findAllByRole('button', { name: '重放' }))[0]!
+    const run = (await screen.findAllByRole('button', { name: '运行全部' }))[0]!
     await waitFor(() => expect(run).not.toBeDisabled())
     fireEvent.click(run)
 
@@ -1107,9 +1015,9 @@ describe('TestingView run flow', () => {
     fireEvent.click(run)
 
     await waitFor(() => expect(screen.getByTestId('testing-coverage')).toHaveTextContent(
-      '覆盖：设计 1 · 执行 1 · 通过 1 · 未运行 0',
+      /测试点 1\/1 通过/,
     ))
-    expect(screen.getByTestId('testing-coverage-verdict')).toHaveTextContent('本轮范围内未全绿')
+    expect(screen.getByTestId('testing-coverage-verdict')).toHaveTextContent('未全绿')
   })
 
   it('reloads the latest batch summary from batch_id after a page reload', async () => {
@@ -1193,9 +1101,9 @@ describe('TestingView run flow', () => {
     expect(screen.getByText('最近批次：2 个用例文件')).toBeInTheDocument()
     fireEvent.click(open)
 
-    await waitFor(() => expect(screen.getByText(/本批次 2 个用例文件：通过 1、失败 1、其他 0/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/本批次 2 个用例文件：通过 1 · 失败 1 · 其他 0/)).toBeInTheDocument())
     expect(await screen.findByTestId('testing-coverage')).toHaveTextContent(
-      '覆盖：设计 2 · 执行 2 · 通过 1 · 未运行 0（需要修复 0 · 不适用 0）',
+      /测试点 1\/2 通过/,
     )
   })
 
