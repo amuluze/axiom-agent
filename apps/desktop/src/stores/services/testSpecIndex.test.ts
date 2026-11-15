@@ -36,7 +36,13 @@ describe('scanTestSpecs', () => {
           name: 'Case',
           steps: [
             { id: 'screen', action: 'ui.screenshot' },
-            { id: 'request', action: 'api.request', method: 'GET', url: 'https://example.test' },
+            {
+              id: 'request',
+              action: 'api.request',
+              method: 'GET',
+              url: 'https://example.test',
+              headers: { Authorization: { secretId: 'apitest.demo' } },
+            },
           ],
         }],
       }),
@@ -52,6 +58,7 @@ describe('scanTestSpecs', () => {
       stepCount: 2,
       uiStepCount: 1,
       apiStepCount: 1,
+      secretIds: ['apitest.demo'],
     })
   })
 

@@ -13,6 +13,7 @@ import { createTestStepApprover } from '@/agent/testing/approval/testStepApprove
 import { useT } from '@/i18n'
 import {
   deleteTestEnvironmentRecord,
+  refreshTestEnvironmentSecrets,
   saveTestEnvironmentRecord,
   type SaveTestEnvironmentRecord,
   type TestEnvironmentRecord,
@@ -20,7 +21,7 @@ import {
 import { deleteApiTestSecret, hasApiTestSecret, saveApiTestSecret } from '@/platform/apiTestSecrets'
 import { probeEnvironmentReadiness } from '@/platform/testEnvironmentProbe'
 import type { EnvironmentReadiness } from '@/agent/testing/environment/readiness'
-import type { EnvironmentFileEntry } from '@/stores/services/testEnvironmentFiles'
+import { readEnvironmentFileEntry, type EnvironmentFileEntry } from '@/stores/services/testEnvironmentFiles'
 import { trapDialogFocus, useDialogFocus } from '../dialogFocus'
 import { TestStepApprovalPanel } from './TestStepApprovalPanel'
 
@@ -42,6 +43,15 @@ interface TestEnvironmentDialogProps {
   environments: TestEnvironmentRecord[]
   /** 工作区 `tests/environments/*.env.axiom` 的扫描结果（环境档 → 运行环境的导入入口）。 */
   environmentFiles: readonly EnvironmentFileEntry[]
+  /** 导入时重新读取档内容（不依赖页面装载时的扫描快照）；缺省则只能用快照。 */
+  workspacePath?: string | null
+  /** 用例文件引用到的 Secret ID：只作为「未授权」建议，授权仍需用户点击。 */
+  referencedSecretIds: readonly string[]
+  /**
+   * 外部（运行报告的 401 提示）请求更新某个 Secret：token 递增表示新请求，
+   * 弹窗把 ID 预填进表单并聚焦值输入，值的写入仍由用户点击「保存并授权」完成。
+   */
+  secretUpdateRequest?: { secretId: string; token: number } | null
   selectedId: string | null
   disabled: boolean
   onSelect: (id: string | null) => void
@@ -67,6 +77,8 @@ interface EnvironmentDraft {
   secretOriginsJson: string
   tlsTrust: EnvironmentTlsTrust
   approvalMode: EnvironmentApprovalMode
+  /** v4 登录配方（v4 环境档导入）；表单不编辑，只展示与触发刷新。 */
+  secretRefreshJson: string | null
 }
 
 const emptyDraft = (): EnvironmentDraft => ({
@@ -84,6 +96,7 @@ const emptyDraft = (): EnvironmentDraft => ({
   secretOriginsJson: '[]',
   tlsTrust: 'system',
   approvalMode: 'per_step',
+  secretRefreshJson: null,
 })
 
 const draftOf = (environment: TestEnvironmentRecord): EnvironmentDraft => ({
@@ -101,6 +114,7 @@ const draftOf = (environment: TestEnvironmentRecord): EnvironmentDraft => ({
   secretOriginsJson: environment.secretOriginsJson,
   tlsTrust: environment.tlsTrust,
   approvalMode: environment.approvalMode,
+  secretRefreshJson: environment.secretRefreshJson,
 })
 
 const hostOf = (value: string): string | null => {
@@ -167,6 +181,49 @@ const summarizeSecretOrigins = (json: string): string => {
   }
 }
 
+/** 请求头的展示文本（存储层已拒绝凭据头，这里只展示非敏感键值）。 */
+const summarizeHeaders = (json: string): string => {
+  try {
+    const parsed: unknown = JSON.parse(json || '{}')
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return ''
+    return Object.entries(parsed as Record<string, unknown>)
+      .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, value]) => `${name}: ${value}`)
+      .join(' · ')
+  } catch {
+    return ''
+  }
+}
+
+const headerCount = (json: string): number => {
+  try {
+    const parsed: unknown = JSON.parse(json || '{}')
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? Object.keys(parsed).length
+      : 0
+  } catch {
+    return 0
+  }
+}
+
+const parseSecretIds = (json: string): string[] => {
+  try {
+    const parsed: unknown = JSON.parse(json || '[]')
+    return Array.isArray(parsed)
+      ? parsed.filter((value): value is string => typeof value === 'string')
+      : []
+  } catch {
+    return []
+  }
+}
+
+/** 用户只记得名字时自动补 `apitest.` 命名空间；已带前缀的原样返回。 */
+const normalizeSecretId = (value: string): string => {
+  const trimmed = value.trim()
+  return trimmed.startsWith('apitest.') ? trimmed : `apitest.${trimmed}`
+}
+
 /**
  * 只读展示：起停配方的命令。
  *
@@ -202,22 +259,56 @@ const recordOf = (draft: EnvironmentDraft, base: TestEnvironmentRecord | undefin
     apiBaseUrl: api === '' ? null : api,
     viewportWidth,
     viewportHeight,
-    allowPrivateNetwork: draft.allowPrivateNetwork,
+    // 私网授权只由地址推导（界面不再提供手勾）：私网地址必然需要放行，
+    // 否则保存后的环境连自己的探针都跑不通。
+    allowPrivateNetwork: isPrivateDraft(draft),
     headersJson: draft.headersJson,
     secretIdsJson: draft.secretIdsJson,
     extraVarsJson: draft.extraVarsJson,
     secretOriginsJson: draft.secretOriginsJson,
     tlsTrust: draft.tlsTrust,
     approvalMode: draft.approvalMode,
+    secretRefreshJson: draft.secretRefreshJson,
     createdAt: base?.createdAt ?? Date.now(),
     updatedAt: Date.now(),
   }
 }
 
+/**
+ * 既有记录 → 保存载荷（Secret 授权变更用）。
+ * 必须逐字段带回：缺省字段会被 Rust 按旧语义写回（local 档降级、配方清空、白名单重置）。
+ */
+const payloadOf = (
+  record: TestEnvironmentRecord,
+  secretIdsJson: string,
+): SaveTestEnvironmentRecord => ({
+  id: record.id,
+  name: record.name,
+  kind: record.kind,
+  recipeJson: record.recipeJson,
+  ...(record.webBaseUrl === null ? {} : { webBaseUrl: record.webBaseUrl }),
+  ...(record.apiBaseUrl === null ? {} : { apiBaseUrl: record.apiBaseUrl }),
+  ...(record.viewportWidth === null || record.viewportHeight === null
+    ? {}
+    : { viewportWidth: record.viewportWidth, viewportHeight: record.viewportHeight }),
+  allowPrivateNetwork: record.allowPrivateNetwork,
+  headersJson: record.headersJson,
+  secretIdsJson,
+  extraVarsJson: record.extraVarsJson,
+  secretOriginsJson: record.secretOriginsJson,
+  tlsTrust: record.tlsTrust,
+  approvalMode: record.approvalMode,
+  secretRefreshJson: record.secretRefreshJson,
+  updatedAt: Date.now(),
+})
+
 export const TestEnvironmentDialog = ({
   open,
   environments,
   environmentFiles,
+  workspacePath = null,
+  referencedSecretIds,
+  secretUpdateRequest = null,
   selectedId,
   disabled,
   onSelect,
@@ -235,6 +326,7 @@ export const TestEnvironmentDialog = ({
   const [secretId, setSecretId] = useState('')
   const [secretValue, setSecretValue] = useState('')
   const [secretStatus, setSecretStatus] = useState<string | null>(null)
+  const [secretExistence, setSecretExistence] = useState<Record<string, boolean>>({})
   const [importingPath, setImportingPath] = useState<string | null>(null)
   const [recipeCopied, setRecipeCopied] = useState(false)
   const [probing, setProbing] = useState(false)
@@ -252,6 +344,11 @@ export const TestEnvironmentDialog = ({
    * 刚挂上就被立刻收起（选中过环境时必现）。ref 记住这是主动新建，跳过重置。
    */
   const creatingRef = useRef(false)
+  /** Secret 输入/状态只在**切换环境**时清空；同一环境保存后的刷新不能抹掉刚显示的结论。 */
+  const secretEnvIdRef = useRef<string | null>(null)
+  /** 「更新值」把焦点送到这里：用户下一步就是粘贴新值。 */
+  const secretValueRef = useRef<HTMLInputElement>(null)
+  const handledSecretUpdateToken = useRef<number | null>(null)
 
   useEffect(() => {
     if (selected) {
@@ -262,12 +359,49 @@ export const TestEnvironmentDialog = ({
       setEditing(false)
     }
     setError(null)
-    setSecretValue('')
-    setSecretStatus(null)
+    if (secretEnvIdRef.current !== (selected?.id ?? null)) {
+      secretEnvIdRef.current = selected?.id ?? null
+      setSecretId('')
+      setSecretValue('')
+      setSecretStatus(null)
+    }
     setReadiness((current) => (
       selected && current?.id === selected.id ? current : null
     ))
   }, [selected])
+
+  // Secret 值只判定存在性（不回读明文）；同一环境的记录刷新后重新核对。
+  useEffect(() => {
+    if (!open || !selected) {
+      setSecretExistence({})
+      return
+    }
+    let cancelled = false
+    const ids = parseSecretIds(selected.secretIdsJson)
+    void Promise.all(ids.map(async (id) => {
+      try {
+        return [id, await hasApiTestSecret(id)] as const
+      } catch {
+        return [id, false] as const
+      }
+    })).then((entries) => {
+      if (!cancelled) setSecretExistence(Object.fromEntries(entries))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [open, selected])
+
+  // 报告 401 提示带来的更新请求：预填 ID 并把焦点送到值输入（值本身仍由用户写入）。
+  useEffect(() => {
+    if (!open || !selected || secretUpdateRequest === null) return
+    if (handledSecretUpdateToken.current === secretUpdateRequest.token) return
+    handledSecretUpdateToken.current = secretUpdateRequest.token
+    setSecretId(secretUpdateRequest.secretId)
+    setSecretValue('')
+    setSecretStatus(null)
+    secretValueRef.current?.focus()
+  }, [open, selected, secretUpdateRequest])
 
   // 关闭弹窗时中止在途探针：审批队列与 Rust 租约都绑定这一次运行。
   useEffect(() => {
@@ -300,6 +434,13 @@ export const TestEnvironmentDialog = ({
   const target = targetOf(draft)
   const privateAccess = isPrivateDraft(draft)
   const recipeCommands = summarizeRecipeCommands(selected?.recipeJson ?? null)
+  const authorizedSecretIds = selected ? parseSecretIds(selected.secretIdsJson) : []
+  const unauthorizedSecretIds = selected
+    ? referencedSecretIds.filter((id) => !authorizedSecretIds.includes(id))
+    : []
+  const extraVarsText = selected ? summarizeServiceVars(selected.extraVarsJson, '') : ''
+  const secretOriginsText = selected ? summarizeSecretOrigins(selected.secretOriginsJson) : '—'
+  const headersText = selected ? summarizeHeaders(selected.headersJson) : ''
   const currentReadiness = readiness && readiness.id === (selected?.id ?? draft.id) ? readiness.value : null
 
   const startCreate = (): void => {
@@ -356,7 +497,7 @@ export const TestEnvironmentDialog = ({
         ...(api === '' ? {} : { apiBaseUrl: api }),
         ...(viewportWidth !== undefined ? { viewportWidth } : {}),
         ...(viewportHeight !== undefined ? { viewportHeight } : {}),
-        allowPrivateNetwork: draft.allowPrivateNetwork,
+        allowPrivateNetwork: isPrivateDraft(draft),
         headersJson: draft.headersJson,
         secretIdsJson: draft.secretIdsJson,
         extraVarsJson: draft.extraVarsJson,
@@ -457,12 +598,21 @@ export const TestEnvironmentDialog = ({
    * 重复导入同一份档会更新同一条记录（id 复用档里的 id）。
    */
   const importFile = async (entry: EnvironmentFileEntry): Promise<void> => {
-    const fileDraft = entry.draft
-    if (!fileDraft) return
     setSaving(true)
     setError(null)
     setImportingPath(entry.path)
     try {
+      // 导入必须以磁盘上的当前内容为准：扫描快照可能早于用户刚做的修改，直接用它
+      // 会把新字段（如 secretRefresh）静默丢掉。
+      const fresh = workspacePath === null
+        ? null
+        : await readEnvironmentFileEntry(entry.path, workspacePath)
+      const source = fresh ?? entry
+      const fileDraft = source.draft
+      if (!source.valid || fileDraft === null) {
+        setError(source.issues.map((issue) => `${issue.path}: ${issue.message}`).join('\n'))
+        return
+      }
       const saved = await saveTestEnvironmentRecord({
         id: fileDraft.id,
         name: fileDraft.name,
@@ -480,6 +630,7 @@ export const TestEnvironmentDialog = ({
         ...(fileDraft.secretOriginsJson === undefined ? {} : { secretOriginsJson: fileDraft.secretOriginsJson }),
         ...(fileDraft.tlsTrust === undefined ? {} : { tlsTrust: fileDraft.tlsTrust }),
         ...(fileDraft.approvalMode === undefined ? {} : { approvalMode: fileDraft.approvalMode }),
+        secretRefreshJson: fileDraft.secretRefreshJson ?? null,
         updatedAt: Date.now(),
       })
       if (!saved) return
@@ -492,27 +643,34 @@ export const TestEnvironmentDialog = ({
     }
   }
 
-  const nextSecretIds = (id: string, present: boolean): string => {
-    const parsed: unknown = JSON.parse(draft.secretIdsJson)
-    if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === 'string')) {
-      throw new Error(t('testing.environment.secretIdsInvalid'))
+  /**
+   * 只改 Secret 授权：保存整条环境记录后由父级刷新。
+   * Secret 值本身走 Rust secrets 表；授权名单是环境的字段，二者在同一次点击里完成，
+   * 用户不需要再找「保存并验证连接」补一次。
+   */
+  const persistSecretIds = async (ids: readonly string[]): Promise<boolean> => {
+    if (!selected) return false
+    const secretIdsJson = JSON.stringify([...new Set(ids)].sort())
+    const saved = await saveTestEnvironmentRecord(payloadOf(selected, secretIdsJson))
+    if (!saved) {
+      setError(t('testing.environment.secretSaveCanceled'))
+      return false
     }
-    const ids = new Set(parsed)
-    if (present) ids.add(id)
-    else ids.delete(id)
-    return JSON.stringify([...ids].sort())
+    setDraft((current) => ({ ...current, secretIdsJson }))
+    await onChanged(selected.id)
+    return true
   }
 
-  const saveSecret = async (): Promise<void> => {
+  const authorizeSecret = async (rawId: string): Promise<void> => {
     setSaving(true)
     setError(null)
     try {
-      const id = secretId.trim()
-      const secretIdsJson = nextSecretIds(id, true)
-      await saveApiTestSecret(id, secretValue)
-      setDraft((current) => ({ ...current, secretIdsJson }))
-      setSecretValue('')
-      setSecretStatus(t('testing.environment.secretSaved'))
+      const id = normalizeSecretId(rawId)
+      if (id.length <= 'apitest.'.length) throw new Error(t('testing.environment.secretIdRequired'))
+      const ids = selected ? parseSecretIds(selected.secretIdsJson) : []
+      if (await persistSecretIds([...ids, id])) {
+        setSecretStatus(t('testing.environment.secretAuthorized'))
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('testing.environment.secretError'))
     } finally {
@@ -520,13 +678,34 @@ export const TestEnvironmentDialog = ({
     }
   }
 
-  const checkSecret = async (): Promise<void> => {
+  /**
+   * 行内「更新值」：把该行 ID 带回表单并清掉上次输入。
+   * 写入仍走 `saveAndAuthorizeSecret` 的 upsert，不新增命令、不回读明文。
+   */
+  const beginSecretUpdate = (id: string): void => {
+    setSecretId(id)
+    setSecretValue('')
+    setSecretStatus(null)
+    secretValueRef.current?.focus()
+  }
+
+  /** 保存值（可留空=只授权已有 Secret）并加入当前环境，一次点击完成两件事。 */
+  const saveAndAuthorizeSecret = async (): Promise<void> => {
     setSaving(true)
     setError(null)
     try {
-      setSecretStatus(await hasApiTestSecret(secretId.trim())
-        ? t('testing.environment.secretExists')
-        : t('testing.environment.secretMissing'))
+      const id = normalizeSecretId(secretId)
+      if (id.length <= 'apitest.'.length) throw new Error(t('testing.environment.secretIdRequired'))
+      if (secretValue !== '') await saveApiTestSecret(id, secretValue)
+      const ids = selected ? parseSecretIds(selected.secretIdsJson) : []
+      if (await persistSecretIds([...ids, id])) {
+        if (secretValue !== '') {
+          setSecretExistence((current) => ({ ...current, [id]: true }))
+        }
+        setSecretId('')
+        setSecretValue('')
+        setSecretStatus(t('testing.environment.secretSaved'))
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('testing.environment.secretError'))
     } finally {
@@ -534,18 +713,61 @@ export const TestEnvironmentDialog = ({
     }
   }
 
-  const removeSecret = async (): Promise<void> => {
+  const revokeSecret = async (id: string): Promise<void> => {
     setSaving(true)
     setError(null)
     try {
-      const id = secretId.trim()
-      const secretIdsJson = nextSecretIds(id, false)
+      const ids = selected ? parseSecretIds(selected.secretIdsJson) : []
+      if (await persistSecretIds(ids.filter((candidate) => candidate !== id))) {
+        setSecretStatus(t('testing.environment.secretRevoked'))
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t('testing.environment.secretError'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const deleteSecretValue = async (id: string): Promise<void> => {
+    setSaving(true)
+    setError(null)
+    try {
       await deleteApiTestSecret(id)
-      setDraft((current) => ({ ...current, secretIdsJson }))
-      setSecretValue('')
+      setSecretExistence((current) => ({ ...current, [id]: false }))
       setSecretStatus(t('testing.environment.secretDeleted'))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('testing.environment.secretError'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  /**
+   * 手动刷新：执行环境声明的登录配方，Rust 直接把捕获的 Cookie 写进 secrets 表。
+   * WebView 只拿到被写入的 ID；这里刷新「已保存 / 未保存」状态。
+   */
+  const refreshSecrets = async (): Promise<void> => {
+    if (!selected) return
+    setSaving(true)
+    setError(null)
+    try {
+      const result = await refreshTestEnvironmentSecrets(selected.id)
+      if (result === null) {
+        setError(t('testing.environment.secretRefreshCanceled'))
+        return
+      }
+      const ids = parseSecretIds(selected.secretIdsJson)
+      const entries = await Promise.all(ids.map(async (id) => {
+        try {
+          return [id, await hasApiTestSecret(id)] as const
+        } catch {
+          return [id, false] as const
+        }
+      }))
+      setSecretExistence(Object.fromEntries(entries))
+      setSecretStatus(t('testing.environment.secretRefreshed', { count: result.secretIds.length }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t('testing.environment.secretRefreshError'))
     } finally {
       setSaving(false)
     }
@@ -650,7 +872,7 @@ export const TestEnvironmentDialog = ({
                 ) : (
                   <p className="testing-env-dialog__derived">
                     <span className="testing-env-dialog__badge">{typeLabel}</span>
-                    {privateAccess && <span className="testing-env-dialog__badge">{t('testing.environment.derivedPrivate')}</span>}
+                    {draft.allowPrivateNetwork && privateAccess && <span className="testing-env-dialog__badge">{t('testing.environment.derivedPrivate')}</span>}
                     <span className="testing-env-dialog__badge">{t('testing.environment.derivedProbe')}</span>
                   </p>
                 )}
@@ -754,98 +976,201 @@ export const TestEnvironmentDialog = ({
 
                 <details className="testing-env-dialog__advanced">
                   <summary>{t('testing.environment.advanced')}</summary>
-                  <div className="testing-env-dialog__fields">
-                    <label className="testing-view__field">
-                      <span>{t('testing.environment.viewportWidth')}</span>
-                      <input type="number" min={320} step={1} value={draft.viewportWidth} disabled={!editing || busy} onChange={(event) => update('viewportWidth', event.target.value)} />
-                    </label>
-                    <label className="testing-view__field">
-                      <span>{t('testing.environment.viewportHeight')}</span>
-                      <input type="number" min={240} step={1} value={draft.viewportHeight} disabled={!editing || busy} onChange={(event) => update('viewportHeight', event.target.value)} />
-                    </label>
-                    <label className="testing-env-dialog__checkbox">
-                      <input
-                        type="checkbox"
-                        checked={draft.allowPrivateNetwork}
-                        disabled={!editing || busy}
-                        onChange={(event) => setDraft((current) => ({ ...current, allowPrivateNetwork: event.target.checked }))}
-                      />
-                      <span>{t('testing.environment.allowPrivateNetwork')}</span>
-                    </label>
-                    <label className="testing-view__field">
-                      <span>{t('testing.environment.tlsTrust')}</span>
-                      <select value={draft.tlsTrust} disabled={!editing || busy} onChange={(event) => setDraft((current) => ({ ...current, tlsTrust: event.target.value as EnvironmentTlsTrust }))}>
-                        <option value="system">{t('testing.environment.tlsTrustSystem')}</option>
-                        <option value="insecure">{t('testing.environment.tlsTrustInsecure')}</option>
-                      </select>
-                    </label>
-                    <label className="testing-view__field">
-                      <span>{t('testing.environment.approvalMode')}</span>
-                      <select value={draft.approvalMode} disabled={!editing || busy} onChange={(event) => setDraft((current) => ({ ...current, approvalMode: event.target.value as EnvironmentApprovalMode }))}>
-                        <option value="per_step">{t('testing.environment.approvalPerStep')}</option>
-                        {/* 受信只对远程档开放（本地档的步骤可能改本机代码）——宿主侧也会拒。 */}
-                        <option value="trusted" disabled={selected?.kind === 'local'}>
-                          {t('testing.environment.approvalTrusted')}
-                        </option>
-                      </select>
-                    </label>
-                  </div>
-                  <p className="testing-env-dialog__hint">
-                    {draft.tlsTrust === 'insecure' ? t('testing.environment.tlsTrustHint') : ''}
-                    {draft.approvalMode === 'trusted' ? t('testing.environment.approvalTrustedHint') : ''}
-                  </p>
-                  <div className="testing-env-dialog__json">
-                    <label className="testing-view__field">
-                      <span>{t('testing.environment.headersJson')}</span>
-                      <textarea className="testing-view__mono" rows={3} spellCheck={false} value={draft.headersJson} disabled={!editing || busy} onChange={(event) => update('headersJson', event.target.value)} />
-                    </label>
-                    <label className="testing-view__field">
-                      <span>{t('testing.environment.secretIdsJson')}</span>
-                      <textarea className="testing-view__mono" rows={3} spellCheck={false} value={draft.secretIdsJson} disabled={!editing || busy} onChange={(event) => update('secretIdsJson', event.target.value)} />
-                    </label>
-                  </div>
-                  {editing && (
-                    <div className="testing-env-dialog__secret">
-                      <label className="testing-view__field">
-                        <span>{t('testing.environment.secretId')}</span>
-                        <input value={secretId} disabled={busy} onChange={(event) => setSecretId(event.target.value)} placeholder="apitest.example-token" />
-                      </label>
-                      <label className="testing-view__field">
-                        <span>{t('testing.environment.secretValue')}</span>
-                        <input type="password" autoComplete="new-password" value={secretValue} disabled={busy} onChange={(event) => setSecretValue(event.target.value)} />
-                      </label>
-                      <button type="button" className="testing-view__secondary" disabled={busy || !secretId.trim()} onClick={() => void checkSecret()}>
-                        {t('testing.environment.secretCheck')}
-                      </button>
-                      <button type="button" className="testing-view__secondary" disabled={busy || !secretId.trim() || !secretValue} onClick={() => void saveSecret()}>
-                        {t('testing.environment.secretSave')}
-                      </button>
-                      <button type="button" className="testing-view__danger" disabled={busy || !secretId.trim()} onClick={() => void removeSecret()}>
-                        {t('testing.environment.secretDelete')}
-                      </button>
-                      {secretStatus && <span role="status">{secretStatus}</span>}
-                    </div>
-                  )}
-                  {selected && !editing && (
-                    <div className="testing-env-dialog__facts">
-                      <p>{t('testing.environment.mode')}{t(selected.kind === 'local' ? 'testing.environment.kindLocal' : 'testing.environment.kindRemote')}</p>
-                      <p>{t('testing.environment.extraVars')}</p>
-                      <code>{summarizeServiceVars(selected.extraVarsJson, t('testing.environment.extraVarsEmpty'))}</code>
-                      <p>{t('testing.environment.secretOrigins')}</p>
-                      <code>{summarizeSecretOrigins(selected.secretOriginsJson)}</code>
-                    </div>
-                  )}
-                  {selected && recipeCommands.length > 0 && (
-                    <div className="testing-env-dialog__facts">
-                      <p>{t('testing.environment.recipeCommands')}</p>
-                      <code className="testing-env-dialog__recipe">{recipeCommands.join('\n')}</code>
-                      <p>{t('testing.environment.recipeCommandsHint')}</p>
-                      <button type="button" className="testing-view__secondary" disabled={busy} onClick={() => void copyRecipeCommands(recipeCommands)}>
-                        {t('testing.environment.recipeCopy')}
-                      </button>
-                      {recipeCopied && <span role="status">{t('testing.environment.recipeCopied')}</span>}
-                    </div>
-                  )}
+
+                  {editing ? (
+                    <>
+                      <div className="testing-env-dialog__fields">
+                        <label className="testing-view__field">
+                          <span>{t('testing.environment.viewportWidth')}</span>
+                          <input type="number" min={320} step={1} value={draft.viewportWidth} disabled={busy} onChange={(event) => update('viewportWidth', event.target.value)} />
+                        </label>
+                        <label className="testing-view__field">
+                          <span>{t('testing.environment.viewportHeight')}</span>
+                          <input type="number" min={240} step={1} value={draft.viewportHeight} disabled={busy} onChange={(event) => update('viewportHeight', event.target.value)} />
+                        </label>
+                        <label className="testing-view__field">
+                          <span>{t('testing.environment.tlsTrust')}</span>
+                          <select value={draft.tlsTrust} disabled={busy} onChange={(event) => setDraft((current) => ({ ...current, tlsTrust: event.target.value as EnvironmentTlsTrust }))}>
+                            <option value="system">{t('testing.environment.tlsTrustSystem')}</option>
+                            <option value="insecure">{t('testing.environment.tlsTrustInsecure')}</option>
+                          </select>
+                        </label>
+                        <label className="testing-view__field">
+                          <span>{t('testing.environment.approvalMode')}</span>
+                          <select value={draft.approvalMode} disabled={busy} onChange={(event) => setDraft((current) => ({ ...current, approvalMode: event.target.value as EnvironmentApprovalMode }))}>
+                            <option value="per_step">{t('testing.environment.approvalPerStep')}</option>
+                            {/* 受信只对远程档开放（本地档的步骤可能改本机代码）——宿主侧也会拒。 */}
+                            <option value="trusted" disabled={selected?.kind === 'local'}>
+                              {t('testing.environment.approvalTrusted')}
+                            </option>
+                          </select>
+                        </label>
+                      </div>
+                      <p className="testing-env-dialog__hint">
+                        {draft.tlsTrust === 'insecure' ? t('testing.environment.tlsTrustHint') : ''}
+                        {draft.approvalMode === 'trusted' ? t('testing.environment.approvalTrustedHint') : ''}
+                      </p>
+                      <details className="testing-env-dialog__headers">
+                        <summary>{t('testing.environment.headersSection', { count: headerCount(draft.headersJson) })}</summary>
+                        <label className="testing-view__field">
+                          <span>{t('testing.environment.headersJson')}</span>
+                          <textarea className="testing-view__mono" rows={3} spellCheck={false} value={draft.headersJson} disabled={busy} onChange={(event) => update('headersJson', event.target.value)} />
+                        </label>
+                      </details>
+                      <p className="testing-env-dialog__hint">{t('testing.environment.secretsAfterSave')}</p>
+                    </>
+                  ) : selected ? (
+                    <>
+                      <div className="testing-env-dialog__summary">
+                        {selected.viewportWidth !== null && selected.viewportHeight !== null && (
+                          <div>
+                            <span>{t('testing.environment.viewport')}</span>
+                            <strong>{`${selected.viewportWidth}×${selected.viewportHeight}`}</strong>
+                          </div>
+                        )}
+                        <div>
+                          <span>{t('testing.environment.tlsTrust')}</span>
+                          <strong>{t(selected.tlsTrust === 'insecure' ? 'testing.environment.tlsTrustInsecure' : 'testing.environment.tlsTrustSystem')}</strong>
+                        </div>
+                        <div>
+                          <span>{t('testing.environment.approvalMode')}</span>
+                          <strong>{t(selected.approvalMode === 'trusted' ? 'testing.environment.approvalTrusted' : 'testing.environment.approvalPerStep')}</strong>
+                        </div>
+                        {headersText !== '' && (
+                          <div>
+                            <span>{t('testing.environment.headersJson')}</span>
+                            <strong className="testing-view__mono">{headersText}</strong>
+                          </div>
+                        )}
+                      </div>
+
+                      <section
+                        className="testing-env-dialog__secrets"
+                        aria-label={t('testing.environment.secretsTitle', { count: authorizedSecretIds.length })}
+                      >
+                        <p className="testing-env-dialog__section-title">
+                          {t('testing.environment.secretsTitle', { count: authorizedSecretIds.length })}
+                        </p>
+                        {selected.secretRefreshJson !== null ? (
+                          <div className="testing-env-dialog__secret-refresh">
+                            <span>{t('testing.environment.secretRefreshConfigured')}</span>
+                            <button type="button" className="testing-view__secondary" disabled={busy} onClick={() => void refreshSecrets()}>
+                              {t('testing.environment.secretRefresh')}
+                            </button>
+                          </div>
+                        ) : (
+                          <p className="testing-env-dialog__hint">{t('testing.environment.secretRefreshMissing')}</p>
+                        )}
+                        {authorizedSecretIds.length === 0 ? (
+                          <p className="testing-env-dialog__hint">{t('testing.environment.secretsEmpty')}</p>
+                        ) : (
+                          <ul className="testing-env-dialog__secret-list">
+                            {authorizedSecretIds.map((id) => {
+                              const exists = secretExistence[id]
+                              return (
+                                <li key={id}>
+                                  <code>{id}</code>
+                                  <span className={`testing-env-dialog__secret-state${exists === true ? ' is-ok' : exists === false ? ' is-missing' : ''}`}>
+                                    {t(exists === undefined
+                                      ? 'testing.environment.secretStateChecking'
+                                      : exists
+                                        ? 'testing.environment.secretStateSaved'
+                                        : 'testing.environment.secretStateMissing')}
+                                  </span>
+                                  <button type="button" className="testing-view__secondary" disabled={busy} onClick={() => beginSecretUpdate(id)}>
+                                    {t('testing.environment.secretUpdate')}
+                                  </button>
+                                  <button type="button" className="testing-view__secondary" disabled={busy} onClick={() => void revokeSecret(id)}>
+                                    {t('testing.environment.secretRevoke')}
+                                  </button>
+                                  <button type="button" className="testing-view__danger" disabled={busy} onClick={() => void deleteSecretValue(id)}>
+                                    {t('testing.environment.secretDeleteValue')}
+                                  </button>
+                                </li>
+                              )
+                            })}
+                          </ul>
+                        )}
+                        {unauthorizedSecretIds.length > 0 && (
+                          <div className="testing-env-dialog__secret-suggest">
+                            <span>{t('testing.environment.secretSuggested')}</span>
+                            {unauthorizedSecretIds.map((id) => (
+                              <button
+                                key={id}
+                                type="button"
+                                className="testing-view__chip"
+                                disabled={busy}
+                                onClick={() => void authorizeSecret(id)}
+                              >
+                                {id}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        <div className="testing-env-dialog__secret-add">
+                          <label className="testing-view__field">
+                            <span>{t('testing.environment.secretId')}</span>
+                            <input
+                              value={secretId}
+                              disabled={busy}
+                              placeholder={t('testing.environment.secretIdPlaceholder')}
+                              onChange={(event) => setSecretId(event.target.value)}
+                            />
+                          </label>
+                          <label className="testing-view__field">
+                            <span>{t('testing.environment.secretValue')}</span>
+                            <input
+                              ref={secretValueRef}
+                              type="password"
+                              autoComplete="new-password"
+                              value={secretValue}
+                              disabled={busy}
+                              onChange={(event) => setSecretValue(event.target.value)}
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="testing-view__primary"
+                            disabled={busy || secretId.trim() === ''}
+                            onClick={() => void saveAndAuthorizeSecret()}
+                          >
+                            {t('testing.environment.secretSaveAndAuthorize')}
+                          </button>
+                        </div>
+                        <p className="testing-env-dialog__hint">{t('testing.environment.secretValueHint')}</p>
+                        {secretStatus && <span role="status" className="testing-env-dialog__secret-status">{secretStatus}</span>}
+                      </section>
+
+                      {(extraVarsText !== '' || secretOriginsText !== '—') && (
+                        <div className="testing-env-dialog__facts">
+                          {extraVarsText !== '' && (
+                            <>
+                              <p>{t('testing.environment.extraVars')}</p>
+                              <code>{extraVarsText}</code>
+                            </>
+                          )}
+                          {secretOriginsText !== '—' && (
+                            <>
+                              <p>{t('testing.environment.secretOrigins')}</p>
+                              <code>{secretOriginsText}</code>
+                            </>
+                          )}
+                        </div>
+                      )}
+
+                      {recipeCommands.length > 0 && (
+                        <div className="testing-env-dialog__facts">
+                          <p>{t('testing.environment.recipeCommands')}</p>
+                          <code className="testing-env-dialog__recipe">{recipeCommands.join('\n')}</code>
+                          <p>{t('testing.environment.recipeCommandsHint')}</p>
+                          <button type="button" className="testing-view__secondary" disabled={busy} onClick={() => void copyRecipeCommands(recipeCommands)}>
+                            {t('testing.environment.recipeCopy')}
+                          </button>
+                          {recipeCopied && <span role="status">{t('testing.environment.recipeCopied')}</span>}
+                        </div>
+                      )}
+                    </>
+                  ) : null}
                 </details>
 
               </>

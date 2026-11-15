@@ -41,6 +41,36 @@ const invalid = (path: string, issues: readonly EnvironmentFileIssue[]): Environ
 })
 
 /**
+ * 重新读取并解析单个环境档。导入路径用它而不是扫描快照：扫描发生在页面装载时，
+ * 用户改完档再导入时快照可能已经过期（典型表现是环境记录拿到了旧 Secret 名单、
+ * 新字段却被静默丢掉）。
+ */
+export const readEnvironmentFileEntry = async (
+  path: string,
+  workspacePath: string,
+): Promise<EnvironmentFileEntry> => {
+  try {
+    const read = await readWorkspaceText(path, 0, 1_000, workspacePath)
+    if (read.truncated) {
+      return invalid(path, [{ path: '$', message: '文件超过环境档读取上限' }])
+    }
+    const parsed = parseEnvironmentFile(read.content)
+    if (!parsed.ok) return invalid(path, parsed.issues)
+    return {
+      path,
+      valid: true,
+      fileId: parsed.file.id,
+      name: parsed.file.name,
+      mode: parsed.file.mode,
+      issues: [],
+      draft: environmentRecordDraftFromFile(parsed.file),
+    }
+  } catch {
+    return invalid(path, [{ path: '$', message: '读取文件失败' }])
+  }
+}
+
+/**
  * 扫描并解析。同一 `id` 被两个档声明时**两个都判无效**：导入会把它们写进同一条环境记录，
  * 静默覆盖比报错更难查。
  */
@@ -70,27 +100,9 @@ export const scanEnvironmentFiles = async (
     throw error
   }
 
-  const entries = await Promise.all(paths.map(async (path): Promise<EnvironmentFileEntry> => {
-    try {
-      const read = await readWorkspaceText(path, 0, 1_000, workspacePath)
-      if (read.truncated) {
-        return invalid(path, [{ path: '$', message: '文件超过环境档读取上限' }])
-      }
-      const parsed = parseEnvironmentFile(read.content)
-      if (!parsed.ok) return invalid(path, parsed.issues)
-      return {
-        path,
-        valid: true,
-        fileId: parsed.file.id,
-        name: parsed.file.name,
-        mode: parsed.file.mode,
-        issues: [],
-        draft: environmentRecordDraftFromFile(parsed.file),
-      }
-    } catch {
-      return invalid(path, [{ path: '$', message: '读取文件失败' }])
-    }
-  }))
+  const entries = await Promise.all(
+    paths.map((path) => readEnvironmentFileEntry(path, workspacePath)),
+  )
 
   return entries.map((entry) => {
     if (entry.fileId === null) return entry

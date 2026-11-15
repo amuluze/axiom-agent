@@ -292,6 +292,20 @@ describe('runTestPlan', () => {
     expect(report.status).toBe('error')
     expect(report.cases[0]?.steps[0]?.message).toBe('驱动返回的变量提取结果与测试计划不一致')
   })
+
+  it('carries the API status code into the step report and status changes', async () => {
+    const { ui, api } = drivers(passing, async () => ({
+      verdict: 'failed' as const,
+      message: 'API 断言失败：status',
+      statusCode: 401,
+    }))
+    const changes: StepStatusChange[] = []
+    const report = await runWith({ ui, api }, changes)
+    const failed = report.cases.flatMap((testCase) => testCase.steps).find((step) => step.stepId === 'create')
+    expect(failed?.status).toBe('failed')
+    expect(failed?.statusCode).toBe(401)
+    expect(changes.find((change) => change.stepId === 'create' && change.status === 'failed')?.statusCode).toBe(401)
+  })
 })
 
 /** hook 步骤一律走 API driver：判定来源单一，同时让执行顺序可直接断言。 */

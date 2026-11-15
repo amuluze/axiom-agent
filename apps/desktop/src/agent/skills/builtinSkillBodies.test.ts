@@ -38,8 +38,8 @@ const assertSkeletonOrder = (
 }
 
 describe('builtinSkillBodies', () => {
-  it('包含 8 个内置 Skill，name 合法且无重复', () => {
-    expect(BUILTIN_SKILL_BODIES).toHaveLength(8)
+  it('包含 9 个内置 Skill，name 合法且无重复', () => {
+    expect(BUILTIN_SKILL_BODIES).toHaveLength(9)
     const names = BUILTIN_SKILL_BODIES.map((skill) => skill.name)
     expect(new Set(names).size).toBe(names.length)
     for (const name of names) {
@@ -122,6 +122,26 @@ describe('builtinSkillBodies', () => {
     expect(en).toContain('single visual protagonist')
     expect(en).toContain('audience and primary job')
     expect(en).toContain('Patterns define structure, not visuals')
+  })
+
+  it('design-intent 是 DESIGN.md 的唯一作者契约，design 只消费并指向它（双语）', () => {
+    const zhIntent = findBuiltinSkillBody('design-intent')!['zh-CN'].body
+    const enIntent = findBuiltinSkillBody('design-intent')!.en.body
+    expect(zhIntent).toContain('DESIGN.md')
+    expect(zhIntent).toContain('受众与核心任务')
+    expect(zhIntent).toContain('唯一视觉主角')
+    expect(zhIntent).toContain('16 KiB')
+    expect(zhIntent).toContain('不写 .ax')
+    expect(enIntent).toContain('DESIGN.md')
+    expect(enIntent).toContain('audience and primary job')
+    expect(enIntent).toContain('single visual protagonist')
+    expect(enIntent).toContain('16 KiB')
+    expect(enIntent).toContain('never writes .ax')
+
+    const zhDesign = findBuiltinSkillBody('design')!['zh-CN'].body
+    const enDesign = findBuiltinSkillBody('design')!.en.body
+    expect(zhDesign).toContain('design-intent')
+    expect(enDesign).toContain('design-intent')
   })
 
   it('证据降级与阶段边界在退出条件中闭合（双语）', () => {

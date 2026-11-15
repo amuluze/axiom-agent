@@ -321,7 +321,7 @@
     },
     {
       "id": "tool:api_request",
-      "version": "7",
+      "version": "8",
       "sourceFiles": [
         "src/agent/tools/apiRequestTool.ts",
         "src/agent/environment/AgentEnvironment.ts",
@@ -333,7 +333,7 @@
         "src-tauri/src/api_test_policy.rs",
         "src-tauri/src/test_repository.rs"
       ],
-      "semanticDigest": "d64426dfd515aeb95a53e3452c0d28efb2dd3fa22f4277006ca4d5fba53060a7"
+      "semanticDigest": "9b2b13e6b60d335f994291142a3792232c898f5b8cd91ba95de6ce01cd246a98"
     },
     {
       "id": "tool:apply_changes",
@@ -575,7 +575,7 @@
         "src/agent/skills/parseSkillFile.ts",
         "src/agent/skills/builtinSkillBodies.ts"
       ],
-      "semanticDigest": "d9c83c973c8a85f27266fb03c580f122eb5080c43782c05bd1bf0f81bb05cc00"
+      "semanticDigest": "03cf62c93bbd81bc72e7f1ffa3b1c57d0cb2cdad92bea6caad9b4ca49dd6e074"
     },
     {
       "id": "tool:ls",

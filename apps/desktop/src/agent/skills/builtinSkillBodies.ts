@@ -2,9 +2,9 @@ import type { ResolvedLanguage } from '@/i18n/locale'
 import type { BuiltinSkillOverrideEntry } from '@/config/builtinPromptOverrides'
 
 /**
- * 内置 SDD 工作流 Skill 正文（单一数据源）。
+ * 内置 Skill 正文（单一数据源）。
  *
- * 这 6 个 Skill 是**有正文的可加载指令**，经 load_skill 双通道返回
+ * 这些内置 Skill 是**有正文的可加载指令**，经 load_skill 双通道返回
  * （项目 .axiom/skills/ 同名覆盖优先，否则回退到本模块）。
  *
  * 正文按语言双变体维护：zh-CN 是基线语言（历史契约字段，SPV/SDD 段只派生 name
@@ -70,7 +70,9 @@ import type { BuiltinSkillOverrideEntry } from '@/config/builtinPromptOverrides'
  * （缺失时提案后回写，已存在只补缺）。补丁定位：完整度清单只管覆盖度下限，pattern 只管结构底座。 */
 /** v46：DESIGN.md 正文改由系统提示词以 `<project_design>` 注入（16 KiB 上限），design skill 的
  * 「必须先 read」口径改为「以注入块为准，仅在未注入或被截断时 read」，避免每轮重复整读。 */
-export const BUILTIN_SKILL_BODIES_VERSION = 46
+/** v47：新增 design-intent 内置 Skill——项目根 DESIGN.md 的创建/更新独立成作者契约；
+ * design skill 保留五区摘要兜底并指向它，消费其正文产出 .ax。 */
+export const BUILTIN_SKILL_BODIES_VERSION = 47
 
 export type BuiltinPromptLanguage = ResolvedLanguage
 
@@ -531,14 +533,14 @@ The explanation system is aligned with the implementation, verification evidence
   {
     name: 'design',
     'zh-CN': {
-      description: '按设计即代码原则产出/修改工作区内的设计稿（.ax 唯一原生格式，.pen 仅为迁移输入）：从零生成按 Path A 走完整度清单收口，编辑模式按 Path B 定位子树、用 token 引用迭代样式，写后自查 JSON，让设计画布实时渲染投影。',
+      description: '按设计即代码原则产出/修改工作区内的设计稿（.ax 唯一原生格式，.pen 仅为迁移输入）：从零生成按 Path A 走完整度清单收口，编辑模式按 Path B 定位子树、用 token 引用迭代样式，写后自查 JSON，让设计画布实时渲染投影。项目根 DESIGN.md 的创建/更新见 design-intent，本 Skill 只消费其正文。',
       body: `# 目的
 
-把用户对界面/交互设计的意图收敛为对工作区内 .ax 设计稿的定点修改。设计画布是 .ax 文件的实时渲染投影（设计即代码）：模型改的是文件本身，画布自动跟随刷新，不是模型在画布上作画。
+把用户对界面/交互设计的意图收敛为对工作区内 .ax 设计稿的定点修改。设计画布是 .ax 文件的实时渲染投影（设计即代码）：模型改的是文件本身，画布自动跟随刷新，不是模型在画布上作画。项目根 DESIGN.md 的创建与更新由 design-intent 负责；本 Skill 消费其正文作为基调输入。
 
 # 何时进入
 
-用户要求新增/修改设计稿页面或组件、按画布效果迭代样式或布局；或设计画布显示解析诊断（ref 缺失、未知节点）需要修复设计稿。
+用户要求新增/修改设计稿页面或组件、按画布效果迭代样式或布局；或设计画布显示解析诊断（ref 缺失、未知节点）需要修复设计稿。只创建或更新项目根 DESIGN.md、不涉及 .ax 时用 design-intent。
 
 # 前置输入
 
@@ -546,7 +548,7 @@ The explanation system is aligned with the implementation, verification evidence
 - 用户对设计的意图描述；有设计画布时可要求用户描述看到的实际渲染。
 - 以下 Axiom 内部资料**只作背景参考，读不到属正常**（新项目工作区通常没有）：docs/design-canvas.md（渲染子集与语义说明）、apps/desktop/src/agent/design/__fixtures__/patterns/（pattern 库）、apps/desktop/src/styles/tokens.css（Axiom 自身 token）。读不到就按本 Skill 的规则继续，不要停步，也不要在稿件或生成代码里引用这些路径。
 - 工作区没有 .axiom/design/components.json 时，design_query 返回的组件清单来自 **Axiom 宿主注册表**（sourcePath 指向 Axiom 自身源码，不是本项目实现）：不得把其中的组件写进本项目稿件与 codegen；此时节点只用 symbol / part / 原语，重复结构抽 symbol 表达。
-- 项目根 DESIGN.md（若存在）：品牌/视觉/交互基调与设计意图，**正文已注入 # 项目上下文 段的 <project_design> 块**（16 KiB 上限，超限带截断注记；索引条目仍以 role=design 出现）。直接以注入块为准，不要为获取基调重复整读；块被截断或需核对完整版本时再 read。缺失且用户未给基调时，按下述最小结构自拟，并随设计计划一起交用户确认——确认后可新建（写工具逐次审批）：① 受众与核心任务；② 视觉语言（4–6 个命名色含明暗、字体栈与 type scale、圆角/阴影层级、间距节奏）；③ 语气与文案规则；④ 本项目禁用的默认套路；⑤ 唯一视觉主角。已存在时只补缺、不覆盖用户既有内容；确认的新基调回写它。
+- 项目根 DESIGN.md（若存在）：品牌/视觉/交互基调与设计意图，**正文已注入 # 项目上下文 段的 <project_design> 块**（16 KiB 上限，超限带截断注记；索引条目仍以 role=design 出现）。直接以注入块为准，不要为获取基调重复整读；块被截断或需核对完整版本时再 read。缺失且用户未给基调时，按下述五区摘要自拟，并随设计计划一起交用户确认——完整创建/更新流程按 design-intent 执行（本 Skill 只保留摘要级兜底）；确认后可新建（写工具逐次审批）：① 受众与核心任务；② 视觉语言（4–6 个命名色含明暗、字体栈与 type scale、圆角/阴影层级、间距节奏）；③ 语气与文案规则；④ 本项目禁用的默认套路；⑤ 唯一视觉主角。已存在时只补缺、不覆盖用户既有内容；确认的新基调回写它，回写细则按 design-intent。
 
 # 唯一设计稿格式与迁移
 
@@ -643,7 +645,7 @@ KPI 行（不少于 3 张卡，每卡 label + value + delta/对比）→ 主图�
 
 ## Path A：从零生成
 
-1. **读基调、出设计计划、登记 tokens**：先核对 <project_design> 注入块（即根 DESIGN.md 正文；未注入但文件存在、或块被截断时再 read；无则按「前置输入」的最小结构自拟，随计划交用户确认）；再按「审美定位」产出设计计划——4–6 个命名色、字体角色与 type scale、版式概念、一条差异原则，并对照 brief/DESIGN.md 自审、说明差异或改了什么；最后按三档登记 token——① DESIGN.md / 用户 brief 的视觉意图；② 项目已有的 token 来源（styles/tokens.css、theme 文件等，存在则复用）；③ 都没有时才用 Axiom 基线兜底。计划确认后才写页面；自加 token 需在稿顶层 tokens 登记并写明暗两档。
+1. **读基调、出设计计划、登记 tokens**：先核对 <project_design> 注入块（即根 DESIGN.md 正文；未注入但文件存在、或块被截断时再 read；无则按「前置输入」的五区摘要自拟，随计划交用户确认；需要完整创建或修订时按 design-intent 执行）；再按「审美定位」产出设计计划——4–6 个命名色、字体角色与 type scale、版式概念、一条差异原则，并对照 brief/DESIGN.md 自审、说明差异或改了什么；最后按三档登记 token——① DESIGN.md / 用户 brief 的视觉意图；② 项目已有的 token 来源（styles/tokens.css、theme 文件等，存在则复用）；③ 都没有时才用 Axiom 基线兜底。计划确认后才写页面；自加 token 需在稿顶层 tokens 登记并写明暗两档。
 2. **产出页面清单**：每页给出 name、用途、对应的 the Completeness rubric 条目（管理后台 / 落地页 / 仪表盘三类之一，或自定）、关键分区列表、差异点（本页相对同类产品不同的那一件事，取自设计计划的差异原则）。先把清单交给用户确认或直接继续。
 3. **逐页写 + 单页自查**：每写完一页（component / symbol / part / 原语 四级节点；重复结构先抽 symbol 再逐实例传参），立即 design_query mode=render 视觉自查——通过再下一页。**完整稿 300-800KB 单次写入必撞模型单轮预算，本路径明确豁免「合并为一次 apply_changes」的编辑路径限制**：一页一页写是预期行为，不是碎片化。
 4. **整稿收口**：全部页面写完后 design_query mode=scan 全稿扫描（结构 + 离屏渲染 + 空白检测），按 fail/warn 修复重扫至全绿。
@@ -671,7 +673,7 @@ Path B 的视觉取舍同样受「审美定位」约束：新增或改样式不�
 # 产出物
 
 - 更新后的 .ax 设计稿。
-- Path A 时先产出设计计划（基调来源 + 4–6 个命名色 + 字体角色与 type scale + 版式概念 + 差异原则）；经用户确认后回写项目根 DESIGN.md（无则按最小结构新建；写工具逐次审批）。
+- Path A 时先产出设计计划（基调来源 + 4–6 个命名色 + 字体角色与 type scale + 版式概念 + 差异原则）；经用户确认后回写项目根 DESIGN.md（无则按最小结构新建；写工具逐次审批；创建/更新细则按 design-intent）。
 - 发生方案探索时：变体 .ax 路径、真实渲染截图或 compare 结果，以及采用/放弃理由；未发生时不产出。
 - 必要时同步 .docs/ 实现现状说明（如新增了影响实现的组件）。
 
@@ -680,14 +682,14 @@ Path B 的视觉取舍同样受「审美定位」约束：新增或改样式不�
 画布渲染结果与用户意图一致、无新增解析诊断；全部修改已合入一次批量补丁并写后自查通过；整稿级改动已通过 mode=scan 扫描（无 fail 页）。**发生方案探索时**：2–3 个变体均有真实渲染证据与选择结论，原稿未被覆盖；无法取得的视觉证据标为未验证，不得宣称验收通过。**Path A 从零生成的额外要求**：与 the Completeness rubric 对账——通用最低线达标、所属产品类型页面集/分区集无缺失、关键交互页含空/加载/错误三态；设计计划已对照 brief/DESIGN.md 自审并说明差异原则或改了什么，基调来源已声明，反默认清单逐项有理由或已替换，全稿只有一个视觉主角。`,
     },
     en: {
-      description: 'Author or edit workspace design documents (.ax is the only native format; .pen is migration input only) following design-as-code: from-zero generation follows Path A with the completeness rubric as the exit bar; edit mode follows Path B (locate subtrees, iterate styles via token references, self-check JSON after writes); the design canvas renders the live projection.',
+      description: 'Author or edit workspace design documents (.ax is the only native format; .pen is migration input only) following design-as-code: from-zero generation follows Path A with the completeness rubric as the exit bar; edit mode follows Path B (locate subtrees, iterate styles via token references, self-check JSON after writes); the design canvas renders the live projection. Root DESIGN.md authoring is handled by design-intent; this skill only consumes it.',
       body: `# Purpose
 
-Converge the user's UI/interaction design intent into targeted modifications of .ax design documents inside the workspace. The design canvas is a live render projection of the .ax file (design as code): the model edits the file itself and the canvas refreshes automatically — the model does not draw on the canvas.
+Converge the user's UI/interaction design intent into targeted modifications of .ax design documents inside the workspace. The design canvas is a live render projection of the .ax file (design as code): the model edits the file itself and the canvas refreshes automatically — the model does not draw on the canvas. Creating or updating the root DESIGN.md is handled by design-intent; this skill consumes that body as its baseline.
 
 # When to enter
 
-The user asks to add or modify design pages/components, iterate styles or layout based on canvas appearance; or the design canvas shows parse diagnostics (missing refs, unknown nodes) that need fixing in the document.
+The user asks to add or modify design pages/components, iterate styles or layout based on canvas appearance; or the design canvas shows parse diagnostics (missing refs, unknown nodes) that need fixing in the document. When the task is only creating or updating the root DESIGN.md without touching .ax, use design-intent.
 
 # Required inputs
 
@@ -695,7 +697,7 @@ The user asks to add or modify design pages/components, iterate styles or layout
 - The user's design intent; when the canvas is open, ask the user to describe what is actually rendered.
 - The following Axiom-internal references are **background only — absence is normal** (new project workspaces usually lack them): docs/design-canvas.md, apps/desktop/src/agent/design/__fixtures__/patterns/ (pattern library), apps/desktop/src/styles/tokens.css. When unreadable, continue under this skill's rules; never cite those paths in the document or generated code.
 - When the workspace has no .axiom/design/components.json, the component inventory returned by design_query comes from the **Axiom host registry** (sourcePath points at Axiom's own sources, not this project): do not use those components in this project's documents or codegen; use symbol / part / primitives only, and extract a symbol for repeated structures.
-- Root DESIGN.md when present: brand/visual/interaction baseline and design intent. **Its body is already injected as the <project_design> block under the # 项目上下文 section** (16 KiB cap with an explicit truncation note; the index entry remains under role=design). Use the injected block directly — do not re-read the whole file just to obtain the baseline; read it only when the block was truncated or you need to verify the full version. When it is absent and the user gave no baseline, draft the minimal structure below, present it with the design plan, and create the file after confirmation (write tools are approval-gated): ① audience and primary job; ② visual language (4–6 named colors with light/dark, type stack and scale, radius/shadow hierarchy, spacing rhythm); ③ tone and copy rules; ④ default patterns banned in this project; ⑤ the single visual protagonist. When it exists, fill gaps only — never overwrite the user's content; write confirmed baseline changes back to it.
+- Root DESIGN.md when present: brand/visual/interaction baseline and design intent. **Its body is already injected as the <project_design> block under the # 项目上下文 section** (16 KiB cap with an explicit truncation note; the index entry remains under role=design). Use the injected block directly — do not re-read the whole file just to obtain the baseline; read it only when the block was truncated or you need to verify the full version. When it is absent and the user gave no baseline, draft the five-area summary below, present it with the design plan, and create the file after confirmation (write tools are approval-gated); follow design-intent for the full create/update workflow (this skill keeps only a summary fallback): ① audience and primary job; ② visual language (4–6 named colors with light/dark, type stack and scale, radius/shadow hierarchy, spacing rhythm); ③ tone and copy rules; ④ default patterns banned in this project; ⑤ the single visual protagonist. When it exists, fill gaps only — never overwrite the user's content; write confirmed baseline changes back to it under design-intent's rules.
 
 # Sole design format and migration
 
@@ -792,7 +794,7 @@ Design exploration: when the direction is open, build 2–3 independent .ax vari
 
 ## Path A: from-zero generation
 
-1. **Read the baseline, produce a design plan, register tokens**: start from the injected <project_design> block (the root DESIGN.md body; read the file only when it was not injected, was truncated, or you need the full version — if it is missing, draft the minimal structure from Required inputs and confirm it with the user together with the plan); then produce the plan required by Aesthetic direction — 4–6 named colors, typeface roles and scale, layout concept, one differentiation principle — review it against the brief/DESIGN.md, and state the difference or what changed; finally register tokens in three tiers — ① the DESIGN.md / user-brief intent; ② existing project token sources (styles/tokens.css, theme files) when present; ③ the Axiom baseline only as the last resort. Write pages only after the plan is confirmed; newly added tokens must be declared in the doc's top-level tokens with light + dark values.
+1. **Read the baseline, produce a design plan, register tokens**: start from the injected <project_design> block (the root DESIGN.md body; read the file only when it was not injected, was truncated, or you need the full version — if it is missing, draft the five-area summary from Required inputs and confirm it with the user together with the plan; follow design-intent for full creation or revision); then produce the plan required by Aesthetic direction — 4–6 named colors, typeface roles and scale, layout concept, one differentiation principle — review it against the brief/DESIGN.md, and state the difference or what changed; finally register tokens in three tiers — ① the DESIGN.md / user-brief intent; ② existing project token sources (styles/tokens.css, theme files) when present; ③ the Axiom baseline only as the last resort. Write pages only after the plan is confirmed; newly added tokens must be declared in the doc's top-level tokens with light + dark values.
 2. **Draft a page inventory**: for each page provide name, purpose, the matching the Completeness rubric entry (admin console / landing / dashboard, or your own), key sections, and a differentiation point (the one thing this page does differently, taken from the plan's differentiation principle). Either confirm the inventory with the user first or proceed directly.
 3. **Write per page + single-page self-check**: each page uses the four-tier node set (component / symbol / part / primitive; extract a symbol for repeated structures and pass params per instance); after each page, run design_query mode=render for a visual self-check — only move on once it passes. **A complete draft is 300-800 KB; a single write would blow the model's per-turn output budget, so this path explicitly opts out of the "merge into one apply_changes" rule from the edit path**: writing one page at a time is the expected behavior, not fragmentation.
 4. **Document-level close**: once all pages are written, run design_query mode=scan across the whole doc (structure + offscreen render + blank detection); fix fail/warn issues and re-scan until green.
@@ -820,7 +822,7 @@ Path B is bound by Aesthetic direction too: new or changed styles must not intro
 # Outputs
 
 - The updated .ax design document.
-- On Path A, a design plan first (baseline source + 4–6 named colors + typeface roles and scale + layout concept + differentiation principle); after user confirmation, write it back to the root DESIGN.md (create it with the minimal structure when absent; write tools are approval-gated).
+- On Path A, a design plan first (baseline source + 4–6 named colors + typeface roles and scale + layout concept + differentiation principle); after user confirmation, write it back to the root DESIGN.md (create it with the minimal structure when absent; write tools are approval-gated; authoring/update rules follow design-intent).
 - When design exploration occurred: variant .ax paths, real rendered screenshots or compare results, and the reasons for adoption/rejection; none otherwise.
 - .docs/ implementation notes when needed (e.g. a new component that affects implementation).
 
@@ -828,7 +830,83 @@ Path B is bound by Aesthetic direction too: new or changed styles must not intro
 
 The canvas render matches the user's intent with no new parse diagnostics; all modifications were merged into a single batch patch and passed the post-write self-check; document-wide changes passed the mode=scan scan (no failed pages). **When design exploration occurred**: all 2–3 variants have real rendered evidence and a selection conclusion, and the original document was not overwritten; unavailable visual evidence is marked unverified and cannot be claimed as accepted. **Additional requirement for Path A from-zero generation**: reconcile against the the Completeness rubric — universal floor met, the chosen product-type page/section set has no missing entries, key interactive pages cover empty/loading/error; the design plan was reviewed against the brief/DESIGN.md with the differentiation principle or changes stated, the baseline source is declared, every anti-default hit is justified or replaced, and the document has one visual protagonist.`,
     },
-  },  {
+  },
+  {
+    name: 'design-intent',
+    'zh-CN': {
+      description: '创建或更新工作区根 DESIGN.md（项目设计意图：受众与核心任务、视觉语言、语气文案、禁用套路、唯一视觉主角）；以仓库与 token 证据为依据，缺失补全、已有只补缺，不产出 .ax 或代码。',
+      body: `# 目的
+
+把项目根 DESIGN.md 收敛成可长期复用的设计意图基线：受众与核心任务、视觉语言、语气与文案、本项目禁用的默认套路、唯一视觉主角。DESIGN.md 以 role=design 进入文档索引，并以 16 KiB 上限注入系统提示词的 <project_design> 块，是 design Skill 产出 .ax 设计稿时的最高审美约束。
+
+# 何时进入
+
+用户明确要求创建或更新工作区根 DESIGN.md；项目缺少 DESIGN.md 而设计工作需要一个可确认的基调；既有 DESIGN.md 与实际产品意图或 token 来源冲突，需要核对并修订。只创建或更新设计稿 .ax 时用 design；只写领域约束或任务规格时用 domain / brainstorm。本 Skill 不写 .ax、不改代码。
+
+# 前置输入
+
+- 当前 DESIGN.md 正文：若已注入 <project_design>，直接以注入块为准；未注入、被截断或需要逐行修订时再 read 工作区根 DESIGN.md。
+- <available_docs> 中 role=design / domain 的条目，以及 .docs/ 的实现现状与 README 等产品说明（核实受众、主任务、行业语汇、已有品牌约束）。
+- 项目实际 token 来源（如 styles/tokens.css、theme 文件）：已实现的项目以它作为色彩/间距/圆角/字号的数值权威；DESIGN.md 写意图与引用，冲突时先报告，不静默改代码或改文档。
+- 用户 brief 与现有设计稿/界面：只用于提取基调，不复制 Axiom 自己的 DESIGN.md 作为模板。
+
+# 执行步骤
+
+1. 判断创建还是更新：文件缺失走创建；已存在先盘点已有的受众、视觉语言、文案规则、禁用套路与视觉主角，找出缺口，不整篇重写。
+2. 先取证再提问：用只读工具核实 token、现有界面/设计稿与产品说明；只问仓库回答不了的问题（目标受众、主任务、品牌取舍、真正常用的禁用方向），每次一个问题并给推荐与权衡。
+3. 起草五个覆盖区（不是五个强制标题，保留用户既有组织方式）：① 受众与核心任务；② 视觉语言（4–6 个命名色含明暗、字体栈与 type scale、圆角/阴影层级、间距节奏，能引用项目 token 就引用）；③ 语气与文案规则（含真实感示例与禁用占位文案）；④ 本项目禁用的默认套路与反例；⑤ 唯一视觉主角与克制边界。
+4. 自审：换一个同行业相似产品，这份基调会不会原样成立？会，说明它是默认而不是选择，改掉并说明改了什么。明暗主题必须成对；新组合颜色先按 WCAG AA 自查；不引入品牌外彩色或装饰性渐变。
+5. 给用户变更计划或 diff：新建时列出五区要点与待确认项；更新时按节列出新增/修改/保持不变，冲突项单独标出。用户确认后才写。
+6. 写入工作区根 DESIGN.md：新建用 write，更新用 edit 定向修改；写工具逐次审批，不绕过。文件保持 ≤16 KiB 注入预算（建议 ≤12 KiB），不加 status: done，不把页面清单、组件实例或实现细节搬进来。
+7. 写完回读核对：标题与五区完整、没有占位文案、没有未决冲突被写成事实；下一次项目上下文刷新后确认 <project_design> 能读到新正文。
+
+# 产出物
+
+- 工作区根 DESIGN.md（新建或更新）。
+- 变更摘要：新增/修订的章节、保留的既有内容、待用户决定的冲突与未覆盖项。
+
+# 退出条件
+
+DESIGN.md 覆盖五区且每区有可执行的具体内容（不是标题占位）；受众/主任务/行业语汇明确；视觉语言含明暗与 token 来源；文案规则与禁用套路可判定；只有一个视觉主角；没有 lorem、示例文本或按钮式占位；既有用户内容未被无关覆盖；文件在 16 KiB 注入预算内；写操作均经宿主审批。审美方向由用户确认，本 Skill 只对结构、证据与可追溯性负责，不宣称视觉验收通过。`,
+    },
+    en: {
+      description: 'Create or update the workspace root DESIGN.md (project design intent: audience and primary job, visual language, voice and copy, banned defaults, single visual protagonist). Ground it in repository and token evidence, fill gaps in existing documents rather than rewriting them, and never produce .ax documents or code.',
+      body: `# Purpose
+
+Turn the root DESIGN.md into a durable design-intent baseline: audience and primary job, visual language, voice and copy, default patterns banned in this project, and the single visual protagonist. DESIGN.md appears in the docs index with role=design and is injected as the <project_design> block under a 16 KiB cap; it is the highest aesthetic authority when the design Skill produces .ax documents.
+
+# When to enter
+
+The user explicitly asks to create or update the workspace root DESIGN.md; the project lacks one and design work needs a confirmable baseline; an existing DESIGN.md conflicts with actual product intent or token sources and must be reconciled. Use design when the task is only creating or editing .ax documents; use domain / brainstorm when the task is only domain constraints or task specs. This skill never writes .ax documents or code.
+
+# Required inputs
+
+- The current DESIGN.md body: when <project_design> is injected, use that block directly; read the root DESIGN.md only when the block is missing, truncated, or line-level revision is required.
+- role=design and role=domain entries in <available_docs>, plus implementation notes under .docs/ and product docs such as README (to verify audience, primary job, industry vocabulary, and existing brand constraints).
+- The project's actual token source (for example styles/tokens.css or theme files): for implemented projects it is the numeric authority for colors, spacing, radii, and type sizes. DESIGN.md describes intent and references tokens; report conflicts first and never silently change code or the document.
+- The user brief and existing design documents or UI: use them only to extract the baseline; never copy Axiom's own DESIGN.md as a template.
+
+# Execution steps
+
+1. Decide between create and update: create when the file is missing; when it exists, inventory the existing audience, visual language, copy rules, banned defaults, and visual protagonist to find gaps — never rewrite the whole document.
+2. Gather evidence before asking: verify tokens, current UI/design documents, and product docs with read-only tools; ask only what the repository cannot answer (target audience, primary job, brand trade-offs, genuinely used banned directions), one question at a time with a recommendation and trade-offs.
+3. Draft five coverage areas (not five mandatory headings; preserve the user's existing organization): ① audience and primary job; ② visual language (4–6 named colors with light/dark, type stack and scale, radius/shadow hierarchy, spacing rhythm; reference project tokens where possible); ③ tone and copy rules (including realistic examples and banned placeholder copy); ④ default patterns banned in this project with counterexamples; ⑤ the single visual protagonist and restraint boundary.
+4. Self-review: would this baseline hold unchanged for a similar product in the same industry? If so it is a default rather than a choice — revise it and say what changed. Light and dark themes must come in pairs; new color combinations must pass WCAG AA; do not introduce off-brand colors or decorative gradients.
+5. Present a change plan or diff before writing: for creation list the five-area highlights and open questions; for updates list added/changed/unchanged sections and call out conflicts separately. Write only after user confirmation.
+6. Write the workspace root DESIGN.md: use write for creation and targeted edit for updates; write tools remain approval-gated per call and must not be bypassed. Keep the file within the 16 KiB injection budget (prefer ≤12 KiB), do not add status: done, and do not move page inventories, component instances, or implementation details into it.
+7. Read it back after writing: confirm the title and five areas are complete, no placeholder copy remains, and unresolved conflicts were not recorded as facts; on the next project-context refresh confirm <project_design> exposes the new body.
+
+# Outputs
+
+- The workspace root DESIGN.md (created or updated).
+- A change summary: added/revised sections, preserved existing content, conflicts awaiting user decision, and uncovered items.
+
+# Exit criteria
+
+DESIGN.md covers all five areas with concrete, actionable content (not heading placeholders); audience, primary job, and industry vocabulary are explicit; the visual language includes light/dark and a token source; copy rules and banned defaults are decidable; exactly one visual protagonist; no lorem, sample text, or button-style placeholders; unrelated user content was not overwritten; the file fits the 16 KiB injection budget; every write passed host approval. The user confirms the aesthetic direction; this skill only owns structure, evidence, and traceability and never claims visual acceptance.`,
+    },
+  },
+  {
     name: 'test-authoring',
     'zh-CN': {
       description: '为工作区内指定功能编写可重放的自动化测试用例（tests/*.testspec.json 的测试点与用例）：先定测试点再写用例，用真实环境与真实接口构造数据，写 typed 断言与清理步骤。',

@@ -20,6 +20,7 @@ describe('testEnvironmentRuntimeConfig', () => {
       secretOriginsJson: '[]',
       tlsTrust: 'system',
       approvalMode: 'per_step',
+      secretRefreshJson: null,
       createdAt: 1,
       updatedAt: 2,
     })).toEqual({
@@ -78,6 +79,7 @@ describe('testEnvironmentRuntimeConfig v2（自定义服务变量）', () => {
     secretOriginsJson: '[]',
     tlsTrust: 'system',
     approvalMode: 'per_step',
+    secretRefreshJson: null,
     createdAt: 1,
     updatedAt: 2,
   }

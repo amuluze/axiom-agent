@@ -27,6 +27,8 @@ export interface TestEnvironmentRecord {
   tlsTrust: EnvironmentTlsTrust
   /** v23：审批档（`per_step` / `trusted`）。 */
   approvalMode: EnvironmentApprovalMode
+  /** v24：登录配方 JSON（v4 环境档）；没有配方时为 null。 */
+  secretRefreshJson: string | null
   createdAt: number
   updatedAt: number
 }
@@ -50,6 +52,8 @@ export interface SaveTestEnvironmentRecord {
   /** v23：缺省保持旧记录语义（系统信任 + 逐次审批）。 */
   tlsTrust?: EnvironmentTlsTrust
   approvalMode?: EnvironmentApprovalMode
+  /** v24：登录配方 JSON；缺省/null 表示该环境没有自动刷新。 */
+  secretRefreshJson?: string | null
   updatedAt: number
 }
 
@@ -77,3 +81,16 @@ export const listTestEnvironmentRecords = async (): Promise<TestEnvironmentRecor
 
 export const deleteTestEnvironmentRecord = (environmentId: string): Promise<boolean> =>
   invoke<boolean>('delete_test_environment_record', { environmentId })
+
+export interface SecretRefreshResult {
+  /** 本次写入 `secrets` 表的 Secret ID（值不回传）。 */
+  secretIds: readonly string[]
+  updatedAt: number
+}
+
+/**
+ * 执行环境声明的登录配方并把捕获到的 Cookie 写入宿主 Secret 表。
+ * 返回 `null` 表示用户在原生确认框里取消；WebView 永远拿不到 Secret 值。
+ */
+export const refreshTestEnvironmentSecrets = (environmentId: string): Promise<SecretRefreshResult | null> =>
+  invoke<SecretRefreshResult | null>('refresh_test_environment_secrets', { environmentId })

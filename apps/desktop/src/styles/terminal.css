@@ -146,7 +146,7 @@
   padding: var(--space-4) var(--space-6);
   background: var(--bg-canvas);
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 1rem;
   line-height: 1.6;
   text-align: center;
 }

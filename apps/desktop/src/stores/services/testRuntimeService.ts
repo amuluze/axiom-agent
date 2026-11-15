@@ -159,6 +159,7 @@ export const startUiTestRun = async (input: StartUiTestRunInput): Promise<TestRu
             ...(change.message !== undefined ? { message: change.message } : {}),
             ...(step && 'expect' in step ? { expected: step.expect } : {}),
             ...(step?.action === 'ui.screenshot' && step.name !== undefined ? { name: step.name } : {}),
+            ...(typeof change.statusCode === 'number' ? { statusCode: change.statusCode } : {}),
             ...(change.variables !== undefined ? { variables: change.variables } : {}),
             actual: change.message ?? { verdict: change.status },
           })

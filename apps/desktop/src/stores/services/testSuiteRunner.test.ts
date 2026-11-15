@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   browserTargetOrigin: vi.fn((url: string) => new URL(url).origin),
   ensureEnvironmentReady: vi.fn(),
   startUiTestRun: vi.fn(),
+  refreshTestEnvironmentSecrets: vi.fn(),
 }))
 
 vi.mock('./testRunPreparation', () => ({
@@ -14,6 +15,9 @@ vi.mock('./testRunPreparation', () => ({
 }))
 vi.mock('./testEnvironmentReadiness', () => ({ ensureEnvironmentReady: mocks.ensureEnvironmentReady }))
 vi.mock('./testRuntimeService', () => ({ startUiTestRun: mocks.startUiTestRun }))
+vi.mock('@/platform/testEnvironments', () => ({
+  refreshTestEnvironmentSecrets: mocks.refreshTestEnvironmentSecrets,
+}))
 
 import { runTestSuite, type TestSuiteRunInput } from './testSuiteRunner'
 import type { TestEnvironmentRecord } from '@/platform/testEnvironments'
@@ -58,6 +62,7 @@ const environment: TestEnvironmentRecord = {
   secretOriginsJson: '[]',
   tlsTrust: 'system',
   approvalMode: 'per_step',
+  secretRefreshJson: null,
   createdAt: 1,
   updatedAt: 2,
 }
@@ -147,6 +152,44 @@ describe('runTestSuite', () => {
       expect(input.environmentId).toBe('env-1')
       expect(input.environmentFacts).toMatchObject({ environmentId: 'env-1', preparedBy: 'probe' })
     }
+  })
+
+  it('refreshes a declared login recipe once before the batch and stops when canceled', async () => {
+    const apiSpecs = [
+      { path: 'tests/a.testspec.json', uiStepCount: 0, apiStepCount: 1 },
+      { path: 'tests/b.testspec.json', uiStepCount: 0, apiStepCount: 1 },
+    ]
+    const withRecipe = {
+      ...environment,
+      approvalMode: 'trusted' as const,
+      secretRefreshJson: JSON.stringify({
+        steps: [{ method: 'GET', path: '/auth/csrf', capture: [{ secretId: 'apitest.s', cookie: 'sid' }] }],
+      }),
+    }
+    mocks.refreshTestEnvironmentSecrets.mockResolvedValue({ secretIds: ['apitest.s'], updatedAt: 1 })
+    const result = await run({ environment: withRecipe, specs: apiSpecs })
+
+    expect(result.blockedReason).toBeNull()
+    // 整批只刷新一次，且在就绪探针/任何 run 之前。
+    expect(mocks.refreshTestEnvironmentSecrets).toHaveBeenCalledTimes(1)
+    expect(mocks.refreshTestEnvironmentSecrets).toHaveBeenCalledWith('env-1')
+    expect(mocks.startUiTestRun).toHaveBeenCalledTimes(2)
+
+    mocks.refreshTestEnvironmentSecrets.mockReset().mockResolvedValue(null)
+    const canceled = await run({ environment: withRecipe, specs: apiSpecs })
+    expect(canceled.blockedReason).toContain('Secret 刷新被取消')
+    expect(canceled.entries).toEqual([])
+    expect(mocks.startUiTestRun).toHaveBeenCalledTimes(2)
+
+    // per_step 环境的探针会消耗运行点击的手势配额，自动刷新没有第二份额度：
+    // 不尝试（面板的手动「刷新 Secret」仍可用），也不因此阻断运行。
+    mocks.refreshTestEnvironmentSecrets.mockReset().mockResolvedValue({ secretIds: [], updatedAt: 1 })
+    const perStep = await run({
+      environment: { ...withRecipe, approvalMode: 'per_step' },
+      specs: apiSpecs,
+    })
+    expect(perStep.blockedReason).toBeNull()
+    expect(mocks.refreshTestEnvironmentSecrets).not.toHaveBeenCalled()
   })
 
   it('skips the API probe for a UI-only suite when the environment has no API base', async () => {

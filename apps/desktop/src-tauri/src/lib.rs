@@ -32,6 +32,7 @@ mod request_id;
 mod runtime_fault;
 mod runtime_manifest;
 mod sandbox;
+mod secret_refresh;
 mod secrets;
 mod session_authorization;
 mod session_mutations;
@@ -103,6 +104,7 @@ use provider_profiles::{
 };
 #[cfg(feature = "e2e")]
 use runtime_fault::{e2e_automation_log, e2e_runtime_fault_checkpoint};
+use secret_refresh::refresh_test_environment_secrets;
 #[cfg(feature = "e2e")]
 use secrets::seed_e2e_legacy_provider_secret;
 use secrets::{
@@ -371,6 +373,7 @@ pub fn run() -> Result<(), String> {
                 save_test_environment_record,
                 list_test_environment_records,
                 delete_test_environment_record,
+                refresh_test_environment_secrets,
                 transition_test_run_record,
                 transition_test_case_record,
                 transition_test_step_record,

@@ -57,19 +57,22 @@ export const RUNTIME_TOOL_COMPATIBILITY_MIGRATIONS: ToolNameMigration[] = [
   // api_request → v5：非 macOS 平台的「在场门」从静默放行改为宿主原生确认对话框
   // （macOS 行为不变：仍是手势 + 内容确认两层）；schema 不变，旧入参/恢复路径继续兼容。
   // 历史条目一律指向当前 live 版本——迁移表拒绝中间目标版本（单跳迁移）。
-  { previousName: 'api_request', previousVersion: '4', currentName: 'api_request', currentVersion: '7' },
+  { previousName: 'api_request', previousVersion: '4', currentName: 'api_request', currentVersion: '8' },
   // api_request → v4：带 Secret 的步骤签发租约前叠加原生内容确认，取消映射为 rejected；
   // schema 不变，旧入参/恢复路径继续兼容。
-  { previousName: 'api_request', previousVersion: '3', currentName: 'api_request', currentVersion: '7' },
-  { previousName: 'api_request', previousVersion: '2', currentName: 'api_request', currentVersion: '7' },
-  { previousName: 'api_request', previousVersion: '1', currentName: 'api_request', currentVersion: '7' },
+  { previousName: 'api_request', previousVersion: '3', currentName: 'api_request', currentVersion: '8' },
+  { previousName: 'api_request', previousVersion: '2', currentName: 'api_request', currentVersion: '8' },
+  { previousName: 'api_request', previousVersion: '1', currentName: 'api_request', currentVersion: '8' },
   // api_request → v6：接受可选 virtualHost（Host 头覆盖，v4 测试协议的多服务拓扑能力）。
   // 旧版本调用不携带该字段，语义不变；只是 schema 扩展，因此仍是单跳迁移。
-  { previousName: 'api_request', previousVersion: '5', currentName: 'api_request', currentVersion: '7' },
+  { previousName: 'api_request', previousVersion: '5', currentName: 'api_request', currentVersion: '8' },
   // api_request → v7：受信测试环境（`approvalMode = trusted`）内的步骤免逐次原生确认，
   // 且环境可声明「不校验证书」（私有 CA）。schema 不变，旧入参/恢复路径继续兼容；
   // 受信只作用于远程档环境声明的 origin 集合，作用域外照旧逐次审批。
-  { previousName: 'api_request', previousVersion: '6', currentName: 'api_request', currentVersion: '7' },
+  { previousName: 'api_request', previousVersion: '6', currentName: 'api_request', currentVersion: '8' },
+  // api_request → v8：私网授权改为随环境地址推导，被拒时的引导文案不再指向上已移除的
+  // 「允许访问回环/私网 API」勾选。输入/输出 schema 与审批语义不变。
+  { previousName: 'api_request', previousVersion: '7', currentName: 'api_request', currentVersion: '8' },
   // write → v12（父目录语义：缺失父目录在授权根内自动创建，见 task `write-parent-directory`；契约加宽，旧入参不变）。
   { previousName: 'write', previousVersion: '11', currentName: 'write', currentVersion: '12' },
   { previousName: 'write', previousVersion: '10', currentName: 'write', currentVersion: '12' },

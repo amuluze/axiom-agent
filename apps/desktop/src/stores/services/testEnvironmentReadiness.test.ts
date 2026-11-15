@@ -23,6 +23,7 @@ const environment = (overrides: Partial<TestEnvironmentRecord> = {}): TestEnviro
   secretOriginsJson: '[]',
   tlsTrust: 'system',
   approvalMode: 'per_step',
+  secretRefreshJson: null,
   createdAt: 1,
   updatedAt: 2,
   ...overrides,

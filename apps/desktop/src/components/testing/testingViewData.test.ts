@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CompiledTestPlan } from '@/agent/testing/spec/compileTestPlan'
+import type { TestStepSpec } from '@/agent/testing/spec/types'
 import type { TestRunDetailRecord } from '@/platform/testRuns'
 import type { TestSpecIndexEntry } from '@/stores/services/testSpecIndex'
 import type { TestSuiteRunEntry } from '@/stores/services/testSuiteRunner'
@@ -10,8 +11,10 @@ import {
   computeSuiteSummary,
   detailValue,
   durationLabel,
+  expiredSecretIdsFor,
   findReportFailure,
   stepDetails,
+  stepSecretIds,
 } from './testingViewData'
 
 const spec = (overrides: Partial<TestSpecIndexEntry> = {}): TestSpecIndexEntry => ({
@@ -27,6 +30,7 @@ const spec = (overrides: Partial<TestSpecIndexEntry> = {}): TestSpecIndexEntry =
   testPointIds: ['tp-1'],
   caseIds: ['case-1'],
   caseVerifies: [['tp-1']],
+  secretIds: [],
   ...overrides,
 })
 
@@ -143,6 +147,27 @@ describe('testingViewData', () => {
       scannedSpec: spec(),
     })).toMatchObject([{ testPointId: 'tp-1', state: 'failed' }])
     expect(buildReportTestPoints({ report: report(), frozenPlan: null, scannedSpec: spec() })).toBeUndefined()
+  })
+
+  it('extracts Secret references and only flags them for 401 failures', () => {
+    const step: TestStepSpec = {
+      id: 'login',
+      action: 'api.request',
+      method: 'GET',
+      url: '/session',
+      headers: {
+        Cookie: { secretId: 'apitest.beacon-session' },
+        Authorization: { secretId: 'apitest.beacon-session' },
+        'X-Trace': 'plain',
+      },
+    }
+    expect(stepSecretIds(step)).toEqual(['apitest.beacon-session'])
+    expect(stepSecretIds(undefined)).toEqual([])
+    expect(expiredSecretIdsFor(401, step)).toEqual(['apitest.beacon-session'])
+    // 非 401 的失败与其他状态不指向会话 Secret；UI 步骤没有 headers 也不会误报。
+    expect(expiredSecretIdsFor(500, step)).toEqual([])
+    expect(expiredSecretIdsFor(null, step)).toEqual([])
+    expect(expiredSecretIdsFor(401, { id: 'open', action: 'ui.navigate', url: '/' })).toEqual([])
   })
 
   it('parses step details and formats durations', () => {

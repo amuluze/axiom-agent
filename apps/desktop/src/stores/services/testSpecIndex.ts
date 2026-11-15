@@ -3,6 +3,7 @@ import { isLegacyMissingDirectory } from './testScanErrors'
 import { parseTestSpec, type TestSpecIssue } from '@/agent/testing/spec/parseTestSpec'
 import { TEST_SPEC_SUFFIX, isTestSpecPath } from '@/agent/testing/spec/specAudit'
 import { isApiTestStep } from '@/agent/testing/spec/stepActions'
+import type { TestStepSpec } from '@/agent/testing/spec/types'
 import { findWorkspaceFiles, readWorkspaceText } from '@/platform/workspace'
 
 export interface TestSpecIndexEntry {
@@ -21,6 +22,8 @@ export interface TestSpecIndexEntry {
   caseIds: readonly string[]
   /** 有效文件：每个用例声明的测试点，与 `caseIds` 同序（用例→测试点的追溯）。 */
   caseVerifies: readonly (readonly string[])[]
+  /** 有效文件：请求头里引用的 `apitest.*` Secret ID（去重排序）。 */
+  secretIds: readonly string[]
 }
 
 /** 无效文件没有用例/测试点面：三处失败分支共用同一形状。 */
@@ -37,7 +40,27 @@ const invalidEntry = (path: string, issues: readonly TestSpecIssue[]): TestSpecI
   testPointIds: [],
   caseIds: [],
   caseVerifies: [],
+  secretIds: [],
 })
+
+/**
+ * 用例文件里引用到的 Secret ID（只来自请求头；解析器拒绝其它位置的 `secretId`）。
+ * 环境弹窗用它在「未授权」列表里提示，避免用户去翻文件找 ID——授权仍是显式动作，
+ * 测试文件不能自行把 Secret 加进环境白名单。
+ */
+const collectSecretIds = (steps: readonly TestStepSpec[]): string[] => {
+  const ids = new Set<string>()
+  for (const step of steps) {
+    if (!('headers' in step) || step.headers === undefined) continue
+    for (const value of Object.values(step.headers)) {
+      if (typeof value === 'object' && value !== null && 'secretId' in value) {
+        const id = value.secretId
+        if (typeof id === 'string') ids.add(id)
+      }
+    }
+  }
+  return [...ids].sort()
+}
 
 // 目录缺失不是错误：宿主 `find_workspace_files` 对工作区内不存在的相对路径返回结构化空结果
 // （`find_impl_with_policy` 的短路分支），且命令错误已改为 `{code,message}` 信封。
@@ -114,6 +137,7 @@ const readTestSpecEntry = async (
       testPointIds: (parsed.spec.testPoints ?? []).map((point) => point.id),
       caseIds: parsed.spec.cases.map((testCase) => testCase.id),
       caseVerifies: parsed.spec.cases.map((testCase) => testCase.verifies ?? []),
+      secretIds: collectSecretIds(steps),
     }
   } catch {
     return invalidEntry(path, [{ path: '$', message: '读取文件失败' }])

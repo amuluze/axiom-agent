@@ -254,7 +254,7 @@ describe('api_request 执行', () => {
     expect(result.content).toContain('not_evaluated（未评估：没有可用于判定的响应）')
     expect(result.content).toContain('blocked（被宿主网络策略拒绝，请求未发出）')
     expect(result.content).toContain('不可绕过')
-    expect(result.content).toContain('允许访问回环/私网 API')
+    expect(result.content).toContain('私网授权按地址自动推导')
     expect(result.content).toContain('不要改用 IP 直连、代理或其它地址绕过')
     // 未评估就不该出现证据引用（没有可引用的响应证据）。
     expect(result.content).not.toContain('证据：宿主脱敏后')

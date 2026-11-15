@@ -1,4 +1,5 @@
 import type { CompiledTestPlan } from '@/agent/testing/spec/compileTestPlan'
+import type { TestStepSpec } from '@/agent/testing/spec/types'
 import { readArtifactText } from '@/platform/artifacts'
 import type {
   TestCaseDetailRecord,
@@ -60,7 +61,28 @@ export interface StepDetails {
   expected?: unknown
   actual?: unknown
   name?: string
+  /** API 步骤的响应状态码（Rust 权威结果）；旧报告没有该字段。 */
+  statusCode?: number | null
 }
+
+/** 步骤请求头里引用的 Secret ID（去重排序）。Secret 只能经请求头引用。 */
+export const stepSecretIds = (step: TestStepSpec | undefined): readonly string[] => {
+  if (!step || !('headers' in step) || !step.headers) return []
+  const ids = new Set<string>()
+  for (const value of Object.values(step.headers)) {
+    if (typeof value === 'object' && value !== null && 'secretId' in value) ids.add(value.secretId)
+  }
+  return [...ids].sort()
+}
+
+/**
+ * 401 失败且步骤带 Secret 时，会话型 Secret 很可能已过期（上游 session TTL）。
+ * 只给出「更新」入口，不自动改写任何 Secret——值的铸造属于项目自己的登录流程。
+ */
+export const expiredSecretIdsFor = (
+  statusCode: number | null | undefined,
+  step: TestStepSpec | undefined,
+): readonly string[] => (statusCode === 401 ? stepSecretIds(step) : [])
 
 export const stepDetails = (detailsJson: string | null): StepDetails => {
   if (!detailsJson) return {}

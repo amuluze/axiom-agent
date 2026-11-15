@@ -369,6 +369,8 @@ export type TestEnvironment = {
 	tlsTrust: string,
 	/**  v23：审批档（`per_step` / `trusted`）。 */
 	approvalMode: string,
+	/**  v24：登录配方 JSON（环境档 v4）；没有配方时为 `None`。 */
+	secretRefreshJson: string | null,
 	createdAt: number,
 	updatedAt: number,
 };

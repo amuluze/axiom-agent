@@ -153,6 +153,9 @@ pub(crate) struct SaveTestEnvironment {
     /// v23：审批档（`per_step` / `trusted`）。缺省 `per_step`。
     #[serde(default)]
     pub(crate) approval_mode: Option<String>,
+    /// v24：登录配方（环境档 v4）；`None` 表示没有自动刷新。
+    #[serde(default)]
+    pub(crate) secret_refresh_json: Option<String>,
     pub(crate) updated_at: i64,
 }
 
@@ -180,6 +183,8 @@ pub(crate) struct TestEnvironment {
     pub(crate) tls_trust: String,
     /// v23：审批档（`per_step` / `trusted`）。
     pub(crate) approval_mode: String,
+    /// v24：登录配方 JSON（环境档 v4）；没有配方时为 `None`。
+    pub(crate) secret_refresh_json: Option<String>,
     #[specta(type = specta_typescript::Number)]
     pub(crate) created_at: i64,
     #[specta(type = specta_typescript::Number)]
@@ -472,6 +477,22 @@ fn validate_test_environment(environment: &SaveTestEnvironment) -> Result<(), St
     if !valid_secret_ids || environment.secret_ids_json.len() > 16 * 1024 {
         return Err("测试环境 Secret 引用必须是大小受限的字符串数组".to_string());
     }
+    if let Some(refresh) = environment.secret_refresh_json.as_deref() {
+        let authorized: BTreeSet<String> = secret_ids
+            .as_array()
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        crate::secret_refresh::validate_secret_refresh(
+            refresh,
+            &authorized,
+            environment.api_base_url.as_deref(),
+        )?;
+    }
     let extra_vars_source = environment.extra_vars_json.as_deref().unwrap_or("{}");
     let extra_vars: serde_json::Value = serde_json::from_str(extra_vars_source)
         .map_err(|_| "测试环境自定义变量不是合法 JSON".to_string())?;
@@ -556,8 +577,8 @@ pub(crate) async fn save_test_environment(
             "INSERT INTO test_environments (
                id, logical_id, workspace_path, name, kind, recipe_json, web_base_url, api_base_url, viewport_width, viewport_height,
                allow_private_network, headers_json, secret_ids_json, extra_vars_json, secret_origins_json,
-               tls_trust, approval_mode, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               tls_trust, approval_mode, secret_refresh_json, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                name = excluded.name, kind = excluded.kind, recipe_json = excluded.recipe_json,
                web_base_url = excluded.web_base_url,
@@ -567,6 +588,7 @@ pub(crate) async fn save_test_environment(
                secret_ids_json = excluded.secret_ids_json, extra_vars_json = excluded.extra_vars_json,
                secret_origins_json = excluded.secret_origins_json,
                tls_trust = excluded.tls_trust, approval_mode = excluded.approval_mode,
+               secret_refresh_json = excluded.secret_refresh_json,
                updated_at = excluded.updated_at",
         )
         .bind(storage_id)
@@ -586,6 +608,7 @@ pub(crate) async fn save_test_environment(
         .bind(environment.secret_origins_json.as_deref().unwrap_or("[]"))
         .bind(environment.tls_trust.as_deref().unwrap_or("system"))
         .bind(environment.approval_mode.as_deref().unwrap_or("per_step"))
+        .bind(&environment.secret_refresh_json)
         .bind(environment.updated_at)
         .bind(environment.updated_at)
         .execute(&mut *connection)
@@ -604,7 +627,7 @@ pub(crate) async fn list_test_environments(
     let rows = sqlx::query(
         "SELECT logical_id AS id, name, kind, recipe_json, web_base_url, api_base_url, viewport_width, viewport_height,
          allow_private_network, headers_json, secret_ids_json, extra_vars_json, secret_origins_json,
-         tls_trust, approval_mode, created_at, updated_at FROM test_environments
+         tls_trust, approval_mode, secret_refresh_json, created_at, updated_at FROM test_environments
          WHERE workspace_path = ? ORDER BY updated_at DESC, logical_id DESC",
     )
     .bind(workspace_path)
@@ -653,6 +676,9 @@ pub(crate) async fn list_test_environments(
                 approval_mode: row
                     .try_get("approval_mode")
                     .map_err(|error| error.to_string())?,
+                secret_refresh_json: row
+                    .try_get("secret_refresh_json")
+                    .map_err(|error| error.to_string())?,
                 created_at: row
                     .try_get("created_at")
                     .map_err(|error| error.to_string())?,
@@ -662,6 +688,36 @@ pub(crate) async fn list_test_environments(
             })
         })
         .collect()
+}
+
+pub(crate) struct TestEnvironmentRefreshMeta {
+    pub(crate) name: String,
+    pub(crate) secret_refresh_json: Option<String>,
+}
+
+pub(crate) async fn load_test_environment_refresh(
+    connection: &mut SqliteConnection,
+    workspace_path: &str,
+    environment_id: &str,
+) -> Result<Option<TestEnvironmentRefreshMeta>, String> {
+    let row = sqlx::query(
+        "SELECT name, secret_refresh_json FROM test_environments
+         WHERE logical_id = ? AND workspace_path = ?",
+    )
+    .bind(environment_id)
+    .bind(workspace_path)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(|error| format!("无法读取测试环境登录配方：{error}"))?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    Ok(Some(TestEnvironmentRefreshMeta {
+        name: row.try_get("name").map_err(|error| error.to_string())?,
+        secret_refresh_json: row
+            .try_get("secret_refresh_json")
+            .map_err(|error| error.to_string())?,
+    }))
 }
 
 pub(crate) async fn load_test_environment_access(
@@ -749,6 +805,8 @@ struct EnvironmentFields {
     /// v23：证书校验策略与审批档同样是边界——关掉证书校验或关掉逐次审批都要让用户看见。
     tls_trust: String,
     approval_mode: String,
+    /// v24：登录配方决定凭据发往哪里、写入哪些 Secret，同样属于运行边界。
+    secret_refresh: Option<String>,
 }
 
 async fn load_environment_fields(
@@ -757,8 +815,8 @@ async fn load_environment_fields(
     environment_id: &str,
 ) -> Result<Option<EnvironmentFields>, String> {
     let row = sqlx::query(
-        "SELECT api_base_url, web_base_url, secret_ids_json, allow_private_network, headers_json, secret_origins_json, extra_vars_json,
-                tls_trust, approval_mode \
+         "SELECT api_base_url, web_base_url, secret_ids_json, allow_private_network, headers_json, secret_origins_json, extra_vars_json,
+                tls_trust, approval_mode, secret_refresh_json \
          FROM test_environments WHERE workspace_path = ? AND logical_id = ?",
     )
     .bind(workspace_path)
@@ -808,6 +866,9 @@ async fn load_environment_fields(
             .map_err(|error| error.to_string())?,
         approval_mode: row
             .try_get("approval_mode")
+            .map_err(|error| error.to_string())?,
+        secret_refresh: row
+            .try_get("secret_refresh_json")
             .map_err(|error| error.to_string())?,
     }))
 }
@@ -892,6 +953,9 @@ fn describe_environment_changes(
         }
         if incoming_approval_mode == "trusted" {
             changes.push("审批档：逐次审批 → 受信（本环境的测试步骤不再逐次弹确认）".to_string());
+        }
+        if incoming.secret_refresh_json.is_some() {
+            changes.push("登录配方：新增（运行前自动刷新 Secret）".to_string());
         }
         return Ok(changes);
     };
@@ -982,6 +1046,9 @@ fn describe_environment_changes(
             display_approval_mode(&existing.approval_mode),
             display_approval_mode(incoming_approval_mode),
         ));
+    }
+    if existing.secret_refresh != incoming.secret_refresh_json {
+        changes.push("登录配方：已变更（运行前自动刷新 Secret）".to_string());
     }
     Ok(changes)
 }
@@ -1902,6 +1969,7 @@ mod tests {
             secret_origins_json: None,
             tls_trust: None,
             approval_mode: None,
+            secret_refresh_json: None,
             updated_at: 10,
         }
     }
@@ -1942,6 +2010,7 @@ mod tests {
             extra_vars: serde_json::json!({}),
             tls_trust: "system".to_string(),
             approval_mode: "per_step".to_string(),
+            secret_refresh: None,
         };
         let mut incoming = sample_environment("env-1");
         incoming.api_base_url = Some("https://api.example.com".to_string());
@@ -1997,6 +2066,7 @@ mod tests {
             extra_vars: serde_json::json!({}),
             tls_trust: "system".to_string(),
             approval_mode: "per_step".to_string(),
+            secret_refresh: None,
         };
         let mut incoming = sample_environment("env-1");
         incoming.api_base_url = Some("https://10.9.35.5:1443".to_string());
@@ -2125,6 +2195,44 @@ mod tests {
             .is_err());
         environment.headers_json = "{}".to_string();
         environment.secret_ids_json = r#"["provider.openai.key"]"#.to_string();
+        assert!(save_test_environment(&mut connection, "/ws", &environment)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn round_trips_secret_refresh_recipe_and_rejects_invalid_ones() {
+        let (_directory, mut connection) = database().await;
+        let mut environment = sample_environment("env-refresh");
+        environment.secret_ids_json = r#"["apitest.s"]"#.to_string();
+        environment.secret_refresh_json = Some(
+            r#"{"steps":[{"method":"GET","path":"/auth/csrf","capture":[{"secretId":"apitest.s","cookie":"sid"}]}]}"#
+                .to_string(),
+        );
+        save_test_environment(&mut connection, "/ws", &environment)
+            .await
+            .unwrap();
+        let listed = list_test_environments(&mut connection, "/ws")
+            .await
+            .unwrap();
+        assert_eq!(
+            listed[0].secret_refresh_json,
+            environment.secret_refresh_json
+        );
+
+        // 未授权的 Secret 与缺失 API Base 都必须在保存侧拒绝，不能拖到运行期。
+        environment.secret_refresh_json = Some(
+            r#"{"steps":[{"method":"GET","path":"/x","capture":[{"secretId":"apitest.missing","cookie":"sid"}]}]}"#
+                .to_string(),
+        );
+        assert!(save_test_environment(&mut connection, "/ws", &environment)
+            .await
+            .is_err());
+        environment.secret_refresh_json = Some(
+            r#"{"steps":[{"method":"GET","path":"/x","capture":[{"secretId":"apitest.s","cookie":"sid"}]}]}"#
+                .to_string(),
+        );
+        environment.api_base_url = None;
         assert!(save_test_environment(&mut connection, "/ws", &environment)
             .await
             .is_err());

@@ -6,15 +6,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   saveTestEnvironmentRecord: vi.fn(),
   deleteTestEnvironmentRecord: vi.fn(),
+  refreshTestEnvironmentSecrets: vi.fn(),
   saveApiTestSecret: vi.fn(),
   hasApiTestSecret: vi.fn(),
   deleteApiTestSecret: vi.fn(),
   probeEnvironmentReadiness: vi.fn(),
+  readEnvironmentFileEntry: vi.fn(),
 }))
 
 vi.mock('@/platform/testEnvironments', () => ({
   saveTestEnvironmentRecord: mocks.saveTestEnvironmentRecord,
   deleteTestEnvironmentRecord: mocks.deleteTestEnvironmentRecord,
+  refreshTestEnvironmentSecrets: mocks.refreshTestEnvironmentSecrets,
 }))
 vi.mock('@/platform/apiTestSecrets', () => ({
   saveApiTestSecret: mocks.saveApiTestSecret,
@@ -23,6 +26,9 @@ vi.mock('@/platform/apiTestSecrets', () => ({
 }))
 vi.mock('@/platform/testEnvironmentProbe', () => ({
   probeEnvironmentReadiness: mocks.probeEnvironmentReadiness,
+}))
+vi.mock('@/stores/services/testEnvironmentFiles', () => ({
+  readEnvironmentFileEntry: mocks.readEnvironmentFileEntry,
 }))
 
 import { TestEnvironmentDialog } from './TestEnvironmentDialog'
@@ -44,6 +50,7 @@ const RECORD: TestEnvironmentRecord = {
   secretOriginsJson: '[]',
   tlsTrust: 'system',
   approvalMode: 'per_step',
+  secretRefreshJson: null,
   createdAt: 1,
   updatedAt: 2,
 }
@@ -72,6 +79,7 @@ const renderDialog = (overrides: Partial<Parameters<typeof TestEnvironmentDialog
       open
       environments={[]}
       environmentFiles={[]}
+      referencedSecretIds={[]}
       selectedId={null}
       disabled={false}
       onSelect={vi.fn()}
@@ -91,6 +99,7 @@ describe('TestEnvironmentDialog', () => {
     mocks.saveApiTestSecret.mockResolvedValue(undefined)
     mocks.hasApiTestSecret.mockResolvedValue(true)
     mocks.deleteApiTestSecret.mockResolvedValue(undefined)
+    mocks.refreshTestEnvironmentSecrets.mockResolvedValue({ secretIds: [], updatedAt: 1 })
     mocks.probeEnvironmentReadiness.mockResolvedValue({
       readiness: { ready: true, verdict: 'ready', reason: '环境就绪：GET http://localhost:8080/ 返回 200（3 ms）', status: 200, elapsedMs: 3 },
       probe: { method: 'GET', url: 'http://localhost:8080/' },
@@ -109,6 +118,7 @@ describe('TestEnvironmentDialog', () => {
           open
           environments={environments}
           environmentFiles={[]}
+          referencedSecretIds={[]}
           selectedId={selectedId}
           disabled={false}
           onSelect={setSelectedId}
@@ -134,6 +144,7 @@ describe('TestEnvironmentDialog', () => {
               secretOriginsJson: payload.secretOriginsJson ?? '[]',
               tlsTrust: payload.tlsTrust ?? 'system',
               approvalMode: payload.approvalMode ?? 'per_step',
+              secretRefreshJson: payload.secretRefreshJson ?? null,
               createdAt: 1,
               updatedAt: 2,
             }
@@ -202,18 +213,119 @@ describe('TestEnvironmentDialog', () => {
     expect(mocks.saveTestEnvironmentRecord).toHaveBeenCalledTimes(1)
   })
 
-  it('stores an API test secret without reading the plaintext back', async () => {
-    renderDialog()
+  it('saves a secret and authorizes it in one click without reading plaintext back', async () => {
+    renderControlledDialog()
 
     fireEvent.click(screen.getByRole('button', { name: '新建环境' }))
-    fireEvent.change(screen.getByLabelText('Secret ID'), { target: { value: 'apitest.orders-token' } })
+    fireEvent.click(screen.getByRole('button', { name: /本地（推荐）/ }))
+    fireEvent.change(screen.getByLabelText('名称'), { target: { value: '本地开发' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存并验证连接' }))
+    // 保存后进入查看模式：Secret 管理区替代原来的 JSON 文本框。
+    await screen.findByRole('button', { name: '删除环境' })
+    mocks.saveTestEnvironmentRecord.mockClear()
+
+    // 用户只填名字：`apitest.` 前缀自动补全。
+    fireEvent.change(screen.getByLabelText('Secret ID'), { target: { value: 'orders-token' } })
     fireEvent.change(screen.getByLabelText('Secret 值'), { target: { value: 'top-secret' } })
-    fireEvent.click(screen.getByRole('button', { name: '保存 Secret' }))
+    fireEvent.click(screen.getByRole('button', { name: '保存并授权' }))
 
     await waitFor(() => expect(mocks.saveApiTestSecret).toHaveBeenCalledWith('apitest.orders-token', 'top-secret'))
+    // 值 + 授权名单一次提交：不再需要再点一次「保存并验证连接」。
+    await waitFor(() => expect(mocks.saveTestEnvironmentRecord).toHaveBeenCalledWith(expect.objectContaining({
+      secretIdsJson: '["apitest.orders-token"]',
+      webBaseUrl: 'http://localhost:5173',
+      apiBaseUrl: 'http://localhost:8080',
+    })))
+    expect(await screen.findByText('Secret 已保存并授权给当前环境')).toBeInTheDocument()
     expect(screen.getByLabelText('Secret 值')).toHaveValue('')
-    expect(screen.getByLabelText('允许的 Secret ID JSON')).toHaveValue('["apitest.orders-token"]')
-    expect(screen.getByRole('status')).toHaveTextContent('Secret 已保存并加入当前环境')
+    // 授权列表展示存在性（只查存在，不回读明文）。
+    expect(await screen.findByText('apitest.orders-token')).toBeInTheDocument()
+    expect(screen.getByText('已保存')).toBeInTheDocument()
+  })
+
+  it('suggests Secrets referenced by test files and authorizes them on click', async () => {
+    renderDialog({
+      environments: [RECORD],
+      selectedId: RECORD.id,
+      referencedSecretIds: ['apitest.orders-token'],
+    })
+
+    expect(screen.getByText('用例引用但未授权：')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'apitest.orders-token' }))
+
+    await waitFor(() => expect(mocks.saveTestEnvironmentRecord).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'env-1',
+      // 只改授权名单，其余记录字段原样带回。
+      secretIdsJson: '["apitest.orders-token"]',
+      webBaseUrl: 'https://staging.test',
+    })))
+    expect(await screen.findByText('Secret 已加入当前环境授权')).toBeInTheDocument()
+  })
+
+  it('removes a Secret from the environment without deleting its stored value', async () => {
+    renderDialog({
+      environments: [{ ...RECORD, secretIdsJson: '["apitest.orders-token"]' }],
+      selectedId: RECORD.id,
+    })
+
+    expect(await screen.findByText('apitest.orders-token')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '移出环境' }))
+
+    await waitFor(() => expect(mocks.saveTestEnvironmentRecord).toHaveBeenCalledWith(expect.objectContaining({
+      secretIdsJson: '[]',
+    })))
+    // 移出环境只改授权，不动 secrets 表里的值（别的环境可能还在用）。
+    expect(mocks.deleteApiTestSecret).not.toHaveBeenCalled()
+  })
+
+  it('prefills an existing Secret ID from the row action and focuses the value input', async () => {
+    renderDialog({
+      environments: [{ ...RECORD, secretIdsJson: '["apitest.orders-token"]' }],
+      selectedId: RECORD.id,
+    })
+
+    expect(await screen.findByText('apitest.orders-token')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '更新值' }))
+
+    expect(screen.getByLabelText('Secret ID')).toHaveValue('apitest.orders-token')
+    const valueInput = screen.getByLabelText('Secret 值')
+    expect(valueInput).toHaveValue('')
+    expect(valueInput).toHaveFocus()
+  })
+
+  it('prefills the requested Secret when opened from a 401 report hint', async () => {
+    renderDialog({
+      environments: [{ ...RECORD, secretIdsJson: '["apitest.orders-token"]' }],
+      selectedId: RECORD.id,
+      secretUpdateRequest: { secretId: 'apitest.orders-token', token: 1 },
+    })
+
+    await waitFor(() => expect(screen.getByLabelText('Secret ID')).toHaveValue('apitest.orders-token'))
+    expect(screen.getByLabelText('Secret 值')).toHaveFocus()
+  })
+
+  it('refreshes Secrets from the declared login recipe', async () => {
+    mocks.refreshTestEnvironmentSecrets.mockResolvedValue({
+      secretIds: ['apitest.orders-token'],
+      updatedAt: 5,
+    })
+    renderDialog({
+      environments: [{
+        ...RECORD,
+        secretIdsJson: '["apitest.orders-token"]',
+        secretRefreshJson: JSON.stringify({
+          steps: [{ method: 'GET', path: '/auth/csrf', capture: [{ secretId: 'apitest.orders-token', cookie: 'sid' }] }],
+        }),
+      }],
+      selectedId: RECORD.id,
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: '刷新 Secret' }))
+
+    await waitFor(() => expect(mocks.refreshTestEnvironmentSecrets).toHaveBeenCalledWith('env-1'))
+    expect(await screen.findByText('已刷新 1 个 Secret')).toBeInTheDocument()
+    // 刷新后重新核对存在性：值写入宿主，界面只反映「已保存」。
+    await waitFor(() => expect(mocks.hasApiTestSecret).toHaveBeenCalledWith('apitest.orders-token'))
   })
 
   it('imports a valid environment file as a persisted environment', async () => {
@@ -230,7 +342,22 @@ describe('TestEnvironmentDialog', () => {
       headersJson: '{}',
       secretIdsJson: '["apitest.orders-token"]',
     }
+    // 扫描快照是旧内容（没有登录配方）；导入时必须重新读盘，拿到刚写入的字段。
+    const freshDraft = {
+      ...draft,
+      secretRefreshJson: '{"steps":[{"method":"GET","path":"/x","capture":[]}]}',
+    }
+    mocks.readEnvironmentFileEntry.mockResolvedValue({
+      path: 'tests/environments/local.env.axiom',
+      valid: true,
+      fileId: 'local-shop',
+      name: '本地开发环境',
+      mode: 'local',
+      issues: [],
+      draft: freshDraft,
+    })
     const { onChanged } = renderDialog({
+      workspacePath: '/repo',
       environmentFiles: [{
         path: 'tests/environments/local.env.axiom',
         valid: true,
@@ -245,8 +372,12 @@ describe('TestEnvironmentDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: '导入为运行环境' }))
 
     await waitFor(() => expect(mocks.saveTestEnvironmentRecord).toHaveBeenCalledTimes(1))
+    expect(mocks.readEnvironmentFileEntry).toHaveBeenCalledWith(
+      'tests/environments/local.env.axiom',
+      '/repo',
+    )
     expect(mocks.saveTestEnvironmentRecord).toHaveBeenCalledWith({
-      ...draft,
+      ...freshDraft,
       updatedAt: expect.any(Number),
     })
     expect(onChanged).toHaveBeenCalledWith('local-shop')
@@ -349,7 +480,9 @@ describe('TestEnvironmentDialog', () => {
 
     expect(screen.queryByRole('button', { name: '导入为运行环境' })).toBeNull()
     expect(screen.getByText(/需要修复：\$\.mode 只允许 local 或 remote/)).toBeTruthy()
-    expect(screen.getByText(/档位：远程（只读校验）/)).toBeTruthy()
+    // 存储档位不再是展示项：界面上的本地/远程由地址派生，高级区只给可执行的事实摘要。
+    expect(screen.getByText('系统信任')).toBeTruthy()
+    expect(screen.getByText('逐次审批')).toBeTruthy()
   })
 
   it('keeps the create form open after the parent clears the selection', () => {
@@ -362,6 +495,7 @@ describe('TestEnvironmentDialog', () => {
           open
           environments={[RECORD]}
           environmentFiles={[]}
+          referencedSecretIds={[]}
           selectedId={selectedId}
           disabled={false}
           onSelect={setSelectedId}

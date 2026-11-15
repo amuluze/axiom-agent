@@ -2,7 +2,28 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [0.7.8] - 未发布
+## [0.7.9] - 未发布
+
+### Added
+
+- **新增 `design-intent` 内置 Skill，`DESIGN.md` 作者与设计稿生产分离**：项目根 `DESIGN.md` 的创建/更新此前只是 `design` Skill 里的一句前置输入，文档任务既不匹配 `.ax` 触发条件，也要为写一份文档加载 22.8 KB 的设计稿规则。现在 `design-intent` 成为唯一作者契约：五区覆盖（受众与主任务 / 视觉语言 / 语气文案 / 禁用套路 / 唯一视觉主角）、先取证再提问、已有只补缺、token 来源冲突先报告、16 KiB 注入预算、写完回读；不写 `.ax`、不改代码。`design` 改为消费 `<project_design>` 的基调，仅保留五区摘要兜底并在创建/回写处指向 `design-intent`。`BUILTIN_SKILL_BODIES_VERSION` 46→47、`SYSTEM_PROMPT_VERSION` 53→54（SDD 段名单派生），`tool:load_skill` 语义 digest 同步重算。
+- **环境档 v4：`secretRefresh` 登录配方，Secret 自动获取**：环境档声明请求序列（如 Beacon 的 CSRF → 登录）与响应 Cookie 捕获，测试批次开跑前由 Rust 自动执行并写入 `secrets` 表；步骤间共享仅存活于本次命令的临时 Cookie Jar，值不回传 WebView、不进会话/报告/Artifact。配方只打环境 `API_BASE_URL` 同源，沿用私网/明文/TLS 策略；执行前原生内容确认（目标 / 步骤数 / Secret ID）+ 手势，用户取消或失败则批次不启动。环境面板 Secret 区新增「刷新 Secret」手动入口；配方引用的凭据本身以 `apitest.*` Secret 保存。SQLite v24 新增 `test_environments.secret_refresh_json`。
+- **Secret 更新入口（手动兜底）**：环境 Secret 列表每行新增「更新值」（预填 ID 并聚焦值输入）；运行报告对 401 失败且引用 Secret 的步骤给出「可能已过期 · 更新」，直接定位到该运行环境。API 步骤状态码贯通到报告 `detailsJson`。
+
+### Changed
+
+- **品牌 Logo 重新设计为公理符号变形**：弃用「渐变字母 A + 绿点」，新 mark 为扁平深色圆角板 + 青色左弧与右箭头——由 ⊢（公理/推导）变形而来，左弧表循环与边界、右箭头表推导与执行；配色直接取应用设计令牌（板 = `--bg-main #161514`，符号 = `--accent #14B8A6`），去除渐变、sheen 与描边，16px 下仍可辨识。同步替换 `apps/desktop/src-tauri/icons/` 全套（icon.svg 源稿 + PNG/icns/ico）、官网 `favicon.svg` 与 `BrandMark.tsx`，三者共用同一份 1024 坐标系几何。
+- **官网按浏览器语言展示中英文**：官网此前已按 `navigator.languages` 判定中英文，但判定只看偏好列表首项（`["fr-FR","zh-CN"]` 会被判成英文）、文案与语言是两个可脱节的独立来源（`CopyProvider` 与 `LocaleProvider` 并存，文档页还要额外传 `locale` prop 才能保证正文与侧栏同语言）、文档元数据落地既偏晚（title/description 在 effect 里改写）又不完整（`og:title`/`og:description`/`og:locale` 从不随语言改写，中文用户分享出去的卡片仍是英文），且 `index.html` 硬编码一份英文标题/描述与文案表里的那份已漂移。改为：判定按偏好顺序取第一个站点支持的语言（`zh*`→中文、`en*`→英文，兼容 `zh_CN`/`ZH-Hans` 等写法，与浏览器自身的站点语言匹配一致），列表中无支持语言才回落英文；语言在渲染前一次性检出，文案由语言上下文派生（删除 `CopyProvider`），`<html lang>`/title/description/OG 卡片在首帧前整体改写（`og:locale` 用地区码 `en_US`/`zh_CN`）；静态 HTML 的英文兜底文案改为构建期从文案表注入，不再两处维护。首页、文档页与更新记录页的中英文渲染经真实浏览器按 `--accept-lang` 双向验证。
+- **测试环境弹窗收敛高级配置，Secret 改为可发现的一键授权**：删除「允许访问回环/私网 API」手勾（`allow_private_network` 随地址推导，保存时统一计算并仍由宿主校验）、存储「档位」展示（与按地址派生的本地/远程徽章互相矛盾）以及为空时仍占行的「服务变量 / Secret 目标白名单」；查看态的高级配置从一排禁用表单改为摘要行（视口 / 证书校验 / 审批档 / 自定义请求头，默认项不出现），只有编辑态展开表单，请求头收进「自定义请求头（N）」折叠。删除「允许的 Secret ID JSON」文本框：Secret 改为列表管理——宿主自动核对每个 ID 的「已保存 / 未保存」，「保存并授权」一次点击写入 `secrets` 表并更新环境授权名单，支持「移出环境」（只撤授权）与「删除值」（全局删值）；测试用例文件里引用但未授权的 `apitest.*` 会作为建议列出，仍需用户点击授权（测试文件不能自行扩大环境白名单）。用例索引新增 `secretIds`（只从请求头收集），使用说明、原生 E2E 与单测断言同步。`api_request` runtimeVersion 7→8 并补单跳迁移（私网拒绝时的引导文案不再指向已移除的勾选；输入/输出 schema 不变）。
+
+### Fixed
+
+- **文档页、设计页、测试页字号改挂全局「界面字号」偏好**：这三页的样式表此前把字号全部硬编码成 px（docs.css 35 处、design.css 34 处、testing.css 82 处），设置页「界面字号」（12–16px）偏好对它们完全无效——改了偏好，文档树、设计画布工具条、测试报告仍是旧尺寸。全量按设置页同一刻度换算为 rem（px÷13：10px=0.7692rem、11px=0.8462rem、12px=0.9231rem、13px=1rem、14px=1.0769rem、16px=1.2308rem、18px=1.3846rem），默认 13px 根字号下视觉逐像素不变（设计助手标题 17px 按 px÷13 记为 1.3077rem，不改刻度外的既有取值），`.ax-component-error` 的 0.85rem 归到 0.8462rem。画布内容（`.ax` 设计稿里的文本尺寸）是设计稿自身度量，仍走 PenNodeView 内联 px，不随界面字号缩放。`npm run audit:design-tokens` 新增第 4 条门禁：`styles/*.css` 的 font-size 出现硬编码 px 即报错（确需例外时同行注释标 `ui-font-size-px-ok`），防止再漂回 px。
+
+### Security
+
+
+## [0.7.8] - 2026-11-10
 
 ### Added
 

@@ -9,7 +9,7 @@ use sqlx::{AssertSqlSafe, ConnectOptions as _, Connection, Executor, Row, Sqlite
 use std::path::Path;
 use std::time::Duration;
 
-pub(crate) const DATABASE_VERSION: i64 = 23;
+pub(crate) const DATABASE_VERSION: i64 = 24;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Provider / connect 凭据表（v15 起密钥由 macOS Keychain 迁入 SQLite，Rust 独占读写）。
@@ -387,6 +387,12 @@ const V21_COLUMNS: &[ColumnMigration] = &[
 /// `trusted` 只对 `remote` 档开放：受信环境的测试步骤不再逐次弹原生确认，
 /// 但**作用域限定在该环境声明的 origin 集合内**（`validate_test_environment`）。
 /// 旧记录缺省 `system` + `per_step`，语义与升级前一致。
+const V24_COLUMNS: &[ColumnMigration] = &[ColumnMigration {
+    table: "test_environments",
+    column: "secret_refresh_json",
+    statement: "ALTER TABLE test_environments ADD COLUMN secret_refresh_json TEXT",
+}];
+
 const V23_COLUMNS: &[ColumnMigration] = &[
     ColumnMigration {
         table: "test_environments",
@@ -565,6 +571,12 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         version: 23,
         statements: &[],
         columns: V23_COLUMNS,
+        post_statements: &[],
+    },
+    Migration {
+        version: 24,
+        statements: &[],
+        columns: V24_COLUMNS,
         post_statements: &[],
     },
 ];

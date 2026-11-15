@@ -29,6 +29,11 @@ export interface StepOutcome {
   message?: string
   /** 证据 Artifact 的内容 hash；由 Rust 直写后回传引用，不携带图片内容。 */
   evidenceContentHash?: string
+  /**
+   * API 步骤的响应状态码（Rust 权威结果，传输失败为 null）。报告用它把 401 与
+   * 「会话 Secret 可能过期」联系起来；UI 步骤不产生该字段。
+   */
+  statusCode?: number | null
   extractedVariables?: Record<string, ExtractedTestValue>
 }
 
@@ -85,6 +90,8 @@ export interface StepReport {
   origin?: FailureOrigin
   message?: string
   evidenceContentHash?: string
+  /** API 步骤的响应状态码；与 {@link StepOutcome.statusCode} 同源。 */
+  statusCode?: number | null
   variables?: Record<string, VariableProjection>
 }
 
@@ -136,6 +143,8 @@ export interface StepStatusChange {
   status: TestRunStatus
   message?: string
   evidenceContentHash?: string
+  /** API 步骤的响应状态码；落进步骤 detailsJson 供报告识别 401 会话过期。 */
+  statusCode?: number | null
   variables?: Record<string, VariableProjection>
 }
 
@@ -243,6 +252,7 @@ export const runTestPlan = async (options: RunTestPlanOptions): Promise<TestRunR
     evidenceContentHash?: string,
     variables?: Record<string, VariableProjection>,
     origin?: FailureOrigin,
+    statusCode?: number | null,
   ): void => {
     const caseReport = report.cases[caseIndex]
     const stepReport = caseReport?.steps[stepIndex]
@@ -252,12 +262,14 @@ export const runTestPlan = async (options: RunTestPlanOptions): Promise<TestRunR
     if (evidenceContentHash !== undefined) stepReport.evidenceContentHash = evidenceContentHash
     if (variables !== undefined) stepReport.variables = variables
     if (origin !== undefined) stepReport.origin = origin
+    if (statusCode !== undefined) stepReport.statusCode = statusCode
     onStepStatusChange?.({
       caseId: caseReport.caseId,
       stepId: stepReport.stepId,
       status: stepReport.status,
       ...(stepReport.message !== undefined ? { message: stepReport.message } : {}),
       ...(stepReport.evidenceContentHash !== undefined ? { evidenceContentHash: stepReport.evidenceContentHash } : {}),
+      ...(stepReport.statusCode !== undefined ? { statusCode: stepReport.statusCode } : {}),
       ...(stepReport.variables !== undefined ? { variables: stepReport.variables } : {}),
     })
   }
@@ -390,6 +402,7 @@ export const runTestPlan = async (options: RunTestPlanOptions): Promise<TestRunR
         outcome.evidenceContentHash,
         variableProjection,
         failureOriginForOutcome(outcome) ?? undefined,
+        outcome.statusCode,
       )
       if (outcome.verdict !== 'passed') {
         result = outcome.verdict === 'canceled' ? 'canceled' : 'failure'

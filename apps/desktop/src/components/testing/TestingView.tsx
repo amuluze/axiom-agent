@@ -14,7 +14,7 @@
  * 用例文件是测试的唯一事实来源：本页负责确定性重放与报告；起草/修改由左侧助手
  * 会话完成（写 .testspec.json 走会话的写工具审批链），本页不提供第二个创作入口。
  */
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { createTestStepApprover } from '@/agent/testing/approval/testStepApprover'
 import { useT } from '@/i18n'
 import { useAgentStore } from '@/stores/agentStore'
@@ -54,6 +54,9 @@ export const TestingView = () => {
   const approver = useMemo(() => createTestStepApprover(), [])
   const [envDialogOpen, setEnvDialogOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // 报告里的 401 更新入口：token 递增让同一 ID 的重复点击也能重新预填。
+  const [secretUpdateRequest, setSecretUpdateRequest] = useState<{ secretId: string; token: number } | null>(null)
+  const secretUpdateToken = useRef(0)
 
   const {
     specs,
@@ -151,6 +154,11 @@ export const TestingView = () => {
 
   const selectedSpec = specs.find((spec) => spec.path === selectedSpecPath)
   const showBrowserTarget = allTargets.some((spec) => spec.uiStepCount > 0)
+  // 用例文件里引用到的 Secret（只用于环境弹窗的「未授权」建议，不自动授权）。
+  const referencedSecretIds = useMemo(
+    () => [...new Set(specs.flatMap((spec) => spec.secretIds ?? []))].sort(),
+    [specs],
+  )
 
   const { suiteCoverage, suiteSummary } = useTestingSuiteSummary({ suiteResult, specs })
 
@@ -179,6 +187,19 @@ export const TestingView = () => {
     runSpecs,
     setError,
   })
+
+  /**
+   * 报告 → 环境弹窗的 Secret 更新入口：选中该次运行的环境并把 ID 预填进表单。
+   * 只做导航，不发命令、不改值——值的铸造仍由用户完成。
+   */
+  const requestSecretUpdate = (secretId: string): void => {
+    secretUpdateToken.current += 1
+    setSecretUpdateRequest({ secretId, token: secretUpdateToken.current })
+    if (selectedReport?.summary.environmentId) {
+      setSelectedEnvironmentId(selectedReport.summary.environmentId)
+    }
+    setEnvDialogOpen(true)
+  }
 
   // ── 派生展示数据 ──────────────────────────────────────────────
 
@@ -268,6 +289,9 @@ export const TestingView = () => {
         open={envDialogOpen}
         environments={environments}
         environmentFiles={environmentFiles}
+        workspacePath={workspace?.path ?? null}
+        referencedSecretIds={referencedSecretIds}
+        secretUpdateRequest={secretUpdateRequest}
         selectedId={selectedEnvironmentId}
         disabled={!workspace || running}
         onSelect={setSelectedEnvironmentId}
@@ -298,6 +322,8 @@ export const TestingView = () => {
         ) : selectedReport ? (
           <RunReport
             report={selectedReport}
+            plan={selectedReportPlan}
+            onUpdateSecret={requestSecretUpdate}
             specName={reportSpec?.name ?? undefined}
             repairRounds={repairRounds}
             handoffSessionId={handoffSessionId}

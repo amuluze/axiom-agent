@@ -34,6 +34,7 @@ const APP_COMMANDS: &[&str] = &[
     "save_test_environment_record",
     "list_test_environment_records",
     "delete_test_environment_record",
+    "refresh_test_environment_secrets",
     "transition_test_run_record",
     "transition_test_case_record",
     "transition_test_step_record",

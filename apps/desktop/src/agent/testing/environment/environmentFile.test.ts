@@ -137,8 +137,8 @@ describe('parseEnvironmentFile', () => {
       ok: false,
       issues: [{ path: '$.kind', message: `必须为 "${ENVIRONMENT_FILE_KIND}"` }],
     })
-    expect(issuesOf({ version: 4 })).toEqual([
-      { path: '$.version', message: '不支持的版本，当前支持 1 / 2 / 3' },
+    expect(issuesOf({ version: 5 })).toEqual([
+      { path: '$.version', message: '不支持的版本，当前支持 1 / 2 / 3 / 4' },
     ])
   })
 
@@ -407,5 +407,111 @@ describe('parseEnvironmentFile v3（快捷基址 / 证书策略 / 审批档）',
       tlsTrust: 'insecure',
       approvalMode: 'trusted',
     })
+  })
+})
+
+describe('parseEnvironmentFile v4（登录配方 / Secret 自动刷新）', () => {
+  const v4Base = {
+    kind: ENVIRONMENT_FILE_KIND,
+    version: 4,
+    id: 'beacon-local',
+    name: 'Beacon 本地容器',
+    mode: 'remote',
+    baseUrl: 'https://127.0.0.1:18443',
+    headers: {},
+    secretNames: [
+      'apitest.beacon-csrf',
+      'apitest.beacon-user',
+      'apitest.beacon-pass',
+      'apitest.beacon-session',
+    ],
+    recipe: { probe: { method: 'GET', path: '/ready', expectStatus: [200] } },
+  }
+
+  const v4 = (overrides: Record<string, unknown> = {}) =>
+    parseEnvironmentFile(JSON.stringify({ ...v4Base, ...overrides }))
+
+  const refresh = {
+    steps: [
+      {
+        method: 'GET',
+        path: '/api/v1/auth/csrf',
+        capture: [{ secretId: 'apitest.beacon-csrf', cookie: 'beacon_csrf_token' }],
+      },
+      {
+        method: 'POST',
+        path: '/api/v1/auth/login',
+        headers: { 'X-CSRF-Token': { secretId: 'apitest.beacon-csrf' } },
+        body: {
+          username: { secretId: 'apitest.beacon-user' },
+          password: { secretId: 'apitest.beacon-pass' },
+        },
+        capture: [{
+          secretId: 'apitest.beacon-session',
+          cookie: 'beacon_access_token',
+          format: 'cookieHeader',
+        }],
+      },
+    ],
+  }
+
+  it('accepts a login recipe and carries it into the record draft', () => {
+    const result = v4({ secretRefresh: refresh })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.file.secretRefresh?.steps).toHaveLength(2)
+    expect(JSON.parse(environmentRecordDraftFromFile(result.file).secretRefreshJson ?? 'null'))
+      .toEqual(refresh)
+  })
+
+  it('rejects the recipe in v3 files and unlisted Secret references', () => {
+    const old = parseEnvironmentFile(JSON.stringify({ ...v4Base, version: 3, secretRefresh: refresh }))
+    expect(old.ok).toBe(false)
+    if (!old.ok) expect(old.issues).toContainEqual({
+      path: '$.secretRefresh',
+      message: 'secretRefresh 是 v4 增量；请把 version 升到 4',
+    })
+
+    const unlisted = v4({
+      secretNames: ['apitest.beacon-session'],
+      secretRefresh: refresh,
+    })
+    expect(unlisted.ok).toBe(false)
+    if (!unlisted.ok) {
+      expect(unlisted.issues.some((issue) => issue.message.includes('未列入 secretNames'))).toBe(true)
+    }
+  })
+
+  it('rejects handwritten Cookie headers and missing API_BASE_URL', () => {
+    const cookieHeader = v4({
+      secretRefresh: {
+        steps: [{
+          method: 'GET',
+          path: '/x',
+          headers: { Cookie: { secretId: 'apitest.beacon-session' } },
+        }],
+      },
+    })
+    expect(cookieHeader.ok).toBe(false)
+    if (!cookieHeader.ok) {
+      expect(cookieHeader.issues).toContainEqual({
+        path: '$.secretRefresh.steps[0].headers.Cookie',
+        message: 'Cookie 由登录配方自动携带，不要手写',
+      })
+    }
+
+    const noApi = parseEnvironmentFile(JSON.stringify({
+      ...v4Base,
+      baseUrl: undefined,
+      vars: { WEB_BASE_URL: 'https://127.0.0.1:18443' },
+      secretRefresh: refresh,
+    }))
+    expect(noApi.ok).toBe(false)
+    if (!noApi.ok) {
+      expect(noApi.issues).toContainEqual({
+        path: '$.secretRefresh',
+        message: '登录配方需要 API_BASE_URL（请求路径相对它解析）',
+      })
+    }
   })
 })

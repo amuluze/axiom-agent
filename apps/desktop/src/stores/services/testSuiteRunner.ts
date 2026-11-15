@@ -19,7 +19,7 @@ import type { CompiledTestPlan } from '@/agent/testing/spec/compileTestPlan'
 import { isApiTestStep } from '@/agent/testing/spec/stepActions'
 import { testPlanExecutions, type StepStatusChange } from '@/agent/testing/runner/runTestPlan'
 import { stopsBatch, type FailureOrigin } from '@/agent/testing/runner/runState'
-import type { TestEnvironmentRecord } from '@/platform/testEnvironments'
+import { refreshTestEnvironmentSecrets, type TestEnvironmentRecord } from '@/platform/testEnvironments'
 import type { TestRunStatus } from '@/platform/testRuns'
 import { browserTargetOrigin, prepareUiTestRun } from './testRunPreparation'
 import { ensureEnvironmentReady } from './testEnvironmentReadiness'
@@ -127,6 +127,22 @@ export const runTestSuite = async (input: TestSuiteRunInput): Promise<TestSuiteR
       return { batchId, blockedReason: gate.readiness.reason, entries: [] }
     }
     environmentFacts = gate.facts
+  }
+
+  // 环境声明了登录配方且本批有 API 步骤：开跑前自动刷新会话型 Secret。
+  // 刷新本身也需要一次原生手势（macOS）——受信环境的就绪探针跳过原生确认，运行点击
+  // 的配额才能留给刷新；`per_step` 环境请先在面板点「刷新 Secret」（或把环境改受信）。
+  if (hasApiSteps && input.environment?.secretRefreshJson != null
+    && input.environment.approvalMode === 'trusted') {
+    try {
+      const refreshed = await refreshTestEnvironmentSecrets(input.environment.id)
+      if (refreshed === null) {
+        return { batchId, blockedReason: 'Secret 刷新被取消，未启动运行', entries: [] }
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      return { batchId, blockedReason: `Secret 刷新失败：${reason}`, entries: [] }
+    }
   }
 
   /** 已触发批次的归因中断：`environment`（环境坏了）或 `approval`（用户已表态）。 */

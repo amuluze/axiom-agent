@@ -153,6 +153,7 @@ export const createApiTestDriver = (
       ...(transportFailure && result.runnerVerdict === 'error' ? { origin: 'environment' as const } : {}),
       message: result.message,
       evidenceContentHash: result.evidenceContentHash,
+      statusCode: result.statusCode,
       extractedVariables: result.extracted,
     }
   },

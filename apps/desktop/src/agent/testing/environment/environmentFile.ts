@@ -29,9 +29,11 @@ export const ENVIRONMENT_FILE_KIND = 'axiom.test-env' as const
  * - v2：自定义大写变量（多服务端点）、`secretOrigins` 白名单与多服务就绪探针。
  * - v3：`baseUrl` 快捷基址、`tlsTrust` 证书策略、`approvalMode` 审批档，
  *   以及「私网访问」缺省按地址推导。
+ * - v4：`secretRefresh` 登录配方——声明取 CSRF / 登录等请求序列与响应 Cookie 捕获，
+ *   由 Rust 执行并把结果直接写入 `secrets` 表；值不回传 WebView。
  */
-export const ENVIRONMENT_FILE_VERSION = 3 as const
-export const SUPPORTED_ENVIRONMENT_FILE_VERSIONS = [1, 2, 3] as const
+export const ENVIRONMENT_FILE_VERSION = 4 as const
+export const SUPPORTED_ENVIRONMENT_FILE_VERSIONS = [1, 2, 3, 4] as const
 export type EnvironmentFileVersion = (typeof SUPPORTED_ENVIRONMENT_FILE_VERSIONS)[number]
 
 /** v1 档仅允许的两个逻辑变量名；v2 起开放任意大写标识符（见 {@link ENV_VAR_NAME_PATTERN}）。 */
@@ -99,6 +101,48 @@ export interface EnvironmentRecipe {
   probes?: readonly EnvironmentServiceProbe[]
 }
 
+/** v4：登录配方里允许出现在请求头/请求体的 Secret 引用。 */
+export interface SecretRefreshReference {
+  secretId: string
+}
+
+/** v4：响应 Cookie 的落库形态——裸值，或整段 `name=value`（用于 Cookie 头）。 */
+export type SecretRefreshCaptureFormat = 'value' | 'cookieHeader'
+
+export interface SecretRefreshCapture {
+  secretId: string
+  /** 响应 `Set-Cookie` 里的 Cookie 名。 */
+  cookie: string
+  /** 缺省 `value`；`cookieHeader` 产出 `name=value`。 */
+  format?: SecretRefreshCaptureFormat
+}
+
+/**
+ * v4：一步刷新请求。`path` 相对环境 `API_BASE_URL`；跨源不在配方里表达——Secret
+ * 目的地边界仍由环境的 API Base / `secretOrigins` 决定。
+ *
+ * 请求体是 JSON，任意层级都可以用 `{ "secretId": "apitest.x" }` 引用 Secret；
+ * 明文敏感 Header 与明文凭据一律拒绝（与 API 测试步骤同一套判定）。
+ */
+export interface SecretRefreshStep {
+  method: ApiMethod
+  path: string
+  headers?: Readonly<Record<string, string | SecretRefreshReference>>
+  body?: unknown
+  /** 期望状态码；缺省 2xx。 */
+  expectStatus?: readonly number[]
+  /** 本步响应里要写回宿主 Secret 表的 Cookie。 */
+  capture?: readonly SecretRefreshCapture[]
+}
+
+/**
+ * v4：环境级登录配方。执行顺序固定为数组顺序，步骤之间共享一个**临时 Cookie Jar**
+ * （仅存活于本次刷新命令内，不跨运行、不回传 WebView）。
+ */
+export interface SecretRefreshRecipe {
+  steps: readonly SecretRefreshStep[]
+}
+
 export interface EnvironmentFile {
   kind: typeof ENVIRONMENT_FILE_KIND
   version: EnvironmentFileVersion
@@ -133,6 +177,8 @@ export interface EnvironmentFile {
    */
   secretOrigins?: readonly string[]
   recipe?: EnvironmentRecipe
+  /** v4：登录配方；存在时运行前自动刷新 Secret。 */
+  secretRefresh?: SecretRefreshRecipe
 }
 
 export interface EnvironmentFileIssue {
@@ -157,6 +203,10 @@ export const ENVIRONMENT_FILE_LIMITS = {
   maxVars: 64,
   maxSecretOrigins: 16,
   maxProbes: 8,
+  maxSecretRefreshSteps: 8,
+  maxSecretRefreshHeaders: 32,
+  maxSecretRefreshCaptures: 16,
+  maxSecretRefreshPathLength: 1024,
 } as const
 
 const ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/
@@ -495,6 +545,259 @@ const readSecretOrigins: Reader<readonly string[]> = (ctx, value, path) => {
   return valid ? [...new Set(origins)].sort() : undefined
 }
 
+const COOKIE_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/
+const MAX_REFRESH_BODY_DEPTH = 16
+
+/**
+ * 递归校验刷新请求体：JSON 值原样保留，`{ "secretId": "apitest.x" }` 视为 Secret
+ * 引用并收集 ID。拒绝非 JSON 值、空 Secret 引用与过深嵌套。
+ */
+const readRefreshBody = (
+  ctx: Ctx,
+  value: unknown,
+  path: string,
+  ids: Set<string>,
+  depth: number,
+): { value: unknown } | undefined => {
+  if (depth > MAX_REFRESH_BODY_DEPTH) {
+    issue(ctx, path, '请求体嵌套过深（上限 16 层）')
+    return undefined
+  }
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return { value }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      issue(ctx, path, '数字必须是有限值')
+      return undefined
+    }
+    return { value }
+  }
+  if (Array.isArray(value)) {
+    const items: unknown[] = []
+    let valid = true
+    value.forEach((item, index) => {
+      const parsed = readRefreshBody(ctx, item, `${path}[${index}]`, ids, depth + 1)
+      if (parsed === undefined) valid = false
+      else items.push(parsed.value)
+    })
+    return valid ? { value: items } : undefined
+  }
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    const keys = Object.keys(record)
+    if (keys.length === 1 && keys[0] === 'secretId') {
+      const secretId = record.secretId
+      if (typeof secretId !== 'string' || !SECRET_ID_PATTERN.test(secretId)) {
+        issue(ctx, `${path}.secretId`, 'Secret ID 必须以 apitest. 开头')
+        return undefined
+      }
+      ids.add(secretId)
+      return { value: { secretId } }
+    }
+    const output: Record<string, unknown> = {}
+    let valid = true
+    for (const key of keys) {
+      const parsed = readRefreshBody(ctx, record[key], `${path}.${key}`, ids, depth + 1)
+      if (parsed === undefined) valid = false
+      else output[key] = parsed.value
+    }
+    return valid ? { value: output } : undefined
+  }
+  issue(ctx, path, '请求体只允许 JSON 值或 {secretId} 引用')
+  return undefined
+}
+
+const readSecretRefreshHeaders = (
+  ctx: Ctx,
+  value: unknown,
+  path: string,
+  ids: Set<string>,
+): Readonly<Record<string, string | SecretRefreshReference>> | undefined => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return issue(ctx, path, '必须是对象')
+  }
+  const record = value as Record<string, unknown>
+  const entries = Object.entries(record)
+  if (entries.length > ENVIRONMENT_FILE_LIMITS.maxSecretRefreshHeaders) {
+    issue(ctx, path, `请求头数量超过上限 ${ENVIRONMENT_FILE_LIMITS.maxSecretRefreshHeaders}`)
+    return undefined
+  }
+  const output: Record<string, string | SecretRefreshReference> = {}
+  let valid = true
+  for (const [name, headerValue] of entries) {
+    if (!HEADER_NAME_PATTERN.test(name)) {
+      issue(ctx, `${path}.${name}`, '请求头名称无效')
+      valid = false
+      continue
+    }
+    const lowered = name.toLowerCase()
+    if (lowered === 'cookie' || lowered === 'set-cookie') {
+      issue(ctx, `${path}.${name}`, 'Cookie 由登录配方自动携带，不要手写')
+      valid = false
+      continue
+    }
+    if (typeof headerValue === 'string') {
+      if (SENSITIVE_HEADER_NAMES.has(lowered)) {
+        issue(ctx, `${path}.${name}`, '敏感请求头必须使用 {secretId} 引用')
+        valid = false
+      } else if (containsPlaintextCredential(headerValue)) {
+        issue(ctx, `${path}.${name}`, '请求头包含疑似明文凭据，必须使用 {secretId} 引用')
+        valid = false
+      } else {
+        output[name] = headerValue
+      }
+      continue
+    }
+    if (typeof headerValue === 'object' && headerValue !== null && !Array.isArray(headerValue)) {
+      const reference = headerValue as Record<string, unknown>
+      const keys = Object.keys(reference)
+      if (keys.length === 1 && keys[0] === 'secretId' && typeof reference.secretId === 'string' && SECRET_ID_PATTERN.test(reference.secretId)) {
+        ids.add(reference.secretId)
+        output[name] = { secretId: reference.secretId }
+      } else {
+        issue(ctx, `${path}.${name}`, '只允许字符串或 {secretId} 引用')
+        valid = false
+      }
+      continue
+    }
+    issue(ctx, `${path}.${name}`, '只允许字符串或 {secretId} 引用')
+    valid = false
+  }
+  return valid ? output : undefined
+}
+
+const readSecretRefreshCapture = (
+  ctx: Ctx,
+  value: unknown,
+  path: string,
+  ids: Set<string>,
+): SecretRefreshCapture | undefined => {
+  const record = readRecord(ctx, value, path, ['secretId', 'cookie', 'format'])
+  if (!record) return undefined
+  const secretId = typeof record.secretId === 'string' && SECRET_ID_PATTERN.test(record.secretId)
+    ? record.secretId
+    : issue(ctx, `${path}.secretId`, 'Secret ID 必须以 apitest. 开头')
+  const cookie = typeof record.cookie === 'string' && COOKIE_NAME_PATTERN.test(record.cookie)
+    ? record.cookie
+    : issue(ctx, `${path}.cookie`, 'Cookie 名无效')
+  let format: SecretRefreshCaptureFormat | undefined
+  if (record.format === undefined || record.format === 'value' || record.format === 'cookieHeader') {
+    format = record.format
+  } else {
+    issue(ctx, `${path}.format`, '只允许 value 或 cookieHeader')
+  }
+  if (secretId === undefined || cookie === undefined) return undefined
+  ids.add(secretId)
+  return {
+    secretId,
+    cookie,
+    ...(format === undefined ? {} : { format }),
+  }
+}
+
+const readSecretRefreshStep = (
+  ctx: Ctx,
+  value: unknown,
+  path: string,
+  ids: Set<string>,
+): SecretRefreshStep | undefined => {
+  const record = readRecord(ctx, value, path, ['method', 'path', 'headers', 'body', 'expectStatus', 'capture'])
+  if (!record) return undefined
+  const method = typeof record.method === 'string' && (TEST_SPEC_API_METHODS as readonly string[]).includes(record.method)
+    ? record.method as ApiMethod
+    : issue(ctx, `${path}.method`, `只允许 ${TEST_SPEC_API_METHODS.join(' / ')}`)
+  const rawPath = record.path
+  let stepPath: string | undefined
+  if (typeof rawPath !== 'string' || !rawPath.startsWith('/') || rawPath.startsWith('//')
+    || rawPath.length > ENVIRONMENT_FILE_LIMITS.maxSecretRefreshPathLength) {
+    issue(ctx, `${path}.path`, '必须是以 / 开头的相对路径')
+  } else if (/[\\\s]/u.test(rawPath) || rawPath.includes('://')) {
+    issue(ctx, `${path}.path`, '路径不能包含空白、反斜杠或协议')
+  } else {
+    stepPath = rawPath
+  }
+  const headers = record.headers === undefined ? undefined : readSecretRefreshHeaders(ctx, record.headers, `${path}.headers`, ids)
+  let body: { value: unknown } | undefined
+  if (record.body !== undefined) {
+    body = readRefreshBody(ctx, record.body, `${path}.body`, ids, 0)
+  }
+  let expectStatus: number[] | undefined
+  if (record.expectStatus !== undefined) {
+    if (!Array.isArray(record.expectStatus) || record.expectStatus.length === 0) {
+      issue(ctx, `${path}.expectStatus`, '必须是非空状态码数组')
+    } else {
+      const statuses = new Set<number>()
+      let valid = true
+      record.expectStatus.forEach((status, index) => {
+        if (typeof status !== 'number' || !Number.isInteger(status) || status < 100 || status > 599) {
+          issue(ctx, `${path}.expectStatus[${index}]`, '状态码必须在 100–599 之间')
+          valid = false
+        } else {
+          statuses.add(status)
+        }
+      })
+      if (valid) expectStatus = [...statuses]
+    }
+  }
+  let capture: SecretRefreshCapture[] | undefined
+  if (record.capture !== undefined) {
+    if (!Array.isArray(record.capture)) {
+      issue(ctx, `${path}.capture`, '必须是数组')
+    } else if (record.capture.length > ENVIRONMENT_FILE_LIMITS.maxSecretRefreshCaptures) {
+      issue(ctx, `${path}.capture`, `捕获项超过上限 ${ENVIRONMENT_FILE_LIMITS.maxSecretRefreshCaptures}`)
+    } else {
+      const items: SecretRefreshCapture[] = []
+      let valid = true
+      record.capture.forEach((item, index) => {
+        const parsed = readSecretRefreshCapture(ctx, item, `${path}.capture[${index}]`, ids)
+        if (parsed === undefined) valid = false
+        else items.push(parsed)
+      })
+      if (valid) capture = items
+    }
+  }
+  if (method === undefined || stepPath === undefined
+    || (record.headers !== undefined && headers === undefined)
+    || (record.body !== undefined && body === undefined)
+    || (record.expectStatus !== undefined && expectStatus === undefined)
+    || (record.capture !== undefined && capture === undefined)) {
+    return undefined
+  }
+  return {
+    method,
+    path: stepPath,
+    ...(headers === undefined ? {} : { headers }),
+    ...(body === undefined ? {} : { body: body.value }),
+    ...(expectStatus === undefined ? {} : { expectStatus }),
+    ...(capture === undefined ? {} : { capture }),
+  }
+}
+
+const readSecretRefresh = (
+  ctx: Ctx,
+  value: unknown,
+  path: string,
+  ids: Set<string> = new Set(),
+): SecretRefreshRecipe | undefined => {
+  const record = readRecord(ctx, value, path, ['steps'])
+  if (!record) return undefined
+  if (!Array.isArray(record.steps) || record.steps.length === 0) {
+    issue(ctx, `${path}.steps`, '必须是非空数组')
+    return undefined
+  }
+  if (record.steps.length > ENVIRONMENT_FILE_LIMITS.maxSecretRefreshSteps) {
+    issue(ctx, `${path}.steps`, `步骤数超过上限 ${ENVIRONMENT_FILE_LIMITS.maxSecretRefreshSteps}`)
+    return undefined
+  }
+  const steps: SecretRefreshStep[] = []
+  let valid = true
+  record.steps.forEach((step, index) => {
+    const parsed = readSecretRefreshStep(ctx, step, `${path}.steps[${index}]`, ids)
+    if (parsed === undefined) valid = false
+    else steps.push(parsed)
+  })
+  return valid ? { steps } : undefined
+}
+
 const readProbe: Reader<EnvironmentProbe> = (ctx, value, path) => {
   const record = readRecord(ctx, value, path, ['method', 'path', 'expectStatus'])
   if (!record) return undefined
@@ -666,7 +969,7 @@ export const parseEnvironmentFile = (source: string): ParseEnvironmentFileResult
   const record = readRecord(ctx, document, '$', [
     'kind', 'version', 'id', 'name', 'mode', 'vars', 'viewport', 'headers',
     'allowPrivateNetwork', 'secretNames', 'secretOrigins', 'recipe',
-    'baseUrl', 'tlsTrust', 'approvalMode',
+    'baseUrl', 'tlsTrust', 'approvalMode', 'secretRefresh',
   ])
   const id = readId(ctx, document.id, '$.id')
   const name = readText(ctx, document.name, '$.name', ENVIRONMENT_FILE_LIMITS.maxNameLength)
@@ -691,6 +994,15 @@ export const parseEnvironmentFile = (source: string): ParseEnvironmentFileResult
     }
   }
   const recipe = document.recipe === undefined ? undefined : readRecipe(ctx, document.recipe, '$.recipe')
+  const refreshSecretIds = new Set<string>()
+  let secretRefresh: SecretRefreshRecipe | undefined
+  if (document.secretRefresh !== undefined) {
+    if (version < 4) {
+      issue(ctx, '$.secretRefresh', 'secretRefresh 是 v4 增量；请把 version 升到 4')
+    } else {
+      secretRefresh = readSecretRefresh(ctx, document.secretRefresh, '$.secretRefresh', refreshSecretIds)
+    }
+  }
 
   // v3：`baseUrl` 派生。`vars` 里显式声明的变量优先——多服务拓扑仍然用 `vars` 表达，
   // `baseUrl` 只省掉「同一个地址写两遍」。
@@ -732,6 +1044,19 @@ export const parseEnvironmentFile = (source: string): ParseEnvironmentFileResult
     issue(ctx, '$.approvalMode', '本地档不支持受信（免逐次审批）模式')
   }
 
+  // v4：登录配方只能打环境自己的 API Base URL；引用的 Secret 必须已列入 secretNames
+  // （授权名单是刷新写入与读取的前提，漏写会在运行期才失败）。
+  if (secretRefresh !== undefined) {
+    if (effectiveVars?.API_BASE_URL === undefined) {
+      issue(ctx, '$.secretRefresh', '登录配方需要 API_BASE_URL（请求路径相对它解析）')
+    }
+    for (const secretId of refreshSecretIds) {
+      if (!(secretNames ?? []).includes(secretId)) {
+        issue(ctx, '$.secretNames', `登录配方引用的「${secretId}」未列入 secretNames`)
+      }
+    }
+  }
+
   // 多服务探针的 var 必须指向本档已声明的变量：指向不存在的服务地址只能得到
   // 永远 not_ready 的探针，错误应在导入时暴露。同一个服务只允许一条探针——步骤 ID
   // 与审批 actor 按 var 派生，重复会让两个探针共用同一个 ID。
@@ -770,7 +1095,8 @@ export const parseEnvironmentFile = (source: string): ParseEnvironmentFileResult
     || (document.recipe !== undefined && recipe === undefined)
     || (document.baseUrl !== undefined && baseUrl === undefined)
     || (document.tlsTrust !== undefined && tlsTrust === undefined)
-    || (document.approvalMode !== undefined && approvalMode === undefined)) {
+    || (document.approvalMode !== undefined && approvalMode === undefined)
+    || (document.secretRefresh !== undefined && secretRefresh === undefined)) {
     return { ok: false, issues: ctx.issues }
   }
 
@@ -792,6 +1118,7 @@ export const parseEnvironmentFile = (source: string): ParseEnvironmentFileResult
       secretNames,
       ...(secretOrigins ? { secretOrigins } : {}),
       ...(recipe ? { recipe } : {}),
+      ...(secretRefresh ? { secretRefresh } : {}),
     },
   }
 }
@@ -816,6 +1143,8 @@ export interface EnvironmentRecordDraft {
   tlsTrust?: EnvironmentTlsTrust
   /** v3：审批档（`per_step` / `trusted`）。 */
   approvalMode?: EnvironmentApprovalMode
+  /** v4：登录配方 JSON；没有配方时为 null。 */
+  secretRefreshJson?: string | null
 }
 
 export const environmentRecordDraftFromFile = (file: EnvironmentFile): EnvironmentRecordDraft => {
@@ -840,5 +1169,6 @@ export const environmentRecordDraftFromFile = (file: EnvironmentFile): Environme
       : {}),
     ...(file.tlsTrust === undefined ? {} : { tlsTrust: file.tlsTrust }),
     ...(file.approvalMode === undefined ? {} : { approvalMode: file.approvalMode }),
+    ...(file.secretRefresh === undefined ? {} : { secretRefreshJson: JSON.stringify(file.secretRefresh) }),
   }
 }

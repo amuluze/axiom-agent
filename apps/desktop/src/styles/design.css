@@ -1,4 +1,10 @@
-/* 设计画布样式（docs/design-canvas.md D3/D4/D5，§11 无限画布）。 */
+/* 设计画布样式（docs/design-canvas.md D3/D4/D5，§11 无限画布）。
+
+   字号一律用 rem 挂接全局 UI 字号缩放（根字号 13px：10px=0.7692rem、11px=0.8462rem、
+   12px=0.9231rem、13px=1rem、16px=1.2308rem），与设置页同一刻度——「界面字号」
+   偏好改 --ui-font-size 即整页随动，硬编码 px 会让本页在偏好下冻在旧尺寸。
+   例外：画布内容（.ax 设计稿里的文本）走 PenNodeView 的内联 px，是设计稿自身
+   的度量，不随界面字号缩放。 */
 
 .design-view {
   display: flex;
@@ -42,7 +48,7 @@
   color: var(--text-secondary);
   border-radius: var(--radius-sm, 6px);
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: 0.9231rem;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -62,7 +68,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
   flex-shrink: 0;
 }
@@ -74,7 +80,7 @@
   color: var(--text-secondary);
   border-radius: var(--radius-sm, 6px);
   padding: 3px 8px;
-  font-size: 11px;
+  font-size: 0.8462rem;
   cursor: pointer;
 }
 
@@ -102,7 +108,7 @@
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-card);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 0.9231rem;
 }
 
 .design-history__header,
@@ -133,7 +139,7 @@
   color: var(--text-secondary);
   border-radius: var(--radius-sm, 6px);
   padding: 3px 8px;
-  font-size: 11px;
+  font-size: 0.8462rem;
   cursor: pointer;
 }
 
@@ -152,7 +158,7 @@
   border: 1px solid var(--diff-red);
   border-radius: var(--radius-md, 10px);
   color: var(--diff-red);
-  font-size: 13px;
+  font-size: 1rem;
   white-space: pre-wrap;
 }
 
@@ -162,7 +168,7 @@
   justify-content: center;
   flex: 1;
   color: var(--text-tertiary);
-  font-size: 13px;
+  font-size: 1rem;
 }
 
 .design-view--empty {
@@ -181,12 +187,12 @@
 
 .design-view__empty-card h2 {
   margin: 0 0 8px;
-  font-size: 16px;
+  font-size: 1.2308rem;
 }
 
 .design-view__empty-card p {
   margin: 0 0 12px;
-  font-size: 13px;
+  font-size: 1rem;
   color: var(--text-secondary);
 }
 
@@ -202,7 +208,7 @@
   flex-direction: column;
   gap: 4px;
   flex: 1;
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-secondary);
   text-align: left;
 }
@@ -213,7 +219,7 @@
   color: var(--text-primary);
   border-radius: var(--radius-sm, 6px);
   padding: 5px 8px;
-  font-size: 12px;
+  font-size: 0.9231rem;
   width: 100%;
   box-sizing: border-box;
 }
@@ -227,7 +233,7 @@
   padding: 10px 12px;
   background: var(--bg-hover);
   border-radius: var(--radius-sm, 6px);
-  font-size: 12px;
+  font-size: 0.9231rem;
   text-align: left;
   overflow-x: auto;
 }
@@ -289,7 +295,7 @@
   border-radius: 4px;
   background: transparent;
   color: var(--text-tertiary);
-  font-size: 11px;
+  font-size: 0.8462rem;
   line-height: 1;
   white-space: nowrap;
   overflow: hidden;
@@ -344,13 +350,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: 0.8462rem;
   font-weight: 600;
 }
 
 .design-canvas__group-band-count {
   flex: none;
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -397,7 +403,7 @@
 .design-canvas__empty {
   padding: 40px;
   color: var(--text-tertiary);
-  font-size: 13px;
+  font-size: 1rem;
 }
 
 .design-canvas__statusbar {
@@ -406,7 +412,7 @@
   gap: 12px;
   padding: 4px 12px;
   border-top: 1px solid var(--border-subtle);
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
   flex-shrink: 0;
 }
@@ -450,7 +456,7 @@
   background: var(--bg-card);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
   z-index: 10;
-  font-size: 12px;
+  font-size: 0.9231rem;
 }
 
 .design-canvas__inspector-head {
@@ -466,7 +472,7 @@
   border-radius: 999px;
   border: 1px solid var(--border-subtle);
   color: var(--text-tertiary);
-  font-size: 10px;
+  font-size: 0.7692rem;
   line-height: 1.6;
 }
 
@@ -492,7 +498,7 @@
   color: var(--text-secondary);
   border-radius: 4px;
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: 0.8462rem;
   cursor: pointer;
 }
 
@@ -522,7 +528,7 @@
   color: var(--text-secondary);
   border-radius: 4px;
   padding: 1px 8px;
-  font-size: 11px;
+  font-size: 0.8462rem;
   cursor: pointer;
   line-height: 1.4;
 }
@@ -548,7 +554,7 @@
   color: var(--text-secondary);
   border-radius: 4px;
   padding: 1px 7px;
-  font-size: 11px;
+  font-size: 0.8462rem;
   cursor: pointer;
   line-height: 1.4;
 }
@@ -574,7 +580,7 @@
   color: var(--text-secondary);
   border-radius: 4px;
   padding: 1px 8px;
-  font-size: 11px;
+  font-size: 0.8462rem;
   cursor: pointer;
 }
 
@@ -596,7 +602,7 @@
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md, 10px);
   background: var(--bg-card);
-  font-size: 11px;
+  font-size: 0.8462rem;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
   z-index: 10;
 }
@@ -617,7 +623,7 @@
   border: 1px dashed var(--border-subtle);
   border-radius: 4px;
   color: var(--text-tertiary);
-  font-size: 11px;
+  font-size: 0.8462rem;
   padding: 4px;
   min-width: 24px;
   min-height: 24px;
@@ -665,7 +671,7 @@
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 0.9231rem;
   cursor: pointer;
 }
 
@@ -728,7 +734,7 @@
 
 .design-assistant__title {
   margin: 0;
-  font-size: 17px;
+  font-size: 1.3077rem;
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -736,7 +742,7 @@
 .design-assistant__subtitle {
   margin: 0;
   max-width: var(--intro-measure);
-  font-size: 12px;
+  font-size: 0.9231rem;
   color: var(--text-secondary);
 }
 
@@ -758,7 +764,7 @@
   display: flex;
   align-items: flex-start;
   gap: 7px;
-  font-size: 12px;
+  font-size: 0.9231rem;
   text-align: left;
   color: var(--text-primary);
 }
@@ -823,7 +829,7 @@
   border-radius: var(--radius-md);
   background: var(--bg-card);
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: 0.9231rem;
   cursor: pointer;
 }
 
@@ -852,7 +858,7 @@
   border: 1px dashed var(--diff-red);
   border-radius: 6px;
   color: var(--diff-red);
-  font-size: 0.85rem;
+  font-size: 0.8462rem;
   line-height: 1.4;
 }
 
@@ -872,7 +878,7 @@
   color: var(--text-secondary);
   border-radius: 4px;
   padding: 1px 8px;
-  font-size: 11px;
+  font-size: 0.8462rem;
   cursor: pointer;
 }
 
@@ -894,7 +900,7 @@
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md, 10px);
   background: var(--bg-card);
-  font-size: 11px;
+  font-size: 0.8462rem;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
   z-index: 10;
 }
@@ -941,7 +947,7 @@
   color: var(--text-secondary);
   border-radius: 4px;
   padding: 1px 8px;
-  font-size: 11px;
+  font-size: 0.8462rem;
   cursor: pointer;
 }
 
@@ -1009,7 +1015,7 @@
   border-radius: 4px;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 0.8462rem;
   text-align: left;
   cursor: pointer;
 }

@@ -2,7 +2,12 @@
    形态按 .pen 设计稿四页对齐：tsCases（用例总览）/ tsRunng（运行中）/
    tsRprt（运行报告）/ tsEmpt（空态）。布局自上而下：Shared31 顶栏 →
    eNvBar 环境条 → 主体（按状态切换三态之一）→ 底栏。
-   配色与尺寸对齐 docs/design 的设计 token（--bg-card/--accent-soft 等）。 */
+   配色与尺寸对齐 docs/design 的设计 token（--bg-card/--accent-soft 等）。
+
+   字号一律用 rem 挂接全局 UI 字号缩放（根字号 13px：10px=0.7692rem、11px=0.8462rem、
+   12px=0.9231rem、13px=1rem、14px=1.0769rem、16px=1.2308rem、18px=1.3846rem），
+   与设置页同一刻度——「界面字号」偏好改 --ui-font-size 即整页随动，硬编码 px 会让
+   本页在偏好下冻在旧尺寸。 */
 
 .testing-view {
   display: flex;
@@ -36,14 +41,14 @@
 }
 
 .testing-view__synced {
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
   white-space: nowrap;
 }
 
 /* 运行入口不可用时给出原因：沉默的 disabled 按钮等于没有反馈。 */
 .testing-view__run-blocked {
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--warn-text);
   white-space: nowrap;
 }
@@ -70,7 +75,7 @@
   border-radius: 6px;
   background: var(--bg-card);
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 0.8462rem;
   cursor: pointer;
   white-space: nowrap;
   transition: background 0.12s ease, color 0.12s ease;
@@ -112,12 +117,12 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-secondary);
 }
 
 .testing-view__envbar-item select {
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-secondary);
   background: transparent;
   border: 0;
@@ -130,7 +135,7 @@
   background: transparent;
   cursor: pointer;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 0.8462rem;
   padding: 2px 4px;
   border-radius: 4px;
 }
@@ -210,7 +215,7 @@
   padding: 1px 7px;
   border: 1px solid var(--border-subtle);
   border-radius: 999px;
-  font-size: 10px;
+  font-size: 0.7692rem;
 }
 
 .testing-view__envbar-spacer {
@@ -223,7 +228,7 @@
   background: var(--danger-soft);
   color: var(--diff-red);
   border-radius: 6px;
-  font-size: 12px;
+  font-size: 0.9231rem;
 }
 
 .testing-view__preparing {
@@ -269,7 +274,7 @@
 
 .testing-view__title-text h1 {
   margin: 0;
-  font-size: 16px;
+  font-size: 1.2308rem;
   font-weight: 600;
   color: var(--text-primary);
   text-overflow: ellipsis;
@@ -279,7 +284,7 @@
 
 .testing-view__title-text p {
   margin: 0;
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
   text-overflow: ellipsis;
   overflow: hidden;
@@ -310,7 +315,7 @@
   align-items: center;
   justify-content: center;
   color: var(--text-tertiary);
-  font-size: 13px;
+  font-size: 1rem;
 }
 
 /* ── 进度条（tsRunng）─────────────────────────────────────── */
@@ -333,7 +338,7 @@
 .testing-view__suite-progress {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
 }
 
@@ -359,19 +364,19 @@
 }
 
 .testing-view__kpi > span {
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-secondary);
 }
 
 .testing-view__kpi > strong {
-  font-size: 18px;
+  font-size: 1.3846rem;
   font-weight: 600;
   color: var(--text-primary);
   line-height: 1.2;
 }
 
 .testing-view__kpi-note {
-  font-size: 10px;
+  font-size: 0.7692rem;
   font-style: normal;
   color: var(--text-tertiary);
 }
@@ -406,13 +411,13 @@
 
 .testing-view__card-header h2 {
   margin: 0;
-  font-size: 13px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .testing-view__card-header > span {
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
 }
 
@@ -424,7 +429,7 @@
 .testing-view__card-note {
   margin: 0;
   padding: 12px;
-  font-size: 12px;
+  font-size: 0.9231rem;
   color: var(--text-tertiary);
 }
 
@@ -444,7 +449,7 @@
   gap: 12px;
   padding: 10px 12px;
   border-top: 1px solid var(--border-subtle);
-  font-size: 12px;
+  font-size: 0.9231rem;
 }
 
 .testing-view__row:first-child {
@@ -504,7 +509,7 @@
 }
 
 .testing-view__row-main strong {
-  font-size: 12px;
+  font-size: 0.9231rem;
   font-weight: 500;
   color: var(--text-primary);
   text-overflow: ellipsis;
@@ -513,7 +518,7 @@
 }
 
 .testing-view__row-main span {
-  font-size: 10px;
+  font-size: 0.7692rem;
   color: var(--text-tertiary);
   text-overflow: ellipsis;
   overflow: hidden;
@@ -521,17 +526,25 @@
   line-height: 1.4;
 }
 
+/* 401 会话过期提示：按钮自带 chip 尺寸，容器不能再按单行文本裁切。 */
+.testing-view__row-main .testing-view__row-hint {
+  display: inline-flex;
+  gap: 6px;
+  overflow: visible;
+  white-space: normal;
+}
+
 .testing-view__row-type {
   flex: none;
   min-width: 36px;
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
   text-align: right;
 }
 
 .testing-view__row-duration {
   flex: none;
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
   min-width: 48px;
   text-align: right;
@@ -573,7 +586,7 @@
   padding: 10px 12px 12px 48px;
   background: var(--bg-main);
   border-top: 1px solid var(--border-subtle);
-  font-size: 12px;
+  font-size: 0.9231rem;
   color: var(--text-secondary);
 }
 
@@ -585,14 +598,14 @@
 }
 
 .testing-view__row-details dt {
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
 }
 
 .testing-view__row-details dd {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 0.8462rem;
   word-break: break-word;
 }
 
@@ -603,7 +616,7 @@
   align-items: center;
   padding: 2px 6px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: 0.7692rem;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -653,7 +666,7 @@
   grid-template-columns: 1fr 1fr 170px;
   gap: 12px;
   padding: 12px 0;
-  font-size: 12px;
+  font-size: 0.9231rem;
 }
 
 .testing-view__failure-grid > div {
@@ -664,12 +677,12 @@
 }
 
 .testing-view__failure-grid span {
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
 }
 
 .testing-view__failure-grid strong {
-  font-size: 12px;
+  font-size: 0.9231rem;
   color: var(--text-primary);
   font-weight: 500;
   word-break: break-word;
@@ -693,7 +706,7 @@
 
 .testing-view__handoff select {
   width: 100%;
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-secondary);
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
@@ -710,7 +723,7 @@
   padding: 10px 12px;
   background: var(--bg-card);
   border-radius: 12px;
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
 }
 
@@ -732,7 +745,7 @@
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-card);
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-secondary);
 }
 
@@ -755,7 +768,7 @@
 .testing-view__suite-verdict {
   padding: 1px 8px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: 0.7692rem;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -826,7 +839,7 @@
 
 .testing-view__suite-problem-path {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-secondary);
 }
 
@@ -851,7 +864,7 @@
   border: 1px solid transparent;
   border-radius: 6px;
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: 0.9231rem;
   white-space: nowrap;
   transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
@@ -919,13 +932,13 @@
 
 .testing-env-dialog__header h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: 1.0769rem;
   font-weight: 600;
 }
 
 .testing-env-dialog__header p {
   margin: 4px 0 0;
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
 }
 
@@ -953,7 +966,7 @@
   border-bottom: 1px solid var(--border-subtle);
   background: var(--danger-soft);
   color: var(--diff-red);
-  font-size: 12px;
+  font-size: 0.9231rem;
 }
 
 .testing-env-dialog__body {
@@ -1004,12 +1017,12 @@
 }
 
 .testing-env-dialog__list-item strong {
-  font-size: 12px;
+  font-size: 0.9231rem;
   font-weight: 500;
 }
 
 .testing-env-dialog__list-item span {
-  font-size: 10px;
+  font-size: 0.7692rem;
   color: var(--text-tertiary);
 }
 
@@ -1017,13 +1030,13 @@
   flex-direction: row;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: 0.9231rem;
   color: var(--accent-text);
 }
 
 .testing-env-dialog__list-empty {
   margin: 4px 0 0;
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
 }
 
@@ -1039,7 +1052,7 @@
 
 .testing-env-dialog__placeholder {
   margin: 0;
-  font-size: 12px;
+  font-size: 0.9231rem;
   color: var(--text-tertiary);
 }
 
@@ -1066,13 +1079,13 @@
 }
 
 .testing-env-dialog__type strong {
-  font-size: 12px;
+  font-size: 0.9231rem;
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .testing-env-dialog__type span {
-  font-size: 10px;
+  font-size: 0.7692rem;
   color: var(--text-tertiary);
 }
 
@@ -1099,7 +1112,7 @@
   padding: 2px 7px;
   border: 1px solid var(--border-subtle);
   border-radius: 999px;
-  font-size: 10px;
+  font-size: 0.7692rem;
   color: var(--text-secondary);
   white-space: nowrap;
 }
@@ -1120,7 +1133,7 @@
   align-items: center;
   gap: 6px;
   height: 28px;
-  font-size: 12px;
+  font-size: 0.9231rem;
   color: var(--text-secondary);
   cursor: pointer;
   user-select: none;
@@ -1145,7 +1158,7 @@
   background: var(--bg-input);
   color: var(--text-primary);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: 0.9231rem;
 }
 
 .testing-env-dialog textarea {
@@ -1188,7 +1201,7 @@
 
 .testing-env-dialog__hint {
   margin: 0;
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
 }
 
@@ -1200,7 +1213,7 @@
   margin: 0;
   padding: 8px 10px;
   border-radius: 8px;
-  font-size: 12px;
+  font-size: 0.9231rem;
 }
 
 .testing-env-dialog__probe--ok {
@@ -1219,7 +1232,7 @@
 }
 
 .testing-env-dialog__advanced > summary {
-  font-size: 12px;
+  font-size: 0.9231rem;
   color: var(--text-secondary);
   cursor: pointer;
 }
@@ -1232,26 +1245,135 @@
   margin-top: 8px;
 }
 
-.testing-env-dialog__json {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px 10px;
+.testing-env-dialog__headers {
   margin-top: 8px;
 }
 
-.testing-env-dialog__secret {
+.testing-env-dialog__headers > summary {
+  font-size: 0.8462rem;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.testing-env-dialog__headers[open] > summary {
+  margin-bottom: 6px;
+}
+
+/* 只读摘要：默认项不占表单位置，长值单行省略。 */
+.testing-env-dialog__summary {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto auto;
-  align-items: end;
-  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 16px;
   margin-top: 8px;
+}
+
+.testing-env-dialog__summary > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.testing-env-dialog__summary span {
+  font-size: 0.7692rem;
+  color: var(--text-tertiary);
+}
+
+.testing-env-dialog__summary strong {
+  font-size: 0.9231rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Secret 授权：列表替代 JSON 文本框；存在性由宿主核对后直接标注。 */
+.testing-env-dialog__secrets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
   padding-top: 10px;
   border-top: 1px dashed var(--border-subtle);
 }
 
-.testing-env-dialog__secret > [role='status'] {
-  grid-column: 1 / -1;
-  font-size: 11px;
+.testing-env-dialog__section-title {
+  margin: 0;
+  font-size: 0.9231rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.testing-env-dialog__secret-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.testing-env-dialog__secret-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.testing-env-dialog__secret-refresh {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.8462rem;
+  color: var(--text-tertiary);
+}
+
+.testing-env-dialog__secret-list code {
+  font-family: var(--font-mono);
+  font-size: 0.8462rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.testing-env-dialog__secret-state {
+  font-size: 0.7692rem;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.testing-env-dialog__secret-state.is-ok {
+  color: var(--diff-green);
+}
+
+.testing-env-dialog__secret-state.is-missing {
+  color: var(--warn-text);
+}
+
+.testing-env-dialog__secret-suggest {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 0.8462rem;
+  color: var(--text-tertiary);
+}
+
+.testing-env-dialog__secret-suggest button {
+  font-family: var(--font-mono);
+}
+
+.testing-env-dialog__secret-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.testing-env-dialog__secret-status {
+  font-size: 0.8462rem;
   color: var(--accent-text);
 }
 
@@ -1260,19 +1382,19 @@
   flex-direction: column;
   gap: 3px;
   margin-top: 8px;
-  font-size: 12px;
+  font-size: 0.9231rem;
   color: var(--text-secondary);
 }
 
 .testing-env-dialog__facts p {
   margin: 0;
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
 }
 
 .testing-env-dialog__facts code {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 0.8462rem;
   word-break: break-all;
 }
 
@@ -1301,7 +1423,7 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  font-size: 12px;
+  font-size: 0.9231rem;
   color: var(--text-secondary);
 }
 
@@ -1309,7 +1431,7 @@
   min-width: 0;
   overflow: hidden;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-primary);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1321,7 +1443,7 @@
 
 .testing-view__environment-error {
   margin: 0;
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--diff-red);
 }
 
@@ -1341,7 +1463,7 @@
 
 .testing-approval-list h2 {
   margin: 0;
-  font-size: 12px;
+  font-size: 0.9231rem;
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -1349,7 +1471,7 @@
 .testing-approval-hint,
 .testing-approval-empty {
   margin: 0;
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
 }
 
@@ -1397,7 +1519,7 @@
 
 .testing-approval-item dt {
   flex: none;
-  font-size: 10px;
+  font-size: 0.7692rem;
   color: var(--text-tertiary);
   white-space: nowrap;
 }
@@ -1405,14 +1527,14 @@
 /* 动作/目标是安全决策依据，宁可换行也不截断。 */
 .testing-approval-item dd {
   margin: 0;
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-secondary);
   overflow-wrap: anywhere;
 }
 
 .testing-approval-item dd code {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 0.8462rem;
 }
 
 .testing-approval-actions {
@@ -1427,7 +1549,7 @@
 .testing-view__env-facts {
   margin: -4px 0 0;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
 }
 
@@ -1484,7 +1606,7 @@
   background: transparent;
   border: 0;
   color: var(--text-tertiary);
-  font-size: 11px;
+  font-size: 0.8462rem;
   padding: 0;
   cursor: pointer;
 }
@@ -1507,7 +1629,7 @@
 }
 
 .testing-view__footer-item {
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
 }
 
@@ -1522,7 +1644,7 @@
 /* 运行历史：列表默认收起，卡头常驻「最近批次」入口。 */
 .testing-view__runs > summary {
   padding: 6px 12px;
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-tertiary);
   cursor: pointer;
 }
@@ -1559,14 +1681,14 @@
 
 .testing-view__empty-card h1 {
   margin: 0;
-  font-size: 16px;
+  font-size: 1.2308rem;
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .testing-view__empty-card p {
   margin: 0;
-  font-size: 13px;
+  font-size: 1rem;
   color: var(--text-secondary);
   line-height: 1.35;
 }
@@ -1577,7 +1699,7 @@
   gap: 6px;
   margin: 0;
   padding-left: 18px;
-  font-size: 12px;
+  font-size: 0.9231rem;
   color: var(--text-secondary);
 }
 
@@ -1599,7 +1721,7 @@
   flex-direction: column;
   align-items: flex-start;
   gap: 4px;
-  font-size: 11px;
+  font-size: 0.8462rem;
   color: var(--text-secondary);
 }
 
@@ -1618,7 +1740,7 @@
   border: 1px solid var(--border-subtle);
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 0.9231rem;
 }
 
 .testing-view__empty-snippet {
@@ -1631,7 +1753,7 @@
   background: var(--bg-hover);
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 0.9231rem;
   text-align: left;
   white-space: pre-wrap;
 }

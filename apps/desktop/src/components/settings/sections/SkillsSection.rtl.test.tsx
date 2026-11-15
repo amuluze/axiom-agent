@@ -193,15 +193,15 @@ describe('SkillsSection 内置/项目技能区分展示（RTL）', () => {
     expect(screen.getByText('root_list_failed:not_authorized')).toBeTruthy()
   })
 
-  it('内置技能区渲染 8 个内置 Skill 与来源标注，项目区独立成块', () => {
+  it('内置技能区渲染 9 个内置 Skill 与来源标注，项目区独立成块', () => {
     render(<SkillsSection />)
     expect(screen.getByText('内置技能')).toBeTruthy()
     expect(screen.getByText('项目级技能')).toBeTruthy()
-    for (const name of ['domain', 'brainstorm', 'diagnose', 'plan', 'implement', 'finish', 'design']) {
+    for (const name of ['domain', 'brainstorm', 'diagnose', 'plan', 'implement', 'finish', 'design', 'design-intent']) {
       expect(screen.getByText(name)).toBeTruthy()
     }
     // 每个内置项都有「内置」badge；项目 alpha/beta 不带该 badge。
-    expect(screen.getAllByText('内置')).toHaveLength(8)
+    expect(screen.getAllByText('内置')).toHaveLength(9)
     expect(screen.queryByText(/已被项目同名覆盖/)).toBeNull()
   })
 

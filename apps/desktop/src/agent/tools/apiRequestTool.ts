@@ -392,8 +392,8 @@ const describeApiStepResult = (request: ApiRequestInput, result: ApiTestStepResu
   }
   if (result.message.includes(PRIVATE_NETWORK_BLOCKED_MARKER)) {
     lines.push(
-      '目标解析到回环或私网地址而当前测试环境未授权私网访问：请让用户在「测试环境」面板里为该环境勾选'
-      + '「允许访问回环/私网 API」（allow_private_network）后重试；不要改用 IP 直连、代理或其它地址绕过。',
+      '目标解析到回环或私网地址而当前测试环境未授权私网访问：请让用户在「测试环境」面板里重新保存该环境'
+      + '（私网授权按地址自动推导），或把服务地址改成回环/私网形态；不要改用 IP 直连、代理或其它地址绕过。',
     )
   }
   if (result.verdict !== 'not_evaluated') {
@@ -440,7 +440,7 @@ export const createApiRequestTool = (
     '判定与证据都由宿主给出：非 2xx 不是工具错误（期望状态由测试文件里的断言决定），响应正文与 Secret 不回灌会话，不要凭摘要臆造响应内容。',
     '不要把密钥、令牌或用户隐私写进 url/query/body：它们会进入会话记录与审计。',
   ],
-  runtimeVersion: '7',
+  runtimeVersion: '8',
   recoveryPolicy: 'never',
   executionMode: 'sequential',
   requiresApproval: true,
