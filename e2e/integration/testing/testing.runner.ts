@@ -91,7 +91,8 @@ const ensureBrowserTab = async (page: Page): Promise<void> => {
 }
 
 const startRun = async (page: Page, specPath: string): Promise<void> => {
-  await page.getByRole('tab', { name: specPath }).click()
+  // 用例文件自 0.7.9 起经环境条下拉框选择（option value = 完整路径）。
+  await page.getByRole('combobox', { name: '用例文件' }).selectOption(specPath)
   await ensureBrowserTab(page)
   await page.getByRole('button', { name: '重放' }).first().click()
 }
@@ -128,18 +129,17 @@ test.describe('测试页运行旅程', () => {
 
       switch (item.input.scenario) {
         case 'scan_lists_specs': {
-          // 扫描结果：3 个用例文件标签；非法文件标红并在 title 里带首条校验问题。
-          const tabs = page.getByRole('tablist', { name: '用例文件' }).getByRole('tab')
-          await expect(tabs).toHaveCount(3)
-          await expect(page.getByRole('tab', { name: 'tests/checkout.testspec.json' }))
+          // 扫描结果：环境条「用例文件」下拉框含 3 个选项（0.7.9 起替换顶栏标签页）；
+          // 无效文件在选项文本带「需要修复」后缀，option title 恒为完整路径。
+          const specSelect = page.getByRole('combobox', { name: '用例文件' })
+          await expect(specSelect.locator('option')).toHaveCount(3)
+          await expect(specSelect.locator('option', { hasText: 'checkout.testspec.json' }))
             .toHaveAttribute('title', 'tests/checkout.testspec.json')
-          await expect(page.getByRole('tab', { name: 'tests/broken.testspec.json' }))
-            .toHaveClass(/is-invalid/)
-          await expect(page.getByRole('tab', { name: 'tests/broken.testspec.json' }))
-            .toHaveAttribute('title', /不支持的版本，当前支持 1 \/ 2 \/ 3/)
-          // 合法用例展示扫描出的元数据。
-          await expect(page.getByText('tests/checkout.testspec.json · 1 个场景 · UI 4 步 · API 0 步'))
-            .toBeVisible()
+          const brokenOption = specSelect.locator('option', { hasText: 'broken.testspec.json' })
+          await expect(brokenOption).toHaveText(/需要修复/)
+          await expect(brokenOption).toHaveAttribute('title', 'tests/broken.testspec.json')
+          // 元数据行（N 个场景 · UI N 步）自 0.7.9 起移到运行期批次条展示，
+          // 扫描场景不出现——由 run_with_approval 旅程覆盖。
           // 扫描真的走了宿主命令面（而不是前端内置的假数据）。
           const commands = (await host.snapshot()).calls.slice(baselineCalls).map((call) => call.cmd)
           expect(commands, '扫描经宿主枚举工作区文件').toContain('find_workspace_files')
